@@ -328,7 +328,7 @@ async def generate_recommendations(
                 model=model_override,
                 system=system,
                 prompt=prompt,
-                max_tokens=2048,
+                max_tokens=8192,
             )
         except Exception:
             logger.warning("LLM call failed, falling back to rule-based", exc_info=True)

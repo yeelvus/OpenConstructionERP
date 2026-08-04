@@ -8640,7 +8640,7 @@ class BOQService:
             api_key=api_key,
             system=system,
             prompt=prompt,
-            max_tokens=2048,
+            max_tokens=8192,
             model=model_override,
         )
         return raw_text, provider, tokens

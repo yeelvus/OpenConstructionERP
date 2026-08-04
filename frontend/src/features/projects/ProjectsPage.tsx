@@ -1,6 +1,6 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
@@ -8,6 +8,7 @@ import {
   FolderPlus, FolderOpen, ArrowRight, MoreHorizontal, Copy, Trash2, Archive, ArchiveRestore, ExternalLink,
   Search, ChevronDown, ArrowUpDown, Star, Map as MapIcon, CloudSun,
   Building2, DollarSign, Euro, PoundSterling, Globe2, MapPin, Layers, AlertTriangle,
+  FileSpreadsheet, Download, Upload,
 } from 'lucide-react';
 import { formatDistanceToNowStrict, isValid as isValidDate, parseISO } from 'date-fns';
 import { Button, Card, Badge, EmptyState, Skeleton, SkeletonGrid, Breadcrumb, ProjectMap, ProjectWeather, FileTypeChips, ConfirmDialog, ModuleGuideButton, RecoveryCard, type LatLng } from '@/shared/ui';
@@ -131,6 +132,8 @@ export function ProjectsPage() {
 
   // Create project modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const excelImportRef = useRef<HTMLInputElement>(null);
+  const [excelBusy, setExcelBusy] = useState(false);
   useEffect(() => {
     const state = location.state as { openCreateModal?: boolean } | null;
     if (state?.openCreateModal) {
@@ -138,6 +141,90 @@ export function ProjectsPage() {
       window.history.replaceState({}, '');
     }
   }, [location.state]);
+
+  const handleExcelTemplate = async () => {
+    try {
+      setExcelBusy(true);
+      await projectsApi.downloadExcelTemplate();
+      addToast({
+        type: 'success',
+        title: t('projects.excel.template_ok', { defaultValue: 'Template downloaded' }),
+        message: t('projects.excel.template_hint', {
+          defaultValue: 'Fill rows (name required), then use Import Excel.',
+        }),
+      });
+    } catch (e) {
+      addToast({
+        type: 'error',
+        title: t('projects.excel.template_fail', { defaultValue: 'Template download failed' }),
+        message: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setExcelBusy(false);
+    }
+  };
+
+  const handleExcelExport = async () => {
+    try {
+      setExcelBusy(true);
+      await projectsApi.exportExcel();
+      addToast({
+        type: 'success',
+        title: t('projects.excel.export_ok', { defaultValue: 'Projects exported' }),
+      });
+    } catch (e) {
+      addToast({
+        type: 'error',
+        title: t('projects.excel.export_fail', { defaultValue: 'Export failed' }),
+        message: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setExcelBusy(false);
+    }
+  };
+
+  const handleExcelImport = async (file: File) => {
+    try {
+      setExcelBusy(true);
+      const result = await projectsApi.importExcel(file);
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['projects-switcher'] });
+      const errN = result.errors?.length ?? 0;
+      addToast({
+        type: errN && !result.imported ? 'error' : 'success',
+        title: t('projects.excel.import_ok', {
+          defaultValue: 'Imported {{n}} project(s)',
+          n: result.imported,
+        }),
+        message: t('projects.excel.import_detail', {
+          defaultValue: 'Skipped {{skipped}} · Errors {{errors}} · Rows {{total}}',
+          skipped: result.skipped,
+          errors: errN,
+          total: result.total_rows,
+        }),
+      });
+      if (errN > 0) {
+        const sample = result.errors
+          .slice(0, 5)
+          .map((e) => `row ${e.row}: ${e.error}`)
+          .join('; ');
+        addToast({
+          type: 'warning',
+          title: t('projects.excel.import_errors', { defaultValue: 'Some rows failed' }),
+          message: sample,
+        });
+      }
+    } catch (e) {
+      addToast({
+        type: 'error',
+        title: t('projects.excel.import_fail', { defaultValue: 'Import failed' }),
+        message: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setExcelBusy(false);
+      if (excelImportRef.current) excelImportRef.current.value = '';
+    }
+  };
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filters, setFilters] = useLocalStorage('oe_projects_filters', {
@@ -548,7 +635,7 @@ export function ProjectsPage() {
             : t('common.loading', { defaultValue: 'Loading...' })
         }
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {/* "How it works" guide — explains what a project is and how to
                 fill it in. Sibling to the primary action so the header reads
                 as one control cluster. Its closing CTA opens the create
@@ -556,6 +643,46 @@ export function ProjectsPage() {
             <ModuleGuideButton
               content={projectsGuide}
               onCta={() => setCreateModalOpen(true)}
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<FileSpreadsheet size={15} />}
+              disabled={excelBusy}
+              onClick={() => void handleExcelTemplate()}
+              data-testid="projects-excel-template"
+            >
+              {t('projects.excel.template', { defaultValue: 'Excel template' })}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<Download size={15} />}
+              disabled={excelBusy}
+              onClick={() => void handleExcelExport()}
+              data-testid="projects-excel-export"
+            >
+              {t('projects.excel.export', { defaultValue: 'Export Excel' })}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<Upload size={15} />}
+              disabled={excelBusy}
+              onClick={() => excelImportRef.current?.click()}
+              data-testid="projects-excel-import"
+            >
+              {t('projects.excel.import', { defaultValue: 'Import Excel' })}
+            </Button>
+            <input
+              ref={excelImportRef}
+              type="file"
+              accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void handleExcelImport(f);
+              }}
             />
             <Button
               variant="primary"

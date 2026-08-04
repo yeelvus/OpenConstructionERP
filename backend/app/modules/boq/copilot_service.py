@@ -689,7 +689,7 @@ class BOQCopilotService:
                 api_key=api_key,
                 system=COPILOT_SYSTEM_PROMPT,
                 prompt=prompt,
-                max_tokens=2048,
+                max_tokens=8192,
                 model=model_override,
             )
             parsed = extract_json(raw_response)

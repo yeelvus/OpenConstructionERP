@@ -496,19 +496,32 @@ function ProjectLocationPanel({ project }: { project: Project }) {
   const mapEnabled = useWidgetSettingsStore((s) => s.projectMapEnabled);
   const weatherEnabled = useWidgetSettingsStore((s) => s.projectWeatherEnabled);
   const queryClient = useQueryClient();
+  const storedLat =
+    project.address?.lat != null && Number.isFinite(project.address.lat)
+      ? project.address.lat
+      : null;
+  const storedLng =
+    project.address?.lng != null && Number.isFinite(project.address.lng)
+      ? project.address.lng
+      : null;
   const [resolved, setResolved] = useState<{ lat: number; lng: number } | null>(
-    project.address?.lat && project.address?.lng
-      ? { lat: project.address.lat, lng: project.address.lng }
+    storedLat != null && storedLng != null
+      ? { lat: storedLat, lng: storedLng }
       : null,
   );
+
+  // Keep weather/map pin in sync when settings save new coordinates.
+  useEffect(() => {
+    if (storedLat != null && storedLng != null) {
+      setResolved({ lat: storedLat, lng: storedLng });
+    }
+  }, [storedLat, storedLng]);
 
   // Persist the resolved lat/lng back to the project so subsequent
   // renders (and other users of the same project) don't re-hit
   // Nominatim.  Only fires when we have an address but no stored
   // coords yet, and stops after the first successful write.
-  const [persisted, setPersisted] = useState(
-    !!(project.address?.lat && project.address?.lng),
-  );
+  const [persisted, setPersisted] = useState(storedLat != null && storedLng != null);
   const persistCoords = useMutation({
     mutationFn: (coords: { lat: number; lng: number }) =>
       apiPatch(`/v1/projects/${project.id}`, {
@@ -525,12 +538,15 @@ function ProjectLocationPanel({ project }: { project: Project }) {
     },
   });
 
-  const hasAddress = !!(
+  const hasTextAddress = !!(
     project.address &&
     (project.address.street || project.address.city || project.address.country)
   );
+  // Coords-only pins (DMS paste without street text) still drive map + weather.
+  const hasCoords = storedLat != null && storedLng != null;
+  const hasLocation = hasTextAddress || hasCoords;
 
-  if (!hasAddress || (!mapEnabled && !weatherEnabled)) return null;
+  if (!hasLocation || (!mapEnabled && !weatherEnabled)) return null;
 
   const addressLabel = [
     project.address?.street,
@@ -538,7 +554,7 @@ function ProjectLocationPanel({ project }: { project: Project }) {
     project.address?.country,
   ]
     .filter(Boolean)
-    .join(', ');
+    .join(', ') || (hasCoords ? `${storedLat!.toFixed(5)}, ${storedLng!.toFixed(5)}` : '');
 
   const handleResolved = (coords: { lat: number; lng: number }) => {
     setResolved(coords);
@@ -546,6 +562,9 @@ function ProjectLocationPanel({ project }: { project: Project }) {
       persistCoords.mutate(coords);
     }
   };
+
+  const weatherLat = resolved?.lat ?? storedLat;
+  const weatherLng = resolved?.lng ?? storedLng;
 
   return (
     <div
@@ -559,8 +578,8 @@ function ProjectLocationPanel({ project }: { project: Project }) {
       {mapEnabled && (
         <ProjectMap
           variant="detail"
-          lat={project.address?.lat ?? null}
-          lng={project.address?.lng ?? null}
+          lat={storedLat}
+          lng={storedLng}
           address={project.address?.street}
           city={project.address?.city}
           country={project.address?.country}
@@ -576,7 +595,7 @@ function ProjectLocationPanel({ project }: { project: Project }) {
         />
       )}
       {weatherEnabled && (
-        <ProjectWeather lat={resolved?.lat} lng={resolved?.lng} />
+        <ProjectWeather lat={weatherLat} lng={weatherLng} />
       )}
     </div>
   );

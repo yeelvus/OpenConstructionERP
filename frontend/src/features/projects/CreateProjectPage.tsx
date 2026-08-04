@@ -26,6 +26,7 @@ import {
   type WizardPreset,
   type ProfileSpec,
 } from './api';
+import { looksLikeCoordinatePair, parseCoordinates } from './parseCoordinates';
 import { useTelemetry } from '@/shared/lib/telemetry';
 import { onlyChangedFields } from '@/shared/lib/apiHelpers';
 
@@ -479,6 +480,17 @@ export function CreateProjectModal({
   // geocode in ProjectGeoPage still anchors it - backward compatible).
   const [addressLat, setAddressLat] = useState<number | null>(null);
   const [addressLon, setAddressLon] = useState<number | null>(null);
+  /** Free-text paste for DMS / decimal pairs shown next to lat/lng. */
+  const [coordsPaste, setCoordsPaste] = useState('');
+
+  function applyCoordsFromText(raw: string): boolean {
+    const parsed = parseCoordinates(raw);
+    if (!parsed) return false;
+    setAddressLat(parsed.lat);
+    setAddressLon(parsed.lng);
+    setCoordsPaste(raw.trim());
+    return true;
+  }
 
   function applyAutocompleteSelection(sel: AddressAutocompleteSelection) {
     const parts = sel.address_parts ?? {};
@@ -789,16 +801,16 @@ export function CreateProjectModal({
         lat: addressLat,
         lng: addressLon,
       };
-      // Coordinates alone shouldn't count as "has an address" for the
-      // null-vs-object decision; only the text parts do. (Coords are never
-      // present without a picked suggestion, which also fills the text, but
-      // keep the guard explicit so the contract is obvious.)
-      const hasAnyAddress = [
-        addressParts.street,
-        addressParts.city,
-        addressParts.country,
-        addressParts.postal_code,
-      ].some((v) => !!v);
+      // Text parts or explicit coordinates both count as a location.
+      // Coords-only is valid when the user pins a site without a street address.
+      const hasAnyAddress =
+        [addressParts.street, addressParts.city, addressParts.country, addressParts.postal_code].some(
+          (v) => !!v,
+        ) ||
+        (addressLat != null &&
+          addressLon != null &&
+          Number.isFinite(addressLat) &&
+          Number.isFinite(addressLon));
 
       // Custom picks send the normalized effective values (trimmed, and
       // uppercased for the currency code) instead of the raw input text.
@@ -1572,6 +1584,73 @@ export function CreateProjectModal({
                     <input type="text" value={addressCity} onChange={(e) => setAddressCity(e.target.value)} aria-label={t('projects.address_city', { defaultValue: 'City' })} placeholder={t('projects.address_city', { defaultValue: 'City' })} className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent" />
                     <input type="text" value={addressCountry} onChange={(e) => setAddressCountry(e.target.value)} aria-label={t('projects.address_country', { defaultValue: 'Country' })} placeholder={t('projects.address_country', { defaultValue: 'Country' })} className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent" />
                     <input type="text" value={addressPostal} onChange={(e) => setAddressPostal(e.target.value)} aria-label={t('projects.address_postal', { defaultValue: 'Postal code' })} placeholder={t('projects.address_postal', { defaultValue: 'Postal code' })} className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent" />
+                    <input
+                      type="text"
+                      value={coordsPaste}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setCoordsPaste(v);
+                        if (looksLikeCoordinatePair(v)) applyCoordsFromText(v);
+                      }}
+                      onPaste={(e) => {
+                        const text = e.clipboardData.getData('text');
+                        if (text && looksLikeCoordinatePair(text)) {
+                          e.preventDefault();
+                          applyCoordsFromText(text);
+                        }
+                      }}
+                      aria-label={t('project.settings.location.paste_label', { defaultValue: 'Paste coordinates' })}
+                      placeholder={`13°35'37.60"N 100°57'48.38"E`}
+                      className="h-10 w-full sm:col-span-2 rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
+                    />
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={addressLat ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        if (v === '') {
+                          setAddressLat(null);
+                          return;
+                        }
+                        if (looksLikeCoordinatePair(v) && applyCoordsFromText(v)) return;
+                        const n = Number(v);
+                        setAddressLat(Number.isFinite(n) ? n : null);
+                      }}
+                      onPaste={(e) => {
+                        const text = e.clipboardData.getData('text');
+                        if (text && looksLikeCoordinatePair(text)) {
+                          e.preventDefault();
+                          applyCoordsFromText(text);
+                        }
+                      }}
+                      aria-label={t('project.settings.location.latitude', { defaultValue: 'Latitude' })}
+                      placeholder={t('project.settings.location.latitude', { defaultValue: 'Latitude (e.g. 13.59378)' })}
+                      className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent tabular-nums"
+                    />
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={addressLon ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        if (v === '') setAddressLon(null);
+                        else {
+                          const n = Number(v);
+                          setAddressLon(Number.isFinite(n) ? n : null);
+                        }
+                      }}
+                      onPaste={(e) => {
+                        const text = e.clipboardData.getData('text');
+                        if (text && looksLikeCoordinatePair(text)) {
+                          e.preventDefault();
+                          applyCoordsFromText(text);
+                        }
+                      }}
+                      aria-label={t('project.settings.location.longitude', { defaultValue: 'Longitude' })}
+                      placeholder={t('project.settings.location.longitude', { defaultValue: 'Longitude (e.g. 100.96344)' })}
+                      className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent tabular-nums"
+                    />
                   </div>
                   <div className="flex items-center gap-4 pt-1 border-t border-border-light/60 mt-1">
                     <span className="text-xs text-content-tertiary">
@@ -2030,6 +2109,71 @@ export function CreateProjectModal({
                   <input type="text" value={addressCity} onChange={(e) => setAddressCity(e.target.value)} placeholder={t('projects.address_city', { defaultValue: 'City' })} className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent" />
                   <input type="text" value={addressCountry} onChange={(e) => setAddressCountry(e.target.value)} placeholder={t('projects.address_country', { defaultValue: 'Country' })} className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent" />
                   <input type="text" value={addressPostal} onChange={(e) => setAddressPostal(e.target.value)} placeholder={t('projects.address_postal', { defaultValue: 'Postal code' })} className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent" />
+                  <input
+                    type="text"
+                    value={coordsPaste}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setCoordsPaste(v);
+                      if (looksLikeCoordinatePair(v)) applyCoordsFromText(v);
+                    }}
+                    onPaste={(e) => {
+                      const text = e.clipboardData.getData('text');
+                      if (text && looksLikeCoordinatePair(text)) {
+                        e.preventDefault();
+                        applyCoordsFromText(text);
+                      }
+                    }}
+                    aria-label={t('project.settings.location.paste_label', { defaultValue: 'Paste coordinates' })}
+                    placeholder={`13°35'37.60"N 100°57'48.38"E`}
+                    className="h-10 w-full sm:col-span-2 rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
+                  />
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={addressLat ?? ''}
+                    onChange={(e) => {
+                      const v = e.target.value.trim();
+                      if (v === '') {
+                        setAddressLat(null);
+                        return;
+                      }
+                      if (looksLikeCoordinatePair(v) && applyCoordsFromText(v)) return;
+                      const n = Number(v);
+                      setAddressLat(Number.isFinite(n) ? n : null);
+                    }}
+                    onPaste={(e) => {
+                      const text = e.clipboardData.getData('text');
+                      if (text && looksLikeCoordinatePair(text)) {
+                        e.preventDefault();
+                        applyCoordsFromText(text);
+                      }
+                    }}
+                    placeholder={t('project.settings.location.latitude', { defaultValue: 'Latitude (e.g. 13.59378)' })}
+                    className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent tabular-nums"
+                  />
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={addressLon ?? ''}
+                    onChange={(e) => {
+                      const v = e.target.value.trim();
+                      if (v === '') setAddressLon(null);
+                      else {
+                        const n = Number(v);
+                        setAddressLon(Number.isFinite(n) ? n : null);
+                      }
+                    }}
+                    onPaste={(e) => {
+                      const text = e.clipboardData.getData('text');
+                      if (text && looksLikeCoordinatePair(text)) {
+                        e.preventDefault();
+                        applyCoordsFromText(text);
+                      }
+                    }}
+                    placeholder={t('project.settings.location.longitude', { defaultValue: 'Longitude (e.g. 100.96344)' })}
+                    className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent tabular-nums"
+                  />
                 </div>
                 <div className="flex items-center gap-4 pt-1 border-t border-border-light/60 mt-2">
                   <span className="text-xs text-content-tertiary">

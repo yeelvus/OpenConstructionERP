@@ -7,7 +7,9 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   AlertTriangle,
   ArrowLeft,
+  CloudSun,
   Coins,
+  MapPin,
   Pencil,
   Percent,
   Plus,
@@ -32,9 +34,15 @@ import { PageHeader } from '@/shared/ui/PageHeader';
 import { DismissibleInfo } from '@/shared/ui/DismissibleInfo';
 import { useToastStore } from '@/stores/useToastStore';
 import { useFxRatesStore, getFxRate } from '@/stores/useFxRatesStore';
+import { useWidgetSettingsStore } from '@/stores/useWidgetSettingsStore';
 import { getErrorMessage } from '@/shared/lib/api';
-import { projectsApi, type Project, type ProjectFxRate } from './api';
+import { projectsApi, type Project, type ProjectAddress, type ProjectFxRate } from './api';
 import { CURRENCY_GROUPS, CreateProjectModal } from './CreateProjectPage';
+import {
+  formatDms,
+  looksLikeCoordinatePair,
+  parseCoordinates,
+} from './parseCoordinates';
 import { getVatRate } from '../boq/boqHelpers';
 import { TranslationSettingsTab } from '../translation';
 import { MethodologyActiveCard } from '../methodology/MethodologyActiveCard';
@@ -42,6 +50,8 @@ import {
   listComplianceRulePacks,
   type ComplianceRulePack,
 } from '../contracts/api';
+import { AddressAutocomplete } from '@/features/geo-hub/AddressAutocomplete';
+import type { AddressAutocompleteSelection } from '@/features/geo-hub/AddressAutocomplete';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -555,6 +565,20 @@ export function ProjectSettingsPage() {
   // Slice 4 — re-open the setup wizard for this project in EDIT mode.
   const [editSetupOpen, setEditSetupOpen] = useState(false);
 
+  // Site location / coordinates (stored on project.address JSON)
+  const [addrStreet, setAddrStreet] = useState('');
+  const [addrCity, setAddrCity] = useState('');
+  const [addrCountry, setAddrCountry] = useState('');
+  const [addrPostal, setAddrPostal] = useState('');
+  const [addrLat, setAddrLat] = useState('');
+  const [addrLng, setAddrLng] = useState('');
+  /** Free-text paste box for DMS / decimal pairs (e.g. 13°35'37.60"N 100°57'48.38"E). */
+  const [coordsPaste, setCoordsPaste] = useState('');
+  const [addrSearch, setAddrSearch] = useState('');
+  const [addrError, setAddrError] = useState<string | null>(null);
+  const weatherEnabled = useWidgetSettingsStore((s) => s.projectWeatherEnabled);
+  const setProjectWeather = useWidgetSettingsStore((s) => s.setProjectWeather);
+
   // Sync local state with server state once (and when projectId changes)
   useEffect(() => {
     if (!project) return;
@@ -563,6 +587,23 @@ export function ProjectSettingsPage() {
     setBaseCurrencyCustom('');
     setVatInput(project.default_vat_rate ?? '');
     setCustomUnits(project.custom_units ?? []);
+    const a = project.address;
+    setAddrStreet(a?.street ?? '');
+    setAddrCity(a?.city ?? '');
+    setAddrCountry(a?.country ?? '');
+    setAddrPostal(a?.postal_code ?? '');
+    setAddrLat(a?.lat != null && Number.isFinite(a.lat) ? String(a.lat) : '');
+    setAddrLng(a?.lng != null && Number.isFinite(a.lng) ? String(a.lng) : '');
+    setCoordsPaste(
+      a?.lat != null &&
+        a?.lng != null &&
+        Number.isFinite(a.lat) &&
+        Number.isFinite(a.lng)
+        ? formatDms(a.lat, a.lng)
+        : '',
+    );
+    setAddrSearch('');
+    setAddrError(null);
   }, [project]);
 
   // Issue #105 — when navigated here with a hash (e.g. /settings#fx-rates),
@@ -598,6 +639,21 @@ export function ProjectSettingsPage() {
       setBaseCurrencyCustom('');
       setVatInput(updated.default_vat_rate ?? '');
       setCustomUnits(updated.custom_units ?? []);
+      const a = updated.address;
+      setAddrStreet(a?.street ?? '');
+      setAddrCity(a?.city ?? '');
+      setAddrCountry(a?.country ?? '');
+      setAddrPostal(a?.postal_code ?? '');
+      setAddrLat(a?.lat != null && Number.isFinite(a.lat) ? String(a.lat) : '');
+      setAddrLng(a?.lng != null && Number.isFinite(a.lng) ? String(a.lng) : '');
+      setCoordsPaste(
+        a?.lat != null &&
+          a?.lng != null &&
+          Number.isFinite(a.lat) &&
+          Number.isFinite(a.lng)
+          ? formatDms(a.lat, a.lng)
+          : '',
+      );
       addToast({
         type: 'success',
         title: t('project.settings.saved', { defaultValue: 'Project settings saved' }),
@@ -720,6 +776,157 @@ export function ProjectSettingsPage() {
       return;
     }
     updateMutation.mutate({ default_vat_rate: trimmed } as Partial<Project>);
+  };
+
+  const applyAddressAutocomplete = (sel: AddressAutocompleteSelection) => {
+    const parts = sel.address_parts ?? {};
+    const street = [parts.house_number, parts.road ?? parts.street]
+      .filter((v): v is string => typeof v === 'string' && v.trim() !== '')
+      .join(' ')
+      .trim();
+    const city = parts.city || parts.town || parts.village || parts.municipality || '';
+    if (street) setAddrStreet(street);
+    if (city) setAddrCity(city);
+    if (parts.country) setAddrCountry(parts.country);
+    if (parts.postcode) setAddrPostal(parts.postcode);
+    if (
+      Number.isFinite(sel.lat) &&
+      Number.isFinite(sel.lon) &&
+      sel.lat >= -90 &&
+      sel.lat <= 90 &&
+      sel.lon >= -180 &&
+      sel.lon <= 180
+    ) {
+      setAddrLat(String(sel.lat));
+      setAddrLng(String(sel.lon));
+      setCoordsPaste(formatDms(sel.lat, sel.lon));
+    }
+    setAddrSearch(sel.display_name);
+    setAddrError(null);
+  };
+
+  /** Apply a free-text coordinate paste (DMS or decimal pair). */
+  const applyCoordsPaste = (raw: string, opts?: { silent?: boolean }): boolean => {
+    const parsed = parseCoordinates(raw);
+    if (!parsed) {
+      if (!opts?.silent) {
+        setAddrError(
+          t('project.settings.location.paste_invalid', {
+            defaultValue:
+              'Could not parse coordinates. Try 13°35\'37.60"N 100°57\'48.38"E or 13.59378, 100.96344.',
+          }),
+        );
+      }
+      return false;
+    }
+    setAddrLat(String(parsed.lat));
+    setAddrLng(String(parsed.lng));
+    setCoordsPaste(formatDms(parsed.lat, parsed.lng));
+    setAddrError(null);
+    return true;
+  };
+
+  const tryParseFieldAsPair = (raw: string): boolean => {
+    if (!looksLikeCoordinatePair(raw)) return false;
+    return applyCoordsPaste(raw, { silent: true });
+  };
+
+  const handleLocationSave = (e: FormEvent) => {
+    e.preventDefault();
+    setAddrError(null);
+
+    // Prefer an unparsed paste box when decimal fields are still empty.
+    let latTrim = addrLat.trim();
+    let lngTrim = addrLng.trim();
+    if ((latTrim === '' || lngTrim === '') && coordsPaste.trim()) {
+      const parsed = parseCoordinates(coordsPaste);
+      if (parsed) {
+        latTrim = String(parsed.lat);
+        lngTrim = String(parsed.lng);
+        setAddrLat(latTrim);
+        setAddrLng(lngTrim);
+      } else if (latTrim === '' && lngTrim === '') {
+        setAddrError(
+          t('project.settings.location.paste_invalid', {
+            defaultValue:
+              'Could not parse coordinates. Try 13°35\'37.60"N 100°57\'48.38"E or 13.59378, 100.96344.',
+          }),
+        );
+        return;
+      }
+    }
+
+    // If the user pasted a full pair into the latitude box alone.
+    if (latTrim && looksLikeCoordinatePair(latTrim) && (lngTrim === '' || !Number.isFinite(Number(lngTrim)))) {
+      const parsed = parseCoordinates(latTrim);
+      if (parsed) {
+        latTrim = String(parsed.lat);
+        lngTrim = String(parsed.lng);
+        setAddrLat(latTrim);
+        setAddrLng(lngTrim);
+        setCoordsPaste(formatDms(parsed.lat, parsed.lng));
+      }
+    }
+
+    let lat: number | null = null;
+    let lng: number | null = null;
+
+    if (latTrim !== '' || lngTrim !== '') {
+      if (latTrim === '' || lngTrim === '') {
+        setAddrError(
+          t('project.settings.location.coords_pair', {
+            defaultValue: 'Enter both latitude and longitude, or leave both empty.',
+          }),
+        );
+        return;
+      }
+      // Allow DMS in either individual field when the other is filled as decimal.
+      const latParsed = parseCoordinates(`${latTrim} ${lngTrim}`);
+      if (latParsed) {
+        lat = latParsed.lat;
+        lng = latParsed.lng;
+      } else {
+        lat = Number(latTrim);
+        lng = Number(lngTrim);
+      }
+      if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+        setAddrError(
+          t('project.settings.location.lat_invalid', {
+            defaultValue: 'Latitude must be a number between -90 and 90.',
+          }),
+        );
+        return;
+      }
+      if (!Number.isFinite(lng) || lng < -180 || lng > 180) {
+        setAddrError(
+          t('project.settings.location.lng_invalid', {
+            defaultValue: 'Longitude must be a number between -180 and 180.',
+          }),
+        );
+        return;
+      }
+    }
+
+    const address: ProjectAddress = {
+      street: addrStreet.trim() || null,
+      city: addrCity.trim() || null,
+      country: addrCountry.trim() || null,
+      postal_code: addrPostal.trim() || null,
+      lat,
+      lng,
+    };
+    const hasText = [address.street, address.city, address.country, address.postal_code].some(
+      (v) => !!v,
+    );
+    const hasCoords = lat != null && lng != null;
+    // Empty form → clear address so Geo Hub stops anchoring a stale pin.
+    updateMutation.mutate({
+      address: hasText || hasCoords ? address : null,
+      country_code:
+        addrCountry.trim().length === 2
+          ? addrCountry.trim().toUpperCase()
+          : project.country_code,
+    } as Partial<Project>);
   };
 
   const handleAddUnit = (e: FormEvent) => {
@@ -1085,6 +1292,240 @@ export function ProjectSettingsPage() {
               regional: regionalVatPct,
             })}
           </p>
+        </form>
+      </Card>
+
+      {/* ── Site location + coordinates ───────────────────────────────────── */}
+      <Card padding="lg" id="location">
+        <CardHeader
+          title={t('project.settings.location.title', { defaultValue: 'Site location' })}
+          subtitle={t('project.settings.location.subtitle', {
+            defaultValue:
+              'Address and GPS coordinates. Used by the map, weather and Geo Hub. Files stay local — only the pin is stored.',
+          })}
+          action={
+            addrLat && addrLng ? (
+              <Badge variant="blue" size="sm">
+                {Number(addrLat).toFixed(5)}, {Number(addrLng).toFixed(5)}
+              </Badge>
+            ) : (
+              <Badge variant="neutral" size="sm">
+                {t('project.settings.location.no_pin', { defaultValue: 'No pin' })}
+              </Badge>
+            )
+          }
+        />
+        <form onSubmit={handleLocationSave} className="mt-4 space-y-3">
+          <AddressAutocomplete
+            value={addrSearch}
+            onChange={setAddrSearch}
+            onSelect={applyAddressAutocomplete}
+            ariaLabel={t('projects.address_search', { defaultValue: 'Search address' })}
+          />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label={t('projects.address_street', { defaultValue: 'Street & number' })}
+              value={addrStreet}
+              onChange={(e) => setAddrStreet(e.target.value)}
+              placeholder={t('projects.address_street', { defaultValue: 'Street & number' })}
+            />
+            <Input
+              label={t('projects.address_city', { defaultValue: 'City' })}
+              value={addrCity}
+              onChange={(e) => setAddrCity(e.target.value)}
+              placeholder={t('projects.address_city', { defaultValue: 'City' })}
+            />
+            <Input
+              label={t('projects.address_country', { defaultValue: 'Country' })}
+              value={addrCountry}
+              onChange={(e) => setAddrCountry(e.target.value)}
+              placeholder={t('projects.address_country', {
+                defaultValue: 'Country (e.g. Thailand or TH)',
+              })}
+            />
+            <Input
+              label={t('projects.address_postal', { defaultValue: 'Postal code' })}
+              value={addrPostal}
+              onChange={(e) => setAddrPostal(e.target.value)}
+              placeholder={t('projects.address_postal', { defaultValue: 'Postal code' })}
+            />
+          </div>
+          <div className="rounded-lg border border-border-light bg-surface-secondary/30 p-3 space-y-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-content-primary">
+              <MapPin size={15} className="text-oe-blue" />
+              {t('project.settings.location.coords_title', {
+                defaultValue: 'Coordinates (latitude / longitude)',
+              })}
+            </div>
+            <p className="text-xs text-content-tertiary">
+              {t('project.settings.location.coords_hint', {
+                defaultValue:
+                  'Paste DMS (e.g. 13°35\'37.60"N 100°57\'48.38"E) or decimal degrees. Address search fills these automatically.',
+              })}
+            </p>
+            <Input
+              label={t('project.settings.location.paste_label', {
+                defaultValue: 'Paste coordinates',
+              })}
+              value={coordsPaste}
+              onChange={(e) => {
+                const v = e.target.value;
+                setCoordsPaste(v);
+                setAddrError(null);
+                // Auto-parse as soon as the string looks like a full pair.
+                if (looksLikeCoordinatePair(v)) {
+                  applyCoordsPaste(v, { silent: true });
+                }
+              }}
+              onPaste={(e) => {
+                const text = e.clipboardData.getData('text');
+                if (text && looksLikeCoordinatePair(text)) {
+                  e.preventDefault();
+                  setCoordsPaste(text);
+                  applyCoordsPaste(text);
+                }
+              }}
+              onBlur={() => {
+                if (coordsPaste.trim() && looksLikeCoordinatePair(coordsPaste)) {
+                  applyCoordsPaste(coordsPaste, { silent: true });
+                }
+              }}
+              placeholder={`13°35'37.60"N 100°57'48.38"E`}
+              aria-invalid={!!addrError}
+              data-testid="project-coords-paste"
+            />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                label={t('project.settings.location.latitude', { defaultValue: 'Latitude' })}
+                value={addrLat}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setAddrLat(v);
+                  setAddrError(null);
+                  if (tryParseFieldAsPair(v)) return;
+                }}
+                onPaste={(e) => {
+                  const text = e.clipboardData.getData('text');
+                  if (text && looksLikeCoordinatePair(text)) {
+                    e.preventDefault();
+                    applyCoordsPaste(text);
+                  }
+                }}
+                inputMode="decimal"
+                placeholder="e.g. 13.59378"
+                aria-invalid={!!addrError}
+              />
+              <Input
+                label={t('project.settings.location.longitude', { defaultValue: 'Longitude' })}
+                value={addrLng}
+                onChange={(e) => {
+                  setAddrLng(e.target.value);
+                  setAddrError(null);
+                }}
+                onPaste={(e) => {
+                  const text = e.clipboardData.getData('text');
+                  if (text && looksLikeCoordinatePair(text)) {
+                    e.preventDefault();
+                    applyCoordsPaste(text);
+                  }
+                }}
+                inputMode="decimal"
+                placeholder="e.g. 100.96344"
+                aria-invalid={!!addrError}
+              />
+            </div>
+            {addrError && (
+              <p className="text-xs text-semantic-error flex items-center gap-1.5">
+                <AlertTriangle size={12} />
+                {addrError}
+              </p>
+            )}
+          </div>
+          <label className="flex items-start gap-2.5 rounded-lg border border-border-light bg-surface-secondary/20 px-3 py-2.5 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-3.5 w-3.5 rounded border-border accent-oe-blue"
+              checked={weatherEnabled}
+              onChange={(e) => setProjectWeather(e.target.checked)}
+              data-testid="project-weather-toggle"
+            />
+            <span className="min-w-0">
+              <span className="flex items-center gap-1.5 text-sm font-medium text-content-primary">
+                <CloudSun size={14} className="text-oe-blue shrink-0" />
+                {t('project.settings.location.weather_toggle', {
+                  defaultValue: 'Show weather forecast on project page',
+                })}
+              </span>
+              <span className="block text-xs text-content-tertiary mt-0.5">
+                {t('project.settings.location.weather_hint', {
+                  defaultValue:
+                    'Uses Open-Meteo at the pin above (15-day forecast). Turn on after saving coordinates.',
+                })}
+              </span>
+            </span>
+          </label>
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <Button
+              type="submit"
+              size="sm"
+              icon={<Save size={14} />}
+              loading={updateMutation.isPending}
+            >
+              {t('project.settings.location.save', { defaultValue: 'Save location' })}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                setAddrStreet('');
+                setAddrCity('');
+                setAddrCountry('');
+                setAddrPostal('');
+                setAddrLat('');
+                setAddrLng('');
+                setCoordsPaste('');
+                setAddrSearch('');
+                setAddrError(null);
+              }}
+            >
+              {t('common.clear', { defaultValue: 'Clear' })}
+            </Button>
+            {addrLat && addrLng && Number.isFinite(Number(addrLat)) && Number.isFinite(Number(addrLng)) && (
+              <>
+                <a
+                  className="text-xs text-oe-blue hover:underline ml-1"
+                  href={`https://www.google.com/maps?q=${encodeURIComponent(`${addrLat},${addrLng}`)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {t('project.settings.location.open_google', {
+                    defaultValue: 'Google Maps',
+                  })}
+                </a>
+                <a
+                  className="text-xs text-oe-blue hover:underline ml-1"
+                  href={`https://earth.google.com/web/@${encodeURIComponent(addrLat)},${encodeURIComponent(addrLng)},500a,35y,0h,0t,0r`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {t('project.settings.location.open_earth', {
+                    defaultValue: 'Google Earth',
+                  })}
+                </a>
+                <a
+                  className="text-xs text-content-tertiary hover:underline ml-1"
+                  href={`https://www.openstreetmap.org/?mlat=${encodeURIComponent(addrLat)}&mlon=${encodeURIComponent(addrLng)}#map=15/${encodeURIComponent(addrLat)}/${encodeURIComponent(addrLng)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {t('project.settings.location.open_map', {
+                    defaultValue: 'OpenStreetMap',
+                  })}
+                </a>
+              </>
+            )}
+          </div>
         </form>
       </Card>
 

@@ -254,6 +254,10 @@ def _extract_openai_message_text(provider: str, data: Any) -> str:
     the model emitting only a ``reasoning`` trace. Every shape is reduced
     to a non-empty string or a precise, actionable ``ValueError`` - a paid
     completion is never silently discarded.
+
+    Also handles DeepSeek reasoner-style payloads where the visible answer
+    lives in ``reasoning_content`` (or is truncated with finish_reason=length
+    while partial content still exists).
     """
     if isinstance(data, dict) and data.get("error") and not data.get("choices"):
         err = data["error"]
@@ -282,15 +286,22 @@ def _extract_openai_message_text(provider: str, data: Any) -> str:
         text = ""
 
     if not text:
-        reasoning = message.get("reasoning")
-        if isinstance(reasoning, str) and reasoning.strip():
-            text = reasoning.strip()
+        # OpenAI o-series / some aggregators use "reasoning"; DeepSeek uses
+        # "reasoning_content". Prefer either over failing a billed call.
+        for key in ("reasoning_content", "reasoning", "reasoning_text"):
+            reasoning = message.get(key)
+            if isinstance(reasoning, str) and reasoning.strip():
+                text = reasoning.strip()
+                break
 
     if not text:
         finish = choices[0].get("finish_reason") or "unknown"
+        usage = (data or {}).get("usage") or {}
         msg = (
-            f"{provider} returned an empty message (finish_reason={finish}). "
-            f"If 'length', raise max tokens; if 'content_filter', rephrase; "
+            f"{provider} returned an empty message (finish_reason={finish}"
+            f", completion_tokens={usage.get('completion_tokens', '?')}). "
+            f"If 'length', raise max tokens (Settings > AI or re-run with a "
+            f"shorter prompt / deepseek-chat); if 'content_filter', rephrase; "
             f"otherwise pick a different model in Settings > AI."
         )
         raise ValueError(msg)
@@ -654,6 +665,14 @@ async def call_openai_compatible(
         )
     user_content.append({"type": "text", "text": prompt})
 
+    # DeepSeek smart-import / long BOQ JSON often exhausts 4096 completion
+    # tokens (finish_reason=length, empty content). Floor output budget for
+    # deepseek so callers that still pass 1500/2048/4096 still get a usable
+    # answer. deepseek-chat accepts up to 8k; allow higher for reasoner.
+    effective_max = max_tokens
+    if provider == "deepseek":
+        effective_max = max(int(max_tokens or 0), 8192)
+
     data = await _post_openai_compat(
         provider,
         api_key,
@@ -662,7 +681,7 @@ async def call_openai_compatible(
             {"role": "user", "content": user_content},
         ],
         model=model,
-        max_tokens=max_tokens,
+        max_tokens=effective_max,
         base_url=base_url,
         timeout=timeout,
     )

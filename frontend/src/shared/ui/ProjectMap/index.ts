@@ -9,3 +9,5 @@ export { ProjectMap } from './ProjectMapLazy';
 // importing it doesn't transitively pull in maplibre + its CSS.
 export { buildGeocodeQuery } from './geocode';
 export type { LatLng } from './ProjectMap';
+// Deep-link helpers are pure — safe to import without pulling MapLibre.
+export { googleEarthUrl, googleMapsUrl } from './mapLinks';

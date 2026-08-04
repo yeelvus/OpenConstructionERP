@@ -531,6 +531,13 @@ class Settings(BaseSettings):
     # (invoked as a subprocess), not via a separate HTTP microservice, so no
     # converter/pipeline service URL is needed here.
     openweathermap_api_key: str = ""
+    # Google Maps Platform key (Maps JavaScript / Embed / Static). When set,
+    # project maps can switch from the default OSM/CARTO proxy to Google
+    # satellite/hybrid. Env: OE_GOOGLE_MAPS_API_KEY or GOOGLE_MAPS_API_KEY.
+    google_maps_api_key: str = ""
+    # hybrid = satellite + labels (default); satellite = imagery only.
+    # Env: OE_GOOGLE_MAPS_MAP_TYPE
+    google_maps_map_type: Literal["hybrid", "satellite"] = "hybrid"
 
     # ── Rate Limiting ────────────────────────────────────────────────────
     api_rate_limit: int = Field(

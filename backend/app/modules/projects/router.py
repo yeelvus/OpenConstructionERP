@@ -255,6 +255,177 @@ async def list_projects(
     return [ProjectResponse.model_validate(p) for p in projects]
 
 
+# ── Portfolio Excel (template / export / import) ───────────────────────────
+# Static paths MUST sit above ``/{project_id}`` so FastAPI does not treat
+# ``excel`` as a UUID.
+
+
+@router.get(
+    "/excel/template/",
+    summary="Download project import template",
+    description="Excel workbook with the correct headers, Chinese aliases "
+    "documented on a second sheet, and two example rows.",
+    response_class=Response,
+)
+async def download_projects_excel_template(
+    _user_id: CurrentUserId,
+) -> Response:
+    from app.modules.projects.excel_io import build_template_workbook
+
+    data = build_template_workbook()
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="projects_import_template.xlsx"',
+        },
+    )
+
+
+@router.get(
+    "/excel/export/",
+    summary="Export projects to Excel",
+    description="Export projects visible to the current user using the same "
+    "column layout as the import template (address flattened to columns).",
+    response_class=Response,
+)
+async def export_projects_excel(
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    service: ProjectService = Depends(_get_service),
+) -> Response:
+    from app.modules.projects.excel_io import build_export_workbook
+
+    is_admin = payload.get("role") == "admin"
+    projects, _ = await service.list_projects(
+        uuid.UUID(user_id),
+        offset=0,
+        limit=500,
+        status_filter=None,
+        include_archived=False,
+        is_admin=is_admin,
+    )
+    data = build_export_workbook(projects)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="projects_export.xlsx"',
+        },
+    )
+
+
+@router.post(
+    "/excel/import/",
+    summary="Bulk-import projects from Excel/CSV",
+    description="Upload .xlsx or .csv with one project per row. Column headers "
+    "accept English or Chinese aliases (名称, 项目编号, 纬度, …). "
+    "Creates only — rows with duplicate project_code are reported as errors. "
+    "Partial success: valid rows are committed even if later rows fail.",
+)
+async def import_projects_excel(
+    user_id: CurrentUserId,
+    file: UploadFile = File(..., description="Excel (.xlsx) or CSV (.csv)"),
+    service: ProjectService = Depends(_get_service),
+) -> dict:
+    from app.core.upload_guards import reject_if_xlsx_bomb
+    from app.modules.projects.excel_io import (
+        MAX_IMPORT_ROWS,
+        parse_rows_from_csv,
+        parse_rows_from_excel,
+        row_to_project_create,
+        sniff_upload,
+    )
+    from pydantic import ValidationError
+
+    filename = (file.filename or "").lower()
+    content = await file.read()
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is empty.",
+        )
+    try:
+        kind = sniff_upload(filename, content)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    if kind == "xlsx":
+        reject_if_xlsx_bomb(content)
+
+    try:
+        rows = (
+            parse_rows_from_excel(content)
+            if kind == "xlsx"
+            else parse_rows_from_csv(content)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("Unexpected error parsing project import file")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to parse file. Please check the format and try again.",
+        ) from None
+
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No data rows found. Check that the first row contains column headers.",
+        )
+    if len(rows) > MAX_IMPORT_ROWS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Too many rows ({len(rows)}). Maximum is {MAX_IMPORT_ROWS} per import.",
+        )
+
+    imported = 0
+    skipped = 0
+    errors: list[dict] = []
+    owner = uuid.UUID(user_id)
+
+    for row_idx, row in enumerate(rows, start=2):
+        # Skip pure example placeholder rows the user left unchanged
+        name = str(row.get("name") or "").strip()
+        if not name:
+            skipped += 1
+            continue
+        if name.startswith("Example Site") or name.startswith("示例项目"):
+            skipped += 1
+            continue
+        try:
+            data = row_to_project_create(row)
+            await service.create_project(data, owner)
+            imported += 1
+        except ValidationError as exc:
+            msg = "; ".join(
+                f"{'.'.join(str(x) for x in e.get('loc', ()))}: {e.get('msg')}"
+                for e in exc.errors()[:3]
+            )
+            errors.append({"row": row_idx, "error": msg or "validation failed", "name": name})
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            errors.append({"row": row_idx, "error": detail, "name": name})
+        except ValueError as exc:
+            errors.append({"row": row_idx, "error": str(exc), "name": name})
+        except Exception as exc:
+            logger.exception("Row %s project import failed", row_idx)
+            errors.append(
+                {
+                    "row": row_idx,
+                    "error": f"create failed: {exc!s}"[:200],
+                    "name": name,
+                }
+            )
+
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "errors": errors,
+        "total_rows": len(rows),
+    }
+
+
 # ── Get ───────────────────────────────────────────────────────────────────
 
 

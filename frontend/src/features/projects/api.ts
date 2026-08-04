@@ -299,4 +299,63 @@ export const projectsApi = {
     apiPatch<Project>(`/v1/projects/${id}/compliance-rule-packs`, {
       rule_pack_ids: rulePackIds,
     }),
+
+  /* ── Portfolio Excel template / export / import ─────────────────── */
+  downloadExcelTemplate: async () => {
+    const { getAuthToken, API_BASE } = await import('@/shared/lib/api');
+    const token = getAuthToken();
+    const res = await fetch(`${API_BASE}/v1/projects/excel/template/`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`Template download failed (${res.status})`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'projects_import_template.xlsx';
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+  exportExcel: async () => {
+    const { getAuthToken, API_BASE } = await import('@/shared/lib/api');
+    const token = getAuthToken();
+    const res = await fetch(`${API_BASE}/v1/projects/excel/export/`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`Export failed (${res.status})`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'projects_export.xlsx';
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+  importExcel: async (file: File) => {
+    const { getAuthToken, API_BASE } = await import('@/shared/lib/api');
+    const token = getAuthToken();
+    const body = new FormData();
+    body.append('file', file);
+    const res = await fetch(`${API_BASE}/v1/projects/excel/import/`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body,
+    });
+    if (!res.ok) {
+      let detail = `Import failed (${res.status})`;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (j.detail) detail = typeof j.detail === 'string' ? j.detail : detail;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as {
+      imported: number;
+      skipped: number;
+      total_rows: number;
+      errors: Array<{ row: number; error: string; name?: string }>;
+    };
+  },
 };

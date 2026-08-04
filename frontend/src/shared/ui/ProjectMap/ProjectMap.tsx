@@ -30,12 +30,37 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { MapPin, Loader2 } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { MapPin, Loader2, ExternalLink } from 'lucide-react';
 import Map, { Marker, Popup, NavigationControl, AttributionControl } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import clsx from 'clsx';
 
 import { PROXY_TILE_BASE, RASTER_BASEMAP_STYLE } from './basemap';
+import { API_BASE, getAuthToken } from '@/shared/lib/api';
+
+export interface MapProviderConfig {
+  provider: 'google' | 'osm';
+  map_type: 'hybrid' | 'satellite';
+  browser_key: string | null;
+  has_key: boolean;
+}
+
+async function fetchMapConfig(): Promise<MapProviderConfig> {
+  try {
+    const headers: HeadersInit = { Accept: 'application/json' };
+    const token = getAuthToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(`${API_BASE}/v1/geo-hub/map-config/`, { headers });
+    if (!res.ok) throw new Error('map-config failed');
+    return (await res.json()) as MapProviderConfig;
+  } catch {
+    return { provider: 'osm', map_type: 'hybrid', browser_key: null, has_key: false };
+  }
+}
+
+import { googleEarthUrl, googleMapsUrl } from './mapLinks';
+export { googleEarthUrl, googleMapsUrl } from './mapLinks';
 
 // All map tiles are served by our backend proxy as a raster basemap; see
 // ./basemap for the shared MapLibre style and the rationale (browser tile-
@@ -113,6 +138,35 @@ function staticTileUrl(coords: LatLng): string {
   const x = Math.min(max - 1, Math.max(0, Math.floor(lngToTileX(coords.lng, z))));
   const y = Math.min(max - 1, Math.max(0, Math.floor(latToTileY(coords.lat, z))));
   return `${PROXY_TILE_BASE}/${z}/${x}/${y}.png`;
+}
+
+/** Same-origin static map (Google Static Maps when key configured, else CARTO tile). */
+function staticMapProxyUrl(coords: LatLng, zoom = 15): string {
+  const q = new URLSearchParams({
+    lat: String(coords.lat),
+    lng: String(coords.lng),
+    zoom: String(zoom),
+    width: '640',
+    height: '320',
+  });
+  return `${API_BASE}/v1/geo-hub/static-map/?${q}`;
+}
+
+function googleEmbedUrl(
+  coords: LatLng,
+  key: string,
+  mapType: 'hybrid' | 'satellite',
+  zoom = 15,
+): string {
+  // Embed API view mode — satellite/hybrid without a place ID.
+  const params = new URLSearchParams({
+    key,
+    center: `${coords.lat},${coords.lng}`,
+    zoom: String(zoom),
+    maptype: mapType === 'hybrid' ? 'satellite' : 'satellite',
+  });
+  // Embed "view" does not support hybrid labels; use place marker for context.
+  return `https://www.google.com/maps/embed/v1/view?${params}`;
 }
 
 function readCache(q: string): LatLng | null {
@@ -193,6 +247,14 @@ export function ProjectMap({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [popupOpen, setPopupOpen] = useState(false);
+  const [googleFailed, setGoogleFailed] = useState(false);
+
+  const { data: mapConfig } = useQuery({
+    queryKey: ['geo-hub', 'map-config'],
+    queryFn: fetchMapConfig,
+    staleTime: 1000 * 60 * 30,
+    retry: 1,
+  });
 
   const query = useMemo(
     () => (hasExplicitCoords ? null : buildGeocodeQuery(address, city, country)),
@@ -279,11 +341,47 @@ export function ProjectMap({
     );
   }
 
+  const useGoogle =
+    !googleFailed &&
+    mapConfig?.provider === 'google' &&
+    mapConfig.has_key &&
+    !!mapConfig.browser_key;
+
   // Card variant: static raster thumbnail — no MapLibre, no WebGL, no
-  // perpetual tile streaming. The marker is positioned at the resolved
-  // point's fractional offset within the displayed tile so it lands on
-  // the actual location rather than always dead-centre.
+  // perpetual tile streaming. With Google key, uses server-proxied Static
+  // Maps (satellite/hybrid + marker). Otherwise one CARTO tile + CSS pin.
   if (isCard) {
+    if (useGoogle) {
+      return (
+        <div
+          className={clsx(
+            'relative overflow-hidden rounded-xl border border-border-light bg-slate-100 dark:bg-slate-800',
+            heightClass,
+            className,
+          )}
+        >
+          <img
+            src={staticMapProxyUrl(resolved, 15)}
+            alt={label || query || t('projects.map_thumbnail_alt', { defaultValue: 'Project location map' })}
+            loading="lazy"
+            decoding="async"
+            draggable={false}
+            className="absolute inset-0 h-full w-full select-none object-cover"
+            onError={() => setGoogleFailed(true)}
+          />
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
+          {(label || query) && (
+            <div className="pointer-events-none absolute inset-x-2 bottom-2 flex items-center gap-1 rounded-md bg-surface-elevated/90 backdrop-blur-sm px-2 py-1 shadow-sm">
+              <MapPin size={11} className="shrink-0 text-oe-blue" />
+              <span className="truncate text-[11px] font-medium text-content-primary">
+                {label || query}
+              </span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     const z = STATIC_TILE_ZOOM;
     const fracX = lngToTileX(resolved.lng, z) % 1;
     const fracY = latToTileY(resolved.lat, z) % 1;
@@ -328,6 +426,68 @@ export function ProjectMap({
   }
 
   const zoom = 13;
+  const deepLinks = (
+    <div className="absolute bottom-2 left-2 z-[2] flex flex-wrap gap-1.5">
+      <a
+        href={googleMapsUrl(resolved.lat, resolved.lng)}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex items-center gap-1 rounded-md bg-surface-elevated/95 px-2 py-1 text-[10px] font-semibold text-oe-blue shadow-sm ring-1 ring-border-light hover:bg-white dark:hover:bg-slate-800"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <ExternalLink size={10} />
+        {t('projects.map_open_google', { defaultValue: 'Google Maps' })}
+      </a>
+      <a
+        href={googleEarthUrl(resolved.lat, resolved.lng)}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex items-center gap-1 rounded-md bg-surface-elevated/95 px-2 py-1 text-[10px] font-semibold text-oe-blue shadow-sm ring-1 ring-border-light hover:bg-white dark:hover:bg-slate-800"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <ExternalLink size={10} />
+        {t('projects.map_open_earth', { defaultValue: 'Google Earth' })}
+      </a>
+    </div>
+  );
+
+  // Google Embed (satellite) when key is configured; fall back to MapLibre on error.
+  if (useGoogle && !googleFailed && mapConfig?.browser_key) {
+    return (
+      <div
+        className={clsx(
+          'relative overflow-hidden rounded-xl border border-border-light',
+          heightClass,
+          className,
+        )}
+      >
+        <iframe
+          title={label || t('projects.map_iframe_title', { defaultValue: 'Project map' })}
+          src={googleEmbedUrl(
+            resolved,
+            mapConfig.browser_key,
+            mapConfig.map_type || 'hybrid',
+            16,
+          )}
+          className="absolute inset-0 h-full w-full border-0"
+          loading="lazy"
+          referrerPolicy="no-referrer-when-downgrade"
+          allowFullScreen
+          onError={() => setGoogleFailed(true)}
+        />
+        {/* Centre pin overlay — Embed view has no marker */}
+        <div className="pointer-events-none absolute left-1/2 top-1/2 z-[1] -translate-x-1/2 -translate-y-full">
+          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-oe-blue text-white shadow-lg ring-2 ring-white">
+            <MapPin size={16} fill="currentColor" strokeWidth={0} />
+          </span>
+        </div>
+        {deepLinks}
+        <div className="absolute bottom-2 right-2 z-[2] rounded bg-black/50 px-1.5 py-0.5 text-[9px] text-white/90">
+          Google
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -388,6 +548,7 @@ export function ProjectMap({
           </Popup>
         )}
       </Map>
+      {deepLinks}
     </div>
   );
 }

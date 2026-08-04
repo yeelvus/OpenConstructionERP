@@ -221,6 +221,125 @@ async def proxy_basemap_tile(z: int, x: int, y: int, request: Request) -> Respon
     return _tile_response(data, etag)
 
 
+# ── Map provider config + Google Static Maps proxy ─────────────────────────
+
+
+@router.get(
+    "/map-config/",
+    summary="Basemap provider config for the frontend",
+    description="Returns whether Google Maps is available (API key configured) "
+    "and which map type to use. The browser_key is only returned when a key is "
+    "set — operators should restrict it by HTTP referrer in Google Cloud Console.",
+)
+async def get_map_config() -> dict[str, Any]:
+    from app.config import get_settings
+
+    settings = get_settings()
+    key = (settings.google_maps_api_key or "").strip()
+    map_type = (settings.google_maps_map_type or "hybrid").strip().lower()
+    if map_type not in ("hybrid", "satellite"):
+        map_type = "hybrid"
+    if key:
+        return {
+            "provider": "google",
+            "map_type": map_type,
+            "browser_key": key,
+            "has_key": True,
+        }
+    return {
+        "provider": "osm",
+        "map_type": map_type,
+        "browser_key": None,
+        "has_key": False,
+    }
+
+
+@router.get(
+    "/static-map/",
+    summary="Project-card static map thumbnail",
+    description="When a Google Maps API key is configured, proxies Google Static "
+    "Maps (satellite/hybrid). Otherwise falls back to a single CARTO tile via "
+    "the same upstream as /tiles/.",
+    include_in_schema=False,
+)
+async def proxy_static_map(
+    request: Request,
+    lat: float = Query(..., ge=-90, le=90),
+    lng: float = Query(..., ge=-180, le=180),
+    zoom: int = Query(default=15, ge=1, le=21),
+    width: int = Query(default=640, ge=64, le=640),
+    height: int = Query(default=320, ge=64, le=640),
+) -> Response:
+    from app.config import get_settings
+
+    settings = get_settings()
+    key = (settings.google_maps_api_key or "").strip()
+    map_type = (settings.google_maps_map_type or "hybrid").strip().lower()
+    if map_type not in ("hybrid", "satellite"):
+        map_type = "hybrid"
+
+    cache_key = f"static:{map_type}:{lat:.5f}:{lng:.5f}:{zoom}:{width}x{height}:{bool(key)}"
+    hit = _TILE_CACHE.get(cache_key)
+    if hit is not None:
+        data, etag = hit
+        _TILE_CACHE.move_to_end(cache_key)
+        if request.headers.get("if-none-match") == etag:
+            return Response(
+                status_code=304,
+                headers={"Cache-Control": _TILE_CACHE_CONTROL, "ETag": etag},
+            )
+        return _tile_response(data, etag)
+
+    try:
+        client = await _get_tile_client()
+        if key:
+            # Google Static Maps — key stays server-side for card thumbnails.
+            gmap_type = "hybrid" if map_type == "hybrid" else "satellite"
+            url = (
+                "https://maps.googleapis.com/maps/api/staticmap"
+                f"?center={lat},{lng}&zoom={zoom}&size={width}x{height}"
+                f"&maptype={gmap_type}&markers=color:red%7C{lat},{lng}&key={key}"
+            )
+            res = await client.get(url)
+        else:
+            # OSM/CARTO single-tile fallback (same as ProjectMap card math).
+            import math
+
+            z = min(max(zoom, 1), 18)
+            n = 2**z
+            x = int((lng + 180.0) / 360.0 * n) % n
+            lat_rad = math.radians(lat)
+            y = int(
+                (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi)
+                / 2.0
+                * n
+            )
+            y = max(0, min(n - 1, y))
+            res = await client.get(_TILE_UPSTREAM.format(z=z, x=x, y=y))
+    except (httpx.HTTPError, OSError):
+        return Response(content=_BLANK_TILE, media_type="image/png", headers=_BLANK_TILE_HEADERS)
+
+    if res.status_code != 200 or not res.content:
+        return Response(content=_BLANK_TILE, media_type="image/png", headers=_BLANK_TILE_HEADERS)
+
+    data = res.content
+    media = res.headers.get("content-type") or "image/png"
+    etag = f'"{hashlib.sha1(data).hexdigest()}"'  # noqa: S324
+    _TILE_CACHE[cache_key] = (data, etag)
+    _TILE_CACHE.move_to_end(cache_key)
+    while len(_TILE_CACHE) > _TILE_CACHE_MAX:
+        _TILE_CACHE.popitem(last=False)
+    return Response(
+        content=data,
+        media_type=media.split(";")[0].strip() if media else "image/png",
+        headers={
+            "Cache-Control": _TILE_CACHE_CONTROL,
+            "ETag": etag,
+            "Content-Length": str(len(data)),
+        },
+    )
+
+
 # ── Anchors ──────────────────────────────────────────────────────────────
 
 
