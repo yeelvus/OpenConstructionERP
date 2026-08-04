@@ -3432,7 +3432,7 @@ async def ai_chat_boq(
             api_key=api_key,
             system=with_locale(BOQ_CHAT_SYSTEM_PROMPT, locale),
             prompt=prompt,
-            max_tokens=4096,
+            max_tokens=16384,
             model=model_override,
         )
     except Exception as exc:
@@ -7290,7 +7290,7 @@ async def smart_import(
             prompt=prompt,
             image_base64=image_b64,
             image_media_type=image_mime,
-            max_tokens=4096,
+            max_tokens=16384,
             model=model_override,
         )
     except Exception as exc:

@@ -708,7 +708,7 @@ class ERPChatService:
                 },
                 json={
                     "model": model,
-                    "max_tokens": 4096,
+                    "max_tokens": 16384,
                     "system": SYSTEM_PROMPT,
                     "messages": messages,
                     "tools": TOOL_DEFINITIONS,
@@ -768,7 +768,7 @@ class ERPChatService:
                     "model": model,
                     "messages": openai_messages,
                     "tools": openai_tools,
-                    "max_tokens": 4096,
+                    "max_tokens": 16384,
                 },
             )
             resp.raise_for_status()

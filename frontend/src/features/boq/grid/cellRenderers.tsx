@@ -976,7 +976,14 @@ export function DescriptionCellRenderer(params: ICellRendererParams) {
   // comfortable / tall let the full multi-line Langtext show, honouring the
   // newlines stored in the description and scrolling within the (taller) row
   // when the text overflows.
-  const descMultiline = (ctx?.descDensity ?? 'compact') !== 'compact';
+  //
+  // Owner BOQs (业主工程量清单) put multi-line 项目特征描述 into description
+  // via Excel ALT+ENTER. Even in "compact" density we still honour real
+  // newlines so imported features are not flattened into one unreadable line.
+  const hasHardLineBreaks =
+    typeof displayValue === 'string' && /[\r\n]/.test(displayValue);
+  const descMultiline =
+    (ctx?.descDensity ?? 'compact') !== 'compact' || hasHardLineBreaks;
   const descTextCls = descMultiline
     ? 'whitespace-pre-wrap break-words leading-snug min-w-0 w-full overflow-y-auto max-h-full'
     : 'truncate min-w-0';

@@ -160,7 +160,7 @@ async def call_anthropic(
     image_base64: str | None = None,
     image_media_type: str = "image/jpeg",
     model: str | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     timeout: float | None = None,
 ) -> tuple[str, int]:
     """Call Anthropic Claude API.
@@ -308,7 +308,7 @@ async def call_openai(
     image_base64: str | None = None,
     image_media_type: str = "image/jpeg",
     model: str | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     timeout: float | None = None,
 ) -> tuple[str, int]:
     """Call OpenAI API (ChatCompletions).
@@ -375,7 +375,7 @@ async def call_gemini(
     image_base64: str | None = None,
     image_media_type: str = "image/jpeg",
     model: str | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     timeout: float | None = None,
 ) -> tuple[str, int]:
     """Call Google Gemini API (generateContent).
@@ -628,7 +628,7 @@ async def call_openai_compatible(
     prompt: str,
     image_base64: str | None = None,
     image_media_type: str = "image/jpeg",
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     model: str | None = None,
     base_url: str | None = None,  # self-hosted endpoint override
     timeout: float | None = None,
@@ -799,7 +799,7 @@ async def call_ai(
     prompt: str,
     image_base64: str | None = None,
     image_media_type: str = "image/jpeg",
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     model: str | None = None,
     base_url: str | None = None,  # self-hosted endpoint override
     timeout: float | None = None,

@@ -67,6 +67,12 @@ _COLUMN_ALIASES: dict[str, frozenset[str]] = {
             "item",
             "item no",
             "ref",
+            # Chinese owner BOQ (业主工程量清单) and common CN headers
+            "标准序",
+            "序号",
+            "编号",
+            "项号",
+            "清单序号",
             # Note: ``"code"`` lives in the ``"classification"`` alias
             # set, not here. Spreadsheets that name their classification
             # column "Code" (NRM / MasterFormat exports) need that header
@@ -74,6 +80,8 @@ _COLUMN_ALIASES: dict[str, frozenset[str]] = {
             # infer ``nrm`` / ``masterformat``.
         }
     ),
+    # Source-sheet ordinal when both 标准序 and 原序号 are present
+    "source_ordinal": frozenset({"原序号", "原编号", "图纸序号"}),
     "description": frozenset(
         {
             "description",
@@ -90,6 +98,28 @@ _COLUMN_ALIASES: dict[str, frozenset[str]] = {
             "descrizione",
             "opis",
             "наименование",
+            # Chinese
+            "项目名称",
+            "名称",
+            "清单项目",
+            "项目",
+            "工作内容",
+            "工程名称",
+            "分项名称",
+        }
+    ),
+    # Spec / feature text appended to description (业主清单「项目特征描述」)
+    "feature": frozenset(
+        {
+            "feature",
+            "spec",
+            "specification",
+            "项目特征描述",
+            "项目特征",
+            "特征描述",
+            "特征",
+            "工作内容描述",
+            "清单特征",
         }
     ),
     "unit": frozenset(
@@ -106,6 +136,8 @@ _COLUMN_ALIASES: dict[str, frozenset[str]] = {
             "jed",
             "ед",
             "ед.",
+            "计量单位",
+            "单位",
         }
     ),
     "quantity": frozenset(
@@ -123,6 +155,9 @@ _COLUMN_ALIASES: dict[str, frozenset[str]] = {
             "ilosc",
             "количество",
             "кол-во",
+            "工程量",
+            "数量",
+            "量",
         }
     ),
     "unit_rate": frozenset(
@@ -137,9 +172,47 @@ _COLUMN_ALIASES: dict[str, frozenset[str]] = {
             "prezzo",
             "prix",
             "цена",
+            "综合单价",
+            "单价",
+            "全费用单价",
+            "合价单价",
         }
     ),
-    "total": frozenset({"total", "amount", "gesamt", "gesamtpreis", "importe", "subtotal", "стоимость"}),
+    "total": frozenset(
+        {
+            "total",
+            "amount",
+            "gesamt",
+            "gesamtpreis",
+            "importe",
+            "subtotal",
+            "стоимость",
+            "合价",
+            "金额",
+            "合计",
+            "总价",
+        }
+    ),
+    # Optional breakdown rates (人工/材料/机械)
+    "labor_rate": frozenset({"人工", "人工费", "人工单价", "labor", "labour"}),
+    "material_rate": frozenset({"材料", "材料费", "材料单价", "material", "materials"}),
+    "equipment_rate": frozenset({"机械", "机械费", "机械单价", "equipment", "plant"}),
+    # Hierarchy columns on Chinese owner summaries
+    "work_package": frozenset(
+        {
+            "子项名称",
+            "子项名称（sheet）",
+            "子项",
+            "单位工程",
+            "单项工程",
+            "分部工程名称",
+            "sheet",
+            "work package",
+            "package",
+        }
+    ),
+    "category_l1": frozenset({"一级分类", "一级", "分部", "分部工程", "大类"}),
+    "category_l2": frozenset({"二级分类", "二级", "分项", "分项工程", "小类", "专业"}),
     "classification": frozenset(
         {
             "classification",
@@ -154,16 +227,64 @@ _COLUMN_ALIASES: dict[str, frozenset[str]] = {
             "division",
             "category",
             "trade",
+            "分类",
+            "清单编码",
+            "项目编码",
+            "编码",
         }
     ),
 }
 
 
+def _normalise_header(header: str) -> str:
+    """Lowercase + strip currency/unit parentheticals for alias matching.
+
+    Examples: ``人工(泰铢)`` → ``人工``, ``综合单价（元）`` → ``综合单价``.
+    """
+    text = header.strip().lower()
+    # Half-width and full-width parentheses with currency / unit notes
+    text = re.sub(r"[\(（][^\)）]*[\)）]", "", text)
+    return text.strip()
+
+
+def _cell_multiline_text(val: Any) -> str:
+    """Normalise spreadsheet cell text while **preserving internal line breaks**.
+
+    Excel ALT+ENTER stores real newlines (``\\n`` / ``\\r\\n``). Some exports
+    also embed the OOXML escape ``_x000D_`` for CR. We:
+
+    * convert all newline styles to ``\\n``
+    * expand ``_x000D_`` markers
+    * strip only leading/trailing whitespace (not internal spaces/newlines)
+
+    So 项目特征描述 multi-line cells import with their line structure intact.
+    """
+    if val is None:
+        return ""
+    text = str(val)
+    # OOXML escaped CR often appears as literal ``_x000D_`` in plain text
+    text = text.replace("_x000D_\n", "\n").replace("_x000D_\r", "\n").replace("_x000D_", "\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Vertical tab / form feed sometimes sneak in from PDF→Excel pipelines
+    text = text.replace("\v", "\n").replace("\f", "\n")
+    # Collapse runs of more than 2 blank lines (not single intentional breaks)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _match_column(header: str) -> str | None:
     """Match a header string to a canonical column name using the alias map."""
-    normalised = header.strip().lower()
+    normalised = _normalise_header(header)
+    if not normalised:
+        return None
     for canonical, aliases in _COLUMN_ALIASES.items():
         if normalised in aliases:
+            return canonical
+    # Exact (case-sensitive) Chinese match without lowercasing loss
+    raw = header.strip()
+    raw_noparen = re.sub(r"[\(（][^\)）]*[\)）]", "", raw).strip()
+    for canonical, aliases in _COLUMN_ALIASES.items():
+        if raw in aliases or raw_noparen in aliases:
             return canonical
     return None
 
@@ -370,8 +491,9 @@ _TOTAL_ROW_DESCRIPTIONS = {
 }
 
 
-_IMPORT_MAX_QUANTITY = 1e9
-_IMPORT_MAX_UNIT_RATE = 1e8
+# Large civil packages (e.g. earthwork / site area in m2) can exceed 1e9.
+_IMPORT_MAX_QUANTITY = 1e12
+_IMPORT_MAX_UNIT_RATE = 1e10
 
 
 def _rows_to_positions(
@@ -396,7 +518,13 @@ def _rows_to_positions(
 
     for row_idx, row in enumerate(rows, start=2):
         try:
-            description = str(row.get("description", "")).strip()
+            # Preserve Excel ALT+ENTER newlines inside 项目名称 / 项目特征描述.
+            description = _cell_multiline_text(row.get("description", ""))
+            feature = _cell_multiline_text(row.get("feature", ""))
+            if feature:
+                # Keep name on first line(s), then feature body with its own
+                # internal line breaks (common owner-BOQ layout).
+                description = f"{description}\n{feature}" if description else feature
             if not description:
                 result.skipped += 1
                 continue
@@ -406,6 +534,10 @@ def _rows_to_positions(
                 result.skipped += 1
                 continue
             if desc_lower.startswith("subtotal:") or desc_lower.startswith("zwischensumme:"):
+                result.skipped += 1
+                continue
+            # Chinese total / summary footer rows
+            if description in {"合计", "小计", "总计", "汇总", "本页小计", "工程总造价"}:
                 result.skipped += 1
                 continue
 
@@ -423,8 +555,18 @@ def _rows_to_positions(
             unit_raw = str(row.get("unit", "")).strip()
             quantity_raw = row.get("quantity")
             unit_rate_raw = row.get("unit_rate")
+            total_raw = row.get("total")
             quantity, q_err = parse_numeric_cell(quantity_raw)
             unit_rate, r_err = parse_numeric_cell(unit_rate_raw)
+            # Owner BOQs sometimes leave 综合单价 blank and only fill 合价.
+            if (unit_rate_raw in (None, "") or (r_err is None and unit_rate == 0.0)) and total_raw not in (
+                None,
+                "",
+            ):
+                total_val, t_err = parse_numeric_cell(total_raw)
+                if t_err is None and total_val is not None and quantity and quantity > 0:
+                    unit_rate = float(total_val) / float(quantity)
+                    r_err = None
             if q_err is not None:
                 result.errors.append(
                     {
@@ -525,9 +667,45 @@ def _rows_to_positions(
                     }
                 )
 
-            # Heuristic classification (Epics I9 + I10).
+            # Heuristic classification (Epics I9 + I10) + Chinese hierarchy.
             class_value = str(row.get("classification", "")).strip()
+            work_package = str(row.get("work_package", "")).strip()
+            category_l1 = str(row.get("category_l1", "")).strip()
+            category_l2 = str(row.get("category_l2", "")).strip()
+            if not class_value and (category_l1 or category_l2):
+                class_value = " / ".join(p for p in (category_l1, category_l2) if p)
             classification = _infer_classification(class_value, description)
+            if work_package:
+                classification["work_package"] = work_package
+            if category_l1:
+                classification["level1"] = category_l1
+            if category_l2:
+                classification["level2"] = category_l2
+
+            meta: dict[str, Any] = {"import_row_index": row_idx}
+            source_ordinal = str(row.get("source_ordinal", "")).strip()
+            if source_ordinal:
+                meta["source_ordinal"] = source_ordinal
+            if work_package:
+                meta["work_package"] = work_package
+            if category_l1:
+                meta["category_l1"] = category_l1
+            if category_l2:
+                meta["category_l2"] = category_l2
+            if feature:
+                meta["feature"] = feature
+            for key, meta_key in (
+                ("labor_rate", "labor_rate"),
+                ("material_rate", "material_rate"),
+                ("equipment_rate", "equipment_rate"),
+                ("total", "source_total"),
+            ):
+                raw = row.get(key)
+                if raw is None or raw == "":
+                    continue
+                val, err = parse_numeric_cell(raw)
+                if err is None and val is not None:
+                    meta[meta_key] = val
 
             result.positions.append(
                 ImportedPosition(
@@ -538,7 +716,7 @@ def _rows_to_positions(
                     unit_rate=unit_rate,
                     classification=classification,
                     source=source,
-                    metadata={"import_row_index": row_idx},
+                    metadata=meta,
                     position_id=position_id,
                 )
             )

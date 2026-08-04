@@ -252,7 +252,7 @@ class PositionCreate(BaseModel):
     )
     description: str = Field(
         default="",
-        max_length=5000,
+        max_length=20000,
         description="Position description / specification text",
         examples=["Reinforced concrete wall C30/37, 24cm, formwork both sides"],
     )

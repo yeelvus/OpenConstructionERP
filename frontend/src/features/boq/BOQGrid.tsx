@@ -1948,7 +1948,15 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
     if (params.data?._isFooter) return 32;
     // Position rows grow with the description-density preference so a long
     // Langtext is readable inline; compact keeps the historical 32px row.
-    return BOQ_DESC_ROW_HEIGHT[descDensityRef.current] ?? 32;
+    // Imported owner BOQs often carry Excel ALT+ENTER newlines in
+    // 项目特征描述 — auto-grow at least to "comfortable" so multi-line
+    // specs are visible even when the toolbar density is still compact.
+    const density = descDensityRef.current;
+    const desc = String(params.data?.description ?? '');
+    if (density === 'compact' && /[\r\n]/.test(desc)) {
+      return BOQ_DESC_ROW_HEIGHT.comfortable;
+    }
+    return BOQ_DESC_ROW_HEIGHT[density] ?? 32;
   }, []);
 
   /* ── Cancel accidental ordinal edits from chevron clicks ─────── */

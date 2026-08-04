@@ -1132,7 +1132,7 @@ async def advisor_chat(
             api_key=api_key,
             system=system_prompt,
             prompt=user_prompt,
-            max_tokens=1500,
+            max_tokens=8192,
             model=model_override,
         )
         answer = text
