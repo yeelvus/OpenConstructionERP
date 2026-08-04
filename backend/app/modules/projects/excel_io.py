@@ -13,7 +13,8 @@ from __future__ import annotations
 import csv
 import io
 import re
-from decimal import Decimal, InvalidOperation
+from datetime import date, datetime, time
+from decimal import Decimal
 from typing import Any
 
 from app.modules.projects.schemas import ProjectCreate
@@ -149,6 +150,13 @@ def match_column(header: str) -> str | None:
 def _cell_str(val: Any) -> str:
     if val is None:
         return ""
+    # Excel date cells arrive as datetime/date (openpyxl data_only=True).
+    if isinstance(val, datetime):
+        return val.date().isoformat()
+    if isinstance(val, date):
+        return val.isoformat()
+    if isinstance(val, time):
+        return ""
     if isinstance(val, float):
         # Avoid 13.593780000000001 style noise from Excel numbers.
         if val == int(val):
@@ -162,6 +170,54 @@ def _cell_str(val: Any) -> str:
 def _empty_to_none(s: str) -> str | None:
     s = s.strip()
     return s if s else None
+
+
+def _normalize_date_cell(val: Any) -> str | None:
+    """Coerce Excel date cells / datetime strings to ``YYYY-MM-DD``.
+
+    Excel often stores dates as real datetime values; openpyxl then yields
+    ``datetime(2026, 5, 26, 0, 0)`` which ``str()`` turns into
+    ``'2026-05-26 00:00:00'`` — rejected by ProjectCreate's date validator.
+    Also accept ISO datetime strings and Excel serial day numbers.
+    """
+    if val is None or val == "":
+        return None
+    if isinstance(val, datetime):
+        return val.date().isoformat()
+    if isinstance(val, date):
+        return val.isoformat()
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        # Excel serial date (days since 1899-12-30). Guard a sane range.
+        serial = float(val)
+        if 1 <= serial <= 100_000:
+            try:
+                from datetime import timedelta
+
+                base = date(1899, 12, 30)
+                return (base + timedelta(days=int(serial))).isoformat()
+            except (OverflowError, ValueError):
+                pass
+        # Fall through: treat as ordinary number string (not a date).
+        return _empty_to_none(_cell_str(val))
+
+    text = str(val).strip()
+    if not text:
+        return None
+    # '2026-05-26 00:00:00' / '2026-05-26T00:00:00' / with optional Z
+    m = re.match(
+        r"^(\d{4}-\d{2}-\d{2})(?:[T\s]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$",
+        text,
+    )
+    if m:
+        return m.group(1)
+    # '26.05.2026 00:00:00' or '05/26/2026 00:00:00'
+    m = re.match(
+        r"^(\d{1,2}[./]\d{1,2}[./]\d{4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$",
+        text,
+    )
+    if m:
+        return m.group(1)
+    return text
 
 
 def _dms_to_decimal(deg: float, minutes: float, seconds: float, sign: float) -> float:
@@ -267,6 +323,31 @@ def parse_lat_lng_pair(lat_raw: str, lng_raw: str) -> tuple[float | None, float 
     return lat, lng
 
 
+def _coerce_money_cell(val: Any) -> str | None:
+    """Normalise a money/area cell to a plain decimal string (no currency symbols)."""
+    if val is None or val == "":
+        return None
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        # Keep full precision for large THB amounts without scientific notation.
+        if float(val) == int(val) and abs(val) < 1e15:
+            return str(int(val))
+        return format(float(val), "f").rstrip("0").rstrip(".")
+    text = str(val).strip().replace(",", "").replace(" ", "")
+    # Strip common currency prefixes/suffixes.
+    text = re.sub(r"^(THB|CNY|USD|EUR|GBP|¥|￥|฿|\$)", "", text, flags=re.I)
+    text = re.sub(r"(THB|CNY|USD|EUR|GBP)$", "", text, flags=re.I)
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        n = float(text)
+    except ValueError:
+        return text  # let pydantic report a clear error
+    if n == int(n) and abs(n) < 1e15:
+        return str(int(n))
+    return format(n, "f").rstrip("0").rstrip(".")
+
+
 def row_to_project_create(row: dict[str, Any]) -> ProjectCreate:
     """Build a validated ``ProjectCreate`` from a normalised row dict.
 
@@ -314,12 +395,12 @@ def row_to_project_create(row: dict[str, Any]) -> ProjectCreate:
         "phase": _empty_to_none(_cell_str(row.get("phase"))),
         "client_id": _empty_to_none(_cell_str(row.get("client_id"))),
         "country_code": _empty_to_none(_cell_str(row.get("country_code"))),
-        "contract_value": _empty_to_none(_cell_str(row.get("contract_value"))),
-        "budget_estimate": _empty_to_none(_cell_str(row.get("budget_estimate"))),
+        "contract_value": _coerce_money_cell(row.get("contract_value")),
+        "budget_estimate": _coerce_money_cell(row.get("budget_estimate")),
         "contingency_pct": _empty_to_none(_cell_str(row.get("contingency_pct"))),
-        "gross_floor_area": _empty_to_none(_cell_str(row.get("gross_floor_area"))),
-        "planned_start_date": _empty_to_none(_cell_str(row.get("planned_start_date"))),
-        "planned_end_date": _empty_to_none(_cell_str(row.get("planned_end_date"))),
+        "gross_floor_area": _coerce_money_cell(row.get("gross_floor_area")),
+        "planned_start_date": _normalize_date_cell(row.get("planned_start_date")),
+        "planned_end_date": _normalize_date_cell(row.get("planned_end_date")),
         "default_vat_rate": _empty_to_none(_cell_str(row.get("default_vat_rate"))),
         "address": address,
     }

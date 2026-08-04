@@ -579,7 +579,22 @@ export function ProjectSettingsPage() {
   const weatherEnabled = useWidgetSettingsStore((s) => s.projectWeatherEnabled);
   const setProjectWeather = useWidgetSettingsStore((s) => s.setProjectWeather);
 
-  // Sync local state with server state once (and when projectId changes)
+  // Sync local state from server when the project identity or location payload
+  // changes. Depend on a stable fingerprint (not the whole ``project`` object)
+  // so a background refetch with the same address cannot clobber in-progress
+  // form edits with the previous coordinates.
+  const locationSyncKey = useMemo(() => {
+    if (!project) return '';
+    return JSON.stringify({
+      id: project.id,
+      address: project.address ?? null,
+      currency: project.currency ?? '',
+      vat: project.default_vat_rate ?? '',
+      units: project.custom_units ?? [],
+      fx: project.fx_rates ?? [],
+    });
+  }, [project]);
+
   useEffect(() => {
     if (!project) return;
     setFxRates(project.fx_rates ?? []);
@@ -604,7 +619,9 @@ export function ProjectSettingsPage() {
     );
     setAddrSearch('');
     setAddrError(null);
-  }, [project]);
+    // locationSyncKey already embeds address + related fields
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationSyncKey]);
 
   // Issue #105 — when navigated here with a hash (e.g. /settings#fx-rates),
   // scroll the matching Card into view and pulse it briefly so the user
@@ -631,6 +648,9 @@ export function ProjectSettingsPage() {
   const updateMutation = useMutation({
     mutationFn: (payload: Partial<Project>) => projectsApi.update(projectId!, payload),
     onSuccess: (updated) => {
+      // Write the PATCH response into the cache immediately so the sync
+      // effect sees the new address (not a stale list/detail snapshot).
+      queryClient.setQueryData(['project', projectId], updated);
       queryClient.invalidateQueries({ queryKey: ['project', projectId] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       // Re-sync local state from server response (authoritative)
@@ -805,6 +825,28 @@ export function ProjectSettingsPage() {
     setAddrError(null);
   };
 
+  /** True when the field is a plain WGS84 decimal (not DMS / pair paste). */
+  const isPlainDecimal = (s: string): boolean => /^-?\d+(\.\d+)?$/.test(s.trim());
+
+  /** Keep the paste box in sync when the user edits decimal lat/lng so a
+   *  later blur of the paste field cannot re-apply the *previous* DMS and
+   *  silently discard the edit. */
+  const syncPasteFromDecimals = (latS: string, lngS: string) => {
+    if (!isPlainDecimal(latS) || !isPlainDecimal(lngS)) return;
+    const la = Number(latS);
+    const ln = Number(lngS);
+    if (
+      Number.isFinite(la) &&
+      Number.isFinite(ln) &&
+      la >= -90 &&
+      la <= 90 &&
+      ln >= -180 &&
+      ln <= 180
+    ) {
+      setCoordsPaste(formatDms(la, ln));
+    }
+  };
+
   /** Apply a free-text coordinate paste (DMS or decimal pair). */
   const applyCoordsPaste = (raw: string, opts?: { silent?: boolean }): boolean => {
     const parsed = parseCoordinates(raw);
@@ -835,9 +877,13 @@ export function ProjectSettingsPage() {
     e.preventDefault();
     setAddrError(null);
 
-    // Prefer an unparsed paste box when decimal fields are still empty.
+    // Prefer decimal lat/lng fields when both are plain numbers. The paste
+    // box is only a convenience input — using it as the source of truth when
+    // decimals are filled was re-saving the *previous* DMS after the user
+    // typed new lat/lng (blur/onChange race).
     let latTrim = addrLat.trim();
     let lngTrim = addrLng.trim();
+
     if ((latTrim === '' || lngTrim === '') && coordsPaste.trim()) {
       const parsed = parseCoordinates(coordsPaste);
       if (parsed) {
@@ -856,8 +902,12 @@ export function ProjectSettingsPage() {
       }
     }
 
-    // If the user pasted a full pair into the latitude box alone.
-    if (latTrim && looksLikeCoordinatePair(latTrim) && (lngTrim === '' || !Number.isFinite(Number(lngTrim)))) {
+    // Full pair pasted into the latitude box alone.
+    if (
+      latTrim &&
+      looksLikeCoordinatePair(latTrim) &&
+      (lngTrim === '' || !isPlainDecimal(lngTrim))
+    ) {
       const parsed = parseCoordinates(latTrim);
       if (parsed) {
         latTrim = String(parsed.lat);
@@ -880,14 +930,19 @@ export function ProjectSettingsPage() {
         );
         return;
       }
-      // Allow DMS in either individual field when the other is filled as decimal.
-      const latParsed = parseCoordinates(`${latTrim} ${lngTrim}`);
-      if (latParsed) {
-        lat = latParsed.lat;
-        lng = latParsed.lng;
-      } else {
+      if (isPlainDecimal(latTrim) && isPlainDecimal(lngTrim)) {
         lat = Number(latTrim);
         lng = Number(lngTrim);
+      } else {
+        // DMS / mixed: parse as a pair string.
+        const latParsed = parseCoordinates(`${latTrim} ${lngTrim}`);
+        if (latParsed) {
+          lat = latParsed.lat;
+          lng = latParsed.lng;
+        } else {
+          lat = Number(latTrim);
+          lng = Number(lngTrim);
+        }
       }
       if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
         setAddrError(
@@ -1386,9 +1441,37 @@ export function ProjectSettingsPage() {
                 }
               }}
               onBlur={() => {
-                if (coordsPaste.trim() && looksLikeCoordinatePair(coordsPaste)) {
-                  applyCoordsPaste(coordsPaste, { silent: true });
+                // Only re-parse paste → decimals when the paste box still
+                // differs from the current decimal fields. Otherwise a blur
+                // (e.g. click Save after editing lat/lng) would re-apply the
+                // previous DMS and discard the user's new coordinates.
+                if (!coordsPaste.trim() || !looksLikeCoordinatePair(coordsPaste)) return;
+                const parsed = parseCoordinates(coordsPaste);
+                if (!parsed) return;
+                const latN = isPlainDecimal(addrLat) ? Number(addrLat) : NaN;
+                const lngN = isPlainDecimal(addrLng) ? Number(addrLng) : NaN;
+                if (
+                  Number.isFinite(latN) &&
+                  Number.isFinite(lngN) &&
+                  Math.abs(latN - parsed.lat) < 1e-7 &&
+                  Math.abs(lngN - parsed.lng) < 1e-7
+                ) {
+                  return; // already in sync
                 }
+                // Decimals were edited away from paste → trust decimals, refresh paste.
+                if (
+                  Number.isFinite(latN) &&
+                  Number.isFinite(lngN) &&
+                  (Math.abs(latN - parsed.lat) >= 1e-7 || Math.abs(lngN - parsed.lng) >= 1e-7)
+                ) {
+                  // Prefer decimals if both look like intentional new input
+                  // and paste still holds the old formatDms string.
+                  if (isPlainDecimal(addrLat) && isPlainDecimal(addrLng)) {
+                    setCoordsPaste(formatDms(latN, lngN));
+                    return;
+                  }
+                }
+                applyCoordsPaste(coordsPaste, { silent: true });
               }}
               placeholder={`13°35'37.60"N 100°57'48.38"E`}
               aria-invalid={!!addrError}
@@ -1403,6 +1486,7 @@ export function ProjectSettingsPage() {
                   setAddrLat(v);
                   setAddrError(null);
                   if (tryParseFieldAsPair(v)) return;
+                  syncPasteFromDecimals(v, addrLng);
                 }}
                 onPaste={(e) => {
                   const text = e.clipboardData.getData('text');
@@ -1419,8 +1503,10 @@ export function ProjectSettingsPage() {
                 label={t('project.settings.location.longitude', { defaultValue: 'Longitude' })}
                 value={addrLng}
                 onChange={(e) => {
-                  setAddrLng(e.target.value);
+                  const v = e.target.value;
+                  setAddrLng(v);
                   setAddrError(null);
+                  syncPasteFromDecimals(addrLat, v);
                 }}
                 onPaste={(e) => {
                   const text = e.clipboardData.getData('text');

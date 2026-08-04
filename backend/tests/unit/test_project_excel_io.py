@@ -52,6 +52,20 @@ def test_template_roundtrip_headers():
     assert "name" in rows[0]
 
 
+def test_excel_datetime_normalized_to_iso_date():
+    from datetime import datetime
+
+    p = row_to_project_create(
+        {
+            "name": "Dated Site",
+            "planned_start_date": datetime(2026, 5, 26, 0, 0, 0),
+            "planned_end_date": "2026-04-11 00:00:00",
+        }
+    )
+    assert p.planned_start_date == "2026-05-26"
+    assert p.planned_end_date == "2026-04-11"
+
+
 def test_export_row_flattens_address():
     class P:
         name = "X"
