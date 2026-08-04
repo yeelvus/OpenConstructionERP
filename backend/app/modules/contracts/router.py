@@ -256,6 +256,207 @@ def _party_to_response(item: ContractParty, resolved_name: str | None) -> Contra
     return resp
 
 
+# ── THCC local folder sync (path registry — never copies files) ──────────
+
+
+@router.get("/thcc/config")
+async def thcc_contracts_config(
+    _user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("contracts.read")),
+) -> dict:
+    """Return the configured local contracts root and whether it exists."""
+    from app.modules.contracts.thcc_sync import load_config
+
+    return load_config()
+
+
+@router.put("/thcc/config")
+async def thcc_contracts_set_config(
+    body: dict,
+    _user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("contracts.update")),
+) -> dict:
+    """Persist a new local root (e.g. after the folder moved)."""
+    from app.modules.contracts.thcc_sync import save_contracts_root
+
+    root = str((body or {}).get("root") or "").strip()
+    if not root:
+        raise HTTPException(status_code=400, detail="root is required")
+    return save_contracts_root(root)
+
+
+@router.post("/thcc/scan")
+async def thcc_contracts_scan(
+    session: SessionDep,
+    user_id: CurrentUserId,
+    body: dict | None = None,
+    _perm: None = Depends(RequirePermission("contracts.read")),
+) -> dict:
+    """Scan the local THCC contracts tree and match to OCE projects (dry-run)."""
+    from app.modules.contracts.thcc_sync import (
+        default_contracts_root,
+        discovery_to_dict,
+        load_config,
+        match_projects,
+        scan_contracts_root,
+        sync_discoveries,
+    )
+
+    body = body or {}
+    project_code = (body.get("project_code") or "").strip() or None
+    project_id = body.get("project_id")
+    root = default_contracts_root()
+    discovered = scan_contracts_root(root, project_code=project_code)
+    # Optional filter by OCE project_id after match
+    await match_projects(session, discovered)
+    if project_id:
+        pid = str(project_id)
+        discovered = [d for d in discovered if d.project_id == pid]
+    # dry-run actions
+    await sync_discoveries(session, discovered, user_id=user_id, apply=False, root=root)
+    return {
+        "config": load_config(),
+        "count": len(discovered),
+        "items": [discovery_to_dict(d) for d in discovered],
+        "summary": {
+            "matched": sum(
+                1
+                for d in discovered
+                if d.project_id
+                and (d.project_match or "").startswith("matched")
+            ),
+            "missing_project": sum(1 for d in discovered if d.project_match == "missing"),
+            "would_create": sum(1 for d in discovered if d.action == "create"),
+            "would_update": sum(1 for d in discovered if d.action == "update"),
+            "skip": sum(1 for d in discovered if d.action == "skip"),
+        },
+    }
+
+
+@router.post("/thcc/sync")
+async def thcc_contracts_sync(
+    session: SessionDep,
+    user_id: CurrentUserId,
+    body: dict | None = None,
+    _perm: None = Depends(RequirePermission("contracts.create")),
+) -> dict:
+    """Scan and upsert contracts for matched projects (no file copy)."""
+    from app.modules.contracts.thcc_sync import (
+        default_contracts_root,
+        discovery_to_dict,
+        load_config,
+        match_projects,
+        scan_contracts_root,
+        sync_discoveries,
+    )
+
+    body = body or {}
+    project_code = (body.get("project_code") or "").strip() or None
+    project_id = body.get("project_id")
+    root = default_contracts_root()
+    discovered = scan_contracts_root(root, project_code=project_code)
+    await match_projects(session, discovered)
+    if project_id:
+        pid = str(project_id)
+        discovered = [d for d in discovered if d.project_id == pid]
+    await sync_discoveries(session, discovered, user_id=user_id, apply=True, root=root)
+    return {
+        "config": load_config(),
+        "count": len(discovered),
+        "items": [discovery_to_dict(d) for d in discovered],
+        "summary": {
+            "created": sum(1 for d in discovered if d.action == "create" and d.contract_id),
+            "updated": sum(1 for d in discovered if d.action == "update"),
+            "skipped": sum(1 for d in discovered if d.action == "skip"),
+            "errors": sum(1 for d in discovered if d.action == "error"),
+        },
+    }
+
+
+@router.post("/thcc/rescan-paths")
+async def thcc_rescan_paths(
+    session: SessionDep,
+    user_id: CurrentUserId,
+    body: dict | None = None,
+    _perm: None = Depends(RequirePermission("contracts.update")),
+) -> dict:
+    """Re-resolve relative PDF paths under the current root for synced contracts."""
+    from app.modules.contracts.thcc_sync import rescan_fix_paths
+
+    body = body or {}
+    pid = body.get("project_id")
+    project_uuid = uuid.UUID(str(pid)) if pid else None
+    return await rescan_fix_paths(session, project_id=project_uuid)
+
+
+@router.get("/contracts/{contract_id}/thcc-files")
+async def thcc_list_contract_files(
+    contract_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("contracts.read")),
+) -> dict:
+    """List local PDF paths bound to this contract and whether they still exist."""
+    from app.modules.contracts.thcc_sync import default_contracts_root, resolve_pdf_status
+
+    contract = await _verify_contract_access(session, contract_id, user_id)
+    meta = getattr(contract, "metadata_", None) or {}
+    root = default_contracts_root()
+    files = resolve_pdf_status(meta if isinstance(meta, dict) else {}, root=root)
+    thcc = meta.get("thcc") if isinstance(meta, dict) else None
+    return {
+        "contract_id": str(contract_id),
+        "root": str(root),
+        "root_exists": root.is_dir(),
+        "folder_relpath": (thcc or {}).get("folder_relpath") if isinstance(thcc, dict) else None,
+        "json_relpath": (thcc or {}).get("json_relpath") if isinstance(thcc, dict) else None,
+        "files": files,
+        "missing_count": sum(1 for f in files if not f.get("exists")),
+    }
+
+
+@router.post("/contracts/{contract_id}/thcc-relocate")
+async def thcc_relocate_contract_file(
+    contract_id: uuid.UUID,
+    body: dict,
+    session: SessionDep,
+    user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("contracts.update")),
+) -> dict:
+    """Re-bind one PDF path (absolute path on this machine) without copying."""
+    from app.modules.contracts.thcc_sync import (
+        default_contracts_root,
+        relocate_pdf_in_metadata,
+        resolve_pdf_status,
+    )
+
+    contract = await _verify_contract_access(session, contract_id, user_id)
+    old_rel = (body or {}).get("old_relpath")
+    new_abs = str((body or {}).get("new_absolute") or "").strip()
+    if not new_abs:
+        raise HTTPException(status_code=400, detail="new_absolute path is required")
+    root = default_contracts_root()
+    try:
+        meta = relocate_pdf_in_metadata(
+            getattr(contract, "metadata_", None),
+            old_relpath=str(old_rel) if old_rel else None,
+            new_absolute=new_abs,
+            root=root,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    contract.metadata_ = meta
+    await session.flush()
+    files = resolve_pdf_status(meta, root=root)
+    return {
+        "contract_id": str(contract_id),
+        "files": files,
+        "missing_count": sum(1 for f in files if not f.get("exists")),
+    }
+
+
 # ── Contracts ────────────────────────────────────────────────────────────
 
 

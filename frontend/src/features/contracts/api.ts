@@ -369,6 +369,162 @@ export function deleteContract(id: string): Promise<void> {
   return apiDelete(`/v1/contracts/contracts/${id}`);
 }
 
+/* ── Contract documents register (PDF / attachments) ─────────────────── */
+
+export type ContractDocRole =
+  | 'executed_agreement'
+  | 'drawing'
+  | 'specification'
+  | 'bond'
+  | 'insurance'
+  | 'correspondence'
+  | 'variation'
+  | 'other';
+
+export interface ContractDocumentItem {
+  id: string;
+  contract_id: string;
+  document_id: string | null;
+  doc_role: ContractDocRole | string;
+  title: string;
+  version: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export function listContractDocuments(
+  contractId: string,
+  docRole?: string,
+): Promise<ContractDocumentItem[]> {
+  const qs = docRole ? `?doc_role=${encodeURIComponent(docRole)}` : '';
+  return safeGetList<ContractDocumentItem>(
+    `/v1/contracts/contracts/${contractId}/documents${qs}`,
+  );
+}
+
+export function createContractDocument(payload: {
+  contract_id: string;
+  document_id?: string | null;
+  doc_role?: ContractDocRole | string;
+  title?: string;
+  version?: string;
+  metadata?: Record<string, unknown>;
+}): Promise<ContractDocumentItem> {
+  return apiPost<ContractDocumentItem>(
+    `/v1/contracts/contracts/${payload.contract_id}/documents`,
+    payload,
+  );
+}
+
+export function deleteContractDocument(documentRowId: string): Promise<void> {
+  return apiDelete(`/v1/contracts/contracts/documents/${documentRowId}`);
+}
+
+/* ── THCC local folder sync (no file copy) ───────────────────────────── */
+
+export interface ThccConfig {
+  root: string;
+  exists: boolean;
+  config_file?: string;
+  saved?: { root?: string; updated_at?: string } | null;
+}
+
+export interface ThccDiscoveredItem {
+  project_code: string;
+  project_name_hint: string;
+  side: string;
+  status_folder: string;
+  contract_code: string;
+  stable_code: string;
+  contract_title: string;
+  contract_type_label: string;
+  currency: string;
+  total_value: string;
+  counterparty_name: string;
+  end_date: string | null;
+  json_relpath: string;
+  folder_relpath: string;
+  pdfs: Array<{ relpath: string; name: string; exists: boolean }>;
+  project_id: string | null;
+  project_match: string | null;
+  action: string | null;
+  contract_id: string | null;
+  message: string | null;
+}
+
+export interface ThccScanResult {
+  config: ThccConfig;
+  count: number;
+  items: ThccDiscoveredItem[];
+  summary: Record<string, number>;
+}
+
+export function getThccContractsConfig(): Promise<ThccConfig> {
+  return apiGet<ThccConfig>('/v1/contracts/thcc/config');
+}
+
+export function setThccContractsRoot(root: string): Promise<ThccConfig> {
+  return apiPut<ThccConfig>('/v1/contracts/thcc/config', { root });
+}
+
+export function scanThccContracts(body?: {
+  project_id?: string;
+  project_code?: string;
+}): Promise<ThccScanResult> {
+  return apiPost<ThccScanResult>('/v1/contracts/thcc/scan', body ?? {});
+}
+
+export function syncThccContracts(body?: {
+  project_id?: string;
+  project_code?: string;
+}): Promise<ThccScanResult> {
+  return apiPost<ThccScanResult>('/v1/contracts/thcc/sync', body ?? {});
+}
+
+export function rescanThccPaths(body?: { project_id?: string }): Promise<{
+  checked: number;
+  refreshed_from_scan: number;
+  still_missing_files: number;
+  root: string;
+  root_exists: boolean;
+}> {
+  return apiPost('/v1/contracts/thcc/rescan-paths', body ?? {});
+}
+
+export function listThccContractFiles(contractId: string): Promise<{
+  contract_id: string;
+  root: string;
+  root_exists: boolean;
+  folder_relpath: string | null;
+  json_relpath: string | null;
+  files: Array<{
+    relpath: string;
+    name: string;
+    absolute: string;
+    exists: boolean;
+  }>;
+  missing_count: number;
+}> {
+  return apiGet(`/v1/contracts/contracts/${contractId}/thcc-files`);
+}
+
+export function relocateThccContractFile(
+  contractId: string,
+  body: { old_relpath?: string | null; new_absolute: string },
+): Promise<{
+  contract_id: string;
+  files: Array<{
+    relpath: string;
+    name: string;
+    absolute: string;
+    exists: boolean;
+  }>;
+  missing_count: number;
+}> {
+  return apiPost(`/v1/contracts/contracts/${contractId}/thcc-relocate`, body);
+}
+
 export function signContract(id: string): Promise<ContractItem> {
   return apiPost<ContractItem>(`/v1/contracts/contracts/${id}/sign`, {});
 }

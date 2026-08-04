@@ -27,6 +27,7 @@ import {
   BookOpen,
   Network,
   ArrowRight,
+  Pencil,
   Trash2,
 } from 'lucide-react';
 import {
@@ -63,6 +64,9 @@ import { ComplianceGate } from './ComplianceGate';
 import { ContractPartiesPanel } from './ContractPartiesPanel';
 import { ContractSecuritiesPanel } from './ContractSecuritiesPanel';
 import { ContractAnalyticsPanels } from './ContractAnalyticsPanels';
+import { ContractDocumentsPanel } from './ContractDocumentsPanel';
+import { ThccLocalSyncPanel } from './ThccLocalSyncPanel';
+import { ThccLocalFilesPanel } from './ThccLocalFilesPanel';
 import { contractsGuide } from './contractsGuide';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
@@ -77,13 +81,14 @@ import {
   listProgressClaims,
   listContractLines,
   createContract,
+  updateContract,
+  deleteContract,
   createProgressClaim,
   suspendContract,
   resumeContract,
   terminateContract,
   closeContract,
   cloneContract,
-  deleteContract,
   listClauseTemplates,
   submitClaim,
   approveClaim,
@@ -91,6 +96,8 @@ import {
   rejectClaim,
   markClaimPaid,
   getContractDashboard,
+  scanThccContracts,
+  syncThccContracts,
   type ContractItem,
   type ContractLine,
   type ProgressClaimItem,
@@ -99,6 +106,7 @@ import {
   type ClaimStatus,
   type CounterpartyType,
   type ContractDashboard,
+  type ContractUpdatePayload,
 } from './api';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { buildContractsInsights } from './contractsInsights';
@@ -507,6 +515,33 @@ export function ContractsPage() {
     enabled: !!projectId,
   });
 
+  // Runtime: when a project is selected, scan local THCC folders that contain
+  // its project code and auto-sync matched contracts (paths only, no file copy).
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const scan = await scanThccContracts({ project_id: projectId });
+        if (cancelled) return;
+        const need =
+          (scan.summary.would_create ?? 0) + (scan.summary.would_update ?? 0);
+        if (need > 0) {
+          await syncThccContracts({ project_id: projectId });
+          if (!cancelled) {
+            contractsQ.refetch();
+          }
+        }
+      } catch {
+        // Local root missing or API error — panel still allows manual sync.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
   const contracts = contractsQ.data ?? [];
   const selectedProject = useMemo(
     () => (projectsQ.data ?? []).find((p) => p.id === projectId),
@@ -865,11 +900,14 @@ export function ContractsPage() {
         ) : isError ? (
           <RecoveryCard error={loadError} onRetry={retryLoad} />
         ) : tab === 'contracts' ? (
-          <ContractTable
-            rows={filteredContracts}
-            onSelect={setSelectedContractId}
-            emptyAction={() => setCreateOpen(true)}
-          />
+          <>
+            {projectId && <ThccLocalSyncPanel projectId={projectId} />}
+            <ContractTable
+              rows={filteredContracts}
+              onSelect={setSelectedContractId}
+              emptyAction={() => setCreateOpen(true)}
+            />
+          </>
         ) : tab === 'claims' ? (
           <ClaimsTable
             rows={filteredClaims}
@@ -890,7 +928,12 @@ export function ContractsPage() {
         <ContractDetailDrawer
           contractId={selectedContractId}
           contracts={contracts}
+          projectId={projectId}
           onClose={() => setSelectedContractId(null)}
+          onDeleted={() => {
+            setSelectedContractId(null);
+            contractsQ.refetch();
+          }}
         />
       )}
 
@@ -1383,11 +1426,15 @@ function FinalAccountsView({
 export function ContractDetailDrawer({
   contractId,
   contracts,
+  projectId,
   onClose,
+  onDeleted,
 }: {
   contractId: string;
   contracts: ContractItem[];
+  projectId: string;
   onClose: () => void;
+  onDeleted?: () => void;
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -1398,6 +1445,7 @@ export function ContractDetailDrawer({
   // user sign once there are no blocking errors.
   const [gateOpen, setGateOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   const linesQ = useQuery({
     queryKey: ['contracts', 'lines', contractId],
@@ -1509,12 +1557,8 @@ export function ContractDetailDrawer({
     onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
   });
 
-  // Delete is offered on a draft and on nothing else, which is the same rule
-  // the endpoint enforces. A contract that has been signed is the commercial
-  // record of the job and leaves through its status, not through deletion.
-  // The drawer has to close on success: its subject is looked up out of the
-  // list by id, so once the row is gone the drawer would render nothing while
-  // still counting as open.
+  // Delete is offered on a draft only (same rule the endpoint enforces).
+  // Close the drawer on success so it does not render a missing list row.
   const deleteMut = useMutation({
     mutationFn: () => deleteContract(contractId),
     onSuccess: () => {
@@ -1524,6 +1568,7 @@ export function ContractDetailDrawer({
         type: 'success',
         title: t('contracts.deleted_ok', { defaultValue: 'Draft contract deleted' }),
       });
+      onDeleted?.();
       onClose();
     },
     onError: (err) => {
@@ -1630,6 +1675,14 @@ export function ContractDetailDrawer({
 
           {/* Workflow buttons */}
           <div className="flex flex-wrap gap-2 pt-1">
+            <Button
+              variant="secondary"
+              icon={<Pencil size={14} />}
+              onClick={() => setEditOpen(true)}
+              data-testid="contract-edit"
+            >
+              {t('common.edit', { defaultValue: 'Edit' })}
+            </Button>
             {contract.status === 'draft' && (
               <>
                 <Button
@@ -1644,6 +1697,7 @@ export function ContractDetailDrawer({
                   icon={<Trash2 size={14} />}
                   onClick={() => setDeleteOpen(true)}
                   loading={deleteMut.isPending}
+                  data-testid="contract-delete"
                 >
                   {t('contracts.delete', { defaultValue: 'Delete' })}
                 </Button>
@@ -1809,6 +1863,10 @@ export function ContractDetailDrawer({
               header's counterparty field is one side and a category, and this
               is the list the signature block is actually built from. */}
           <ContractPartiesPanel contractId={contractId} />
+
+          {/* Local THCC PDF paths (no copy) + optional upload into Documents */}
+          <ThccLocalFilesPanel contractId={contractId} />
+          <ContractDocumentsPanel contractId={contractId} projectId={projectId} />
 
           {/* SoV */}
           <Card padding="sm">
@@ -2083,6 +2141,17 @@ export function ContractDetailDrawer({
         variant="danger"
         loading={deleteMut.isPending}
       />
+
+      {editOpen && (
+        <EditContractModal
+          contract={contract}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => {
+            setEditOpen(false);
+            invalidate();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -2354,6 +2423,222 @@ function CreateContractModal({
         <WideModalField
           label={t('contracts.end_date', { defaultValue: 'End' })}
         >
+          <input
+            type="date"
+            value={form.end_date}
+            onChange={(e) => setForm({ ...form, end_date: e.target.value })}
+            className={inputCls}
+          />
+        </WideModalField>
+      </WideModalSection>
+    </WideModal>
+  );
+}
+
+/* ─── Edit modal ─── */
+
+function EditContractModal({
+  contract,
+  onClose,
+  onSaved,
+}: {
+  contract: ContractItem;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
+  const [busy, setBusy] = useState(false);
+  const isDraft = contract.status === 'draft';
+
+  const [form, setForm] = useState({
+    code: contract.code || '',
+    title: contract.title || '',
+    contract_type: contract.contract_type,
+    counterparty_type: contract.counterparty_type,
+    total_value: String(toNum(contract.total_value)),
+    currency: contract.currency || 'EUR',
+    retention_percent: String(toNum(contract.retention_percent)),
+    start_date: contract.start_date || '',
+    end_date: contract.end_date || '',
+  });
+
+  const submit = async () => {
+    if (!form.code.trim()) {
+      addToast({
+        type: 'error',
+        title: t('contracts.code_required', { defaultValue: 'Code is required' }),
+      });
+      return;
+    }
+    setBusy(true);
+    try {
+      const payload: ContractUpdatePayload = {
+        code: form.code.trim(),
+        title: form.title.trim(),
+        counterparty_type: form.counterparty_type,
+        start_date: form.start_date || null,
+        end_date: form.end_date || null,
+      };
+      // Financial terms only while draft (backend freezes them after sign).
+      if (isDraft) {
+        payload.contract_type = form.contract_type;
+        payload.total_value = Number(form.total_value) || 0;
+        payload.currency = form.currency.trim().toUpperCase() || undefined;
+        payload.retention_percent = Number(form.retention_percent) || 0;
+      }
+      await updateContract(contract.id, payload);
+      addToast({
+        type: 'success',
+        title: t('contracts.updated_ok', { defaultValue: 'Contract updated' }),
+      });
+      qc.invalidateQueries({ queryKey: ['contracts', 'list'] });
+      onSaved();
+    } catch (err) {
+      addToast({ type: 'error', title: getErrorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <WideModal
+      open
+      onClose={onClose}
+      title={t('contracts.edit_contract', { defaultValue: 'Edit contract' })}
+      size="xl"
+      busy={busy}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            {t('common.cancel', { defaultValue: 'Cancel' })}
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => void submit()}
+            loading={busy}
+            icon={busy ? <Loader2 size={14} /> : <Pencil size={14} />}
+          >
+            {t('common.save', { defaultValue: 'Save' })}
+          </Button>
+        </>
+      }
+    >
+      {!isDraft && (
+        <p className="mb-3 rounded-lg border border-border-light bg-surface-secondary/50 px-3 py-2 text-xs text-content-secondary">
+          {t('contracts.edit_locked_hint', {
+            defaultValue:
+              'This contract is signed. Title, dates and code can still change; value, type, currency and retention are locked — use a variation / change order for commercial changes.',
+          })}
+        </p>
+      )}
+      <WideModalSection
+        title={t('contracts.section_basic', { defaultValue: 'Basic info' })}
+        columns={2}
+      >
+        <WideModalField label={t('contracts.code', { defaultValue: 'Code' })} required>
+          <input
+            value={form.code}
+            onChange={(e) => setForm({ ...form, code: e.target.value })}
+            className={inputCls}
+          />
+        </WideModalField>
+        <WideModalField label={t('contracts.title_col', { defaultValue: 'Title' })}>
+          <input
+            value={form.title}
+            onChange={(e) => setForm({ ...form, title: e.target.value })}
+            className={inputCls}
+          />
+        </WideModalField>
+        <WideModalField label={t('contracts.type', { defaultValue: 'Type' })}>
+          <select
+            value={form.contract_type}
+            disabled={!isDraft}
+            onChange={(e) =>
+              setForm({ ...form, contract_type: e.target.value as ContractType })
+            }
+            className={inputCls}
+          >
+            {CONTRACT_TYPES.map((tp) => (
+              <option key={tp} value={tp}>
+                {t(`contracts.type_${tp}`, {
+                  defaultValue: tp === 'tm' ? 'T&M' : tp.replace(/_/g, ' '),
+                })}
+              </option>
+            ))}
+          </select>
+        </WideModalField>
+        <WideModalField label={t('contracts.counterparty', { defaultValue: 'Counterparty' })}>
+          <select
+            value={form.counterparty_type}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                counterparty_type: e.target.value as CounterpartyType,
+              })
+            }
+            className={inputCls}
+          >
+            <option value="client">
+              {t('contracts.cp_client', { defaultValue: 'Client' })}
+            </option>
+            <option value="subcontractor">
+              {t('contracts.cp_subcontractor', { defaultValue: 'Subcontractor' })}
+            </option>
+          </select>
+        </WideModalField>
+      </WideModalSection>
+
+      <WideModalSection
+        title={t('contracts.section_value', { defaultValue: 'Value' })}
+        columns={3}
+      >
+        <WideModalField label={t('contracts.value', { defaultValue: 'Value' })}>
+          <input
+            type="number"
+            value={form.total_value}
+            disabled={!isDraft}
+            onChange={(e) => setForm({ ...form, total_value: e.target.value })}
+            className={inputCls}
+          />
+        </WideModalField>
+        <WideModalField label={t('contracts.currency', { defaultValue: 'Currency' })}>
+          <input
+            value={form.currency}
+            disabled={!isDraft}
+            onChange={(e) => setForm({ ...form, currency: e.target.value })}
+            className={inputCls}
+          />
+        </WideModalField>
+        <WideModalField
+          label={t('contracts.retention_pct', { defaultValue: 'Retention %' })}
+        >
+          <input
+            type="number"
+            value={form.retention_percent}
+            disabled={!isDraft}
+            onChange={(e) =>
+              setForm({ ...form, retention_percent: e.target.value })
+            }
+            className={inputCls}
+          />
+        </WideModalField>
+      </WideModalSection>
+
+      <WideModalSection
+        title={t('contracts.section_schedule', { defaultValue: 'Schedule' })}
+        columns={2}
+      >
+        <WideModalField label={t('contracts.start_date', { defaultValue: 'Start' })}>
+          <input
+            type="date"
+            value={form.start_date}
+            onChange={(e) => setForm({ ...form, start_date: e.target.value })}
+            className={inputCls}
+          />
+        </WideModalField>
+        <WideModalField label={t('contracts.end_date', { defaultValue: 'End' })}>
           <input
             type="date"
             value={form.end_date}
