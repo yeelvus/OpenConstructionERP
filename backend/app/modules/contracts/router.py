@@ -28,7 +28,7 @@ import uuid
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.core.i18n import get_locale
 from app.core.json_merge import merge_metadata
@@ -455,6 +455,55 @@ async def thcc_relocate_contract_file(
         "files": files,
         "missing_count": sum(1 for f in files if not f.get("exists")),
     }
+
+
+@router.get(
+    "/contracts/{contract_id}/thcc-files/content",
+    summary="Stream a registered local THCC PDF for in-app preview (no copy)",
+    response_description="application/pdf stream",
+)
+async def thcc_stream_contract_file(
+    contract_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId,
+    relpath: str = Query(..., description="Root-relative path registered on the contract"),
+    _perm: None = Depends(RequirePermission("contracts.read")),
+) -> FileResponse:
+    """Serve a local contract PDF by registered path for the project file viewer.
+
+    Bytes are streamed from the configured contracts root; nothing is copied
+    into application storage. Path must match a registered ``pdf_relpaths``
+    entry and resolve under the root.
+    """
+    from app.modules.contracts.thcc_sync import (
+        default_contracts_root,
+        resolve_registered_pdf,
+    )
+
+    contract = await _verify_contract_access(session, contract_id, user_id)
+    meta = getattr(contract, "metadata_", None) or {}
+    root = default_contracts_root()
+    try:
+        path = resolve_registered_pdf(
+            meta if isinstance(meta, dict) else {},
+            relpath=relpath,
+            root=root,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    media = "application/pdf"
+    if path.suffix.lower() not in {".pdf", ""}:
+        # Still allow other registered files (rare); browser may download.
+        media = "application/octet-stream"
+    return FileResponse(
+        path,
+        media_type=media,
+        filename=path.name,
+        content_disposition_type="inline",
+    )
 
 
 # ── Contracts ────────────────────────────────────────────────────────────

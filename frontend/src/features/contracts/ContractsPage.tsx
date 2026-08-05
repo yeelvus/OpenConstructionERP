@@ -29,6 +29,9 @@ import {
   ArrowRight,
   Pencil,
   Trash2,
+  Eye,
+  Building2,
+  HardHat,
 } from 'lucide-react';
 import {
   Button,
@@ -72,7 +75,7 @@ import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { getErrorMessage } from '@/shared/lib/api';
-import { projectsApi } from '@/features/projects/api';
+import { projectsApi, type ProjectFxRate } from '@/features/projects/api';
 import { listSubcontractors } from '@/features/subcontractors/api';
 import { fetchContacts } from '@/features/contacts/api';
 import { getRetentionLedger } from '@/features/finance/api';
@@ -98,6 +101,9 @@ import {
   getContractDashboard,
   scanThccContracts,
   syncThccContracts,
+  contractCommercialSide,
+  firstThccPdfRelpath,
+  thccContractPdfContentUrl,
   type ContractItem,
   type ContractLine,
   type ProgressClaimItem,
@@ -110,6 +116,15 @@ import {
 } from './api';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { buildContractsInsights } from './contractsInsights';
+import { InlinePdfPreviewModal } from '@/features/file-references/InlinePdfPreviewModal';
+import { ContractFxFields } from './ContractFxFields';
+import {
+  convertContractAmountToProject,
+  fxModeLabel,
+  parseContractFx,
+  withContractFx,
+  type ContractFxPolicy,
+} from './fx';
 
 type Tab = 'contracts' | 'claims' | 'final_accounts' | 'templates';
 
@@ -906,6 +921,8 @@ export function ContractsPage() {
               rows={filteredContracts}
               onSelect={setSelectedContractId}
               emptyAction={() => setCreateOpen(true)}
+              projectCurrency={selectedProject?.currency || ''}
+              projectFxRates={selectedProject?.fx_rates ?? []}
             />
           </>
         ) : tab === 'claims' ? (
@@ -929,6 +946,8 @@ export function ContractsPage() {
           contractId={selectedContractId}
           contracts={contracts}
           projectId={projectId}
+          projectCurrency={selectedProject?.currency || ''}
+          projectFxRates={selectedProject?.fx_rates ?? []}
           onClose={() => setSelectedContractId(null)}
           onDeleted={() => {
             setSelectedContractId(null);
@@ -941,6 +960,8 @@ export function ContractsPage() {
       {createOpen && (
         <CreateContractModal
           projectId={projectId}
+          projectCurrency={selectedProject?.currency || ''}
+          projectFxRates={selectedProject?.fx_rates ?? []}
           onClose={() => setCreateOpen(false)}
         />
       )}
@@ -963,12 +984,21 @@ function ContractTable({
   rows,
   onSelect,
   emptyAction,
+  projectCurrency,
+  projectFxRates,
 }: {
   rows: ContractItem[];
   onSelect: (id: string) => void;
   emptyAction: () => void;
+  projectCurrency?: string;
+  projectFxRates?: ProjectFxRate[];
 }) {
   const { t } = useTranslation();
+  const [pdfPreview, setPdfPreview] = useState<{
+    url: string;
+    title: string;
+  } | null>(null);
+  const baseCcy = (projectCurrency || '').toUpperCase();
   // Pre-fetch clause templates for the empty-state hint chips. The
   // query is cheap (in-memory dict on the backend) and is shared with
   // the CreateContractModal via React Query's cache.
@@ -977,6 +1007,29 @@ function ContractTable({
     queryFn: listClauseTemplates,
     staleTime: 60 * 60 * 1000,
   });
+
+  const mainRows = useMemo(
+    () => rows.filter((r) => contractCommercialSide(r) === 'main'),
+    [rows],
+  );
+  const subRows = useMemo(
+    () => rows.filter((r) => contractCommercialSide(r) === 'sub'),
+    [rows],
+  );
+
+  const openPdf = (r: ContractItem, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const rel = firstThccPdfRelpath(r);
+    if (!rel) {
+      // No local THCC path — open detail drawer so user can use upload panel.
+      onSelect(r.id);
+      return;
+    }
+    setPdfPreview({
+      url: thccContractPdfContentUrl(r.id, rel),
+      title: `${r.code} — ${r.title || rel.split('/').pop() || 'PDF'}`,
+    });
+  };
 
   if (rows.length === 0) {
     // Only paper a contract can actually be drawn from. The catalogue now
@@ -1034,94 +1087,256 @@ function ContractTable({
       </div>
     );
   }
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="bg-surface-secondary text-content-tertiary text-xs uppercase tracking-wide">
-          <tr>
-            <th className="px-4 py-2.5 text-left">
-              {t('contracts.code', { defaultValue: 'Code' })}
-            </th>
-            <th className="px-4 py-2.5 text-left">
-              {t('contracts.title_col', { defaultValue: 'Title' })}
-            </th>
-            <th className="px-4 py-2.5 text-left">
-              {t('contracts.type', { defaultValue: 'Type' })}
-            </th>
-            <th className="px-4 py-2.5 text-left">
-              {t('contracts.counterparty', { defaultValue: 'Counterparty' })}
-            </th>
-            <th className="px-4 py-2.5 text-left">
-              {t('contracts.status', { defaultValue: 'Status' })}
-            </th>
-            <th className="px-4 py-2.5 text-right">
-              {t('contracts.value', { defaultValue: 'Value' })}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr
-              key={r.id}
-              onClick={() => onSelect(r.id)}
-              className="border-t border-border-light hover:bg-surface-secondary cursor-pointer"
-            >
-              <td className="px-4 py-2 font-mono text-xs text-content-secondary">
-                {r.code}
-              </td>
-              <td className="px-4 py-2 font-medium text-content-primary truncate max-w-[320px]">
-                {r.title || '—'}
-              </td>
-              <td className="px-4 py-2">
-                <ContractTypeChip type={r.contract_type} />
-              </td>
-              <td className="px-4 py-2 text-xs text-content-secondary capitalize">
-                {r.counterparty_type}
-              </td>
-              <td className="px-4 py-2">
-                <div className="flex items-center gap-2">
-                  <Badge variant={CONTRACT_STATUS_VARIANT[r.status]} dot>
-                    {contractStatusLabel(t, r.status)}
-                  </Badge>
-                  <ContractStatusPipeline status={r.status} />
-                  <ContractExpiryBadge endDate={r.end_date} status={r.status} />
-                </div>
-              </td>
-              <td className="px-4 py-2 text-right">
-                <MoneyDisplay
-                  amount={toNum(r.total_value)}
-                  currency={r.currency || undefined}
-                />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-        {/* Honest cross-currency rollup — never silently sums mixed
-            currencies into a single number (the previous footer would
-            have done arithmetic on €+$ values without warning). */}
-        <tfoot className="bg-surface-secondary/60">
-          <tr className="border-t border-border-light">
-            <td colSpan={5} className="px-4 py-2 text-xs uppercase tracking-wide text-content-tertiary">
-              {t('contracts.register_total', { defaultValue: 'Register total' })}
-              <span className="ml-2 normal-case text-content-secondary">
-                ({rows.length}{' '}
-                {t('contracts.contracts_label', { defaultValue: 'contracts' })})
-              </span>
-            </td>
-            <td className="px-4 py-2 text-right text-sm font-medium">
+
+  const renderSection = (
+    sectionKey: 'main' | 'sub',
+    sectionRows: ContractItem[],
+  ) => {
+    const isMain = sectionKey === 'main';
+    const Icon = isMain ? Building2 : HardHat;
+    const title = isMain
+      ? t('contracts.section_main', { defaultValue: '总包合同 (Main contracts)' })
+      : t('contracts.section_sub', { defaultValue: '分包合同 (Subcontracts)' });
+    const emptyHint = isMain
+      ? t('contracts.section_main_empty', {
+          defaultValue: 'No main / prime contracts in this filter.',
+        })
+      : t('contracts.section_sub_empty', {
+          defaultValue: 'No subcontracts in this filter.',
+        });
+
+    return (
+      <div
+        key={sectionKey}
+        data-testid={`contracts-section-${sectionKey}`}
+        className="border-t border-border-light first:border-t-0"
+      >
+        <div className="flex items-center justify-between gap-2 bg-surface-secondary/80 px-4 py-2.5">
+          <div className="flex items-center gap-2 text-sm font-semibold text-content-primary">
+            <Icon size={15} className="text-oe-blue" aria-hidden />
+            {title}
+            <span className="rounded-full bg-surface-primary px-2 py-0.5 text-xs font-medium text-content-secondary ring-1 ring-inset ring-border-light">
+              {sectionRows.length}
+            </span>
+          </div>
+          {sectionRows.length > 0 && (
+            <div className="text-xs text-content-tertiary">
               <MultiCurrencyTotal
-                items={rows.map((r) => ({
+                items={sectionRows.map((r) => ({
                   amount: r.total_value,
                   currency: r.currency,
                 }))}
                 variant="inline"
                 compact
               />
-            </td>
-          </tr>
-        </tfoot>
-      </table>
-    </div>
+            </div>
+          )}
+        </div>
+
+        {sectionRows.length === 0 ? (
+          <p className="px-4 py-4 text-sm text-content-tertiary">{emptyHint}</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-surface-secondary/40 text-content-tertiary text-xs uppercase tracking-wide">
+                <tr>
+                  <th className="px-4 py-2 text-left">
+                    {t('contracts.code', { defaultValue: 'Code' })}
+                  </th>
+                  <th className="px-4 py-2 text-left">
+                    {t('contracts.title_col', { defaultValue: 'Title' })}
+                  </th>
+                  <th className="px-4 py-2 text-left">
+                    {t('contracts.type', { defaultValue: 'Type' })}
+                  </th>
+                  <th className="px-4 py-2 text-left">
+                    {t('contracts.counterparty', { defaultValue: 'Counterparty' })}
+                  </th>
+                  <th className="px-4 py-2 text-left">
+                    {t('contracts.status', { defaultValue: 'Status' })}
+                  </th>
+                  <th className="px-4 py-2 text-right">
+                    {t('contracts.value', { defaultValue: 'Value' })}
+                  </th>
+                  {baseCcy && (
+                    <th className="px-4 py-2 text-right">
+                      {t('contracts.value_project_ccy', {
+                        defaultValue: '项目币 {{ccy}}',
+                        ccy: baseCcy,
+                      })}
+                    </th>
+                  )}
+                  <th className="px-4 py-2 text-left">
+                    {t('contracts.fx', { defaultValue: '汇率' })}
+                  </th>
+                  <th className="px-4 py-2 text-right">
+                    {t('contracts.pdf', { defaultValue: 'PDF' })}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sectionRows.map((r) => {
+                  const hasPdf = !!firstThccPdfRelpath(r);
+                  const fx = parseContractFx(r.metadata);
+                  const conv = convertContractAmountToProject(r.total_value, {
+                    contractCurrency: r.currency,
+                    projectCurrency: baseCcy,
+                    fx,
+                    projectFxRates,
+                  });
+                  return (
+                    <tr
+                      key={r.id}
+                      onClick={() => onSelect(r.id)}
+                      className="border-t border-border-light hover:bg-surface-secondary cursor-pointer"
+                    >
+                      <td className="px-4 py-2 font-mono text-xs text-content-secondary">
+                        {r.code}
+                      </td>
+                      <td className="px-4 py-2 font-medium text-content-primary truncate max-w-[320px]">
+                        {r.title || '—'}
+                      </td>
+                      <td className="px-4 py-2">
+                        <ContractTypeChip type={r.contract_type} />
+                      </td>
+                      <td className="px-4 py-2 text-xs text-content-secondary capitalize">
+                        {r.counterparty_type}
+                      </td>
+                      <td className="px-4 py-2">
+                        <div className="flex items-center gap-2">
+                          <Badge variant={CONTRACT_STATUS_VARIANT[r.status]} dot>
+                            {contractStatusLabel(t, r.status)}
+                          </Badge>
+                          <ContractStatusPipeline status={r.status} />
+                          <ContractExpiryBadge endDate={r.end_date} status={r.status} />
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        <MoneyDisplay
+                          amount={toNum(r.total_value)}
+                          currency={r.currency || undefined}
+                        />
+                      </td>
+                      {baseCcy && (
+                        <td className="px-4 py-2 text-right">
+                          {conv.amount != null ? (
+                            <MoneyDisplay amount={conv.amount} currency={baseCcy} />
+                          ) : (
+                            <span
+                              className="text-xs text-content-tertiary"
+                              title={conv.label}
+                            >
+                              —
+                            </span>
+                          )}
+                        </td>
+                      )}
+                      <td className="px-4 py-2 text-xs text-content-secondary">
+                        <span title={conv.label}>{fxModeLabel(fx.mode, t)}</span>
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        <Button
+                          size="sm"
+                          variant={hasPdf ? 'secondary' : 'ghost'}
+                          icon={<Eye size={12} />}
+                          disabled={!hasPdf}
+                          title={
+                            hasPdf
+                              ? t('contracts.view_pdf', { defaultValue: 'View PDF' })
+                              : t('contracts.no_pdf_bound', {
+                                  defaultValue: 'No local PDF bound — open contract to upload or sync',
+                                })
+                          }
+                          onClick={(e) => openPdf(r, e)}
+                          data-testid={`contract-view-pdf-${r.id}`}
+                        >
+                          {t('contracts.view_pdf', { defaultValue: 'View PDF' })}
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot className="bg-surface-secondary/40">
+                <tr className="border-t border-border-light">
+                  <td
+                    colSpan={baseCcy ? 7 : 6}
+                    className="px-4 py-2 text-xs uppercase tracking-wide text-content-tertiary"
+                  >
+                    {title}
+                    <span className="ml-2 normal-case text-content-secondary">
+                      ({sectionRows.length})
+                    </span>
+                    {baseCcy && (
+                      <span className="ml-3 normal-case font-medium text-content-primary">
+                        {t('contracts.section_in_project_ccy', {
+                          defaultValue: '项目币合计',
+                        })}
+                        :{' '}
+                        <MoneyDisplay
+                          amount={sectionRows.reduce((acc, r) => {
+                            const c = convertContractAmountToProject(r.total_value, {
+                              contractCurrency: r.currency,
+                              projectCurrency: baseCcy,
+                              fx: parseContractFx(r.metadata),
+                              projectFxRates,
+                            });
+                            return acc + (c.amount ?? 0);
+                          }, 0)}
+                          currency={baseCcy}
+                        />
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-right text-sm font-medium">
+                    <MultiCurrencyTotal
+                      items={sectionRows.map((r) => ({
+                        amount: r.total_value,
+                        currency: r.currency,
+                      }))}
+                      variant="inline"
+                      compact
+                    />
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <div data-testid="contracts-register-split">
+        {renderSection('main', mainRows)}
+        {renderSection('sub', subRows)}
+      </div>
+      <div className="border-t border-border-light bg-surface-secondary/60 px-4 py-2 text-xs text-content-tertiary">
+        {t('contracts.register_total', { defaultValue: 'Register total' })}
+        <span className="ml-2 normal-case text-content-secondary">
+          ({rows.length}{' '}
+          {t('contracts.contracts_label', { defaultValue: 'contracts' })})
+        </span>
+        <span className="ml-3 inline-block font-medium text-content-primary">
+          <MultiCurrencyTotal
+            items={rows.map((r) => ({
+              amount: r.total_value,
+              currency: r.currency,
+            }))}
+            variant="inline"
+            compact
+          />
+        </span>
+      </div>
+      <InlinePdfPreviewModal
+        open={!!pdfPreview}
+        downloadUrl={pdfPreview?.url ?? null}
+        title={pdfPreview?.title ?? ''}
+        onClose={() => setPdfPreview(null)}
+      />
+    </>
   );
 }
 
@@ -1427,12 +1642,16 @@ export function ContractDetailDrawer({
   contractId,
   contracts,
   projectId,
+  projectCurrency,
+  projectFxRates,
   onClose,
   onDeleted,
 }: {
   contractId: string;
   contracts: ContractItem[];
   projectId: string;
+  projectCurrency?: string;
+  projectFxRates?: ProjectFxRate[];
   onClose: () => void;
   onDeleted?: () => void;
 }) {
@@ -1440,6 +1659,15 @@ export function ContractDetailDrawer({
   const qc = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
   const contract = contracts.find((c) => c.id === contractId);
+  const fxPolicy = parseContractFx(contract?.metadata);
+  const projectConv = contract
+    ? convertContractAmountToProject(contract.total_value, {
+        contractCurrency: contract.currency,
+        projectCurrency,
+        fx: fxPolicy,
+        projectFxRates,
+      })
+    : null;
   // Item #27 — signing goes through the compliance gate modal, which runs
   // the project's compliance rule packs against the SoV and only lets the
   // user sign once there are no blocking errors.
@@ -1614,6 +1842,11 @@ export function ContractDetailDrawer({
               {contract.code} — {contract.title || 'Untitled'}
             </h2>
             <div className="mt-1 flex flex-wrap items-center gap-2">
+              <Badge variant={contractCommercialSide(contract) === 'main' ? 'blue' : 'warning'}>
+                {contractCommercialSide(contract) === 'main'
+                  ? t('contracts.side_main', { defaultValue: '总包合同' })
+                  : t('contracts.side_sub', { defaultValue: '分包合同' })}
+              </Badge>
               <ContractTypeChip type={contract.contract_type} />
               <Badge variant={CONTRACT_STATUS_VARIANT[contract.status]} dot>
                 {contractStatusLabel(t, contract.status)}
@@ -1642,6 +1875,25 @@ export function ContractDetailDrawer({
                   amount={toNum(contract.total_value)}
                   currency={contract.currency || undefined}
                 />
+              }
+            />
+            <KPI
+              label={
+                projectCurrency
+                  ? t('contracts.value_in_project', {
+                      defaultValue: '项目币 {{ccy}}',
+                      ccy: projectCurrency,
+                    })
+                  : t('contracts.value_project', { defaultValue: '项目币' })
+              }
+              value={
+                projectConv?.amount != null && projectCurrency ? (
+                  <MoneyDisplay amount={projectConv.amount} currency={projectCurrency} />
+                ) : (
+                  <span className="text-xs font-normal text-content-tertiary">
+                    {projectConv?.label || '—'}
+                  </span>
+                )
               }
             />
             <KPI
@@ -1809,6 +2061,21 @@ export function ContractDetailDrawer({
                 value={contract.currency || '—'}
               />
               <Field
+                label={t('contracts.fx', { defaultValue: '汇率' })}
+                value={
+                  <span>
+                    {fxModeLabel(fxPolicy.mode, t)}
+                    {fxPolicy.mode === 'fixed' && fxPolicy.rate
+                      ? ` · ${fxPolicy.rate}`
+                      : ''}
+                    {fxPolicy.mode === 'spot_at_payment' &&
+                    (fxPolicy.last_spot_rate || fxPolicy.rate)
+                      ? ` · ${fxPolicy.last_spot_rate || fxPolicy.rate}`
+                      : ''}
+                  </span>
+                }
+              />
+              <Field
                 label={t('contracts.start_date', { defaultValue: 'Start' })}
                 value={
                   contract.start_date ? (
@@ -1863,6 +2130,14 @@ export function ContractDetailDrawer({
               header's counterparty field is one side and a category, and this
               is the list the signature block is actually built from. */}
           <ContractPartiesPanel contractId={contractId} />
+
+          {/* FX policy — convert contract currency → project base */}
+          <ContractFxCard
+            contract={contract}
+            projectCurrency={projectCurrency}
+            projectFxRates={projectFxRates}
+            onSaved={() => invalidate()}
+          />
 
           {/* Local THCC PDF paths (no copy) + optional upload into Documents */}
           <ThccLocalFilesPanel contractId={contractId} />
@@ -2145,6 +2420,8 @@ export function ContractDetailDrawer({
       {editOpen && (
         <EditContractModal
           contract={contract}
+          projectCurrency={projectCurrency}
+          projectFxRates={projectFxRates}
           onClose={() => setEditOpen(false)}
           onSaved={() => {
             setEditOpen(false);
@@ -2153,6 +2430,89 @@ export function ContractDetailDrawer({
         />
       )}
     </div>
+  );
+}
+
+/** Inline FX editor on the detail drawer (metadata.fx — editable after sign). */
+function ContractFxCard({
+  contract,
+  projectCurrency,
+  projectFxRates,
+  onSaved,
+}: {
+  contract: ContractItem;
+  projectCurrency?: string;
+  projectFxRates?: ProjectFxRate[];
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
+  const [fx, setFx] = useState<ContractFxPolicy>(() => parseContractFx(contract.metadata));
+  const [busy, setBusy] = useState(false);
+
+  // Keep local form in sync when another edit refreshes the contract.
+  useEffect(() => {
+    setFx(parseContractFx(contract.metadata));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-sync after server save
+  }, [contract.id, contract.updated_at]);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await updateContract(contract.id, {
+        metadata: withContractFx(contract.metadata, fx),
+      });
+      addToast({
+        type: 'success',
+        title: t('contracts.fx_saved', { defaultValue: '汇率设置已保存' }),
+      });
+      qc.invalidateQueries({ queryKey: ['contracts', 'list'] });
+      onSaved();
+    } catch (err) {
+      addToast({ type: 'error', title: getErrorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card padding="sm">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-content-secondary">
+          {t('contracts.fx_section', {
+            defaultValue: '汇率 / 项目币换算',
+          })}
+        </p>
+        <Button
+          size="sm"
+          variant="primary"
+          loading={busy}
+          onClick={() => void save()}
+          data-testid="contract-fx-save"
+        >
+          {t('common.save', { defaultValue: 'Save' })}
+        </Button>
+      </div>
+      <ContractFxFields
+        value={fx}
+        onChange={setFx}
+        contractCurrency={contract.currency}
+        projectCurrency={projectCurrency}
+        sampleAmount={contract.total_value}
+      />
+      {projectFxRates && projectFxRates.length > 0 && (
+        <p className="mt-2 text-[11px] text-content-tertiary">
+          {t('contracts.fx_project_table', {
+            defaultValue: '项目汇率表',
+          })}
+          :{' '}
+          {projectFxRates
+            .map((r) => `${r.code}=${r.rate}`)
+            .join(' · ')}
+        </p>
+      )}
+    </Card>
   );
 }
 
@@ -2184,15 +2544,20 @@ function Field({ label, value }: { label: React.ReactNode; value: React.ReactNod
 
 function CreateContractModal({
   projectId,
+  projectCurrency,
+  projectFxRates,
   onClose,
 }: {
   projectId: string;
+  projectCurrency?: string;
+  projectFxRates?: ProjectFxRate[];
   onClose: () => void;
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
   const [busy, setBusy] = useState(false);
+  const [fx, setFx] = useState<ContractFxPolicy>({ mode: 'none' });
 
   const [form, setForm] = useState({
     code: '',
@@ -2200,7 +2565,7 @@ function CreateContractModal({
     contract_type: 'lump_sum' as ContractType,
     counterparty_type: 'subcontractor' as CounterpartyType,
     total_value: '0',
-    currency: 'EUR',
+    currency: (projectCurrency || 'CNY').toUpperCase(),
     retention_percent: '5',
     start_date: todayIso(),
     end_date: '',
@@ -2240,6 +2605,7 @@ function CreateContractModal({
         start_date: form.start_date || null,
         end_date: form.end_date || null,
         template_code: form.template_code || null,
+        metadata: withContractFx({}, fx),
       });
       addToast({
         type: 'success',
@@ -2407,6 +2773,32 @@ function CreateContractModal({
       </WideModalSection>
 
       <WideModalSection
+        title={t('contracts.fx_section', {
+          defaultValue: '汇率 / 项目币换算',
+        })}
+        columns={1}
+      >
+        <WideModalField
+          label={t('contracts.fx', { defaultValue: '汇率' })}
+          span={2}
+        >
+          <ContractFxFields
+            value={fx}
+            onChange={setFx}
+            contractCurrency={form.currency}
+            projectCurrency={projectCurrency}
+            sampleAmount={form.total_value}
+          />
+          {projectFxRates && projectFxRates.length > 0 && (
+            <p className="mt-1 text-[11px] text-content-tertiary">
+              {t('contracts.fx_project_table', { defaultValue: '项目汇率表' })}:{' '}
+              {projectFxRates.map((r) => `${r.code}=${r.rate}`).join(' · ')}
+            </p>
+          )}
+        </WideModalField>
+      </WideModalSection>
+
+      <WideModalSection
         title={t('contracts.section_schedule', { defaultValue: 'Schedule' })}
         columns={2}
       >
@@ -2439,10 +2831,14 @@ function CreateContractModal({
 
 function EditContractModal({
   contract,
+  projectCurrency,
+  projectFxRates,
   onClose,
   onSaved,
 }: {
   contract: ContractItem;
+  projectCurrency?: string;
+  projectFxRates?: ProjectFxRate[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -2451,6 +2847,9 @@ function EditContractModal({
   const addToast = useToastStore((s) => s.addToast);
   const [busy, setBusy] = useState(false);
   const isDraft = contract.status === 'draft';
+  const [fx, setFx] = useState<ContractFxPolicy>(() =>
+    parseContractFx(contract.metadata),
+  );
 
   const [form, setForm] = useState({
     code: contract.code || '',
@@ -2458,7 +2857,7 @@ function EditContractModal({
     contract_type: contract.contract_type,
     counterparty_type: contract.counterparty_type,
     total_value: String(toNum(contract.total_value)),
-    currency: contract.currency || 'EUR',
+    currency: contract.currency || projectCurrency || 'CNY',
     retention_percent: String(toNum(contract.retention_percent)),
     start_date: contract.start_date || '',
     end_date: contract.end_date || '',
@@ -2480,6 +2879,8 @@ function EditContractModal({
         counterparty_type: form.counterparty_type,
         start_date: form.start_date || null,
         end_date: form.end_date || null,
+        // FX lives in metadata so it stays editable after sign (spot rates).
+        metadata: withContractFx(contract.metadata, fx),
       };
       // Financial terms only while draft (backend freezes them after sign).
       if (isDraft) {
@@ -2623,6 +3024,36 @@ function EditContractModal({
             }
             className={inputCls}
           />
+        </WideModalField>
+      </WideModalSection>
+
+      <WideModalSection
+        title={t('contracts.fx_section', {
+          defaultValue: '汇率 / 项目币换算',
+        })}
+        columns={1}
+      >
+        <WideModalField
+          label={t('contracts.fx', { defaultValue: '汇率' })}
+          span={2}
+          hint={t('contracts.fx_edit_hint', {
+            defaultValue:
+              '签约后仍可更新汇率策略（尤其是付款时时汇率），不影响已锁定的合同金额。',
+          })}
+        >
+          <ContractFxFields
+            value={fx}
+            onChange={setFx}
+            contractCurrency={form.currency}
+            projectCurrency={projectCurrency}
+            sampleAmount={form.total_value}
+          />
+          {projectFxRates && projectFxRates.length > 0 && (
+            <p className="mt-1 text-[11px] text-content-tertiary">
+              {t('contracts.fx_project_table', { defaultValue: '项目汇率表' })}:{' '}
+              {projectFxRates.map((r) => `${r.code}=${r.rate}`).join(' · ')}
+            </p>
+          )}
         </WideModalField>
       </WideModalSection>
 

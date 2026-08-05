@@ -1,15 +1,27 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 /**
- * Show local PDF paths for a THCC-synced contract; allow re-binding absolute paths.
+ * Show local PDF paths for a THCC-synced contract; allow re-binding absolute paths
+ * and open the same in-app PDF viewer used by project files.
  */
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, FolderOpen, Link2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Eye,
+  FolderOpen,
+  Link2,
+} from 'lucide-react';
 import { Button, Card } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
 import { getErrorMessage } from '@/shared/lib/api';
-import { listThccContractFiles, relocateThccContractFile } from './api';
+import { InlinePdfPreviewModal } from '@/features/file-references/InlinePdfPreviewModal';
+import {
+  listThccContractFiles,
+  relocateThccContractFile,
+  thccContractPdfContentUrl,
+} from './api';
 
 export function ThccLocalFilesPanel({ contractId }: { contractId: string }) {
   const { t } = useTranslation();
@@ -17,6 +29,10 @@ export function ThccLocalFilesPanel({ contractId }: { contractId: string }) {
   const addToast = useToastStore((s) => s.addToast);
   const [editingRel, setEditingRel] = useState<string | null>(null);
   const [newPath, setNewPath] = useState('');
+  const [preview, setPreview] = useState<{
+    url: string;
+    title: string;
+  } | null>(null);
 
   const filesQ = useQuery({
     queryKey: ['contracts', 'thcc-files', contractId],
@@ -97,6 +113,21 @@ export function ThccLocalFilesPanel({ contractId }: { contractId: string }) {
                 </span>
                 <Button
                   size="sm"
+                  variant="secondary"
+                  icon={<Eye size={12} />}
+                  disabled={!f.exists}
+                  onClick={() =>
+                    setPreview({
+                      url: thccContractPdfContentUrl(contractId, f.relpath),
+                      title: f.name,
+                    })
+                  }
+                  data-testid="thcc-pdf-view"
+                >
+                  {t('contracts.view_pdf', { defaultValue: 'View PDF' })}
+                </Button>
+                <Button
+                  size="sm"
                   variant="ghost"
                   icon={<Link2 size={12} />}
                   onClick={() => {
@@ -148,6 +179,13 @@ export function ThccLocalFilesPanel({ contractId }: { contractId: string }) {
           ))}
         </ul>
       )}
+
+      <InlinePdfPreviewModal
+        open={!!preview}
+        downloadUrl={preview?.url ?? null}
+        title={preview?.title ?? ''}
+        onClose={() => setPreview(null)}
+      />
     </Card>
   );
 }

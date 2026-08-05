@@ -9,14 +9,12 @@
 import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FileText, Loader2, Paperclip, Trash2, Upload } from 'lucide-react';
+import { Eye, FileText, Loader2, Trash2, Upload } from 'lucide-react';
 import { Button, Card } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
 import { getErrorMessage } from '@/shared/lib/api';
-import {
-  downloadDocumentBlob,
-  uploadDocument,
-} from '@/features/documents/api';
+import { uploadDocument } from '@/features/documents/api';
+import { InlinePdfPreviewModal } from '@/features/file-references/InlinePdfPreviewModal';
 import {
   createContractDocument,
   deleteContractDocument,
@@ -36,6 +34,10 @@ export function ContractDocumentsPanel({
   const addToast = useToastStore((s) => s.addToast);
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [preview, setPreview] = useState<{
+    url: string;
+    title: string;
+  } | null>(null);
 
   const docsQ = useQuery({
     queryKey: ['contracts', 'documents', contractId],
@@ -99,7 +101,7 @@ export function ContractDocumentsPanel({
     }
   };
 
-  const openDoc = async (row: ContractDocumentItem) => {
+  const openDoc = (row: ContractDocumentItem) => {
     if (!row.document_id) {
       addToast({
         type: 'warning',
@@ -109,20 +111,18 @@ export function ContractDocumentsPanel({
       });
       return;
     }
-    try {
-      const blob = await downloadDocumentBlob(row.document_id);
-      const url = URL.createObjectURL(blob);
-      window.open(url, '_blank', 'noopener,noreferrer');
-      // Revoke after the tab has a chance to load.
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch (err) {
-      addToast({ type: 'error', title: getErrorMessage(err) });
-    }
+    setPreview({
+      url: `/api/v1/documents/${row.document_id}/download`,
+      title:
+        row.title ||
+        t('contracts.doc_untitled', { defaultValue: 'Document' }),
+    });
   };
 
   const rows = docsQ.data ?? [];
 
   return (
+    <>
     <Card padding="sm">
       <div className="mb-2 flex items-center justify-between gap-2">
         <p className="text-xs font-semibold uppercase tracking-wide text-content-secondary">
@@ -172,7 +172,7 @@ export function ContractDocumentsPanel({
             >
               <button
                 type="button"
-                onClick={() => void openDoc(row)}
+                onClick={() => openDoc(row)}
                 className="flex min-w-0 flex-1 items-center gap-2 text-left hover:text-oe-blue"
               >
                 <FileText size={14} className="shrink-0 text-oe-blue" />
@@ -187,11 +187,12 @@ export function ContractDocumentsPanel({
                 {row.document_id && (
                   <Button
                     size="sm"
-                    variant="ghost"
-                    icon={<Paperclip size={12} />}
-                    onClick={() => void openDoc(row)}
+                    variant="secondary"
+                    icon={<Eye size={12} />}
+                    onClick={() => openDoc(row)}
+                    data-testid="contract-doc-view-pdf"
                   >
-                    {t('common.open', { defaultValue: 'Open' })}
+                    {t('contracts.view_pdf', { defaultValue: 'View PDF' })}
                   </Button>
                 )}
                 <Button
@@ -219,5 +220,12 @@ export function ContractDocumentsPanel({
         </ul>
       )}
     </Card>
+    <InlinePdfPreviewModal
+      open={!!preview}
+      downloadUrl={preview?.url ?? null}
+      title={preview?.title ?? ''}
+      onClose={() => setPreview(null)}
+    />
+    </>
   );
 }

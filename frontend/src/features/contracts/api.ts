@@ -509,6 +509,56 @@ export function listThccContractFiles(contractId: string): Promise<{
   return apiGet(`/v1/contracts/contracts/${contractId}/thcc-files`);
 }
 
+/**
+ * Bearer-protected URL that streams a registered local THCC PDF for the
+ * same in-app viewer the project file manager uses (no file copy).
+ */
+export function thccContractPdfContentUrl(
+  contractId: string,
+  relpath: string,
+): string {
+  const q = new URLSearchParams({ relpath });
+  return `/api/v1/contracts/contracts/${contractId}/thcc-files/content?${q.toString()}`;
+}
+
+/** First registered THCC PDF relpath on a contract, if any. */
+export function firstThccPdfRelpath(
+  contract: Pick<ContractItem, 'metadata'> | null | undefined,
+): string | null {
+  const thcc = contract?.metadata?.thcc;
+  if (!thcc || typeof thcc !== 'object') return null;
+  const rels = (thcc as { pdf_relpaths?: unknown }).pdf_relpaths;
+  if (!Array.isArray(rels) || rels.length === 0) return null;
+  const first = rels[0];
+  return typeof first === 'string' && first.trim() ? first : null;
+}
+
+/**
+ * Classify as main (总包) vs sub (分包) for the register layout.
+ * Prefers THCC folder side; falls back to counterparty / parent link.
+ */
+export function contractCommercialSide(
+  contract: Pick<
+    ContractItem,
+    'metadata' | 'counterparty_type' | 'parent_contract_id' | 'code'
+  >,
+): 'main' | 'sub' {
+  const thcc = contract.metadata?.thcc;
+  if (thcc && typeof thcc === 'object') {
+    const side = String((thcc as { side?: string }).side || '').toLowerCase();
+    if (side === 'main' || side === 'sub') return side;
+    const label = String(
+      (thcc as { contract_type_label?: string }).contract_type_label || '',
+    );
+    if (label.includes('分包')) return 'sub';
+    if (label.includes('总包')) return 'main';
+  }
+  if (contract.counterparty_type === 'subcontractor') return 'sub';
+  if (contract.parent_contract_id) return 'sub';
+  if (/:SUB-|^SUB-/i.test(contract.code || '')) return 'sub';
+  return 'main';
+}
+
 export function relocateThccContractFile(
   contractId: string,
   body: { old_relpath?: string | null; new_absolute: string },

@@ -364,6 +364,56 @@ def resolve_pdf_status(
     return out
 
 
+def resolve_registered_pdf(
+    metadata: dict[str, Any] | None,
+    *,
+    relpath: str,
+    root: Path | None = None,
+) -> Path:
+    """Resolve a registered THCC PDF to an absolute path under the root.
+
+    Raises:
+        FileNotFoundError: path not registered, missing on disk, or escapes root.
+        ValueError: empty relpath.
+    """
+    root = (root or default_contracts_root()).resolve()
+    want = (relpath or "").strip()
+    if not want:
+        raise ValueError("relpath is required")
+
+    registered = resolve_pdf_status(metadata, root=root)
+    match: dict[str, Any] | None = None
+    want_name = Path(want).name.lower()
+    for f in registered:
+        if f["relpath"] == want or f["absolute"] == want:
+            match = f
+            break
+    if match is None and want_name:
+        by_name = [
+            f
+            for f in registered
+            if Path(str(f["relpath"])).name.lower() == want_name
+        ]
+        if len(by_name) == 1:
+            match = by_name[0]
+    if match is None:
+        raise FileNotFoundError(f"PDF not registered on this contract: {want}")
+
+    abs_path = Path(str(match["absolute"])).expanduser().resolve()
+    # Path traversal guard: prefer staying under contracts root.
+    try:
+        abs_path.relative_to(root)
+    except ValueError as exc:
+        # Absolute path outside root is only OK if it exactly matches the
+        # registered absolute entry (user relocated to another volume).
+        if str(abs_path) != str(Path(str(match["absolute"])).expanduser().resolve()):
+            raise FileNotFoundError("PDF path escapes contracts root") from exc
+
+    if not abs_path.is_file():
+        raise FileNotFoundError(f"PDF missing on disk: {abs_path}")
+    return abs_path
+
+
 def relocate_pdf_in_metadata(
     metadata: dict[str, Any] | None,
     *,
