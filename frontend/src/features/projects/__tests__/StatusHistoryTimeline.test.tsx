@@ -63,12 +63,12 @@ describe('StatusHistoryTimeline', () => {
   it('renders entries newest-first with resolved actor name and note', async () => {
     renderTimeline();
 
-    // Both target statuses from the history render as badges.
+    // Both target statuses from the history render as badges (Chinese labels).
     await waitFor(() => {
-      expect(screen.getByText('On hold')).toBeInTheDocument();
+      expect(screen.getByText('暂停')).toBeInTheDocument();
     });
-    // "Active" appears twice: row 1's from_status and row 2's to_status.
-    expect(screen.getAllByText('Active').length).toBeGreaterThanOrEqual(1);
+    // "在建" (active) appears at least once (from/to history rows).
+    expect(screen.getAllByText('在建').length).toBeGreaterThanOrEqual(1);
     // changed_by resolved to the user's display name.
     expect(screen.getByText(/Jane Doe/)).toBeInTheDocument();
     // The note text shows.

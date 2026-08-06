@@ -1278,3 +1278,12 @@ class ProjectCardMetrics(BaseModel):
     open_rfis: int = 0
     safety_incidents: int = 0
     progress_pct: float = 0.0
+    # Money channels (project base currency where convertible):
+    # contract register = Contracts module totals (总包/分包台账);
+    # project_contract_value = Project.contract_value field (manual/portfolio);
+    # budget_estimate = Project.budget_estimate field.
+    contract_register_value: float = 0.0
+    contract_main_value: float = 0.0
+    contract_sub_value: float = 0.0
+    project_contract_value: float = 0.0
+    budget_estimate: float = 0.0

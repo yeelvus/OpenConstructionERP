@@ -778,7 +778,7 @@ async def list_payments(
     invoice_id: uuid.UUID | None = Query(default=None),
     project_id: uuid.UUID | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=100),
+    limit: int = Query(default=50, ge=1, le=500),
     _perm: None = Depends(RequirePermission("finance.read")),
     service: FinanceService = Depends(_get_service),
 ) -> PaymentListResponse:
@@ -849,6 +849,363 @@ async def create_payment(
     await _require_invoice_access(session, data.invoice_id, user_id)
     payment = await service.create_payment(data, actor_id=str(user_id) if user_id else None)
     return PaymentResponse.model_validate(payment)
+
+
+# ── THCC local payment std import (MUST be before /{invoice_id}) ─────────────
+
+
+@router.get(
+    "/payments/thcc/config/",
+    summary="THCC payment std root path",
+    description="Return the local folder scanned for B_财务付款_std Excel files.",
+)
+async def thcc_payment_config(
+    _user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("finance.read")),
+) -> dict:
+    from app.modules.finance.thcc_payment_import import get_payments_root
+
+    root = get_payments_root()
+    return {
+        "root": str(root),
+        "exists": root.is_dir(),
+        "default_hint": (
+            "~/Desktop/邯郸中材/01成本统计/12-财务数据💰/A_财务付款数据/B_财务付款_std"
+        ),
+    }
+
+
+@router.put(
+    "/payments/thcc/config/",
+    summary="Set THCC payment std root path",
+)
+async def thcc_payment_set_config(
+    body: dict[str, Any],
+    _user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("finance.record_payment")),
+) -> dict:
+    from app.modules.finance.thcc_payment_import import get_payments_root, set_payments_root
+
+    raw = (body.get("root") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="root path is required")
+    path = set_payments_root(raw)
+    return {"root": str(path), "exists": path.is_dir()}
+
+
+@router.get(
+    "/payments/thcc/scan/",
+    summary="Scan local THCC payment std folder",
+    description="List Excel files under the configured B_财务付款_std path and "
+    "match them to OCE projects by project_code / name.",
+)
+async def thcc_payment_scan(
+    session: SessionDep,
+    user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("finance.read")),
+) -> dict:
+    from app.modules.finance.thcc_payment_import import (
+        enrich_scan_with_projects,
+        get_payments_root,
+        scan_payment_files,
+    )
+
+    root = get_payments_root()
+    if not root.is_dir():
+        return {
+            "root": str(root),
+            "exists": False,
+            "files": [],
+            "error": f"Directory not found: {root}",
+        }
+    files = scan_payment_files(root)
+    enriched = await enrich_scan_with_projects(session, files)
+    return {
+        "root": str(root),
+        "exists": True,
+        "file_count": len(enriched),
+        "matched": sum(1 for f in enriched if f.get("project_matched")),
+        "files": enriched,
+    }
+
+
+@router.post(
+    "/payments/thcc/import/",
+    summary="Bulk-import THCC payment std ledgers",
+    description="Import payment rows from local B_财务付款_std Excel files. "
+    "Creates one paid payable invoice + payment per 实付金额 row. "
+    "Re-import is idempotent (stable thccpay-* keys). "
+    "Optional filters: project_id (current project), project_codes, filenames, dry_run.",
+)
+async def thcc_payment_import(
+    body: dict[str, Any],
+    session: SessionDep,
+    user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("finance.record_payment")),
+) -> dict:
+    from app.modules.finance.thcc_payment_import import import_from_local_root
+
+    project_id_raw = body.get("project_id")
+    project_id: uuid.UUID | None = None
+    if project_id_raw:
+        try:
+            project_id = uuid.UUID(str(project_id_raw))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Invalid project_id") from exc
+        await _require_project_access(session, project_id, user_id)
+
+    codes = body.get("project_codes") or None
+    if codes is not None and not isinstance(codes, list):
+        raise HTTPException(status_code=400, detail="project_codes must be a list")
+    filenames = body.get("filenames") or None
+    if filenames is not None and not isinstance(filenames, list):
+        raise HTTPException(status_code=400, detail="filenames must be a list")
+    dry_run = bool(body.get("dry_run") or False)
+
+    result = await import_from_local_root(
+        session,
+        project_id=project_id,
+        project_codes=[str(c) for c in codes] if codes else None,
+        filenames=[str(f) for f in filenames] if filenames else None,
+        dry_run=dry_run,
+        actor_id=str(user_id) if user_id else None,
+    )
+    return result
+
+
+@router.get(
+    "/budgets/thcc-resp-cost/config/",
+    summary="THCC responsibility-cost std root path",
+)
+async def thcc_resp_cost_config(
+    _user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("finance.read")),
+) -> dict:
+    from app.modules.finance.thcc_resp_cost_import import get_resp_cost_root
+
+    root = get_resp_cost_root()
+    return {
+        "root": str(root),
+        "exists": root.is_dir(),
+        "default_hint": "~/Desktop/邯郸中材/01成本统计/3.1_责任成本/2_责任成本_std",
+    }
+
+
+@router.put(
+    "/budgets/thcc-resp-cost/config/",
+    summary="Set THCC responsibility-cost std root path",
+)
+async def thcc_resp_cost_set_config(
+    body: dict[str, Any],
+    _user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("finance.update")),
+) -> dict:
+    from app.modules.finance.thcc_resp_cost_import import set_resp_cost_root
+
+    raw = (body.get("root") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="root path is required")
+    path = set_resp_cost_root(raw)
+    return {"root": str(path), "exists": path.is_dir()}
+
+
+@router.get(
+    "/budgets/thcc-resp-cost/scan/",
+    summary="Scan local THCC responsibility-cost std folder",
+    description="List 责任成本_std Excel files and match them to OCE projects by project_code.",
+)
+async def thcc_resp_cost_scan(
+    session: SessionDep,
+    user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("finance.read")),
+) -> dict:
+    from app.modules.finance.thcc_resp_cost_import import (
+        enrich_scan,
+        get_resp_cost_root,
+        scan_resp_cost_files,
+    )
+
+    root = get_resp_cost_root()
+    if not root.is_dir():
+        return {
+            "root": str(root),
+            "exists": False,
+            "files": [],
+            "error": f"Directory not found: {root}",
+        }
+    files = scan_resp_cost_files(root)
+    enriched = await enrich_scan(session, files)
+    return {
+        "root": str(root),
+        "exists": True,
+        "file_count": len(enriched),
+        "matched": sum(1 for f in enriched if f.get("project_matched")),
+        "files": enriched,
+    }
+
+
+@router.post(
+    "/budgets/thcc-resp-cost/import/",
+    summary="Bulk-import THCC responsibility cost as budget lines",
+    description=(
+        "Import leaf lines from 2_责任成本_std workbooks into oe_finance_budget. "
+        "Each A.1/B.2… line becomes a budget row (wbs_id=code, category=name). "
+        "CNY amounts convert to THB at fx_cny_to_thb (default 4.9). "
+        "Re-import upserts; replace=true drops stale tagged lines. "
+        "Also refreshes cost-board snapshot resp_cost when available."
+    ),
+)
+async def thcc_resp_cost_import(
+    body: dict[str, Any],
+    session: SessionDep,
+    user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("finance.create")),
+) -> dict:
+    from decimal import Decimal, InvalidOperation
+
+    from app.modules.finance.thcc_resp_cost_import import import_from_local_root
+
+    project_id_raw = body.get("project_id")
+    project_id: uuid.UUID | None = None
+    if project_id_raw:
+        try:
+            project_id = uuid.UUID(str(project_id_raw))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Invalid project_id") from exc
+        await _require_project_access(session, project_id, user_id)
+
+    codes = body.get("project_codes") or None
+    if codes is not None and not isinstance(codes, list):
+        raise HTTPException(status_code=400, detail="project_codes must be a list")
+    filenames = body.get("filenames") or None
+    if filenames is not None and not isinstance(filenames, list):
+        raise HTTPException(status_code=400, detail="filenames must be a list")
+    dry_run = bool(body.get("dry_run") or False)
+    replace = body.get("replace", True)
+    if not isinstance(replace, bool):
+        replace = bool(replace)
+
+    fx = None
+    if body.get("fx_cny_to_thb") is not None:
+        try:
+            fx = Decimal(str(body["fx_cny_to_thb"]))
+        except (InvalidOperation, ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail="Invalid fx_cny_to_thb") from exc
+
+    return await import_from_local_root(
+        session,
+        project_id=project_id,
+        project_codes=[str(c) for c in codes] if codes else None,
+        filenames=[str(f) for f in filenames] if filenames else None,
+        dry_run=dry_run,
+        replace=replace,
+        fx_cny_to_thb=fx,
+        actor_id=str(user_id) if user_id else None,
+        sync_cost_board=bool(body.get("sync_cost_board", True)),
+    )
+
+
+@router.post(
+    "/budgets/thcc-resp-cost/import-upload/",
+    summary="Import one THCC responsibility-cost Excel upload as budgets",
+)
+async def thcc_resp_cost_import_upload(
+    session: SessionDep,
+    user_id: CurrentUserId,
+    project_id: uuid.UUID = Query(...),
+    dry_run: bool = Query(default=False),
+    replace: bool = Query(default=True),
+    file: UploadFile = File(...),
+    _perm: None = Depends(RequirePermission("finance.create")),
+) -> dict:
+    from app.modules.finance.thcc_resp_cost_import import import_resp_cost_file
+
+    await _require_project_access(session, project_id, user_id)
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    reject_if_xlsx_bomb(content)
+
+    import tempfile
+    from pathlib import Path
+
+    suffix = Path(file.filename or "resp.xlsx").suffix or ".xlsx"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
+        tmp.write(content)
+        tmp.flush()
+        try:
+            return await import_resp_cost_file(
+                session,
+                path=tmp.name,
+                project_id=project_id,
+                dry_run=dry_run,
+                replace=replace,
+                actor_id=str(user_id) if user_id else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"Import failed: {exc}") from exc
+
+
+@router.post(
+    "/payments/thcc/import-upload/",
+    summary="Import a single THCC payment std Excel upload",
+    description="Upload one B_财务付款_std workbook for the given project_id.",
+)
+async def thcc_payment_import_upload(
+    session: SessionDep,
+    user_id: CurrentUserId,
+    project_id: uuid.UUID = Query(...),
+    dry_run: bool = Query(default=False),
+    file: UploadFile = File(...),
+    _perm: None = Depends(RequirePermission("finance.record_payment")),
+) -> dict:
+    from app.modules.finance.thcc_payment_import import (
+        import_payment_rows,
+        parse_payment_workbook,
+    )
+    from app.modules.projects.models import Project
+
+    await _require_project_access(session, project_id, user_id)
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    reject_if_xlsx_bomb(content)
+
+    import tempfile
+    from pathlib import Path
+
+    suffix = Path(file.filename or "pay.xlsx").suffix or ".xlsx"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
+        tmp.write(content)
+        tmp.flush()
+        path = Path(tmp.name)
+        try:
+            rows = parse_payment_workbook(path)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {exc}") from exc
+
+    # rewrite source_file for metadata
+    for r in rows:
+        r.source_file = file.filename or path.name
+
+    proj = await session.get(Project, project_id)
+    if proj is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    currency = (proj.currency or "").strip() or "THB"
+    stats = await import_payment_rows(
+        session,
+        rows=rows,
+        project_id=project_id,
+        currency_code=currency,
+        dry_run=dry_run,
+        actor_id=str(user_id) if user_id else None,
+    )
+    return {
+        "ok": True,
+        "filename": file.filename,
+        "project_id": str(project_id),
+        **stats,
+    }
 
 
 # ── Gap E: certified claim → receivable invoice (MUST be before /{id}) ───────

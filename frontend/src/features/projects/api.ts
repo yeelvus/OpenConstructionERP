@@ -36,6 +36,8 @@ export interface Project {
   status: string;
   phase?: string | null;
   owner_id: string;
+  /** Optional portfolio code e.g. THCC-2026-004. */
+  project_code?: string | null;
   address?: ProjectAddress | null;
   /** ISO 3166-1 alpha-2 country code (drives the AIA G702/G703 gate). */
   country_code?: string | null;
@@ -50,6 +52,13 @@ export interface Project {
   project_type?: string | null;
   /** Gross floor area in m2 GFA as a decimal-string. Used by Cost Benchmarks. */
   gross_floor_area?: string | null;
+  /**
+   * Manual portfolio / tender figure on the project row.
+   * Distinct from Contracts-module register totals (合同管理台账).
+   */
+  contract_value?: string | null;
+  /** Manual budget / cost-plan figure on the project row. */
+  budget_estimate?: string | null;
   /** RFC 37 #88 — additional currencies + FX rate to project.currency. */
   fx_rates?: ProjectFxRate[];
   /** RFC 37 #89 — per-project VAT override (percentage string, e.g. "21"). */
@@ -270,11 +279,17 @@ function summarizeBulk(
   return { ok, failed };
 }
 
+/** Backend default limit is 50; portfolio + switcher need the full page (cap 500). */
+const PROJECTS_LIST_LIMIT = 500;
+
 export const projectsApi = {
   // NOTE: kept as a zero-arg fn so it can be passed straight as a
   // react-query `queryFn` (callers do `queryFn: projectsApi.list`). For a
   // server-side status filter use `listByStatus` instead.
-  list: () => apiGet<Project[]>('/v1/projects/'),
+  // Always pass limit=500 — the API default of 50 silently truncated the
+  // portfolio (dashboard count 114 vs list showing only 50).
+  list: () =>
+    apiGet<Project[]>(`/v1/projects/?limit=${PROJECTS_LIST_LIMIT}`),
   /**
    * List projects filtered by status. Pass a concrete status (e.g.
    * 'archived') to return only those, or 'all' to include every status
@@ -282,13 +297,23 @@ export const projectsApi = {
    * accepts the `status` query param added for #274.
    */
   listByStatus: (status: string) =>
-    apiGet<Project[]>(`/v1/projects/?status=${encodeURIComponent(status)}`),
+    apiGet<Project[]>(
+      `/v1/projects/?status=${encodeURIComponent(status)}&limit=${PROJECTS_LIST_LIMIT}`,
+    ),
   get: (id: string) => apiGet<Project>(`/v1/projects/${id}`),
   create: (data: CreateProjectData) => apiPost<Project>('/v1/projects/', data),
   update: (id: string, data: UpdateProjectData) =>
     apiPatch<Project>(`/v1/projects/${id}`, data),
   archive: (id: string) => apiDelete(`/v1/projects/${id}`),
   restore: (id: string) => apiPost<Project>(`/v1/projects/${id}/restore/`, {}),
+  /**
+   * Permanently delete an *archived* project (hard delete). Non-archived
+   * projects are rejected by the server (400). Irreversible.
+   */
+  hardDelete: (id: string) =>
+    apiDelete<{ id: string; name: string; project_code?: string | null; deleted: boolean }>(
+      `/v1/projects/${id}/permanent/`,
+    ),
   /** Soft-delete (archive) many projects. Returns per-id results. */
   bulkArchive: async (ids: string[]) => {
     const results = await Promise.allSettled(ids.map((id) => projectsApi.archive(id)));
@@ -299,10 +324,38 @@ export const projectsApi = {
     const results = await Promise.allSettled(ids.map((id) => projectsApi.restore(id)));
     return summarizeBulk(ids, results);
   },
+  /** Hard-delete many archived projects. Non-archived ids fail per-row. */
+  bulkHardDelete: async (ids: string[]) => {
+    const results = await Promise.allSettled(ids.map((id) => projectsApi.hardDelete(id)));
+    return summarizeBulk(ids, results);
+  },
   /** Set the same lifecycle status on many projects (not for archived). */
   bulkSetStatus: async (ids: string[], status: string) => {
     const results = await Promise.allSettled(
       ids.map((id) => projectsApi.update(id, { status })),
+    );
+    return summarizeBulk(ids, results);
+  },
+  /**
+   * Patch the same currency and/or region on many projects.
+   * Only non-empty fields are sent. Archived rows should be filtered by the caller.
+   */
+  bulkSetCurrencyRegion: async (
+    ids: string[],
+    patch: { currency?: string; region?: string },
+  ) => {
+    const data: UpdateProjectData = {};
+    if (patch.currency != null && patch.currency !== '') {
+      data.currency = patch.currency;
+    }
+    if (patch.region != null && patch.region !== '') {
+      data.region = patch.region;
+    }
+    if (!Object.keys(data).length) {
+      return { ok: [] as string[], failed: [] as Array<{ id: string; error: string }> };
+    }
+    const results = await Promise.allSettled(
+      ids.map((id) => projectsApi.update(id, data)),
     );
     return summarizeBulk(ids, results);
   },

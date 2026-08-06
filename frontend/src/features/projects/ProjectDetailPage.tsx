@@ -25,6 +25,7 @@ import {
   RefreshCw,
   Plus,
   ExternalLink,
+  ArrowRight,
   Pencil,
   Save,
   LayoutDashboard,
@@ -715,12 +716,15 @@ function SummaryCard({
   icon,
   variant = 'default',
   subtitle,
+  onClick,
 }: {
   label: string;
   value: string;
   icon: React.ReactNode;
   variant?: 'default' | 'success' | 'blue';
   subtitle?: string;
+  /** When set, card is a button that navigates / runs an action (e.g. open BOQ). */
+  onClick?: () => void;
 }) {
   const bgMap = {
     default: 'bg-surface-secondary text-content-tertiary',
@@ -728,28 +732,41 @@ function SummaryCard({
     blue: 'bg-oe-blue-subtle text-oe-blue-text',
   };
 
-  return (
-    <div className="flex-1 min-w-[180px] rounded-xl border border-border-light bg-surface-elevated/90 p-4 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-2xs font-medium text-content-tertiary uppercase tracking-wide truncate">
-            {label}
-          </p>
-          <p className="mt-0.5 text-xl font-bold text-content-primary tabular-nums leading-tight">
-            {value}
-          </p>
-          {subtitle && (
-            <p className="text-2xs text-content-secondary tabular-nums truncate">{subtitle}</p>
-          )}
-        </div>
-        <div
-          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${bgMap[variant]}`}
-        >
-          {icon}
-        </div>
+  const className = clsx(
+    'flex-1 min-w-[180px] rounded-xl border border-border-light bg-surface-elevated/90 p-4 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm text-left',
+    onClick && 'cursor-pointer hover:border-oe-blue/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40',
+  );
+
+  const body = (
+    <div className="flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-2xs font-medium text-content-tertiary uppercase tracking-wide truncate">
+          {label}
+        </p>
+        <p className="mt-0.5 text-xl font-bold text-content-primary tabular-nums leading-tight">
+          {value}
+        </p>
+        {subtitle && (
+          <p className="text-2xs text-content-secondary tabular-nums truncate">{subtitle}</p>
+        )}
+      </div>
+      <div
+        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${bgMap[variant]}`}
+      >
+        {icon}
       </div>
     </div>
   );
+
+  if (onClick) {
+    return (
+      <button type="button" className={className} onClick={onClick}>
+        {body}
+      </button>
+    );
+  }
+
+  return <div className={className}>{body}</div>;
 }
 
 /**
@@ -2047,6 +2064,7 @@ export function ProjectDetailPage() {
               subtitle={
                 stats.unavailable || stats.partial ? t('common.load_failed') : costPerM2Str
               }
+              onClick={() => navigate(`/projects/${projectId}/boq`)}
             />
           );
         })()}
@@ -2054,12 +2072,21 @@ export function ProjectDetailPage() {
           label={t('boq.title')}
           value={stats.unavailable ? '\u2014' : String(stats.boqCount)}
           icon={<Table2 size={20} strokeWidth={1.75} />}
+          subtitle={t('projects.open_boq_list', {
+            defaultValue: '点击打开工程量清单',
+          })}
+          onClick={() => navigate(`/projects/${projectId}/boq`)}
         />
         <SummaryCard
           label={t('projects.positions')}
           value={stats.unavailable ? '\u2014' : String(stats.totalPositions)}
           icon={<Layers size={20} strokeWidth={1.75} />}
           subtitle={stats.partial ? t('common.load_failed') : undefined}
+          onClick={() => {
+            const first = boqs?.[0];
+            if (first) navigate(`/boq/${first.id}`);
+            else navigate(`/projects/${projectId}/boq`);
+          }}
         />
         <SummaryCard
           label={t('validation.score')}
@@ -2614,6 +2641,18 @@ export function ProjectDetailPage() {
                   </div>
                   <div className="space-y-2.5">
                     <Button
+                      variant="primary"
+                      size="md"
+                      className="w-full justify-start"
+                      icon={<Table2 size={14} />}
+                      onClick={() => navigate(`/projects/${projectId}/boq`)}
+                      data-testid="project-open-boq-module"
+                    >
+                      {t('projects.open_boq_module', {
+                        defaultValue: '工程量清单',
+                      })}
+                    </Button>
+                    <Button
                       variant="secondary"
                       size="md"
                       className="w-full justify-start"
@@ -2773,6 +2812,16 @@ export function ProjectDetailPage() {
               action={
                 <div className="flex items-center gap-2">
                   <Button
+                    variant="secondary"
+                    size="sm"
+                    icon={<ExternalLink size={14} />}
+                    onClick={() => navigate(`/projects/${projectId}/boq`)}
+                  >
+                    {t('projects.open_boq_list', {
+                      defaultValue: '打开清单列表',
+                    })}
+                  </Button>
+                  <Button
                     variant="primary"
                     size="sm"
                     icon={<Table2 size={14} />}
@@ -2872,6 +2921,15 @@ export function ProjectDetailPage() {
                           }}
                         >
                           {t('boq.import_file', { defaultValue: 'Import File' })}
+                        </Button>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          icon={<ArrowRight size={14} />}
+                          onClick={() => navigate(`/boq/${boq.id}`)}
+                          data-testid="project-open-boq-row"
+                        >
+                          {t('common.open', { defaultValue: '打开' })}
                         </Button>
                       </div>
                     </div>

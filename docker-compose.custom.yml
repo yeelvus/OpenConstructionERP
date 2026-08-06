@@ -1,0 +1,86 @@
+# Custom fork stack: your local code + data migrate path.
+#
+# Prerequisites:
+#   1. Colima/Docker running with amd64 support (Rosetta)
+#   2. frontend/dist built on host:  cd frontend && npm run build
+#   3. .env with POSTGRES_PASSWORD + JWT_SECRET
+#
+#   export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
+#   export DOCKER_DEFAULT_PLATFORM=linux/amd64
+#   docker compose -f docker-compose.custom.yml up -d --build
+#
+# App: http://localhost:8080
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: oe
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
+      POSTGRES_DB: openestimate
+    volumes:
+      - oe_custom_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oe -d openestimate"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+
+  app:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.custom-from-host
+      platforms:
+        - linux/amd64
+    image: oe-custom:local
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${OE_BIND:-0.0.0.0}:${OE_PORT:-8080}:8080"
+    environment:
+      OE_DB_HOST: postgres
+      OE_DB_PORT: "5432"
+      OE_DB_USER: oe
+      OE_DB_NAME: openestimate
+      OE_DB_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
+      DATABASE_URL: "postgresql+asyncpg://oe:${POSTGRES_PASSWORD}@postgres:5432/openestimate"
+      DATABASE_SYNC_URL: "postgresql://oe:${POSTGRES_PASSWORD}@postgres:5432/openestimate"
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set}"
+      SERVE_FRONTEND: "true"
+      OE_DATA_DIR: /data
+      ALLOWED_ORIGINS: "${OE_ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}"
+      APP_ENV: development
+      APP_DEBUG: "false"
+      VECTOR_BACKEND: lancedb
+      # Keep demo login available after data restore if needed
+      SEED_DEMO: "${SEED_DEMO:-false}"
+      # Host THCC folders are bind-mounted at /host/thcc (see volumes).
+      # Defaults match the standard 邯郸中材 desktop layout.
+      THCC_PAYMENTS_ROOT: "${THCC_PAYMENTS_ROOT:-/host/thcc/01成本统计/12-财务数据💰/A_财务付款数据/B_财务付款_std}"
+      THCC_CONTRACTS_ROOT: "${THCC_CONTRACTS_ROOT:-/host/thcc/5_合同管理📑}"
+    volumes:
+      - oe_custom_data:/data
+      # Mac Desktop 邯郸中材 → container (read-only). Override host side with:
+      #   THCC_HOST_ROOT=/path/to/邯郸中材 docker compose -f docker-compose.custom.yml up -d
+      - type: bind
+        source: ${THCC_HOST_ROOT:-/Users/wyattsun/Desktop/邯郸中材}
+        target: /host/thcc
+        read_only: true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+volumes:
+  oe_custom_pg:
+    driver: local
+  oe_custom_data:
+    driver: local

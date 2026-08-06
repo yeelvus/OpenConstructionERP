@@ -34,8 +34,10 @@ import { Card, CardHeader, CardContent, Button, Badge, EmptyState, Skeleton, Bre
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { PlanningCrossLinks } from '@/features/schedule/PlanningCrossLinks';
 import { apiGet, apiPost, apiPatch } from '@/shared/lib/api';
+import { normalizeListResponse } from '@/shared/lib/apiHelpers';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { projectsApi, type Project as OeProject } from '@/features/projects/api';
 import {
   costModelApi,
   type SCurvePoint,
@@ -59,6 +61,53 @@ interface Project {
   description: string;
   classification_standard: string;
   currency: string;
+  /** THCC / portfolio lifecycle label, e.g. A_在建项目 · D_已完工 */
+  phase?: string | null;
+  /** Building type, e.g. Industrial / Residential */
+  project_type?: string | null;
+  project_code?: string | null;
+  status?: string;
+}
+
+/** Coarse portfolio category derived from free-text ``phase`` (THCC-friendly). */
+type ProjectCategoryKey = 'all' | 'active' | 'closing' | 'done' | 'unclassified' | 'other';
+
+function projectCategoryKey(phase: string | null | undefined): Exclude<ProjectCategoryKey, 'all'> {
+  const p = (phase || '').trim();
+  if (!p) return 'unclassified';
+  // AS_ 收尾 before bare A_ 在建
+  if (/^AS\b/i.test(p) || p.includes('收尾') || /closing|closeout/i.test(p)) return 'closing';
+  if (
+    /^A[_-]/i.test(p) ||
+    p.includes('在建') ||
+    p.includes('在施') ||
+    /active|construction|execution/i.test(p)
+  ) {
+    return 'active';
+  }
+  if (
+    /^D\b/i.test(p) ||
+    p.includes('完工') ||
+    p.includes('竣工') ||
+    /done|complete|handover|closed/i.test(p)
+  ) {
+    return 'done';
+  }
+  return 'other';
+}
+
+function projectFromListItem(p: OeProject): Project {
+  return {
+    id: p.id,
+    name: p.name,
+    description: p.description || '',
+    classification_standard: p.classification_standard || '',
+    currency: p.currency || '',
+    phase: p.phase ?? null,
+    project_type: p.project_type ?? null,
+    project_code: p.project_code ?? null,
+    status: p.status,
+  };
 }
 
 interface BOQ {
@@ -2614,7 +2663,27 @@ const ProjectCard = memo(function ProjectCard({
   project: Project;
   onSelect: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const handleClick = useCallback(() => onSelect(project.id), [onSelect, project.id]);
+  const cat = projectCategoryKey(project.phase);
+  const catLabel =
+    cat === 'active'
+      ? t('costmodel.filter_cat_active', { defaultValue: '在建' })
+      : cat === 'closing'
+        ? t('costmodel.filter_cat_closing', { defaultValue: '收尾' })
+        : cat === 'done'
+          ? t('costmodel.filter_cat_done', { defaultValue: '完工' })
+          : cat === 'unclassified'
+            ? t('costmodel.filter_cat_unclassified', { defaultValue: '未分类' })
+            : t('costmodel.filter_cat_other', { defaultValue: '其他' });
+  const catVariant =
+    cat === 'active'
+      ? 'blue'
+      : cat === 'closing'
+        ? 'warning'
+        : cat === 'done'
+          ? 'success'
+          : 'neutral';
   return (
     <Card
       hoverable
@@ -2630,17 +2699,29 @@ const ProjectCard = memo(function ProjectCard({
           <h2 className="text-sm font-semibold text-content-primary truncate">
             {project.name}
           </h2>
-          {project.description && (
-            <p className="mt-0.5 text-xs text-content-secondary truncate">
-              {project.description}
-            </p>
-          )}
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-content-secondary">
+            {project.project_code ? (
+              <span className="font-mono text-2xs">{project.project_code}</span>
+            ) : null}
+            {project.phase ? (
+              <span className="truncate" title={project.phase}>
+                {project.phase}
+              </span>
+            ) : project.description ? (
+              <span className="truncate">{project.description}</span>
+            ) : null}
+          </div>
         </div>
+        <Badge variant={catVariant} size="sm">
+          {catLabel}
+        </Badge>
+        {project.project_type ? (
+          <Badge variant="neutral" size="sm">
+            {project.project_type}
+          </Badge>
+        ) : null}
         <Badge variant="blue" size="sm">
           {project.currency || 'EUR'}
-        </Badge>
-        <Badge variant="neutral" size="sm">
-          {project.classification_standard === 'din276' ? 'DIN 276' : project.classification_standard?.toUpperCase() || '-'}
         </Badge>
         <ChevronRight size={16} className="shrink-0 text-content-tertiary" />
       </div>
@@ -2755,13 +2836,70 @@ export function CostModelPage() {
   // The user can explicitly return to the picker; once they do we stop
   // auto-jumping to the active project for the rest of the visit.
   const [showPicker, setShowPicker] = useState(false);
+  /** Coarse 项目类别 filter on the portfolio picker. */
+  const [categoryFilter, setCategoryFilter] = useState<ProjectCategoryKey>('all');
+  /** Exact free-text phase value (optional second-level filter). */
+  const [phaseFilter, setPhaseFilter] = useState<string>('');
+  /** Building type (project_type) filter. */
+  const [typeFilter, setTypeFilter] = useState<string>('');
+  const [searchQ, setSearchQ] = useState('');
   const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
 
   const { data: projects, isLoading } = useQuery({
-    queryKey: ['projects'],
-    queryFn: () => apiGet<Project[]>('/v1/projects/'),
+    queryKey: ['projects', 'costmodel-picker'],
+    queryFn: async () => {
+      const raw = await projectsApi.list();
+      return normalizeListResponse(raw).map(projectFromListItem);
+    },
     staleTime: 5 * 60_000,
   });
+
+  const categoryOptions = useMemo(() => {
+    const counts: Record<Exclude<ProjectCategoryKey, 'all'>, number> = {
+      active: 0,
+      closing: 0,
+      done: 0,
+      unclassified: 0,
+      other: 0,
+    };
+    for (const p of projects ?? []) {
+      counts[projectCategoryKey(p.phase)] += 1;
+    }
+    return counts;
+  }, [projects]);
+
+  const phaseOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of projects ?? []) {
+      if (p.phase?.trim()) set.add(p.phase.trim());
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh'));
+  }, [projects]);
+
+  const typeOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of projects ?? []) {
+      if (p.project_type?.trim()) set.add(p.project_type.trim());
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [projects]);
+
+  const filteredProjects = useMemo(() => {
+    const list = projects ?? [];
+    const q = searchQ.trim().toLowerCase();
+    return list.filter((p) => {
+      if (categoryFilter !== 'all' && projectCategoryKey(p.phase) !== categoryFilter) {
+        return false;
+      }
+      if (phaseFilter && (p.phase || '').trim() !== phaseFilter) return false;
+      if (typeFilter && (p.project_type || '').trim() !== typeFilter) return false;
+      if (q) {
+        const hay = `${p.name} ${p.project_code || ''} ${p.phase || ''} ${p.description || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [projects, categoryFilter, phaseFilter, typeFilter, searchQ]);
 
   // Open straight into a project rather than forcing a second pick: an explicit
   // selection wins, otherwise default to the globally active project when it is
@@ -2986,11 +3124,20 @@ export function CostModelPage() {
             <span className="text-xs font-medium text-content-primary">
               {t('costmodel.scope_all_projects', {
                 defaultValue: 'Viewing all projects ({{count}})',
-                count: projects.length,
+                count: filteredProjects.length,
               })}
             </span>
             <span className="text-2xs text-content-secondary">
-              {t('costmodel.scope_all_hint', { defaultValue: 'Select a project below to drill into its cost model.' })}
+              {t('costmodel.scope_all_hint', {
+                defaultValue: 'Select a project below to drill into its cost model.',
+              })}
+              {filteredProjects.length !== projects.length
+                ? ` · ${t('costmodel.filter_of_total', {
+                    defaultValue: '{{shown}} / {{total}}',
+                    shown: filteredProjects.length,
+                    total: projects.length,
+                  })}`
+                : null}
             </span>
           </div>
 
@@ -3006,18 +3153,179 @@ export function CostModelPage() {
             ))}
           </div>
 
+          {/* ── 项目类别 / phase / type filters ─────────────────────────── */}
+          <div className="rounded-xl border border-border-light bg-surface-primary p-3 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-2xs font-semibold uppercase tracking-wider text-content-tertiary">
+                {t('costmodel.filter_category', { defaultValue: '项目类别' })}
+              </span>
+              {(
+                [
+                  {
+                    key: 'all' as const,
+                    label: t('costmodel.filter_cat_all', { defaultValue: '全部' }),
+                    count: projects.length,
+                  },
+                  {
+                    key: 'active' as const,
+                    label: t('costmodel.filter_cat_active', { defaultValue: '在建' }),
+                    count: categoryOptions.active,
+                  },
+                  {
+                    key: 'closing' as const,
+                    label: t('costmodel.filter_cat_closing', { defaultValue: '收尾' }),
+                    count: categoryOptions.closing,
+                  },
+                  {
+                    key: 'done' as const,
+                    label: t('costmodel.filter_cat_done', { defaultValue: '完工' }),
+                    count: categoryOptions.done,
+                  },
+                  {
+                    key: 'unclassified' as const,
+                    label: t('costmodel.filter_cat_unclassified', { defaultValue: '未分类' }),
+                    count: categoryOptions.unclassified,
+                  },
+                  ...(categoryOptions.other > 0
+                    ? [
+                        {
+                          key: 'other' as const,
+                          label: t('costmodel.filter_cat_other', { defaultValue: '其他' }),
+                          count: categoryOptions.other,
+                        },
+                      ]
+                    : []),
+                ] as const
+              )
+                .filter((opt) => opt.key === 'all' || opt.count > 0)
+                .map((opt) => {
+                  const active = categoryFilter === opt.key;
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => {
+                        setCategoryFilter(opt.key);
+                        // coarse chip clears fine phase when switching bucket
+                        if (opt.key !== 'all') setPhaseFilter('');
+                      }}
+                      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                        active
+                          ? 'border-oe-blue bg-oe-blue text-white shadow-sm'
+                          : 'border-border bg-surface-secondary text-content-secondary hover:border-oe-blue/40 hover:text-content-primary'
+                      }`}
+                      aria-pressed={active}
+                    >
+                      {opt.label}
+                      <span
+                        className={`tabular-nums text-2xs ${
+                          active ? 'text-white/80' : 'text-content-tertiary'
+                        }`}
+                      >
+                        {opt.count}
+                      </span>
+                    </button>
+                  );
+                })}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="search"
+                value={searchQ}
+                onChange={(e) => setSearchQ(e.target.value)}
+                placeholder={t('costmodel.filter_search', {
+                  defaultValue: '搜索项目名称 / 编码…',
+                })}
+                className="h-9 min-w-[200px] flex-1 rounded-lg border border-border bg-surface-primary px-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30"
+              />
+              {phaseOptions.length > 0 ? (
+                <select
+                  value={phaseFilter}
+                  onChange={(e) => {
+                    setPhaseFilter(e.target.value);
+                    if (e.target.value) setCategoryFilter('all');
+                  }}
+                  className="h-9 max-w-[280px] rounded-lg border border-border bg-surface-primary px-2 text-sm"
+                  aria-label={t('costmodel.filter_phase', { defaultValue: '阶段明细' })}
+                >
+                  <option value="">
+                    {t('costmodel.filter_phase_all', { defaultValue: '全部阶段明细' })}
+                  </option>
+                  {phaseOptions.map((ph) => (
+                    <option key={ph} value={ph}>
+                      {ph}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              {typeOptions.length > 1 ? (
+                <select
+                  value={typeFilter}
+                  onChange={(e) => setTypeFilter(e.target.value)}
+                  className="h-9 rounded-lg border border-border bg-surface-primary px-2 text-sm"
+                  aria-label={t('costmodel.filter_type', { defaultValue: '建筑类型' })}
+                >
+                  <option value="">
+                    {t('costmodel.filter_type_all', { defaultValue: '全部建筑类型' })}
+                  </option>
+                  {typeOptions.map((ty) => (
+                    <option key={ty} value={ty}>
+                      {ty}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              {(categoryFilter !== 'all' || phaseFilter || typeFilter || searchQ) && (
+                <button
+                  type="button"
+                  className="h-9 rounded-lg px-3 text-xs font-medium text-oe-blue-text hover:bg-oe-blue/10"
+                  onClick={() => {
+                    setCategoryFilter('all');
+                    setPhaseFilter('');
+                    setTypeFilter('');
+                    setSearchQ('');
+                  }}
+                >
+                  {t('common.clear_filters', { defaultValue: '清除筛选' })}
+                </button>
+              )}
+            </div>
+          </div>
+
           <h2 className="mb-3 text-sm font-semibold text-content-secondary uppercase tracking-wider">
             {t('costmodel.select_project', { defaultValue: 'Select a project' })}
           </h2>
-          <div className="space-y-3">
-            {projects.map((project) => (
-              <ProjectCard
-                key={project.id}
-                project={project}
-                onSelect={setSelectedProjectId}
-              />
-            ))}
-          </div>
+          {filteredProjects.length === 0 ? (
+            <EmptyState
+              icon={<DollarSign size={28} strokeWidth={1.5} />}
+              title={t('costmodel.filter_empty', {
+                defaultValue: '没有符合筛选条件的项目',
+              })}
+              description={t('costmodel.filter_empty_hint', {
+                defaultValue: '尝试切换项目类别，或清除筛选条件。',
+              })}
+              action={{
+                label: t('common.clear_filters', { defaultValue: '清除筛选' }),
+                onClick: () => {
+                  setCategoryFilter('all');
+                  setPhaseFilter('');
+                  setTypeFilter('');
+                  setSearchQ('');
+                },
+              }}
+            />
+          ) : (
+            <div className="space-y-3">
+              {filteredProjects.map((project) => (
+                <ProjectCard
+                  key={project.id}
+                  project={project}
+                  onSelect={setSelectedProjectId}
+                />
+              ))}
+            </div>
+          )}
         </>
       )}
     </div>

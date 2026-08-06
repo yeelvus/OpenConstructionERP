@@ -1,7 +1,11 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 import { describe, it, expect } from 'vitest';
-import { isProjectFilterActive, buildStatusFilterOptions } from '../ProjectsPage';
+import {
+  isProjectFilterActive,
+  buildStatusFilterOptions,
+  normalizeProjectSort,
+} from '../ProjectsPage';
 import { CURATED_PROJECT_STATUSES } from '../ProjectStatusBadge';
 
 /**
@@ -16,6 +20,31 @@ import { CURATED_PROJECT_STATUSES } from '../ProjectStatusBadge';
  * heavy map/query dependencies while still pinning the exact behaviour that
  * regressed.
  */
+describe('normalizeProjectSort', () => {
+  it('keeps structured field+dir sorts', () => {
+    expect(normalizeProjectSort({ field: 'code', dir: 'asc' })).toEqual({
+      field: 'code',
+      dir: 'asc',
+    });
+    expect(normalizeProjectSort({ field: 'status', dir: 'desc' })).toEqual({
+      field: 'status',
+      dir: 'desc',
+    });
+  });
+
+  it('maps legacy sort tokens', () => {
+    expect(normalizeProjectSort('newest')).toEqual({ field: 'created', dir: 'desc' });
+    expect(normalizeProjectSort('oldest')).toEqual({ field: 'created', dir: 'asc' });
+    expect(normalizeProjectSort('name_asc')).toEqual({ field: 'name', dir: 'asc' });
+    expect(normalizeProjectSort('value')).toEqual({ field: 'value', dir: 'desc' });
+  });
+
+  it('falls back to created desc for unknown input', () => {
+    expect(normalizeProjectSort(undefined)).toEqual({ field: 'created', dir: 'desc' });
+    expect(normalizeProjectSort('nope')).toEqual({ field: 'created', dir: 'desc' });
+  });
+});
+
 describe('isProjectFilterActive (#284 toolbar visibility)', () => {
   it('is false for the default view (no search, status=all, region=all)', () => {
     expect(isProjectFilterActive('', 'all', 'all')).toBe(false);

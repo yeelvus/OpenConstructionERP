@@ -1,0 +1,55 @@
+# OpenConstructionERP — custom image using a host-built frontend dist.
+#
+# Why: Apple Silicon + linux/amd64 under Colima cannot reliably run the
+# full Node 8 GB Vite build inside the VM. Build frontend on the host:
+#
+#   cd frontend && NODE_OPTIONS=--max-old-space-size=6144 npm run build
+#
+# then:
+#
+#   docker build --platform linux/amd64 \
+#     -f deploy/docker/Dockerfile.custom-from-host \
+#     -t oe-custom:local .
+#
+# Expects: frontend/dist/ already present (Vite output).
+
+FROM python:3.12-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq-dev curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r oe && useradd -r -g oe -d /app -s /sbin/nologin oe
+
+WORKDIR /app
+
+COPY backend/ backend/
+
+# Host-built SPA (staged as .docker_frontend_dist — see .dockerignore notes).
+# Match official Dockerfile.unified: hatch force-includes into the wheel from
+# backend/app/_frontend_dist only (do not also place under frontend/dist).
+RUN mkdir -p backend/app/_frontend_dist
+COPY .docker_frontend_dist/ backend/app/_frontend_dist/
+
+RUN pip install --no-cache-dir "./backend[server]" && \
+    pip install --no-cache-dir "ezdxf>=0.18.0" || true
+
+COPY data/ data/
+
+COPY deploy/docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod 0755 /app/entrypoint.sh
+
+RUN mkdir -p /data && chown oe:oe /data \
+    && chown -R oe:oe /app
+
+USER oe
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    SERVE_FRONTEND=true \
+    VECTOR_BACKEND=lancedb \
+    OE_DATA_DIR=/data \
+    APP_ENV=development
+
+EXPOSE 8080
+ENTRYPOINT ["/app/entrypoint.sh"]

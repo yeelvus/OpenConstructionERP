@@ -408,6 +408,14 @@ const navGroups: NavGroup[] = [
       { labelKey: 'nav.resource_leveling', to: '/portfolio/leveling', icon: Scale, advancedOnly: true },
       { labelKey: 'nav.risk_register', to: '/risks', icon: ShieldAlert, advancedOnly: true },
       { labelKey: 'nav.cvr', to: '/cvr', icon: Scale, advancedOnly: true },
+      // THCC custom: portfolio cost cockpit (snapshot + labour + monthly import)
+      {
+        labelKey: 'nav.thcc_cost_board',
+        to: '/cost-board',
+        icon: BarChart3,
+        advancedOnly: true,
+        defaultLabel: '综合成本看板',
+      },
     ],
   },
   // ── 9. COMMERCIAL ──────────────────────────────────────────────────
@@ -1033,6 +1041,7 @@ const ROUTE_BACKEND_MODULE: Record<string, string> = {
   // v10.6.0 modules
   '/prefab': 'oe_prefab',
   '/cvr': 'oe_cvr',
+  '/cost-board': 'oe_thcc_cost_board',
   '/site-logistics': 'oe_site_logistics',
   '/commissioning': 'oe_commissioning',
   '/esg': 'oe_esg',

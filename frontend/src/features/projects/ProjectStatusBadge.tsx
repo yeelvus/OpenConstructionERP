@@ -46,15 +46,19 @@ const STATUS_VARIANT: Record<CuratedProjectStatus, BadgeVariant> = {
   archived: 'neutral',
 };
 
+/**
+ * Chinese display labels (storage tokens stay English).
+ * i18n keys ``projects.status.*`` can override when locale packs are filled.
+ */
 const STATUS_LABEL_DEFAULT: Record<CuratedProjectStatus, string> = {
-  active: 'In progress',
-  closing: 'Closing out',
-  settling: 'Settling',
-  settled: 'Settled',
-  on_hold: 'On hold',
-  finished: 'Finished',
-  cancelled: 'Cancelled',
-  archived: 'Archived',
+  active: '在建',
+  closing: '收尾',
+  settling: '结算中',
+  settled: '已结算完成',
+  on_hold: '暂停',
+  finished: '已完工',
+  cancelled: '已取消',
+  archived: '已归档',
 };
 
 /** Title-case an unknown status token (e.g. "in_review" -> "In review"). */

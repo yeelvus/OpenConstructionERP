@@ -326,15 +326,21 @@ async def export_projects_excel(
     summary="Bulk-import projects from Excel/CSV",
     description="Upload .xlsx or .csv with one project per row. Column headers "
     "accept English or Chinese aliases (名称, 项目编号, 纬度, …). "
-    "Creates only — rows with duplicate project_code are reported as errors. "
-    "Partial success: valid rows are committed even if later rows fail.",
+    "Skips rows whose project_code or name already exists (or repeats earlier "
+    "in the same file). Partial success: valid rows are committed even if "
+    "later rows fail.",
 )
 async def import_projects_excel(
     user_id: CurrentUserId,
+    payload: CurrentUserPayload,
     file: UploadFile = File(..., description="Excel (.xlsx) or CSV (.csv)"),
     service: ProjectService = Depends(_get_service),
 ) -> dict:
     from app.core.upload_guards import reject_if_xlsx_bomb
+    from app.modules.projects.dedupe import (
+        normalize_project_code,
+        normalize_project_name,
+    )
     from app.modules.projects.excel_io import (
         MAX_IMPORT_ROWS,
         parse_rows_from_csv,
@@ -387,8 +393,25 @@ async def import_projects_excel(
 
     imported = 0
     skipped = 0
+    skipped_duplicate = 0
     errors: list[dict] = []
     owner = uuid.UUID(user_id)
+    is_admin = payload.get("role") == "admin"
+
+    # Preload existing codes / names so re-import does not create clones.
+    existing = await service.repo.list_all_for_dedupe(is_admin=is_admin, owner_id=owner)
+    seen_codes: set[str] = set()
+    seen_names: set[str] = set()
+    for p in existing:
+        code = normalize_project_code(p.project_code)
+        if code:
+            seen_codes.add(code)
+        # Match names among non-archived only so a re-import can revive
+        # after full archive of a name — codes always unique across all.
+        if (p.status or "") != "archived":
+            nkey = normalize_project_name(p.name)
+            if nkey:
+                seen_names.add(nkey)
 
     for row_idx, row in enumerate(rows, start=2):
         # Skip pure example placeholder rows the user left unchanged
@@ -399,10 +422,44 @@ async def import_projects_excel(
         if name.startswith("Example Site") or name.startswith("示例项目"):
             skipped += 1
             continue
+
+        code_raw = str(row.get("project_code") or "").strip()
+        code_key = normalize_project_code(code_raw)
+        name_key = normalize_project_name(name)
+
+        if code_key and code_key in seen_codes:
+            skipped_duplicate += 1
+            skipped += 1
+            errors.append(
+                {
+                    "row": row_idx,
+                    "error": f"duplicate project_code {code_raw!r} (skipped)",
+                    "name": name,
+                    "action": "skipped_duplicate",
+                }
+            )
+            continue
+        if name_key and name_key in seen_names:
+            skipped_duplicate += 1
+            skipped += 1
+            errors.append(
+                {
+                    "row": row_idx,
+                    "error": f"duplicate project name {name!r} (skipped)",
+                    "name": name,
+                    "action": "skipped_duplicate",
+                }
+            )
+            continue
+
         try:
             data = row_to_project_create(row)
             await service.create_project(data, owner)
             imported += 1
+            if code_key:
+                seen_codes.add(code_key)
+            if name_key:
+                seen_names.add(name_key)
         except ValidationError as exc:
             msg = "; ".join(
                 f"{'.'.join(str(x) for x in e.get('loc', ()))}: {e.get('msg')}"
@@ -411,6 +468,14 @@ async def import_projects_excel(
             errors.append({"row": row_idx, "error": msg or "validation failed", "name": name})
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            # Treat code conflict as skip-duplicate rather than hard error noise
+            if exc.status_code == 409:
+                skipped_duplicate += 1
+                skipped += 1
+                if code_key:
+                    seen_codes.add(code_key)
+                if name_key:
+                    seen_names.add(name_key)
             errors.append({"row": row_idx, "error": detail, "name": name})
         except ValueError as exc:
             errors.append({"row": row_idx, "error": str(exc), "name": name})
@@ -427,9 +492,85 @@ async def import_projects_excel(
     return {
         "imported": imported,
         "skipped": skipped,
+        "skipped_duplicate": skipped_duplicate,
         "errors": errors,
         "total_rows": len(rows),
     }
+
+
+@router.get(
+    "/dedupe/",
+    summary="Preview project duplicates (by code / name)",
+    description="Groups projects that share a project_code or the same "
+    "normalized name. Dry-run only — nothing is archived.",
+)
+async def preview_project_dedupe(
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    service: ProjectService = Depends(_get_service),
+) -> dict:
+    return await service.preview_dedupe(
+        owner_id=uuid.UUID(user_id),
+        is_admin=payload.get("role") == "admin",
+    )
+
+
+@router.post(
+    "/dedupe/archive/",
+    summary="Archive duplicate projects (keep one per code/name)",
+    description="For each duplicate group, keep the newest non-archived "
+    "project and soft-delete (archive) the rest. Safe to re-run.",
+)
+async def archive_project_duplicates(
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    service: ProjectService = Depends(_get_service),
+) -> dict:
+    return await service.archive_duplicates(
+        owner_id=uuid.UUID(user_id),
+        is_admin=payload.get("role") == "admin",
+        changed_by=user_id,
+    )
+
+
+# ── Permanent delete (hard) ───────────────────────────────────────────────
+
+
+@router.delete(
+    "/{project_id}/permanent/",
+    summary="Permanently delete an archived project",
+    description=(
+        "Hard-delete a project that is already archived. Cascades / sweeps "
+        "project-scoped child rows. Active (non-archived) projects return 400 — "
+        "archive first. Irreversible."
+    ),
+)
+@router.delete(
+    "/{project_id}/permanent",
+    include_in_schema=False,
+)
+async def hard_delete_project(
+    project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    service: ProjectService = Depends(_get_service),
+) -> dict:
+    """Permanently remove an archived project (owner or admin)."""
+    try:
+        return await service.hard_delete_project(
+            project_id,
+            owner_id=uuid.UUID(user_id),
+            is_admin=payload.get("role") == "admin",
+            changed_by=user_id,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Hard-delete failed for project %s", project_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to permanently delete project. Check server logs.",
+        ) from exc
 
 
 # ── Get ───────────────────────────────────────────────────────────────────
@@ -1968,18 +2109,21 @@ async def dashboard_cards(
     boq_values: dict[str, float] = {}
     boq_counts: dict[str, int] = {}
     position_counts: dict[str, int] = {}
+    base_by_project: dict[str, str] = {str(p.id): (p.currency or "") for p in all_projects}
+    fx_by_project: dict[str, dict[str, str]] = {}
+    try:
+        from app.modules.boq.service import _project_fx_map as _pfx
+
+        fx_by_project = {str(p.id): _pfx(p) for p in all_projects}
+    except Exception:
+        fx_by_project = {}
+
     try:
         from app.modules.boq.models import BOQ, Position
         from app.modules.boq.service import (
             _position_currency,
             _position_total_in_base,
-            _project_fx_map,
         )
-
-        # Pre-compute each project's FX map + base currency so per-position
-        # conversion is a dict lookup rather than a per-row recompute.
-        fx_by_project: dict[str, dict[str, str]] = {str(p.id): _project_fx_map(p) for p in all_projects}
-        base_by_project: dict[str, str] = {str(p.id): (p.currency or "") for p in all_projects}
 
         # BOQ count per project
         boq_count_rows = (
@@ -2128,6 +2272,102 @@ async def dashboard_cards(
     except Exception:
         logger.debug("Dashboard cards: Schedule query failed", exc_info=True)
 
+    # ── Contract register totals (合同管理) per project ──────────────────
+    #
+    # Distinct from Project.contract_value / budget_estimate (manual fields
+    # on the project row). Convert each contract into the project base
+    # currency when metadata.fx or project.fx_rates provides a rate.
+    def _parse_money_str(raw: object) -> float:
+        if raw is None:
+            return 0.0
+        text = str(raw).strip().replace(",", "")
+        if not text:
+            return 0.0
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _contract_amount_in_base(
+        total: object,
+        contract_currency: str | None,
+        project_currency: str,
+        metadata: object,
+        fx_map: dict[str, str] | None,
+    ) -> float:
+        try:
+            amount = float(total or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        if amount == 0:
+            return 0.0
+        cur = (contract_currency or "").strip().upper()
+        base = (project_currency or "").strip().upper()
+        if not cur or not base or cur == base:
+            return amount
+        rate: float | None = None
+        if isinstance(metadata, dict):
+            fx = metadata.get("fx")
+            if isinstance(fx, dict):
+                for key in ("rate", "last_spot_rate"):
+                    raw = fx.get(key)
+                    if raw is not None and str(raw).strip() != "":
+                        try:
+                            rate = float(raw)
+                            break
+                        except (TypeError, ValueError):
+                            pass
+        if rate is None and fx_map:
+            raw = fx_map.get(cur)
+            if raw is not None and str(raw).strip() != "":
+                try:
+                    rate = float(raw)
+                except (TypeError, ValueError):
+                    rate = None
+        if rate is not None and rate > 0:
+            return amount * rate
+        # No FX — keep nominal amount (same as list when currencies match in practice).
+        return amount
+
+    register_total: dict[str, float] = {}
+    register_main: dict[str, float] = {}
+    register_sub: dict[str, float] = {}
+    try:
+        from app.modules.contracts.models import Contract
+
+        # Exclude terminated / cancelled from commercial totals.
+        excluded = {"terminated", "cancelled", "canceled", "void"}
+        c_rows = (
+            await session.execute(
+                select(
+                    Contract.project_id,
+                    Contract.total_value,
+                    Contract.currency,
+                    Contract.counterparty_type,
+                    Contract.status,
+                    Contract.metadata_,
+                ).where(Contract.project_id.in_(project_ids))
+            )
+        ).all()
+        for pid, total_value, ccy, cptype, cstatus, meta in c_rows:
+            if (cstatus or "").lower() in excluded:
+                continue
+            key = str(pid)
+            converted = _contract_amount_in_base(
+                total_value,
+                ccy,
+                base_by_project.get(key, ""),
+                meta,
+                fx_by_project.get(key),
+            )
+            register_total[key] = register_total.get(key, 0.0) + converted
+            if (cptype or "").lower() == "subcontractor":
+                register_sub[key] = register_sub.get(key, 0.0) + converted
+            else:
+                register_main[key] = register_main.get(key, 0.0) + converted
+    except Exception:
+        logger.debug("Dashboard cards: Contracts query failed", exc_info=True)
+
     # ── Assemble response ───────────────────────────────────────────────
     result = []
     for p in all_projects:
@@ -2151,6 +2391,15 @@ async def dashboard_cards(
                 "open_rfis": open_rfis.get(pid, 0),
                 "safety_incidents": safety_incidents.get(pid, 0),
                 "progress_pct": schedule_progress.get(pid, 0.0),
+                "contract_register_value": round(register_total.get(pid, 0.0), 2),
+                "contract_main_value": round(register_main.get(pid, 0.0), 2),
+                "contract_sub_value": round(register_sub.get(pid, 0.0), 2),
+                "project_contract_value": round(
+                    _parse_money_str(getattr(p, "contract_value", None)), 2
+                ),
+                "budget_estimate": round(
+                    _parse_money_str(getattr(p, "budget_estimate", None)), 2
+                ),
             }
         )
 

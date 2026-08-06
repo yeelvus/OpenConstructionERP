@@ -918,6 +918,8 @@ function BudgetsTab({ projectId }: { projectId: string }) {
   const [importPending, setImportPending] = useState(false);
   const [importResult, setImportResult] = useState<BudgetImportResult | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [respBusy, setRespBusy] = useState(false);
+  const [respLastMsg, setRespLastMsg] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   // When set, the budget modal is in edit mode for this existing line.
   const [editing, setEditing] = useState<BudgetLine | null>(null);
@@ -1079,6 +1081,121 @@ function BudgetsTab({ projectId }: { projectId: string }) {
       setImportPending(false);
     }
   };
+
+  /** THCC 责任成本_std → budget lines (current project or all matched). */
+  const runRespCostImport = async (opts: {
+    all?: boolean;
+    dryRun?: boolean;
+  }) => {
+    setRespBusy(true);
+    setRespLastMsg(null);
+    try {
+      const body: Record<string, unknown> = {
+        dry_run: Boolean(opts.dryRun),
+        replace: true,
+        sync_cost_board: true,
+      };
+      if (!opts.all) body.project_id = projectId;
+      const res = await apiPost<{
+        ok: boolean;
+        message?: string;
+        created?: number;
+        updated?: number;
+        deleted?: number;
+        ok_files?: number;
+        fail_files?: number;
+        error?: string;
+      }>('/v1/finance/budgets/thcc-resp-cost/import/', body, { longRunning: true });
+      const msg =
+        res.message ||
+        res.error ||
+        (res.ok ? '责任成本已导入为预算' : '导入失败');
+      setRespLastMsg(msg);
+      addToast({
+        type: res.ok || (res.ok_files ?? 0) > 0 ? 'success' : 'error',
+        title: opts.dryRun
+          ? t('finance.resp_cost_dry_ok', { defaultValue: '责任成本预检完成' })
+          : t('finance.resp_cost_import_ok', { defaultValue: '责任成本已导入为预算' }),
+        message: msg,
+      });
+      if (!opts.dryRun) {
+        queryClient.invalidateQueries({ queryKey: ['finance-budgets', projectId] });
+        queryClient.invalidateQueries({ queryKey: ['finance', 'dashboard', projectId] });
+        queryClient.invalidateQueries({ queryKey: ['thcc-cost-board'] });
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setRespLastMsg(message);
+      addToast({
+        type: 'error',
+        title: t('finance.resp_cost_import_fail', {
+          defaultValue: '责任成本导入失败',
+        }),
+        message,
+      });
+    } finally {
+      setRespBusy(false);
+    }
+  };
+
+  const respCostPanel = (
+    <div className="mb-4 rounded-xl border border-border bg-surface-secondary/40 p-4 space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold text-content-primary">
+            {t('finance.resp_cost_title', {
+              defaultValue: '责任成本批量导入（THCC 责任成本 std）',
+            })}
+          </div>
+          <p className="mt-1 text-xs text-content-secondary font-mono break-all">
+            ~/Desktop/邯郸中材/01成本统计/3.1_责任成本/2_责任成本_std
+          </p>
+          <p className="mt-1 text-xs text-content-secondary">
+            {t('finance.resp_cost_hint', {
+              defaultValue:
+                '将各项目责任成本 Excel 的明细行写入财务预算（WBS=序号，类别=名称）。人民币按汇率 4.9 换算泰铢；可同步更新综合成本看板责任成本。',
+            })}
+          </p>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={respBusy}
+          onClick={() => void runRespCostImport({ dryRun: true })}
+        >
+          {respBusy ? <Loader2 size={14} className="animate-spin mr-1" /> : null}
+          {t('finance.resp_cost_dry_project', { defaultValue: '预检本项目' })}
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={respBusy}
+          onClick={() => void runRespCostImport({})}
+          data-testid="finance-resp-cost-import-project"
+        >
+          {t('finance.resp_cost_import_project', {
+            defaultValue: '导入本项目责任成本',
+          })}
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={respBusy}
+          onClick={() => void runRespCostImport({ all: true })}
+          data-testid="finance-resp-cost-import-all"
+        >
+          {t('finance.resp_cost_import_all', {
+            defaultValue: '批量导入全部匹配项目',
+          })}
+        </Button>
+      </div>
+      {respLastMsg ? (
+        <p className="text-xs text-content-secondary">{respLastMsg}</p>
+      ) : null}
+    </div>
+  );
 
   const BUDGET_CATEGORIES = [
     { key: 'Material', label: t('finance.cat_material', { defaultValue: 'Material' }) },
@@ -1287,6 +1404,7 @@ function BudgetsTab({ projectId }: { projectId: string }) {
   if (!budgets || budgets.length === 0) {
     return (
       <div className="space-y-4">
+        {respCostPanel}
         {/* BOQ tip */}
         <div className="p-4 bg-blue-50 dark:bg-blue-950/30 rounded-lg border border-blue-200 dark:border-blue-800 text-sm flex items-start gap-3">
           <Lightbulb size={18} className="text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
@@ -1361,6 +1479,7 @@ function BudgetsTab({ projectId }: { projectId: string }) {
 
   return (
     <>
+    {respCostPanel}
     {/* Explanatory text + module link */}
     <div className="flex items-start justify-between gap-3 mb-4">
       <p className="text-sm text-content-secondary">
@@ -2961,6 +3080,30 @@ function InvoicesTab({ projectId }: { projectId: string }) {
 
 /* ── Payments Tab ─────────────────────────────────────────────────────── */
 
+interface ThccPaymentFile {
+  filename: string;
+  path: string;
+  project_code: string | null;
+  project_name_hint: string;
+  row_count: number;
+  paid_row_count: number;
+  total_paid: string;
+  project_id: string | null;
+  project_matched: boolean;
+  project_name?: string;
+  currency?: string;
+  error?: string | null;
+}
+
+interface ThccPaymentScan {
+  root: string;
+  exists: boolean;
+  file_count?: number;
+  matched?: number;
+  files: ThccPaymentFile[];
+  error?: string;
+}
+
 function PaymentsTab({
   projectId,
   onGoToInvoices,
@@ -2969,6 +3112,11 @@ function PaymentsTab({
   onGoToInvoices: () => void;
 }) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const uploadRef = useRef<HTMLInputElement>(null);
 
   const {
     data: payments,
@@ -2979,9 +3127,157 @@ function PaymentsTab({
   } = useQuery({
     queryKey: ['finance-payments', projectId],
     queryFn: () =>
-      apiGet<Payment[]>(`/v1/finance/payments/?project_id=${projectId}`),
+      apiGet<Payment[]>(
+        `/v1/finance/payments/?project_id=${projectId}&limit=500&offset=0`,
+      ),
     select: (d): Payment[] => normalizeListResponse(d),
   });
+
+  const {
+    data: thccScan,
+    isFetching: thccScanning,
+    refetch: refetchThccScan,
+    isError: thccScanError,
+  } = useQuery({
+    queryKey: ['finance-thcc-payment-scan'],
+    queryFn: () => apiGet<ThccPaymentScan>('/v1/finance/payments/thcc/scan/'),
+    enabled: importOpen,
+    staleTime: 30_000,
+  });
+
+  const projectFile = useMemo(() => {
+    if (!thccScan?.files?.length) return null;
+    return (
+      thccScan.files.find((f) => f.project_id === projectId) ??
+      null
+    );
+  }, [thccScan, projectId]);
+
+  const runImport = async (opts: {
+    projectOnly?: boolean;
+    dryRun?: boolean;
+    filenames?: string[];
+  }) => {
+    setImportBusy(true);
+    try {
+      const body: Record<string, unknown> = {
+        dry_run: Boolean(opts.dryRun),
+      };
+      if (opts.projectOnly) body.project_id = projectId;
+      if (opts.filenames?.length) body.filenames = opts.filenames;
+      const res = await apiPost<{
+        ok?: boolean;
+        error?: string;
+        summary?: {
+          imported: number;
+          skipped: number;
+          skipped_duplicate: number;
+          error_count: number;
+          files_processed: number;
+        };
+        files?: Array<{ filename: string; imported?: number; status?: string }>;
+      }>('/v1/finance/payments/thcc/import/', body);
+      if (res.error || res.ok === false) {
+        addToast({
+          type: 'error',
+          title: t('finance.thcc_import_fail', {
+            defaultValue: '付款导入失败',
+          }),
+          message: res.error || 'unknown error',
+        });
+        return;
+      }
+      const s = res.summary;
+      addToast({
+        type: 'success',
+        title: opts.dryRun
+          ? t('finance.thcc_dry_run_ok', { defaultValue: '预检完成（未写入）' })
+          : t('finance.thcc_import_ok', { defaultValue: '付款情况已导入' }),
+        message: s
+          ? t('finance.thcc_import_summary', {
+              defaultValue:
+                '新增 {{imported}} · 跳过 {{skipped}}（重复 {{dup}}）· 文件 {{files}} · 错误 {{errors}}',
+              imported: s.imported,
+              skipped: s.skipped,
+              dup: s.skipped_duplicate,
+              files: s.files_processed,
+              errors: s.error_count,
+            })
+          : undefined,
+      });
+      if (!opts.dryRun) {
+        void queryClient.invalidateQueries({ queryKey: ['finance-payments', projectId] });
+        void queryClient.invalidateQueries({ queryKey: ['finance-invoices'] });
+      }
+      void refetchThccScan();
+    } catch (e) {
+      addToast({
+        type: 'error',
+        title: t('finance.thcc_import_fail', {
+          defaultValue: '付款导入失败',
+        }),
+        message: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  const runUpload = async (file: File) => {
+    setImportBusy(true);
+    try {
+      const { getAuthToken, API_BASE } = await import('@/shared/lib/api');
+      const token = getAuthToken();
+      const fd = new FormData();
+      fd.append('file', file);
+      const url = `${API_BASE}/v1/finance/payments/thcc/import-upload/?project_id=${encodeURIComponent(projectId)}`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: fd,
+      });
+      const data = (await resp.json().catch(() => ({}))) as {
+        imported?: number;
+        skipped?: number;
+        skipped_duplicate?: number;
+        error_count?: number;
+        detail?: string;
+      };
+      if (!resp.ok) {
+        throw new Error(
+          typeof data.detail === 'string' ? data.detail : `HTTP ${resp.status}`,
+        );
+      }
+      addToast({
+        type: 'success',
+        title: t('finance.thcc_upload_ok', {
+          defaultValue: '上传导入完成',
+        }),
+        message: t('finance.thcc_import_summary', {
+          defaultValue:
+            '新增 {{imported}} · 跳过 {{skipped}}（重复 {{dup}}）· 错误 {{errors}}',
+          imported: data.imported ?? 0,
+          skipped: data.skipped ?? 0,
+          dup: data.skipped_duplicate ?? 0,
+          errors: data.error_count ?? 0,
+          files: 1,
+        }),
+      });
+      void queryClient.invalidateQueries({ queryKey: ['finance-payments', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['finance-invoices'] });
+    } catch (e) {
+      addToast({
+        type: 'error',
+        title: t('finance.thcc_upload_fail', {
+          defaultValue: '上传导入失败',
+        }),
+        message: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setImportBusy(false);
+      if (uploadRef.current) uploadRef.current.value = '';
+    }
+  };
 
   const paymentTotals = useMemo(() => {
     if (!payments || !payments.length) return null;
@@ -3000,20 +3296,248 @@ function PaymentsTab({
 
   if (isError) return <RecoveryCard error={error} onRetry={() => refetch()} />;
 
+  const importPanel = (
+    <div
+      className="border-b border-border-light bg-surface-secondary/40 px-4 py-3 space-y-3"
+      data-testid="finance-payments-import-panel"
+    >
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-content-primary">
+            {t('finance.thcc_import_title', {
+              defaultValue: '付款情况批量导入（THCC 财务付款 std）',
+            })}
+          </p>
+          <p className="mt-0.5 text-xs text-content-tertiary break-all">
+            {thccScan?.root ||
+              t('finance.thcc_import_path_hint', {
+                defaultValue:
+                  '~/Desktop/邯郸中材/01成本统计/12-财务数据💰/A_财务付款数据/B_财务付款_std',
+              })}
+            {thccScan && !thccScan.exists && (
+              <span className="ml-2 text-semantic-error">
+                {t('finance.thcc_path_missing', {
+                  defaultValue: '（路径不存在）',
+                })}
+              </span>
+            )}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-1.5 shrink-0">
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={thccScanning ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+            disabled={importBusy || thccScanning}
+            onClick={() => void refetchThccScan()}
+          >
+            {t('finance.thcc_rescan', { defaultValue: '重新扫描' })}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={importBusy || !projectFile}
+            onClick={() =>
+              void runImport({
+                projectOnly: true,
+                dryRun: true,
+                filenames: projectFile ? [projectFile.filename] : undefined,
+              })
+            }
+          >
+            {t('finance.thcc_dry_run', { defaultValue: '预检本项目' })}
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            icon={importBusy ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+            disabled={importBusy || !projectFile}
+            onClick={() =>
+              void runImport({
+                projectOnly: true,
+                filenames: projectFile ? [projectFile.filename] : undefined,
+              })
+            }
+            data-testid="finance-thcc-import-project"
+          >
+            {t('finance.thcc_import_project', {
+              defaultValue: '导入本项目',
+            })}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={importBusy}
+            onClick={() => void runImport({ dryRun: false })}
+            data-testid="finance-thcc-import-all"
+          >
+            {t('finance.thcc_import_all', {
+              defaultValue: '导入全部已匹配',
+            })}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<Upload size={14} />}
+            disabled={importBusy}
+            onClick={() => uploadRef.current?.click()}
+          >
+            {t('finance.thcc_upload', { defaultValue: '上传 Excel' })}
+          </Button>
+          <input
+            ref={uploadRef}
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void runUpload(f);
+            }}
+          />
+        </div>
+      </div>
+
+      {projectFile ? (
+        <p className="text-xs text-content-secondary">
+          {t('finance.thcc_project_file', {
+            defaultValue:
+              '匹配文件：{{file}} · 付款行 {{rows}} · 实付合计 {{total}}',
+            file: projectFile.filename,
+            rows: projectFile.paid_row_count,
+            total: projectFile.total_paid,
+          })}
+        </p>
+      ) : thccScan?.exists ? (
+        <p className="text-xs text-semantic-warning">
+          {t('finance.thcc_no_project_file', {
+            defaultValue:
+              '未找到与当前项目编码匹配的 std 文件。可改用「上传 Excel」或检查项目编号是否与文件名一致（如 THCC-2026-004_…）。',
+          })}
+        </p>
+      ) : null}
+
+      {thccScanError && (
+        <p className="text-xs text-semantic-error">
+          {t('finance.thcc_scan_error', {
+            defaultValue: '扫描失败，请确认后端可访问本机目录。',
+          })}
+        </p>
+      )}
+
+      {thccScan?.files && thccScan.files.length > 0 && (
+        <div className="max-h-40 overflow-auto rounded-md border border-border-light bg-surface-elevated text-xs">
+          <table className="w-full">
+            <thead className="bg-surface-secondary/80 text-content-tertiary">
+              <tr>
+                <th className="px-2 py-1.5 text-left font-medium">
+                  {t('common.file', { defaultValue: '文件' })}
+                </th>
+                <th className="px-2 py-1.5 text-left font-medium">
+                  {t('projects.project_code', { defaultValue: '编码' })}
+                </th>
+                <th className="px-2 py-1.5 text-right font-medium">
+                  {t('finance.thcc_rows', { defaultValue: '行数' })}
+                </th>
+                <th className="px-2 py-1.5 text-left font-medium">
+                  {t('common.status', { defaultValue: '状态' })}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {thccScan.files.slice(0, 40).map((f) => (
+                <tr
+                  key={f.filename}
+                  className={clsx(
+                    'border-t border-border-light',
+                    f.project_id === projectId && 'bg-oe-blue-subtle/40',
+                  )}
+                >
+                  <td className="px-2 py-1 truncate max-w-[220px]" title={f.filename}>
+                    {f.filename}
+                  </td>
+                  <td className="px-2 py-1 font-mono">
+                    {f.project_code || '—'}
+                  </td>
+                  <td className="px-2 py-1 text-right tabular-nums">
+                    {f.paid_row_count}
+                  </td>
+                  <td className="px-2 py-1">
+                    {f.error
+                      ? f.error
+                      : f.project_matched
+                        ? t('finance.thcc_matched', {
+                            defaultValue: '已匹配 · {{name}}',
+                            name: f.project_name || '',
+                          })
+                        : t('finance.thcc_unmatched', {
+                            defaultValue: '未匹配项目',
+                          })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {(thccScan.file_count ?? 0) > 40 && (
+            <p className="px-2 py-1 text-content-tertiary">
+              {t('finance.thcc_more_files', {
+                defaultValue: '…共 {{n}} 个文件',
+                n: thccScan.file_count,
+              })}
+            </p>
+          )}
+        </div>
+      )}
+      <p className="text-2xs text-content-tertiary">
+        {t('finance.thcc_import_note', {
+          defaultValue:
+            '读取「明细数据」表：实付金额>0 的行会生成应付发票+付款记录。重复导入按幂等键跳过。币种取自项目本位币。',
+        })}
+      </p>
+    </div>
+  );
+
   if (!payments || payments.length === 0) {
     return (
-      <EmptyState
-        icon={<CreditCard size={28} strokeWidth={1.5} />}
-        title={t('finance.no_payments', { defaultValue: 'No payments yet' })}
-        description={t('finance.no_payments_desc', {
-          defaultValue:
-            'Payments are recorded automatically when you mark invoices as paid. Go to the Invoices tab to approve and pay invoices.',
-        })}
-        action={{
-          label: t('finance.go_to_invoices', { defaultValue: 'Go to Invoices' }),
-          onClick: onGoToInvoices,
-        }}
-      />
+      <Card padding="none">
+        <div className="p-4 border-b border-border-light flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <p className="text-sm text-content-secondary">
+            {t('finance.payments_empty_import_hint', {
+              defaultValue:
+                '尚无付款记录。可从本地「财务付款_std」批量导入，或在发票页标记已付。',
+            })}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<Upload size={14} />}
+              onClick={() => setImportOpen((v) => !v)}
+              data-testid="finance-payments-import-toggle"
+            >
+              {t('finance.import_payments', { defaultValue: '导入付款情况' })}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<FileText size={14} />}
+              onClick={onGoToInvoices}
+            >
+              {t('finance.go_to_invoices', { defaultValue: 'Go to Invoices' })}
+            </Button>
+          </div>
+        </div>
+        {importOpen && importPanel}
+        <div className="p-8">
+          <EmptyState
+            icon={<CreditCard size={28} strokeWidth={1.5} />}
+            title={t('finance.no_payments', { defaultValue: 'No payments yet' })}
+            description={t('finance.no_payments_desc', {
+              defaultValue:
+                'Import THCC payment ledgers or mark invoices as paid.',
+            })}
+          />
+        </div>
+      </Card>
     );
   }
 
@@ -3024,19 +3548,30 @@ function PaymentsTab({
         <p className="text-sm text-content-secondary">
           {t('finance.payments_explanation', {
             defaultValue:
-              'Payments are read-only ledger entries created automatically when an invoice is marked as paid in the Invoices tab. To record a new payment, approve and pay its invoice.',
+              '付款台账：发票标记已付时自动生成，也可从本地财务付款 std 批量导入。',
           })}
         </p>
-        <Button
-          variant="secondary"
-          size="sm"
-          icon={<FileText size={14} />}
-          onClick={onGoToInvoices}
-          className="shrink-0"
-        >
-          {t('finance.go_to_invoices', { defaultValue: 'Go to Invoices' })}
-        </Button>
+        <div className="flex flex-wrap gap-1.5 shrink-0">
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<Upload size={14} />}
+            onClick={() => setImportOpen((v) => !v)}
+            data-testid="finance-payments-import-toggle"
+          >
+            {t('finance.import_payments', { defaultValue: '导入付款情况' })}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<FileText size={14} />}
+            onClick={onGoToInvoices}
+          >
+            {t('finance.go_to_invoices', { defaultValue: 'Go to Invoices' })}
+          </Button>
+        </div>
       </div>
+      {importOpen && importPanel}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>

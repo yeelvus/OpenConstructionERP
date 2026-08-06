@@ -225,6 +225,7 @@ const ROUTE_ICON_MAP: Record<string, LucideIcon> = {
   // ── v10.6.0 modules ───────────────────────────────────────────────
   '/prefab': Factory,
   '/cvr': Scale,
+  '/cost-board': BarChart3,
   '/design-options': Scale,
   '/formwork': Boxes,
   '/site-logistics': Truck,

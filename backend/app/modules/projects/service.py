@@ -389,6 +389,16 @@ class ProjectService:
         # burn the reserved slot.
         project_code = data.project_code
         reserved_code: str | None = None
+        if project_code:
+            project_code = project_code.strip() or None
+        if project_code and await self.repo.project_code_exists(project_code):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Project code {project_code!r} already exists. "
+                    "Use a different code or update the existing project."
+                ),
+            )
         if not project_code:
             project_code = await self._generate_project_code()
             reserved_code = project_code
@@ -1239,6 +1249,88 @@ class ProjectService:
 
         logger.info("Project archived: %s", project_id)
 
+    # ── Permanent delete (hard) ───────────────────────────────────────────
+
+    async def hard_delete_project(
+        self,
+        project_id: uuid.UUID,
+        *,
+        owner_id: uuid.UUID,
+        is_admin: bool = False,
+        changed_by: str | None = None,
+    ) -> dict:
+        """Permanently remove an *archived* project and its project-scoped data.
+
+        Safety rails:
+          * Only ``status == archived`` projects may be hard-deleted (archive
+            first via :meth:`delete_project`). Active projects return 400.
+          * Owner or admin only.
+          * Children without CASCADE FKs are swept via
+            :func:`purge_project_children_without_cascade` before the row is
+            removed so re-imports do not collide on leftover keys.
+
+        Returns a small summary dict for the API response / audit trail.
+        """
+        from sqlalchemy import delete as sa_delete
+
+        project = await self.get_project(project_id, include_archived=True)
+        if not is_admin and str(project.owner_id) != str(owner_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this project",
+            )
+        if (project.status or "").lower() != "archived":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Only archived projects can be permanently deleted. "
+                    "Archive the project first, then hard-delete."
+                ),
+            )
+
+        project_name = project.name
+        project_code = project.project_code
+        owner_id_str = str(project.owner_id)
+
+        await purge_project_children_without_cascade(self.session, [project_id])
+        await self.session.execute(sa_delete(Project).where(Project.id == project_id))
+        await self.session.flush()
+        # Bulk-style DELETE bypasses identity map; expire so later reads re-hit DB.
+        self.session.expire_all()
+
+        await _safe_publish(
+            "projects.project.hard_deleted",
+            {
+                "project_id": str(project_id),
+                "owner_id": owner_id_str,
+                "name": project_name,
+            },
+            source_module="oe_projects",
+        )
+        await _safe_audit(
+            self.session,
+            action="hard_delete",
+            entity_type="project",
+            entity_id=str(project_id),
+            details={
+                "name": project_name,
+                "project_code": project_code,
+                "changed_by": changed_by,
+            },
+        )
+        logger.info(
+            "Project permanently deleted: %s (%s, code=%s)",
+            project_id,
+            project_name,
+            project_code,
+        )
+        return {
+            "id": str(project_id),
+            "name": project_name,
+            "project_code": project_code,
+            "deleted": True,
+        }
+
     # ── Demo data purge (hard delete) ────────────────────────────────────
 
     async def purge_demo_projects(self) -> int:
@@ -1303,6 +1395,67 @@ class ProjectService:
             global_deleted or "none",
         )
         return deleted
+
+    # ── Deduplicate (archive extras) ────────────────────────────────────
+
+    async def preview_dedupe(
+        self,
+        *,
+        owner_id: uuid.UUID,
+        is_admin: bool,
+    ) -> dict:
+        """Return duplicate groups without mutating anything."""
+        from app.modules.projects.dedupe import ProjectDedupeKey, group_duplicates
+
+        rows = await self.repo.list_all_for_dedupe(is_admin=is_admin, owner_id=owner_id)
+        keys = [
+            ProjectDedupeKey(
+                id=str(p.id),
+                name=p.name or "",
+                project_code=p.project_code,
+                status=p.status or "active",
+                updated_at=getattr(p, "updated_at", None),
+                created_at=getattr(p, "created_at", None),
+            )
+            for p in rows
+        ]
+        groups = group_duplicates(keys)
+        to_archive = sum(len(g["archive_ids"]) for g in groups)
+        return {
+            "total_projects": len(rows),
+            "duplicate_groups": len(groups),
+            "would_archive": to_archive,
+            "groups": groups,
+        }
+
+    async def archive_duplicates(
+        self,
+        *,
+        owner_id: uuid.UUID,
+        is_admin: bool,
+        changed_by: str | None = None,
+    ) -> dict:
+        """Archive non-keeper duplicates (by project_code, then by name)."""
+        preview = await self.preview_dedupe(owner_id=owner_id, is_admin=is_admin)
+        archived_ids: list[str] = []
+        for group in preview["groups"]:
+            for pid in group["archive_ids"]:
+                try:
+                    await self.delete_project(
+                        uuid.UUID(pid),
+                        changed_by=changed_by,
+                    )
+                    archived_ids.append(pid)
+                except HTTPException:
+                    # Already archived or not accessible — skip
+                    continue
+        return {
+            "total_projects": preview["total_projects"],
+            "duplicate_groups": preview["duplicate_groups"],
+            "archived": len(archived_ids),
+            "archived_ids": archived_ids,
+            "groups": preview["groups"],
+        }
 
     # ── Restore (un-archive) ─────────────────────────────────────────────
 

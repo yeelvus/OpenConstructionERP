@@ -8,10 +8,10 @@ import {
 } from '../ProjectStatusBadge';
 
 describe('ProjectStatusBadge', () => {
-  it('renders curated statuses with their English labels', () => {
+  it('renders curated statuses with Chinese labels', () => {
     render(<ProjectStatusBadge status="active" />);
-    // active = in-progress construction (在建)
-    expect(screen.getByText('In progress')).toBeInTheDocument();
+    // active = in-progress construction (在建); token stays English in DB
+    expect(screen.getByText('在建')).toBeInTheDocument();
   });
 
   it('includes close-out / settlement statuses in the curated set', () => {
@@ -19,12 +19,12 @@ describe('ProjectStatusBadge', () => {
     expect(CURATED_PROJECT_STATUSES).toContain('settling');
     expect(CURATED_PROJECT_STATUSES).toContain('settled');
     render(<ProjectStatusBadge status="settling" />);
-    expect(screen.getByText('Settling')).toBeInTheDocument();
+    expect(screen.getByText('结算中')).toBeInTheDocument();
   });
 
-  it('humanises the on_hold token to "On hold"', () => {
+  it('labels on_hold as 暂停', () => {
     render(<ProjectStatusBadge status="on_hold" />);
-    expect(screen.getByText('On hold')).toBeInTheDocument();
+    expect(screen.getByText('暂停')).toBeInTheDocument();
   });
 
   it('humanises an unknown custom status (in_review -> In review)', () => {
@@ -32,11 +32,9 @@ describe('ProjectStatusBadge', () => {
     expect(screen.getByText('In review')).toBeInTheDocument();
   });
 
-  it('renders the curated "cancelled" status with its label (#284)', () => {
-    // "cancelled" is a curated terminal status (distinct from "on hold" /
-    // "waiting"), so it must render its own label, not a humanised fallback.
+  it('renders the curated "cancelled" status with its Chinese label (#284)', () => {
     render(<ProjectStatusBadge status="cancelled" />);
-    expect(screen.getByText('Cancelled')).toBeInTheDocument();
+    expect(screen.getByText('已取消')).toBeInTheDocument();
   });
 
   it('includes "cancelled" in the curated set so pickers/filters offer it (#284)', () => {

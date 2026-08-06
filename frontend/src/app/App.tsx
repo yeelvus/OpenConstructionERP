@@ -613,6 +613,18 @@ const PrefabPage = lazy(() =>
 const CvrPage = lazy(() =>
   import('@/features/cvr').then((m) => ({ default: m.CvrPage }))
 );
+const CostBoardPage = lazy(() =>
+  import('@/features/thcc-cost-board').then((m) => ({ default: m.CostBoardPage }))
+);
+const ProjectCostBoardPage = lazy(() =>
+  import('@/features/thcc-cost-board').then((m) => ({ default: m.ProjectCostBoardPage }))
+);
+const LaborBoardPage = lazy(() =>
+  import('@/features/thcc-cost-board').then((m) => ({ default: m.LaborBoardPage }))
+);
+const CostBoardImportPage = lazy(() =>
+  import('@/features/thcc-cost-board').then((m) => ({ default: m.CostBoardImportPage }))
+);
 const SiteLogisticsPage = lazy(() =>
   import('@/features/site-logistics').then((m) => ({ default: m.SiteLogisticsPage }))
 );
@@ -1165,6 +1177,12 @@ export default function App() {
         <Route path="/prefab" element={<P title="Off-site / Prefab"><PrefabPage /></P>} />
         <Route path="/projects/:projectId/cvr" element={<P title="Cost-Value Reconciliation"><CvrPage /></P>} />
         <Route path="/cvr" element={<P title="Cost-Value Reconciliation"><CvrPage /></P>} />
+        {/* THCC 综合成本看板 — 组合层 / 项目总览 / 人工专题 / 月度导入 */}
+        <Route path="/cost-board" element={<P title="综合成本看板"><CostBoardPage /></P>} />
+        <Route path="/cost-board/labor" element={<P title="人工费专题"><LaborBoardPage /></P>} />
+        <Route path="/cost-board/import" element={<P title="成本看板导入"><CostBoardImportPage /></P>} />
+        <Route path="/cost-board/projects/:rowId" element={<P title="项目成本总览"><ProjectCostBoardPage /></P>} />
+        <Route path="/projects/:projectId/cost-board" element={<P title="项目成本总览"><ProjectCostBoardPage /></P>} />
         <Route path="/site-logistics" element={<P title="Site Logistics"><SiteLogisticsPage /></P>} />
         <Route path="/commissioning" element={<P title="Commissioning"><CommissioningPage /></P>} />
         <Route path="/esg" element={<P title="ESG Site Performance"><EsgPage /></P>} />

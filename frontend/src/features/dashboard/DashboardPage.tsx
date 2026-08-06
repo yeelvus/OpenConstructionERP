@@ -2126,7 +2126,9 @@ function DashboardPageInner() {
 
   const { data: projects } = useQuery({
     queryKey: ['projects'],
-    queryFn: () => apiGet<ProjectSummary[]>('/v1/projects/').catch(() => []),
+    // limit=500: API default is 50 and silently truncates the portfolio.
+    queryFn: () =>
+      apiGet<ProjectSummary[]>('/v1/projects/?limit=500').catch(() => []),
     retry: false,
     staleTime: 5 * 60_000,
   });

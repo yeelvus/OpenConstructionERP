@@ -37,7 +37,8 @@ export interface OptionGroup {
   options: { value: string; label: string }[];
 }
 
-const REGION_GROUPS: OptionGroup[] = [
+/** Shared region catalogue (create form + projects bulk tools). */
+export const REGION_GROUPS: OptionGroup[] = [
   {
     group: 'Europe',
     options: [
@@ -1717,7 +1718,9 @@ export function CreateProjectModal({
                   <div>
                     <OptionalLabel
                       htmlFor="qc-budget"
-                      text={t('projects.budget_estimate', { defaultValue: 'Budget estimate' })}
+                      text={t('projects.budget_estimate', {
+                        defaultValue: '预算金额 (Budget estimate)',
+                      })}
                       optionalText={t('projects.create.optional_badge', { defaultValue: 'Optional' })}
                     />
                     <input
@@ -1734,7 +1737,9 @@ export function CreateProjectModal({
                   <div>
                     <OptionalLabel
                       htmlFor="qc-contract"
-                      text={t('projects.contract_value', { defaultValue: 'Contract value' })}
+                      text={t('projects.contract_value', {
+                        defaultValue: '项目合同额 (非台账)',
+                      })}
                       optionalText={t('projects.create.optional_badge', { defaultValue: 'Optional' })}
                     />
                     <input

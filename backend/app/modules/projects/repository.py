@@ -135,6 +135,61 @@ class ProjectRepository:
         count = (await self.session.execute(stmt)).scalar_one()
         return bool(count)
 
+    async def find_by_project_code(self, code: str) -> Project | None:
+        """Return one project with this exact ``project_code`` (any status)."""
+        code = (code or "").strip()
+        if not code:
+            return None
+        stmt = (
+            select(Project)
+            .where(Project.project_code == code)
+            .order_by(Project.updated_at.desc().nullslast(), Project.created_at.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def find_by_name_ci(
+        self,
+        name: str,
+        *,
+        exclude_archived: bool = True,
+    ) -> Project | None:
+        """Case-insensitive exact name match (whitespace-normalized in Python)."""
+        from app.modules.projects.dedupe import normalize_project_name
+
+        want = normalize_project_name(name)
+        if not want:
+            return None
+        stmt = select(Project)
+        if exclude_archived:
+            stmt = stmt.where(Project.status != "archived")
+        stmt = stmt.order_by(Project.updated_at.desc().nullslast(), Project.created_at.desc())
+        result = await self.session.execute(stmt)
+        for p in result.scalars().all():
+            if normalize_project_name(p.name) == want:
+                return p
+        return None
+
+    async def list_all_for_dedupe(self, *, is_admin: bool, owner_id: uuid.UUID) -> list[Project]:
+        """Load projects visible to the user for duplicate detection (incl. archived)."""
+        from app.core.partner_pack.scope import scope_project_query
+        from app.modules.teams.access import member_project_ids_subquery
+
+        base = select(Project)
+        base = scope_project_query(base, Project)
+        if not is_admin:
+            base = base.where(
+                (Project.owner_id == owner_id) | (Project.id.in_(member_project_ids_subquery(owner_id)))
+            )
+        base = base.options(
+            noload(Project.wbs_nodes),
+            noload(Project.milestones),
+            noload(Project.children),
+        ).order_by(Project.created_at.desc())
+        result = await self.session.execute(base)
+        return list(result.scalars().all())
+
     async def existing_project_codes(self, codes: list[str]) -> set[str]:
         """Bulk variant of :meth:`project_code_exists`.
 

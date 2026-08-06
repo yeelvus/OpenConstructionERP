@@ -6,9 +6,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import {
   FolderPlus, FolderOpen, ArrowRight, MoreHorizontal, Copy, Trash2, Archive, ArchiveRestore, ExternalLink,
-  Search, ChevronDown, ArrowUpDown, Star, Map as MapIcon, CloudSun,
+  Search, ChevronDown, ArrowUpDown, ArrowUp, ArrowDown, Star, Map as MapIcon, CloudSun,
   Building2, DollarSign, Euro, PoundSterling, Globe2, MapPin, Layers, AlertTriangle,
-  FileSpreadsheet, Download, Upload,
+  FileSpreadsheet, Download, Upload, LayoutGrid, List,
 } from 'lucide-react';
 import { formatDistanceToNowStrict, isValid as isValidDate, parseISO } from 'date-fns';
 import { Button, Card, Badge, EmptyState, Skeleton, SkeletonGrid, Breadcrumb, ProjectMap, ProjectWeather, FileTypeChips, ConfirmDialog, ModuleGuideButton, RecoveryCard, type LatLng } from '@/shared/ui';
@@ -30,20 +30,161 @@ import {
   useProjectStatusLabel,
 } from './ProjectStatusBadge';
 import { BIMConverterStatusBanner } from '../bim/BIMConverterStatusBanner';
+import { CURRENCY_GROUPS } from './currencyGroups';
+import { REGION_GROUPS } from './CreateProjectPage';
 
 interface ProjectBOQStats {
   projectId: string;
   boqCount: number;
+  /** BOQ position total in project base currency. */
   totalValue: number;
+  /** Contracts module register sum (总包+分包, converted). */
+  contractRegisterValue: number;
+  contractMainValue: number;
+  contractSubValue: number;
+  /** Project.contract_value manual field. */
+  projectContractValue: number;
+  /** Project.budget_estimate manual field. */
+  budgetEstimate: number;
   hasError?: boolean;
 }
 
-type SortOption = 'name_asc' | 'newest' | 'oldest' | 'value';
+/** Sortable columns on the projects page (list headers + toolbar). */
+export type ProjectSortField =
+  | 'name'
+  | 'code'
+  | 'status'
+  | 'region'
+  | 'currency'
+  | 'boq'
+  | 'value'
+  | 'created'
+  | 'updated';
+
+export type ProjectSortDir = 'asc' | 'desc';
+
+export type ProjectSortState = {
+  field: ProjectSortField;
+  dir: ProjectSortDir;
+};
+
+type ProjectViewMode = 'card' | 'list';
 // Status filter: 'all' (incl. archived), 'working' (every non-archived),
 // or an exact status token (active = 在建, closing, settling, settled, …).
 type StatusFilter = string;
 
-const ITEMS_PER_PAGE = 12;
+/** Allowed page sizes for the projects list / card grid. */
+export const PROJECT_PAGE_SIZE_OPTIONS = [12, 24, 48, 96] as const;
+const DEFAULT_PAGE_SIZE = 12;
+
+const DEFAULT_SORT: ProjectSortState = { field: 'created', dir: 'desc' };
+
+/** Lifecycle order for status sort (earlier = “more active”). */
+const STATUS_SORT_RANK: Record<string, number> = Object.fromEntries(
+  CURATED_PROJECT_STATUSES.map((s, i) => [s, i]),
+);
+
+/**
+ * Map legacy sort tokens (pre field+dir) and partial localStorage blobs
+ * onto a valid ProjectSortState.
+ */
+export function normalizeProjectSort(raw: unknown): ProjectSortState {
+  if (raw && typeof raw === 'object' && 'field' in (raw as object)) {
+    const o = raw as { field?: string; dir?: string };
+    const field = (o.field || DEFAULT_SORT.field) as ProjectSortField;
+    const dir = o.dir === 'asc' || o.dir === 'desc' ? o.dir : DEFAULT_SORT.dir;
+    const allowed: ProjectSortField[] = [
+      'name',
+      'code',
+      'status',
+      'region',
+      'currency',
+      'boq',
+      'value',
+      'created',
+      'updated',
+    ];
+    if (allowed.includes(field)) return { field, dir };
+  }
+  // Legacy string options from earlier builds
+  switch (raw) {
+    case 'name_asc':
+      return { field: 'name', dir: 'asc' };
+    case 'newest':
+      return { field: 'created', dir: 'desc' };
+    case 'oldest':
+      return { field: 'created', dir: 'asc' };
+    case 'value':
+      return { field: 'value', dir: 'desc' };
+    default:
+      return { ...DEFAULT_SORT };
+  }
+}
+
+function compareProjects(
+  a: Project,
+  b: Project,
+  sort: ProjectSortState,
+  boqStatsMap: Map<string, ProjectBOQStats>,
+  hasMultipleCurrencies: boolean,
+): number {
+  const mul = sort.dir === 'asc' ? 1 : -1;
+  const emptyLast = (va: string, vb: string) => {
+    const ea = !va;
+    const eb = !vb;
+    if (ea && eb) return 0;
+    if (ea) return 1; // empty after non-empty regardless of dir for readability
+    if (eb) return -1;
+    return va.localeCompare(vb, undefined, { numeric: true, sensitivity: 'base' }) * mul;
+  };
+
+  switch (sort.field) {
+    case 'name':
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) * mul;
+    case 'code':
+      return emptyLast(
+        (a.project_code || '').trim(),
+        (b.project_code || '').trim(),
+      );
+    case 'status': {
+      const ra = STATUS_SORT_RANK[a.status] ?? 50;
+      const rb = STATUS_SORT_RANK[b.status] ?? 50;
+      if (ra !== rb) return (ra - rb) * mul;
+      return a.status.localeCompare(b.status) * mul;
+    }
+    case 'region':
+      return emptyLast(a.region || '', b.region || '');
+    case 'currency':
+      return emptyLast(a.currency || '', b.currency || '');
+    case 'boq': {
+      const va = boqStatsMap.get(a.id)?.boqCount ?? -1;
+      const vb = boqStatsMap.get(b.id)?.boqCount ?? -1;
+      return (va - vb) * mul;
+    }
+    case 'value': {
+      if (hasMultipleCurrencies) {
+        const aCur = a.currency || '';
+        const bCur = b.currency || '';
+        if (aCur !== bCur) return aCur.localeCompare(bCur);
+      }
+      const va = boqStatsMap.get(a.id)?.totalValue ?? 0;
+      const vb = boqStatsMap.get(b.id)?.totalValue ?? 0;
+      return (va - vb) * mul;
+    }
+    case 'created': {
+      const ta = new Date(a.created_at).getTime() || 0;
+      const tb = new Date(b.created_at).getTime() || 0;
+      return (ta - tb) * mul;
+    }
+    case 'updated': {
+      const ta = new Date(a.updated_at || a.created_at).getTime() || 0;
+      const tb = new Date(b.updated_at || b.created_at).getTime() || 0;
+      return (ta - tb) * mul;
+    }
+    default:
+      return 0;
+  }
+}
 
 // Concrete statuses the backend GET /projects?status= filter accepts.
 const SERVER_FILTERABLE_STATUSES = new Set([
@@ -228,14 +369,49 @@ export function ProjectsPage() {
   const [filters, setFilters] = useLocalStorage('oe_projects_filters', {
     status: 'all' as StatusFilter,
     region: 'all',
-    sort: 'newest' as SortOption,
+    // Prefer structured sort; legacy `sort` string still normalized below.
+    sortState: DEFAULT_SORT as ProjectSortState,
+    sort: undefined as string | undefined,
+    view: 'card' as ProjectViewMode,
+    pageSize: DEFAULT_PAGE_SIZE as number,
   });
   const statusFilter = filters.status;
   const regionFilter = filters.region;
-  const sortOption = filters.sort;
+  const sortState = normalizeProjectSort(
+    filters.sortState ?? filters.sort ?? DEFAULT_SORT,
+  );
+  const viewMode: ProjectViewMode =
+    filters.view === 'list' ? 'list' : 'card';
+  const pageSize = PROJECT_PAGE_SIZE_OPTIONS.includes(
+    filters.pageSize as (typeof PROJECT_PAGE_SIZE_OPTIONS)[number],
+  )
+    ? (filters.pageSize as number)
+    : DEFAULT_PAGE_SIZE;
   const setStatusFilter = (v: StatusFilter) => setFilters((p) => ({ ...p, status: v }));
   const setRegionFilter = (v: string) => setFilters((p) => ({ ...p, region: v }));
-  const setSortOption = (v: SortOption) => setFilters((p) => ({ ...p, sort: v }));
+  const setSortState = (v: ProjectSortState) =>
+    setFilters((p) => ({ ...p, sortState: v, sort: undefined }));
+  const setViewMode = (v: ProjectViewMode) => setFilters((p) => ({ ...p, view: v }));
+  const setPageSize = (n: number) => {
+    setFilters((p) => ({ ...p, pageSize: n }));
+    setPage(1);
+  };
+  /** Toggle sort: same field flips dir; new field uses sensible default dir. */
+  const applySortField = (field: ProjectSortField) => {
+    if (sortState.field === field) {
+      setSortState({ field, dir: sortState.dir === 'asc' ? 'desc' : 'asc' });
+    } else {
+      // Dates / value / boq default to descending; text fields ascending.
+      const dir: ProjectSortDir =
+        field === 'created' ||
+        field === 'updated' ||
+        field === 'value' ||
+        field === 'boq'
+          ? 'desc'
+          : 'asc';
+      setSortState({ field, dir });
+    }
+  };
   const [page, setPage] = useState(1);
 
   const {
@@ -264,9 +440,11 @@ export function ProjectsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkConfirm, setBulkConfirm] = useState<
-    null | { kind: 'archive' | 'restore' }
+    null | { kind: 'archive' | 'restore' | 'hard-delete' }
   >(null);
   const [bulkStatusValue, setBulkStatusValue] = useState<string>('active');
+  const [bulkCurrencyValue, setBulkCurrencyValue] = useState<string>('');
+  const [bulkRegionValue, setBulkRegionValue] = useState<string>('');
 
   // Clear selection when the filtered set changes so we never act on hidden rows.
   useEffect(() => {
@@ -338,11 +516,89 @@ export function ProjectsPage() {
     }
   };
 
+  const projectsById = useMemo(
+    () => new Map((projects ?? []).map((p) => [p.id, p] as const)),
+    [projects],
+  );
+
+  const runBulkHardDelete = async () => {
+    const ids = Array.from(selectedIds).filter(
+      (id) => projectsById.get(id)?.status === 'archived',
+    );
+    if (!ids.length) {
+      addToast({
+        type: 'info',
+        title: t('projects.bulk_hard_delete_none', {
+          defaultValue: 'Only archived projects can be permanently deleted',
+        }),
+        message: t('projects.bulk_hard_delete_none_hint', {
+          defaultValue: '请先归档，或将筛选切换到「已归档」后再选。',
+        }),
+      });
+      setBulkConfirm(null);
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      const result = await projectsApi.bulkHardDelete(ids);
+      toastBulkResult(
+        t('projects.bulk_hard_deleted', {
+          defaultValue: 'Projects permanently deleted',
+        }),
+        result,
+      );
+    } finally {
+      setBulkBusy(false);
+      setBulkConfirm(null);
+    }
+  };
+
+  const runBulkCurrencyRegion = async () => {
+    const ids = Array.from(selectedIds).filter(
+      (id) => projectsById.get(id)?.status !== 'archived',
+    );
+    if (!ids.length) {
+      addToast({
+        type: 'warning',
+        title: t('projects.bulk_status_none', {
+          defaultValue: 'No eligible projects',
+        }),
+        message: t('projects.bulk_status_archived_hint', {
+          defaultValue: 'Restore archived projects before changing currency/region.',
+        }),
+      });
+      return;
+    }
+    if (!bulkCurrencyValue && !bulkRegionValue) {
+      addToast({
+        type: 'info',
+        title: t('projects.bulk_currency_region_empty', {
+          defaultValue: '请选择币种和/或地区',
+        }),
+      });
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      const result = await projectsApi.bulkSetCurrencyRegion(ids, {
+        currency: bulkCurrencyValue || undefined,
+        region: bulkRegionValue || undefined,
+      });
+      toastBulkResult(
+        t('projects.bulk_currency_region_done', {
+          defaultValue: '币种 / 地区已更新',
+        }),
+        result,
+      );
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const runBulkStatus = async (status: string) => {
     const ids = Array.from(selectedIds);
     if (!ids.length) return;
     // Only non-archived rows; restore first if user selected archived.
-    const projectsById = new Map((projects ?? []).map((p) => [p.id, p]));
     const eligible = ids.filter((id) => projectsById.get(id)?.status !== 'archived');
     const skipped = ids.length - eligible.length;
     if (!eligible.length) {
@@ -443,6 +699,11 @@ export function ProjectsPage() {
     open_rfis?: number;
     safety_incidents?: number;
     progress_pct?: number;
+    contract_register_value?: number;
+    contract_main_value?: number;
+    contract_sub_value?: number;
+    project_contract_value?: number;
+    budget_estimate?: number;
   }
   const projectIdsKey = useMemo(
     () => (projects ? projects.map((p) => p.id).join(',') : ''),
@@ -460,10 +721,20 @@ export function ProjectsPage() {
       const cardMap = new Map(cards.map((c) => [c.id, c]));
       return (projects ?? []).map((p) => {
         const c = cardMap.get(p.id);
+        // Prefer server rollups; fall back to project row fields when cards lag.
+        const projectContract = c?.project_contract_value
+          ?? (p.contract_value ? Number(String(p.contract_value).replace(/,/g, '')) || 0 : 0);
+        const budget = c?.budget_estimate
+          ?? (p.budget_estimate ? Number(String(p.budget_estimate).replace(/,/g, '')) || 0 : 0);
         return {
           projectId: p.id,
           boqCount: c?.boq_count ?? 0,
           totalValue: c?.boq_total_value ?? 0,
+          contractRegisterValue: c?.contract_register_value ?? 0,
+          contractMainValue: c?.contract_main_value ?? 0,
+          contractSubValue: c?.contract_sub_value ?? 0,
+          projectContractValue: projectContract,
+          budgetEstimate: budget,
           hasError: false,
         };
       });
@@ -506,13 +777,14 @@ export function ProjectsPage() {
     if (!projects) return [];
     let list = [...projects];
 
-    // Search by name and description
+    // Search by name, description, and project code
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       list = list.filter(
         (p) =>
           p.name.toLowerCase().includes(q) ||
-          (p.description && p.description.toLowerCase().includes(q)),
+          (p.description && p.description.toLowerCase().includes(q)) ||
+          (p.project_code && p.project_code.toLowerCase().includes(q)),
       );
     }
 
@@ -529,64 +801,32 @@ export function ProjectsPage() {
       list = list.filter((p) => p.region === regionFilter);
     }
 
-    // Sort — pinned first, then locale priority (en → de → others)
-    // so the US and German demo projects anchor the top of the list,
-    // then fall through to the user-selected sort option.
-    const localePriority = (p: Project): number => {
-      if (p.locale === 'en') return 0;
-      if (p.locale === 'de') return 1;
-      return 2;
-    };
+    // Sort — pinned first, then user-selected field/direction.
     list.sort((a, b) => {
       const aPinned = pinnedIds.includes(a.id) ? 0 : 1;
       const bPinned = pinnedIds.includes(b.id) ? 0 : 1;
       if (aPinned !== bPinned) return aPinned - bPinned;
-
-      const aLoc = localePriority(a);
-      const bLoc = localePriority(b);
-      if (aLoc !== bLoc) return aLoc - bLoc;
-
-      switch (sortOption) {
-        case 'name_asc':
-          return a.name.localeCompare(b.name);
-        case 'newest':
-          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-        case 'oldest':
-          return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-        case 'value': {
-          // Sorting by value across currencies is apples-to-oranges (no
-          // cross-project rate table). When the list spans multiple
-          // currencies, group by currency first so each currency's
-          // projects are ordered by value among themselves rather than
-          // pretending a raw 1_000 JPY outranks 900 EUR.
-          if (hasMultipleCurrencies) {
-            const aCur = a.currency || '';
-            const bCur = b.currency || '';
-            if (aCur !== bCur) return aCur.localeCompare(bCur);
-          }
-          const aVal = boqStatsMap.get(a.id)?.totalValue ?? 0;
-          const bVal = boqStatsMap.get(b.id)?.totalValue ?? 0;
-          return bVal - aVal;
-        }
-        default:
-          return 0;
-      }
+      return compareProjects(a, b, sortState, boqStatsMap, hasMultipleCurrencies);
     });
 
     return list;
-  }, [projects, searchQuery, statusFilter, regionFilter, sortOption, boqStatsMap, pinnedIds, hasMultipleCurrencies]);
+  }, [projects, searchQuery, statusFilter, regionFilter, sortState, boqStatsMap, pinnedIds, hasMultipleCurrencies]);
 
   // Reset page when filters change
   useEffect(() => {
     setPage(1);
-  }, [searchQuery, statusFilter, regionFilter, sortOption]);
+  }, [searchQuery, statusFilter, regionFilter, sortState.field, sortState.dir, pageSize]);
 
   // Pagination
-  const totalPages = Math.max(1, Math.ceil(filtered.length / ITEMS_PER_PAGE));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const paginatedProjects = filtered.slice(
-    (page - 1) * ITEMS_PER_PAGE,
-    page * ITEMS_PER_PAGE,
+    (page - 1) * pageSize,
+    page * pageSize,
   );
+  // Clamp page if pageSize grew / list shrank
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   // Whether any non-default filter or search is currently applied. Drives
   // both the "no matching projects" empty state and - critically - keeping
@@ -711,22 +951,47 @@ export function ProjectsPage() {
     [projects],
   );
 
-  /* ── Sort labels ──────────────────────────────────────────────────── */
+  /* ── Sort field labels ────────────────────────────────────────────── */
 
-  const sortOptions: { value: SortOption; label: string; title?: string }[] = [
-    { value: 'name_asc', label: t('projects.sort_name', { defaultValue: 'Name A-Z' }) },
-    { value: 'newest', label: t('projects.sort_newest', { defaultValue: 'Newest' }) },
-    { value: 'oldest', label: t('projects.sort_oldest', { defaultValue: 'Oldest' }) },
+  const sortFieldOptions: {
+    value: ProjectSortField;
+    label: string;
+    title?: string;
+  }[] = [
+    { value: 'name', label: t('projects.sort_name', { defaultValue: '名称' }) },
+    {
+      value: 'code',
+      label: t('projects.sort_code', { defaultValue: '项目编码' }),
+    },
+    {
+      value: 'status',
+      label: t('projects.sort_status', { defaultValue: '状态' }),
+      title: t('projects.sort_status_hint', {
+        defaultValue: '生命周期顺序：在建 → 收尾 → 结算中 → 已结算完成 → …',
+      }),
+    },
+    { value: 'region', label: t('projects.sort_region', { defaultValue: '区域' }) },
+    {
+      value: 'currency',
+      label: t('projects.sort_currency', { defaultValue: '币种' }),
+    },
+    { value: 'boq', label: t('projects.sort_boq', { defaultValue: 'BOQ 数量' }) },
     {
       value: 'value',
-      label: t('projects.sort_value', { defaultValue: 'Value' }),
-      // Value ordering is only meaningful within one currency — there is no
-      // cross-project rate table. Flag that when the list spans currencies.
+      label: t('projects.sort_value', { defaultValue: '金额' }),
       title: hasMultipleCurrencies
         ? t('projects.sort_value_mixed_hint', {
-            defaultValue: 'Sorts by value within each currency (projects span multiple currencies)',
+            defaultValue: '多币种时按币种分组后排序金额',
           })
-        : t('projects.sort_value', { defaultValue: 'Value' }),
+        : undefined,
+    },
+    {
+      value: 'created',
+      label: t('projects.sort_created', { defaultValue: '创建时间' }),
+    },
+    {
+      value: 'updated',
+      label: t('projects.sort_updated', { defaultValue: '更新时间' }),
     },
   ];
 
@@ -1073,13 +1338,13 @@ export function ProjectsPage() {
                 {availableStatuses.map((s) => (
                   <option key={s} value={s}>
                     {s === 'all'
-                      ? t('projects.filter_all', { defaultValue: 'All' })
+                      ? t('projects.filter_all', { defaultValue: '全部' })
                       : s === 'working'
                         ? t('projects.filter_working', {
-                            defaultValue: 'All working',
+                            defaultValue: '全部在办',
                           })
                         : s === 'archived'
-                          ? t('projects.filter_archived', { defaultValue: 'Archived' })
+                          ? t('projects.filter_archived', { defaultValue: '已归档' })
                           : statusLabel(s)}
                   </option>
                 ))}
@@ -1112,23 +1377,126 @@ export function ProjectsPage() {
               </div>
             </div>
 
-            {/* Sort buttons */}
-            <div className="flex items-center gap-1 shrink-0">
-              {sortOptions.map((opt) => (
-                <button
-                  key={opt.value}
-                  onClick={() => setSortOption(opt.value)}
-                  title={opt.title}
-                  className={`flex items-center gap-1 rounded-md px-2 py-1.5 text-2xs font-medium transition-colors ${
-                    sortOption === opt.value
-                      ? 'bg-oe-blue-subtle text-oe-blue-text'
-                      : 'text-content-tertiary hover:text-content-secondary hover:bg-surface-secondary'
-                  }`}
+            {/* Sort field + direction */}
+            <div className="flex shrink-0 items-center gap-1">
+              <div className="relative">
+                <select
+                  value={sortState.field}
+                  onChange={(e) => {
+                    const field = e.target.value as ProjectSortField;
+                    if (field === sortState.field) return;
+                    const dir: ProjectSortDir =
+                      field === 'created' ||
+                      field === 'updated' ||
+                      field === 'value' ||
+                      field === 'boq'
+                        ? 'desc'
+                        : 'asc';
+                    setSortState({ field, dir });
+                  }}
+                  aria-label={t('projects.sort_by', { defaultValue: 'Sort by' })}
+                  title={
+                    sortFieldOptions.find((o) => o.value === sortState.field)?.title
+                  }
+                  className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-8 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-36"
+                  data-testid="projects-sort-field"
                 >
-                  {opt.label}
-                  {sortOption === opt.value && <ArrowUpDown size={10} />}
-                </button>
-              ))}
+                  {sortFieldOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value} title={opt.title}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-content-tertiary">
+                  <ChevronDown size={14} />
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  setSortState({
+                    field: sortState.field,
+                    dir: sortState.dir === 'asc' ? 'desc' : 'asc',
+                  })
+                }
+                className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-surface-primary text-content-secondary hover:bg-surface-secondary"
+                title={
+                  sortState.dir === 'asc'
+                    ? t('projects.sort_asc', { defaultValue: 'Ascending' })
+                    : t('projects.sort_desc', { defaultValue: 'Descending' })
+                }
+                aria-label={t('projects.sort_toggle_dir', {
+                  defaultValue: 'Toggle sort direction',
+                })}
+                data-testid="projects-sort-dir"
+              >
+                {sortState.dir === 'asc' ? (
+                  <ArrowUp size={15} />
+                ) : (
+                  <ArrowDown size={15} />
+                )}
+              </button>
+            </div>
+
+            {/* Card / list view toggle */}
+            <div
+              className="flex shrink-0 items-center rounded-lg border border-border bg-surface-primary p-0.5"
+              role="group"
+              aria-label={t('projects.view_mode', { defaultValue: 'View mode' })}
+            >
+              <button
+                type="button"
+                onClick={() => setViewMode('card')}
+                className={`inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
+                  viewMode === 'card'
+                    ? 'bg-oe-blue-subtle text-oe-blue-text'
+                    : 'text-content-tertiary hover:text-content-secondary'
+                }`}
+                title={t('projects.view_card', { defaultValue: 'Card view' })}
+                aria-pressed={viewMode === 'card'}
+                data-testid="projects-view-card"
+              >
+                <LayoutGrid size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('list')}
+                className={`inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
+                  viewMode === 'list'
+                    ? 'bg-oe-blue-subtle text-oe-blue-text'
+                    : 'text-content-tertiary hover:text-content-secondary'
+                }`}
+                title={t('projects.view_list', { defaultValue: 'List view' })}
+                aria-pressed={viewMode === 'list'}
+                data-testid="projects-view-list"
+              >
+                <List size={15} />
+              </button>
+            </div>
+
+            {/* Page size */}
+            <div className="relative shrink-0">
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                aria-label={t('projects.page_size', {
+                  defaultValue: 'Rows per page',
+                })}
+                className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-8 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue"
+                data-testid="projects-page-size"
+              >
+                {PROJECT_PAGE_SIZE_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {t('projects.per_page', {
+                      defaultValue: '{{n}} / page',
+                      n,
+                    })}
+                  </option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-content-tertiary">
+                <ChevronDown size={14} />
+              </div>
             </div>
 
             {/* Widget toggles — map + weather */}
@@ -1300,6 +1668,23 @@ export function ProjectsPage() {
                 >
                   {t('common.restore', { defaultValue: 'Restore' })}
                 </Button>
+                {(statusFilter === 'archived' ||
+                  Array.from(selectedIds).some(
+                    (id) => projectsById.get(id)?.status === 'archived',
+                  )) && (
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    icon={<Trash2 size={14} />}
+                    disabled={bulkBusy}
+                    onClick={() => setBulkConfirm({ kind: 'hard-delete' })}
+                    data-testid="projects-bulk-hard-delete"
+                  >
+                    {t('projects.permanent_delete', {
+                      defaultValue: '永久删除',
+                    })}
+                  </Button>
+                )}
                 <div className="flex items-center gap-1.5">
                   <select
                     value={bulkStatusValue}
@@ -1330,6 +1715,77 @@ export function ProjectsPage() {
                     })}
                   </Button>
                 </div>
+                <div
+                  className="flex flex-wrap items-center gap-1.5 border-l border-border-light pl-2"
+                  data-testid="projects-bulk-currency-region"
+                >
+                  <select
+                    value={bulkCurrencyValue}
+                    onChange={(e) => setBulkCurrencyValue(e.target.value)}
+                    disabled={bulkBusy}
+                    className="h-8 max-w-[9rem] rounded-md border border-border bg-surface-primary px-2 text-xs"
+                    aria-label={t('projects.bulk_currency', {
+                      defaultValue: '批量币种',
+                    })}
+                    data-testid="projects-bulk-currency-select"
+                  >
+                    <option value="">
+                      {t('projects.bulk_currency_placeholder', {
+                        defaultValue: '币种…',
+                      })}
+                    </option>
+                    {CURRENCY_GROUPS.map((g) => (
+                      <optgroup key={g.group} label={g.group}>
+                        {g.options
+                          .filter((o) => o.value !== '__custom__')
+                          .map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                  <select
+                    value={bulkRegionValue}
+                    onChange={(e) => setBulkRegionValue(e.target.value)}
+                    disabled={bulkBusy}
+                    className="h-8 max-w-[10rem] rounded-md border border-border bg-surface-primary px-2 text-xs"
+                    aria-label={t('projects.bulk_region', {
+                      defaultValue: '批量地区',
+                    })}
+                    data-testid="projects-bulk-region-select"
+                  >
+                    <option value="">
+                      {t('projects.bulk_region_placeholder', {
+                        defaultValue: '地区…',
+                      })}
+                    </option>
+                    {REGION_GROUPS.map((g) => (
+                      <optgroup key={g.group} label={g.group}>
+                        {g.options
+                          .filter((o) => o.value !== '__custom__')
+                          .map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={bulkBusy || (!bulkCurrencyValue && !bulkRegionValue)}
+                    loading={bulkBusy}
+                    onClick={() => void runBulkCurrencyRegion()}
+                    data-testid="projects-bulk-currency-region-apply"
+                  >
+                    {t('projects.bulk_apply_currency_region', {
+                      defaultValue: '应用币种/地区',
+                    })}
+                  </Button>
+                </div>
                 <Button
                   size="sm"
                   variant="ghost"
@@ -1342,104 +1798,148 @@ export function ProjectsPage() {
             )}
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {paginatedProjects.map((project, i) => (
-              <ProjectCard
-                key={project.id}
-                project={project}
-                boqStats={boqStatsMap.get(project.id)}
-                fileTypes={fileTypesByProject?.[project.id] ?? []}
-                style={{ animationDelay: `${50 + i * 30}ms` }}
-                selected={selectedIds.has(project.id)}
-                onToggleSelect={(id, on) => {
-                  setSelectedIds((prev) => {
-                    const next = new Set(prev);
-                    if (on) next.add(id);
-                    else next.delete(id);
-                    return next;
-                  });
-                }}
-                onDeleted={() => setStatusFilter('working')}
-              />
-            ))}
-          </div>
+          {viewMode === 'card' ? (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {paginatedProjects.map((project, i) => (
+                <ProjectCard
+                  key={project.id}
+                  project={project}
+                  boqStats={boqStatsMap.get(project.id)}
+                  fileTypes={fileTypesByProject?.[project.id] ?? []}
+                  style={{ animationDelay: `${50 + i * 30}ms` }}
+                  selected={selectedIds.has(project.id)}
+                  onToggleSelect={(id, on) => {
+                    setSelectedIds((prev) => {
+                      const next = new Set(prev);
+                      if (on) next.add(id);
+                      else next.delete(id);
+                      return next;
+                    });
+                  }}
+                  onDeleted={() => setStatusFilter('working')}
+                />
+              ))}
+            </div>
+          ) : (
+            <ProjectsListTable
+              projects={paginatedProjects}
+              boqStatsMap={boqStatsMap}
+              selectedIds={selectedIds}
+              sortState={sortState}
+              onSortField={applySortField}
+              onToggleSelect={(id, on) => {
+                setSelectedIds((prev) => {
+                  const next = new Set(prev);
+                  if (on) next.add(id);
+                  else next.delete(id);
+                  return next;
+                });
+              }}
+              formatMoney={formatMoney}
+              onOpen={(id) => navigate(`/projects/${id}`)}
+              onDeleted={() => setStatusFilter('working')}
+            />
+          )}
 
           {/* Pagination */}
-          <div className="mt-6 flex flex-col items-center gap-3">
-            {totalPages > 1 && (
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setPage(1)}
-                  disabled={page === 1}
-                  className="rounded-lg border border-border-light px-3 py-2 text-sm font-medium text-content-secondary hover:bg-surface-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                  title={t('common.first_page', { defaultValue: 'First page' })}
-                  aria-label={t('common.first_page', { defaultValue: 'First page' })}
-                >
-                  &laquo;
-                </button>
-                <button
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                  className="rounded-lg border border-border-light px-4 py-2 text-sm font-medium text-content-secondary hover:bg-surface-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                >
-                  {t('common.previous', { defaultValue: 'Previous' })}
-                </button>
-
-                {/* Page numbers */}
-                {Array.from({ length: totalPages }, (_, i) => i + 1)
-                  .filter((p) => p === 1 || p === totalPages || Math.abs(p - page) <= 1)
-                  .reduce<(number | 'dots')[]>((acc, p, i, arr) => {
-                    if (i > 0 && arr[i - 1] !== undefined && p - (arr[i - 1] as number) > 1) acc.push('dots');
-                    acc.push(p);
-                    return acc;
-                  }, [])
-                  .map((item, i) =>
-                    item === 'dots' ? (
-                      <span key={`dots-${i}`} className="px-1 text-content-quaternary">...</span>
-                    ) : (
-                      <button
-                        key={item}
-                        onClick={() => setPage(item as number)}
-                        className={`rounded-lg min-w-[40px] py-2 text-sm font-semibold transition-colors ${
-                          page === item
-                            ? 'bg-oe-blue text-white shadow-sm'
-                            : 'border border-border-light text-content-secondary hover:bg-surface-secondary'
-                        }`}
-                      >
-                        {item}
-                      </button>
-                    ),
-                  )}
-
-                <button
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  disabled={page === totalPages}
-                  className="rounded-lg border border-border-light px-4 py-2 text-sm font-medium text-content-secondary hover:bg-surface-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                >
-                  {t('common.next', { defaultValue: 'Next' })}
-                </button>
-                <button
-                  onClick={() => setPage(totalPages)}
-                  disabled={page === totalPages}
-                  className="rounded-lg border border-border-light px-3 py-2 text-sm font-medium text-content-secondary hover:bg-surface-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                  title={t('common.last_page', { defaultValue: 'Last page' })}
-                  aria-label={t('common.last_page', { defaultValue: 'Last page' })}
-                >
-                  &raquo;
-                </button>
-              </div>
-            )}
-            <p className="text-sm text-content-tertiary">
+          <div className="mt-6 flex flex-col items-center gap-3 sm:flex-row sm:justify-between">
+            <p className="text-sm text-content-tertiary order-2 sm:order-1">
               {t('projects.showing_of', {
                 defaultValue: '{{from}}–{{to}} of {{filtered}} projects',
-                from: (page - 1) * ITEMS_PER_PAGE + 1,
-                to: Math.min(page * ITEMS_PER_PAGE, filtered.length),
+                from: filtered.length === 0 ? 0 : (page - 1) * pageSize + 1,
+                to: Math.min(page * pageSize, filtered.length),
                 filtered: filtered.length,
               })}
               {hasActiveFilter && filtered.length !== (projects?.length ?? 0)
                 ? ` (${t('projects.filtered_from', { defaultValue: 'filtered from {{total}}', total: projects?.length ?? 0 })})`
                 : ''}
             </p>
+            <div className="flex flex-wrap items-center justify-center gap-2 order-1 sm:order-2">
+              <div className="relative">
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value))}
+                  aria-label={t('projects.page_size', {
+                    defaultValue: 'Rows per page',
+                  })}
+                  className="h-9 appearance-none rounded-lg border border-border bg-surface-primary pl-2.5 pr-7 text-xs text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue"
+                >
+                  {PROJECT_PAGE_SIZE_OPTIONS.map((n) => (
+                    <option key={n} value={n}>
+                      {t('projects.per_page', {
+                        defaultValue: '{{n}} / page',
+                        n,
+                      })}
+                    </option>
+                  ))}
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-1.5 text-content-tertiary">
+                  <ChevronDown size={12} />
+                </div>
+              </div>
+              {totalPages > 1 && (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setPage(1)}
+                    disabled={page === 1}
+                    className="rounded-lg border border-border-light px-3 py-2 text-sm font-medium text-content-secondary hover:bg-surface-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    title={t('common.first_page', { defaultValue: 'First page' })}
+                    aria-label={t('common.first_page', { defaultValue: 'First page' })}
+                  >
+                    &laquo;
+                  </button>
+                  <button
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page === 1}
+                    className="rounded-lg border border-border-light px-4 py-2 text-sm font-medium text-content-secondary hover:bg-surface-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {t('common.previous', { defaultValue: 'Previous' })}
+                  </button>
+
+                  {Array.from({ length: totalPages }, (_, i) => i + 1)
+                    .filter((p) => p === 1 || p === totalPages || Math.abs(p - page) <= 1)
+                    .reduce<(number | 'dots')[]>((acc, p, i, arr) => {
+                      if (i > 0 && arr[i - 1] !== undefined && p - (arr[i - 1] as number) > 1) acc.push('dots');
+                      acc.push(p);
+                      return acc;
+                    }, [])
+                    .map((item, i) =>
+                      item === 'dots' ? (
+                        <span key={`dots-${i}`} className="px-1 text-content-quaternary">...</span>
+                      ) : (
+                        <button
+                          key={item}
+                          onClick={() => setPage(item as number)}
+                          className={`rounded-lg min-w-[40px] py-2 text-sm font-semibold transition-colors ${
+                            page === item
+                              ? 'bg-oe-blue text-white shadow-sm'
+                              : 'border border-border-light text-content-secondary hover:bg-surface-secondary'
+                          }`}
+                        >
+                          {item}
+                        </button>
+                      ),
+                    )}
+
+                  <button
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={page === totalPages}
+                    className="rounded-lg border border-border-light px-4 py-2 text-sm font-medium text-content-secondary hover:bg-surface-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {t('common.next', { defaultValue: 'Next' })}
+                  </button>
+                  <button
+                    onClick={() => setPage(totalPages)}
+                    disabled={page === totalPages}
+                    className="rounded-lg border border-border-light px-3 py-2 text-sm font-medium text-content-secondary hover:bg-surface-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    title={t('common.last_page', { defaultValue: 'Last page' })}
+                    aria-label={t('common.last_page', { defaultValue: 'Last page' })}
+                  >
+                    &raquo;
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </>
       )}
@@ -1475,11 +1975,418 @@ export function ProjectsPage() {
         })}
         message={t('projects.bulk_restore_desc', {
           defaultValue:
-            'Archived projects return to Active (in progress). Non-archived selections are skipped by the server.',
+            '已归档项目将恢复为「在建」。未归档的选中项会被服务器跳过。',
         })}
         confirmLabel={t('common.restore', { defaultValue: 'Restore' })}
         variant="warning"
         loading={bulkBusy}
+      />
+      <ConfirmDialog
+        open={bulkConfirm?.kind === 'hard-delete'}
+        onCancel={() => setBulkConfirm(null)}
+        onConfirm={() => void runBulkHardDelete()}
+        title={t('projects.bulk_hard_delete_title', {
+          defaultValue: '永久删除 {{count}} 个已归档项目？',
+          count: Array.from(selectedIds).filter(
+            (id) => projectsById.get(id)?.status === 'archived',
+          ).length,
+        })}
+        message={t('projects.bulk_hard_delete_desc', {
+          defaultValue:
+            '将从数据库彻底删除项目及其关联数据（清单、合同关联等），不可恢复。仅处理已归档项；未归档选中项会跳过。',
+        })}
+        confirmLabel={t('projects.permanent_delete', {
+          defaultValue: '永久删除',
+        })}
+        variant="danger"
+        loading={bulkBusy}
+      />
+    </div>
+  );
+}
+
+function SortableTh({
+  field,
+  sortState,
+  onSort,
+  children,
+  className,
+  align = 'left',
+}: {
+  field: ProjectSortField;
+  sortState: ProjectSortState;
+  onSort: (field: ProjectSortField) => void;
+  children: React.ReactNode;
+  className?: string;
+  align?: 'left' | 'right';
+}) {
+  const active = sortState.field === field;
+  return (
+    <th
+      className={`px-3 py-2.5 font-semibold ${align === 'right' ? 'text-right' : 'text-left'} ${className ?? ''}`}
+      scope="col"
+    >
+      <button
+        type="button"
+        onClick={() => onSort(field)}
+        className={`inline-flex items-center gap-1 max-w-full font-semibold transition-colors hover:text-oe-blue ${
+          active ? 'text-oe-blue' : 'text-content-tertiary'
+        } ${align === 'right' ? 'flex-row-reverse' : ''}`}
+        data-testid={`projects-sort-th-${field}`}
+      >
+        <span className="truncate">{children}</span>
+        {active ? (
+          sortState.dir === 'asc' ? (
+            <ArrowUp size={12} className="shrink-0" />
+          ) : (
+            <ArrowDown size={12} className="shrink-0" />
+          )
+        ) : (
+          <ArrowUpDown size={11} className="shrink-0 opacity-40" />
+        )}
+      </button>
+    </th>
+  );
+}
+
+/** Compact table view of projects (complements the card grid). */
+function ProjectsListTable({
+  projects,
+  boqStatsMap,
+  selectedIds,
+  sortState,
+  onSortField,
+  onToggleSelect,
+  formatMoney,
+  onOpen,
+  onDeleted,
+}: {
+  projects: Project[];
+  boqStatsMap: Map<string, ProjectBOQStats>;
+  selectedIds: Set<string>;
+  sortState: ProjectSortState;
+  onSortField: (field: ProjectSortField) => void;
+  onToggleSelect: (id: string, selected: boolean) => void;
+  formatMoney: (v: number, currency: string) => string;
+  onOpen: (id: string) => void;
+  onDeleted?: () => void;
+}) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
+
+  const archiveMut = useMutation({
+    mutationFn: (id: string) => projectsApi.archive(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['projects-switcher'] });
+      addToast({
+        type: 'success',
+        title: t('toasts.project_archived', { defaultValue: 'Project archived successfully' }),
+      });
+      onDeleted?.();
+    },
+    onError: (e: Error) =>
+      addToast({
+        type: 'error',
+        title: t('toasts.archive_failed', { defaultValue: 'Failed to archive project' }),
+        message: e.message,
+      }),
+  });
+
+  const restoreMut = useMutation({
+    mutationFn: (id: string) => projectsApi.restore(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['projects-switcher'] });
+      addToast({
+        type: 'success',
+        title: t('toasts.project_restored', { defaultValue: 'Project restored' }),
+      });
+    },
+    onError: (e: Error) =>
+      addToast({
+        type: 'error',
+        title: t('toasts.restore_failed', { defaultValue: 'Failed to restore project' }),
+        message: e.message,
+      }),
+  });
+
+  const hardDeleteMut = useMutation({
+    mutationFn: (id: string) => projectsApi.hardDelete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['projects-switcher'] });
+      addToast({
+        type: 'success',
+        title: t('projects.hard_deleted', {
+          defaultValue: '项目已永久删除',
+        }),
+      });
+      onDeleted?.();
+    },
+    onError: (e: Error) =>
+      addToast({
+        type: 'error',
+        title: t('projects.hard_delete_failed', {
+          defaultValue: '永久删除失败',
+        }),
+        message: e.message,
+      }),
+  });
+
+  const [hardDeleteId, setHardDeleteId] = useState<string | null>(null);
+
+  return (
+    <div
+      className="overflow-x-auto rounded-xl border border-border-light bg-surface-elevated"
+      data-testid="projects-list-table"
+    >
+      <table className="w-full min-w-[720px] text-left text-sm">
+        <thead className="bg-surface-secondary/80 text-xs uppercase tracking-wide text-content-tertiary">
+          <tr>
+            <th className="w-10 px-3 py-2.5" scope="col">
+              <span className="sr-only">
+                {t('projects.select', { defaultValue: 'Select' })}
+              </span>
+            </th>
+            <SortableTh field="name" sortState={sortState} onSort={onSortField}>
+              {t('projects.name', { defaultValue: 'Name' })}
+            </SortableTh>
+            <SortableTh field="code" sortState={sortState} onSort={onSortField}>
+              {t('projects.project_code', { defaultValue: 'Code' })}
+            </SortableTh>
+            <SortableTh field="status" sortState={sortState} onSort={onSortField}>
+              {t('projects.status_col', { defaultValue: 'Status' })}
+            </SortableTh>
+            <SortableTh field="region" sortState={sortState} onSort={onSortField}>
+              {t('projects.region', { defaultValue: 'Region' })}
+            </SortableTh>
+            <SortableTh
+              field="boq"
+              sortState={sortState}
+              onSort={onSortField}
+              align="right"
+            >
+              {t('projects.boq', { defaultValue: 'BOQs' })}
+            </SortableTh>
+            <th className="px-3 py-2.5 font-semibold text-right" scope="col">
+              {t('projects.col_contract_register', {
+                defaultValue: '合同台账',
+              })}
+            </th>
+            <th className="px-3 py-2.5 font-semibold text-right" scope="col">
+              {t('projects.col_project_contract', {
+                defaultValue: '项目合同额',
+              })}
+            </th>
+            <th className="px-3 py-2.5 font-semibold text-right" scope="col">
+              {t('projects.col_budget', {
+                defaultValue: '预算',
+              })}
+            </th>
+            <SortableTh
+              field="value"
+              sortState={sortState}
+              onSort={onSortField}
+              align="right"
+            >
+              {t('projects.value_boq', { defaultValue: '清单金额' })}
+            </SortableTh>
+            <SortableTh field="updated" sortState={sortState} onSort={onSortField}>
+              {t('projects.updated', { defaultValue: 'Updated' })}
+            </SortableTh>
+            <th className="w-28 px-3 py-2.5 font-semibold text-right" scope="col">
+              {t('common.actions', { defaultValue: 'Actions' })}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {projects.map((project) => {
+            const stats = boqStatsMap.get(project.id);
+            const modifiedSource = project.updated_at || project.created_at;
+            const modifiedDate = modifiedSource ? parseISO(modifiedSource) : null;
+            const relativeModified =
+              modifiedDate && isValidDate(modifiedDate)
+                ? formatDistanceToNowStrict(modifiedDate, { addSuffix: true })
+                : '—';
+            return (
+              <tr
+                key={project.id}
+                className="border-t border-border-light hover:bg-surface-secondary/60 cursor-pointer"
+                onClick={() => onOpen(project.id)}
+              >
+                <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-border"
+                    checked={selectedIds.has(project.id)}
+                    onChange={(e) => onToggleSelect(project.id, e.target.checked)}
+                    aria-label={t('projects.select_one', {
+                      defaultValue: 'Select {{name}}',
+                      name: project.name,
+                    })}
+                  />
+                </td>
+                <td className="px-3 py-2.5">
+                  <div className="font-medium text-content-primary truncate max-w-[220px]">
+                    {project.name}
+                  </div>
+                  {project.description ? (
+                    <div className="text-2xs text-content-tertiary truncate max-w-[220px]">
+                      {project.description}
+                    </div>
+                  ) : null}
+                </td>
+                <td className="px-3 py-2.5 font-mono text-xs text-content-secondary">
+                  {project.project_code || '—'}
+                </td>
+                <td className="px-3 py-2.5">
+                  <ProjectStatusBadge status={project.status || 'active'} dot={false} />
+                </td>
+                <td className="px-3 py-2.5 text-content-secondary truncate max-w-[100px]">
+                  {project.region || '—'}
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums text-content-secondary">
+                  {stats?.boqCount ?? '—'}
+                </td>
+                <td
+                  className="px-3 py-2.5 text-right tabular-nums text-content-primary"
+                  title={
+                    stats
+                      ? t('projects.contract_register_hint', {
+                          defaultValue: '总包 {{main}} · 分包 {{sub}}',
+                          main: formatMoney(
+                            stats.contractMainValue,
+                            project.currency || '',
+                          ),
+                          sub: formatMoney(
+                            stats.contractSubValue,
+                            project.currency || '',
+                          ),
+                        })
+                      : undefined
+                  }
+                >
+                  {stats && stats.contractRegisterValue > 0
+                    ? formatMoney(stats.contractRegisterValue, project.currency || '')
+                    : '—'}
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums text-content-secondary">
+                  {stats && stats.projectContractValue > 0
+                    ? formatMoney(stats.projectContractValue, project.currency || '')
+                    : project.contract_value
+                      ? formatMoney(
+                          Number(String(project.contract_value).replace(/,/g, '')) || 0,
+                          project.currency || '',
+                        )
+                      : '—'}
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums text-content-secondary">
+                  {stats && stats.budgetEstimate > 0
+                    ? formatMoney(stats.budgetEstimate, project.currency || '')
+                    : project.budget_estimate
+                      ? formatMoney(
+                          Number(String(project.budget_estimate).replace(/,/g, '')) || 0,
+                          project.currency || '',
+                        )
+                      : '—'}
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums text-content-tertiary">
+                  {stats && stats.totalValue > 0
+                    ? formatMoney(stats.totalValue, project.currency || '')
+                    : '—'}
+                </td>
+                <td
+                  className="px-3 py-2.5 text-xs text-content-tertiary whitespace-nowrap"
+                  title={
+                    modifiedDate && isValidDate(modifiedDate)
+                      ? modifiedDate.toLocaleString(getIntlLocale())
+                      : undefined
+                  }
+                >
+                  {relativeModified}
+                </td>
+                <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                  <div className="inline-flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      className="rounded p-1.5 text-content-tertiary hover:bg-surface-secondary hover:text-oe-blue"
+                      title={t('common.open', { defaultValue: 'Open' })}
+                      onClick={() => onOpen(project.id)}
+                    >
+                      <ExternalLink size={14} />
+                    </button>
+                    {project.status === 'archived' ? (
+                      <>
+                        <button
+                          type="button"
+                          className="rounded p-1.5 text-content-tertiary hover:bg-surface-secondary hover:text-oe-blue"
+                          title={t('common.restore', { defaultValue: 'Restore' })}
+                          disabled={restoreMut.isPending}
+                          onClick={() => restoreMut.mutate(project.id)}
+                          data-testid="projects-list-restore"
+                        >
+                          <ArchiveRestore size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded p-1.5 text-content-tertiary hover:bg-semantic-error-bg hover:text-semantic-error"
+                          title={t('projects.permanent_delete', {
+                            defaultValue: '永久删除',
+                          })}
+                          disabled={hardDeleteMut.isPending}
+                          onClick={() => setHardDeleteId(project.id)}
+                          data-testid="projects-list-hard-delete"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="rounded p-1.5 text-content-tertiary hover:bg-surface-secondary hover:text-oe-blue"
+                        title={t('common.archive', { defaultValue: 'Archive' })}
+                        disabled={archiveMut.isPending}
+                        onClick={() => archiveMut.mutate(project.id)}
+                      >
+                        <Archive size={14} />
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {projects.length === 0 && (
+        <p className="px-4 py-8 text-center text-sm text-content-tertiary">
+          {t('projects.no_results', { defaultValue: 'No matching projects' })}
+        </p>
+      )}
+      <ConfirmDialog
+        open={hardDeleteId != null}
+        onCancel={() => setHardDeleteId(null)}
+        onConfirm={() => {
+          if (hardDeleteId) hardDeleteMut.mutate(hardDeleteId, {
+            onSettled: () => setHardDeleteId(null),
+          });
+        }}
+        title={t('projects.hard_delete_title', {
+          defaultValue: '永久删除此项目？',
+        })}
+        message={t('projects.hard_delete_desc', {
+          defaultValue:
+            '将从数据库彻底删除「{{name}}」及其关联数据，不可恢复。仅已归档项目可永久删除。',
+          name:
+            projects.find((p) => p.id === hardDeleteId)?.name ?? '',
+        })}
+        confirmLabel={t('projects.permanent_delete', {
+          defaultValue: '永久删除',
+        })}
+        variant="danger"
+        loading={hardDeleteMut.isPending}
       />
     </div>
   );
@@ -1533,19 +2440,32 @@ function ProjectCard({
     return () => document.removeEventListener('keydown', handler);
   }, [menuOpen]);
 
+  const isArchived = project.status === 'archived';
+
+  /** Soft-archive for active projects; hard-delete when already archived. */
   const deleteMutation = useMutation({
-    mutationFn: () => apiDelete(`/v1/projects/${project.id}`),
+    mutationFn: () =>
+      isArchived
+        ? projectsApi.hardDelete(project.id)
+        : apiDelete(`/v1/projects/${project.id}`),
     onSuccess: () => {
       setConfirmDelete(false);
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       queryClient.invalidateQueries({ queryKey: ['projects-switcher'] });
-      addToast({ type: 'success', title: t('projects.deleted', 'Project deleted successfully') });
+      addToast({
+        type: 'success',
+        title: isArchived
+          ? t('projects.hard_deleted', { defaultValue: '项目已永久删除' })
+          : t('projects.deleted', 'Project deleted successfully'),
+      });
       onDeleted?.();
     },
     onError: (e: Error) => {
       addToast({
         type: 'error',
-        title: t('projects.delete_failed', 'Failed to delete project'),
+        title: isArchived
+          ? t('projects.hard_delete_failed', { defaultValue: '永久删除失败' })
+          : t('projects.delete_failed', 'Failed to delete project'),
         message: e.message,
       });
     },
@@ -1777,7 +2697,7 @@ function ProjectCard({
             >
               <Copy size={14} /> {t('common.duplicate', 'Duplicate')}
             </button>
-            {project.status === 'archived' ? (
+            {isArchived ? (
               <button
                 onClick={() => {
                   restoreMutation.mutate();
@@ -1807,8 +2727,12 @@ function ProjectCard({
                 setMenuOpen(false);
               }}
               className="flex w-full items-center gap-2 px-3 py-2 text-sm text-semantic-error hover:bg-semantic-error-bg transition-colors"
+              data-testid={isArchived ? 'project-card-hard-delete' : 'project-card-delete'}
             >
-              <Trash2 size={14} /> {t('common.delete', 'Delete')}
+              <Trash2 size={14} />{' '}
+              {isArchived
+                ? t('projects.permanent_delete', { defaultValue: '永久删除' })
+                : t('common.delete', 'Delete')}
             </button>
           </div>
         )}
@@ -1824,11 +2748,29 @@ function ProjectCard({
                 <Trash2 size={18} className="text-semantic-error" />
               </div>
               <p className="text-sm font-semibold text-content-primary mb-1">
-                {t('projects.confirm_delete', 'Delete this project?')}
+                {isArchived
+                  ? t('projects.hard_delete_title', {
+                      defaultValue: '永久删除此项目？',
+                    })
+                  : t('projects.confirm_delete', 'Delete this project?')}
               </p>
-              <p className="text-xs text-content-tertiary mb-4 max-w-[200px] mx-auto">
+              <p className="text-xs text-content-tertiary mb-1 max-w-[220px] mx-auto">
                 {project.name}
               </p>
+              {isArchived && (
+                <p className="text-xs text-semantic-error mb-4 max-w-[220px] mx-auto">
+                  {t('projects.hard_delete_card_hint', {
+                    defaultValue: '不可恢复：关联清单与数据将一并清除。',
+                  })}
+                </p>
+              )}
+              {!isArchived && (
+                <p className="text-xs text-content-tertiary mb-4 max-w-[200px] mx-auto">
+                  {t('projects.soft_delete_hint', {
+                    defaultValue: '将归档（软删除），之后可恢复。',
+                  })}
+                </p>
+              )}
               <div className="flex items-center justify-center gap-2">
                 <Button
                   variant="danger"
@@ -1836,7 +2778,9 @@ function ProjectCard({
                   onClick={() => deleteMutation.mutate()}
                   loading={deleteMutation.isPending}
                 >
-                  {t('common.delete', 'Delete')}
+                  {isArchived
+                    ? t('projects.permanent_delete', { defaultValue: '永久删除' })
+                    : t('common.delete', 'Delete')}
                 </Button>
                 <Button variant="secondary" size="sm" onClick={() => setConfirmDelete(false)}>
                   {t('common.cancel', 'Cancel')}
@@ -1904,25 +2848,91 @@ function ProjectCard({
           )}
         </div>
       </div>
-      {/* Feature row: total cost as the visual anchor — gradient underline,
-       *  large tabular numerals, currency code aligned for legibility. */}
-      {boqStats && boqStats.boqCount > 0 && boqStats.totalValue > 0 && (
-        <div className="relative px-5 pb-3">
-          <div className="rounded-xl border border-border-light bg-gradient-to-br from-oe-blue-subtle/60 via-surface-elevated to-surface-elevated px-4 py-3">
-            <div className="text-[10px] font-medium uppercase tracking-wider text-content-tertiary">
-              {t('projects.card_total_value', { defaultValue: 'Total value' })}
+      {/* Money channels — 合同台账 / 项目合同额 / 预算 / 清单 (distinct). */}
+      {(() => {
+        const register = boqStats?.contractRegisterValue ?? 0;
+        const projContract =
+          boqStats?.projectContractValue ??
+          (project.contract_value
+            ? Number(String(project.contract_value).replace(/,/g, '')) || 0
+            : 0);
+        const budget =
+          boqStats?.budgetEstimate ??
+          (project.budget_estimate
+            ? Number(String(project.budget_estimate).replace(/,/g, '')) || 0
+            : 0);
+        const boqVal = boqStats?.totalValue ?? 0;
+        const hasAny = register > 0 || projContract > 0 || budget > 0 || boqVal > 0;
+        if (!hasAny) return null;
+        const cur = project.currency || '';
+        const row = (
+          label: string,
+          value: number,
+          emphasize?: boolean,
+          hint?: string,
+        ) =>
+          value > 0 ? (
+            <div
+              key={label}
+              className="flex items-baseline justify-between gap-2"
+              title={hint}
+            >
+              <span className="text-[10px] font-medium uppercase tracking-wider text-content-tertiary shrink-0">
+                {label}
+              </span>
+              <span
+                className={`tabular-nums ${
+                  emphasize
+                    ? 'text-base font-bold text-content-primary'
+                    : 'text-xs font-semibold text-content-secondary'
+                }`}
+              >
+                {currencyFmt.format(value)}
+                {cur ? (
+                  <span className="ml-1 text-2xs font-semibold uppercase text-content-tertiary">
+                    {cur}
+                  </span>
+                ) : null}
+              </span>
             </div>
-            <div className="mt-0.5 flex items-baseline gap-1.5">
-              <span className="text-xl font-bold tabular-nums text-content-primary">
-                {currencyFmt.format(boqStats.totalValue)}
-              </span>
-              <span className="text-2xs font-semibold uppercase tracking-wider text-content-tertiary">
-                {project.currency}
-              </span>
+          ) : null;
+        return (
+          <div className="relative px-5 pb-3">
+            <div className="rounded-xl border border-border-light bg-gradient-to-br from-oe-blue-subtle/60 via-surface-elevated to-surface-elevated px-4 py-3 space-y-1.5">
+              {row(
+                t('projects.money_contract_register', {
+                  defaultValue: '合同台账',
+                }),
+                register,
+                true,
+                t('projects.contract_register_hint', {
+                  defaultValue: '总包 {{main}} · 分包 {{sub}}',
+                  main: currencyFmt.format(boqStats?.contractMainValue ?? 0),
+                  sub: currencyFmt.format(boqStats?.contractSubValue ?? 0),
+                }),
+              )}
+              {row(
+                t('projects.money_project_contract', {
+                  defaultValue: '项目合同额',
+                }),
+                projContract,
+                false,
+                t('projects.money_project_contract_hint', {
+                  defaultValue: '项目字段手动填写，非合同管理台账汇总',
+                }),
+              )}
+              {row(
+                t('projects.money_budget', { defaultValue: '预算金额' }),
+                budget,
+              )}
+              {row(
+                t('projects.money_boq', { defaultValue: '清单金额' }),
+                boqVal,
+              )}
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
       <div className="border-t border-border-light px-5 py-3">
         {weatherEnabled && cardCoords && (
           <div className="mb-2" onClick={(e) => e.stopPropagation()}>

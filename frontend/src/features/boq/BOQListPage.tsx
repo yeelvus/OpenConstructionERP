@@ -16,20 +16,13 @@ import { apiGet } from '@/shared/lib/api';
 import { getIntlLocale } from '@/shared/lib/formatters';
 import { boqApi, type BOQWithPositions, groupPositionsIntoSections, type SectionGroup } from './api';
 import { resourceAwareTotalInBase, getCurrencyCode } from './boqHelpers';
-import { projectsApi, type ProjectFxRate } from '@/features/projects/api';
+import { projectsApi, type Project, type ProjectFxRate } from '@/features/projects/api';
 import { useToastStore } from '@/stores/useToastStore';
 import { useModuleStore } from '@/stores/useModuleStore';
 import { PresenceAvatars } from '@/modules/collaboration/components/PresenceAvatars';
 import { usePresenceStore } from '@/modules/collaboration/hooks/usePresence';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { CreateBOQModal } from './CreateBOQPage';
-
-interface Project {
-  id: string;
-  name: string;
-  currency: string;
-  classification_standard: string;
-}
 
 interface BOQ {
   id: string;
@@ -559,8 +552,10 @@ export function BOQListPage() {
     error: projErrorValue,
     refetch: refetchProjects,
   } = useQuery({
-    queryKey: ['projects'],
-    queryFn: () => apiGet<Project[]>('/v1/projects/'),
+    // Must use limit=500 — API default 50 silently drops later projects
+    // (e.g. 天顿 at index 51), so their BOQs never appear on /boq.
+    queryKey: ['projects', 'boq-list'],
+    queryFn: () => projectsApi.list(),
     staleTime: 5 * 60_000,
   });
 
@@ -573,14 +568,41 @@ export function BOQListPage() {
   // When the URL pins a single project, only fetch that project's BOQs —
   // not every project's. On prod with 50+ projects, the parallel fan-out
   // was costing 1-2s of skeleton state for no reason.
-  const scopedProjects = projectIdFromUrl
-    ? projects?.filter((p) => p.id === projectIdFromUrl)
-    : projects;
+  // Always include active/filter project ids even if they were missing from
+  // an incomplete projects payload (defence in depth after limit fix).
+  const scopedProjects = useMemo(() => {
+    const list = projects ?? [];
+    if (projectIdFromUrl) {
+      const hit = list.filter((p) => p.id === projectIdFromUrl);
+      if (hit.length > 0) return hit;
+      return [
+        {
+          id: projectIdFromUrl,
+          name: '…',
+          currency: '',
+          classification_standard: '',
+        } as Project,
+      ];
+    }
+    const byId = new Map(list.map((p) => [p.id, p]));
+    const ensure = (id: string | null | undefined) => {
+      if (!id || byId.has(id)) return;
+      byId.set(id, {
+        id,
+        name: '…',
+        currency: '',
+        classification_standard: '',
+      } as Project);
+    };
+    ensure(activeProjectId);
+    ensure(projectFilter || null);
+    return Array.from(byId.values());
+  }, [projects, projectIdFromUrl, activeProjectId, projectFilter]);
 
   const { data: allBoqs, isLoading: boqLoading } = useQuery({
-    queryKey: ['all-boqs', scopedProjects?.map((p) => p.id).join(',')],
+    queryKey: ['all-boqs', scopedProjects.map((p) => p.id).join(',')],
     queryFn: async () => {
-      if (!scopedProjects || scopedProjects.length === 0) return [];
+      if (scopedProjects.length === 0) return [];
 
       // Fetch all BOQs in parallel (one request per project, no N+1 for grand_total)
       const fetches = scopedProjects.map(async (p) => {
@@ -614,7 +636,7 @@ export function BOQListPage() {
       const results = await Promise.all(fetches);
       return results.flat();
     },
-    enabled: !!scopedProjects && scopedProjects.length > 0,
+    enabled: scopedProjects.length > 0,
   });
 
   // Seed demo presence when collaboration module is enabled and BOQs load
