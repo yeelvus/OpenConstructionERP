@@ -229,6 +229,11 @@ frontend/qa-smoke/
 frontend/qa-smoke-report/
 backend/_frontend_dist/
 backend/app/_frontend_dist/
+# Host-side Docker custom image artefacts (regenerable; not source).
+# `.docker_frontend_dist` = vite production build copied into oe-custom image.
+# `.migrate` = local pg_dump used only for container data migration.
+.docker_frontend_dist/
+.migrate/
 backend/*.log.err
 backend/*.log.out
 frontend/*.log.err
