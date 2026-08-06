@@ -50,9 +50,10 @@ describe('isProjectFilterActive (#284 toolbar visibility)', () => {
  * unless a project literally still carries it.
  */
 describe('buildStatusFilterOptions (#284 status filter)', () => {
-  it("leads with the 'all' sentinel then the full curated set", () => {
+  it("leads with the 'all' and 'working' sentinels then the full curated set", () => {
     const opts = buildStatusFilterOptions([]);
     expect(opts[0]).toBe('all');
+    expect(opts[1]).toBe('working');
     for (const s of CURATED_PROJECT_STATUSES) {
       expect(opts).toContain(s);
     }
@@ -62,6 +63,9 @@ describe('buildStatusFilterOptions (#284 status filter)', () => {
     const opts = buildStatusFilterOptions([]);
     expect(opts).toContain('active');
     expect(opts).toContain('archived');
+    expect(opts).toContain('closing');
+    expect(opts).toContain('settling');
+    expect(opts).toContain('settled');
   });
 
   it('no longer offers the removed "waiting" status by default', () => {

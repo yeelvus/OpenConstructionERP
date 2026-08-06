@@ -245,6 +245,31 @@ export interface ProjectStatusHistoryEntry {
   created_at: string;
 }
 
+export type BulkProjectResult = {
+  ok: string[];
+  failed: Array<{ id: string; error: string }>;
+};
+
+function summarizeBulk(
+  ids: string[],
+  results: PromiseSettledResult<unknown>[],
+): BulkProjectResult {
+  const ok: string[] = [];
+  const failed: Array<{ id: string; error: string }> = [];
+  results.forEach((r, i) => {
+    const id = ids[i]!;
+    if (r.status === 'fulfilled') ok.push(id);
+    else {
+      const err = r.reason;
+      failed.push({
+        id,
+        error: err instanceof Error ? err.message : String(err ?? 'failed'),
+      });
+    }
+  });
+  return { ok, failed };
+}
+
 export const projectsApi = {
   // NOTE: kept as a zero-arg fn so it can be passed straight as a
   // react-query `queryFn` (callers do `queryFn: projectsApi.list`). For a
@@ -264,6 +289,23 @@ export const projectsApi = {
     apiPatch<Project>(`/v1/projects/${id}`, data),
   archive: (id: string) => apiDelete(`/v1/projects/${id}`),
   restore: (id: string) => apiPost<Project>(`/v1/projects/${id}/restore/`, {}),
+  /** Soft-delete (archive) many projects. Returns per-id results. */
+  bulkArchive: async (ids: string[]) => {
+    const results = await Promise.allSettled(ids.map((id) => projectsApi.archive(id)));
+    return summarizeBulk(ids, results);
+  },
+  /** Restore many archived projects to active. */
+  bulkRestore: async (ids: string[]) => {
+    const results = await Promise.allSettled(ids.map((id) => projectsApi.restore(id)));
+    return summarizeBulk(ids, results);
+  },
+  /** Set the same lifecycle status on many projects (not for archived). */
+  bulkSetStatus: async (ids: string[], status: string) => {
+    const results = await Promise.allSettled(
+      ids.map((id) => projectsApi.update(id, { status })),
+    );
+    return summarizeBulk(ids, results);
+  },
   /**
    * Server-side deep-clone. The backend copies every column (incl.
    * WBS tree, milestones, match-settings, fx_rates, custom_units, VAT,

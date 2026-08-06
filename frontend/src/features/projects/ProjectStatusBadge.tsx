@@ -8,17 +8,20 @@ import { Badge } from '@/shared/ui';
  * coloured pill with an i18n label.
  *
  * The backend stores status as a free-form string (<=50 chars), but the UI
- * curates a recommended set - active, on_hold, finished, cancelled,
- * archived - each mapped to a Badge variant and a translated label. Any value
- * outside the curated set still renders (humanised + neutral colour) so a
- * custom status set elsewhere never shows a blank or breaks the layout.
+ * curates a recommended set. ``active`` means 在建 (in construction).
+ * Construction close-out / settlement statuses (closing, settling, settled)
+ * sit between active work and finished/cancelled. ``archived`` is soft-delete
+ * only — not offered in the status picker for normal edits.
  */
 
 type BadgeVariant = 'neutral' | 'blue' | 'success' | 'warning' | 'error';
 
-/** The curated, recommended project statuses, in lifecycle order. */
+/** Curated project statuses in lifecycle order (English tokens). */
 export const CURATED_PROJECT_STATUSES = [
-  'active',
+  'active', // 在建
+  'closing', // 收尾
+  'settling', // 结算中
+  'settled', // 已结算完成
   'on_hold',
   'finished',
   'cancelled',
@@ -27,18 +30,27 @@ export const CURATED_PROJECT_STATUSES = [
 
 export type CuratedProjectStatus = (typeof CURATED_PROJECT_STATUSES)[number];
 
+/** Statuses that may be set via bulk / picker (excludes soft-delete archive). */
+export const WORKING_PROJECT_STATUSES = CURATED_PROJECT_STATUSES.filter(
+  (s) => s !== 'archived',
+);
+
 const STATUS_VARIANT: Record<CuratedProjectStatus, BadgeVariant> = {
   active: 'success',
+  closing: 'warning',
+  settling: 'blue',
+  settled: 'success',
   on_hold: 'warning',
   finished: 'neutral',
-  // Cancelled is a terminal, abandoned state - red to read as negative,
-  // distinct from the neutral "finished" (completed) and "archived" (filed).
   cancelled: 'error',
   archived: 'neutral',
 };
 
 const STATUS_LABEL_DEFAULT: Record<CuratedProjectStatus, string> = {
-  active: 'Active',
+  active: 'In progress',
+  closing: 'Closing out',
+  settling: 'Settling',
+  settled: 'Settled',
   on_hold: 'On hold',
   finished: 'Finished',
   cancelled: 'Cancelled',

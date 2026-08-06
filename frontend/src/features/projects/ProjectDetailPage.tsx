@@ -1203,11 +1203,11 @@ const INITIAL_PROJECT_EDIT_FORM = { name: '', description: '', region: '', curre
 
 /**
  * ProjectStatusSelect (#274) - compact dropdown letting an owner/admin set
- * the project's working status. Offers only the curated working statuses
- * (active / on hold / finished); archiving is a separate action,
- * so 'archived' is excluded. If the project currently carries a custom
- * status outside the curated set, that value is shown as a leading option
- * so the control never silently rewrites it on open.
+ * the project's working status. Offers curated statuses (active = 在建,
+ * closing, settling, settled, on hold, finished, cancelled); archiving is
+ * a separate action so 'archived' is excluded. Custom values outside the
+ * curated set appear as a leading option so the control never silently
+ * rewrites them on open.
  */
 function ProjectStatusSelect({
   value,

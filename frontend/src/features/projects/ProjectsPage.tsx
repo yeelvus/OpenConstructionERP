@@ -23,7 +23,12 @@ import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useLocalStorage } from '@/shared/hooks/useLocalStorage';
 import { CreateProjectModal } from './CreateProjectPage';
 import { projectsGuide } from './projectsGuide';
-import { ProjectStatusBadge, CURATED_PROJECT_STATUSES, useProjectStatusLabel } from './ProjectStatusBadge';
+import {
+  ProjectStatusBadge,
+  CURATED_PROJECT_STATUSES,
+  WORKING_PROJECT_STATUSES,
+  useProjectStatusLabel,
+} from './ProjectStatusBadge';
 import { BIMConverterStatusBanner } from '../bim/BIMConverterStatusBanner';
 
 interface ProjectBOQStats {
@@ -34,41 +39,34 @@ interface ProjectBOQStats {
 }
 
 type SortOption = 'name_asc' | 'newest' | 'oldest' | 'value';
-// The status filter accepts two view sentinels plus any concrete project
-// status string: 'all' (every project, archived included), 'active' (every
-// non-archived working project), 'archived', or an exact status token
-// (on_hold / finished / cancelled / a custom status). It is a free string
-// because project.status is free-form on the backend, so the option list is
-// built from the curated set UNION whatever statuses the fetched projects
-// actually carry (see availableStatuses).
+// Status filter: 'all' (incl. archived), 'working' (every non-archived),
+// or an exact status token (active = 在建, closing, settling, settled, …).
 type StatusFilter = string;
 
 const ITEMS_PER_PAGE = 12;
 
-// Concrete statuses the backend GET /projects?status= filter accepts as an
-// exact-match server-side filter (its regex). Anything outside this set
-// (e.g. 'cancelled' or a custom status) is fetched with the lighter default
-// list() - which returns every non-archived project - and narrowed to the
-// exact status client-side, so we never trip a 422 on an unrecognised value.
-const SERVER_FILTERABLE_STATUSES = new Set(['on_hold', 'finished']);
+// Concrete statuses the backend GET /projects?status= filter accepts.
+const SERVER_FILTERABLE_STATUSES = new Set([
+  'active',
+  'closing',
+  'settling',
+  'settled',
+  'on_hold',
+  'finished',
+  'cancelled',
+  'archived',
+]);
 
 /**
  * Build the status-filter option list shown in the toolbar dropdown.
  *
- * Mirrors the availableRegions pattern: start from the curated recommended
- * statuses, then UNION any distinct statuses actually present on the fetched
- * projects so a custom/legacy status (set elsewhere) is always selectable and
- * never silently hidden. 'all' + 'active' are the two leading view sentinels;
- * 'archived' keeps its curated slot. Returns the option VALUES only; the
- * caller resolves each to a translated label.
+ * 'all' / 'working' are view sentinels; curated statuses follow (active =
+ * in-progress construction). Custom statuses on loaded projects are unioned in.
  */
 export function buildStatusFilterOptions(
   projectStatuses: Iterable<string | null | undefined>,
 ): string[] {
-  // 'all' and 'active' are view sentinels, not stored statuses. The curated
-  // set already carries 'active'/'archived'; keep their lifecycle order and
-  // de-duplicate while preserving insertion order.
-  const ordered: string[] = ['all', ...CURATED_PROJECT_STATUSES];
+  const ordered: string[] = ['all', 'working', ...CURATED_PROJECT_STATUSES];
   const seen = new Set(ordered);
   for (const s of projectStatuses) {
     const status = (s ?? '').trim();
@@ -248,23 +246,140 @@ export function ProjectsPage() {
     refetch: refetchProjects,
   } = useQuery({
     queryKey: ['projects', statusFilter],
-    // Fetch by status so archived projects are actually retrieved: the default
-    // list endpoint excludes archived, so 'archived' and 'all' must ask for
-    // them explicitly. 'active' keeps the lighter default fetch (every
-    // non-archived project, custom statuses included). A concrete status the
-    // backend filter recognises (on_hold / finished) is fetched server-side;
-    // any other concrete status (cancelled / custom) falls back to the default
-    // non-archived list and is narrowed client-side, avoiding a 422.
+    // 'archived' / 'all' need explicit server flags; exact curated statuses
+    // use server filter; 'working' = default list (non-archived).
     queryFn: () => {
       if (statusFilter === 'archived') return projectsApi.listByStatus('archived');
       if (statusFilter === 'all') return projectsApi.listByStatus('all');
-      if (statusFilter !== 'active' && SERVER_FILTERABLE_STATUSES.has(statusFilter)) {
+      if (statusFilter === 'working') return projectsApi.list();
+      if (SERVER_FILTERABLE_STATUSES.has(statusFilter)) {
         return projectsApi.listByStatus(statusFilter);
       }
       return projectsApi.list();
     },
     staleTime: 5 * 60_000,
   });
+
+  /** Multi-select for bulk archive / restore / status. */
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkConfirm, setBulkConfirm] = useState<
+    null | { kind: 'archive' | 'restore' }
+  >(null);
+  const [bulkStatusValue, setBulkStatusValue] = useState<string>('active');
+
+  // Clear selection when the filtered set changes so we never act on hidden rows.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [statusFilter, regionFilter, searchQuery, projects]);
+
+  const invalidateProjects = () => {
+    void queryClient.invalidateQueries({ queryKey: ['projects'] });
+    void queryClient.invalidateQueries({ queryKey: ['projects-switcher'] });
+  };
+
+  const toastBulkResult = (
+    title: string,
+    result: { ok: string[]; failed: Array<{ id: string; error: string }> },
+  ) => {
+    if (result.failed.length === 0) {
+      addToast({
+        type: 'success',
+        title,
+        message: t('projects.bulk_ok', {
+          defaultValue: '{{count}} project(s) updated',
+          count: result.ok.length,
+        }),
+      });
+    } else {
+      addToast({
+        type: 'warning',
+        title,
+        message: t('projects.bulk_partial', {
+          defaultValue: '{{ok}} succeeded, {{fail}} failed',
+          ok: result.ok.length,
+          fail: result.failed.length,
+        }),
+      });
+    }
+    setSelectedIds(new Set());
+    invalidateProjects();
+  };
+
+  const runBulkArchive = async () => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    setBulkBusy(true);
+    try {
+      const result = await projectsApi.bulkArchive(ids);
+      toastBulkResult(
+        t('projects.bulk_archived', { defaultValue: 'Projects archived' }),
+        result,
+      );
+    } finally {
+      setBulkBusy(false);
+      setBulkConfirm(null);
+    }
+  };
+
+  const runBulkRestore = async () => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    setBulkBusy(true);
+    try {
+      const result = await projectsApi.bulkRestore(ids);
+      toastBulkResult(
+        t('projects.bulk_restored', { defaultValue: 'Projects restored' }),
+        result,
+      );
+    } finally {
+      setBulkBusy(false);
+      setBulkConfirm(null);
+    }
+  };
+
+  const runBulkStatus = async (status: string) => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    // Only non-archived rows; restore first if user selected archived.
+    const projectsById = new Map((projects ?? []).map((p) => [p.id, p]));
+    const eligible = ids.filter((id) => projectsById.get(id)?.status !== 'archived');
+    const skipped = ids.length - eligible.length;
+    if (!eligible.length) {
+      addToast({
+        type: 'warning',
+        title: t('projects.bulk_status_none', {
+          defaultValue: 'No eligible projects',
+        }),
+        message: t('projects.bulk_status_archived_hint', {
+          defaultValue: 'Restore archived projects before changing status.',
+        }),
+      });
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      const result = await projectsApi.bulkSetStatus(eligible, status);
+      toastBulkResult(
+        t('projects.bulk_status_done', {
+          defaultValue: 'Status updated to {{status}}',
+          status: statusLabel(status),
+        }),
+        result,
+      );
+      if (skipped > 0) {
+        addToast({
+          type: 'info',
+          title: t('projects.bulk_status_skipped', {
+            defaultValue: '{{n}} archived project(s) skipped',
+            n: skipped,
+          }),
+        });
+      }
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   /* Demo-data banner: seeded demo projects carry metadata.demo_id. The
      purge action lives in Settings > Advanced too, but new users could not
@@ -401,13 +516,9 @@ export function ProjectsPage() {
       );
     }
 
-    // Status filter. 'active' shows every working (non-archived) project so
-    // custom statuses (on hold / finished) stay visible; 'archived' shows only
-    // archived; 'all' shows everything; any other value narrows to that exact
-    // status. The list is already fetched by status above (server-side where
-    // the backend supports it), so this also guards against a stale cache and
-    // covers concrete statuses fetched via the broader non-archived list.
-    if (statusFilter === 'active') {
+    // Status filter. 'working' = every non-archived; 'all' = everything;
+    // concrete tokens (active = 在建, closing, settling, …) exact-match.
+    if (statusFilter === 'working') {
       list = list.filter((p) => p.status !== 'archived');
     } else if (statusFilter !== 'all') {
       list = list.filter((p) => p.status === statusFilter);
@@ -948,11 +1059,8 @@ export function ProjectsPage() {
               />
             </div>
 
-            {/* Status filter. Options = curated statuses UNION any custom
-                status present on the fetched projects (availableStatuses).
-                'all'/'active' are view sentinels with their own labels;
-                'archived' keeps its existing filter label; every other
-                concrete status resolves through the shared status label. */}
+            {/* Status filter. 'all' / 'working' are view sentinels; curated
+                statuses (active = 在建) and any custom values follow. */}
             <div className="relative">
               <select
                 value={statusFilter}
@@ -960,14 +1068,16 @@ export function ProjectsPage() {
                 aria-label={t('a11y.projects.status_filter', {
                   defaultValue: 'Filter projects by status',
                 })}
-                className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-36"
+                className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-40"
               >
                 {availableStatuses.map((s) => (
                   <option key={s} value={s}>
                     {s === 'all'
                       ? t('projects.filter_all', { defaultValue: 'All' })
-                      : s === 'active'
-                        ? t('projects.filter_active', { defaultValue: 'Active' })
+                      : s === 'working'
+                        ? t('projects.filter_working', {
+                            defaultValue: 'All working',
+                          })
                         : s === 'archived'
                           ? t('projects.filter_archived', { defaultValue: 'Archived' })
                           : statusLabel(s)}
@@ -1052,10 +1162,12 @@ export function ProjectsPage() {
           // toolbar above already lets the user switch, but a primary action
           // here makes the way out unmissable from an empty filtered view.
           action={{
-            label: t('projects.show_active', { defaultValue: 'Show active projects' }),
+            label: t('projects.show_working', {
+              defaultValue: 'Show working projects',
+            }),
             onClick: () => {
               setSearchQuery('');
-              setStatusFilter('active');
+              setStatusFilter('working');
               setRegionFilter('all');
             },
           }}
@@ -1123,6 +1235,113 @@ export function ProjectsPage() {
               </Button>
             </div>
           )}
+
+          {/* Bulk selection toolbar */}
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border-light bg-surface-secondary/50 px-3 py-2">
+            <label className="flex items-center gap-2 text-sm text-content-secondary cursor-pointer">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-border"
+                checked={
+                  paginatedProjects.length > 0 &&
+                  paginatedProjects.every((p) => selectedIds.has(p.id))
+                }
+                ref={(el) => {
+                  if (!el) return;
+                  const some = paginatedProjects.some((p) => selectedIds.has(p.id));
+                  const all =
+                    paginatedProjects.length > 0 &&
+                    paginatedProjects.every((p) => selectedIds.has(p.id));
+                  el.indeterminate = some && !all;
+                }}
+                onChange={(e) => {
+                  setSelectedIds((prev) => {
+                    const next = new Set(prev);
+                    if (e.target.checked) {
+                      paginatedProjects.forEach((p) => next.add(p.id));
+                    } else {
+                      paginatedProjects.forEach((p) => next.delete(p.id));
+                    }
+                    return next;
+                  });
+                }}
+                data-testid="projects-select-page"
+              />
+              {t('projects.select_page', {
+                defaultValue: 'Select page ({{n}})',
+                n: paginatedProjects.length,
+              })}
+            </label>
+            {selectedIds.size > 0 && (
+              <>
+                <span className="text-xs font-medium text-content-primary">
+                  {t('projects.selected_count', {
+                    defaultValue: '{{count}} selected',
+                    count: selectedIds.size,
+                  })}
+                </span>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={<Archive size={14} />}
+                  disabled={bulkBusy}
+                  onClick={() => setBulkConfirm({ kind: 'archive' })}
+                  data-testid="projects-bulk-archive"
+                >
+                  {t('common.archive', { defaultValue: 'Archive' })}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={<ArchiveRestore size={14} />}
+                  disabled={bulkBusy}
+                  onClick={() => setBulkConfirm({ kind: 'restore' })}
+                  data-testid="projects-bulk-restore"
+                >
+                  {t('common.restore', { defaultValue: 'Restore' })}
+                </Button>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={bulkStatusValue}
+                    onChange={(e) => setBulkStatusValue(e.target.value)}
+                    disabled={bulkBusy}
+                    className="h-8 rounded-md border border-border bg-surface-primary px-2 text-xs"
+                    aria-label={t('projects.bulk_status', {
+                      defaultValue: 'Bulk status',
+                    })}
+                    data-testid="projects-bulk-status-select"
+                  >
+                    {WORKING_PROJECT_STATUSES.map((s) => (
+                      <option key={s} value={s}>
+                        {statusLabel(s)}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    disabled={bulkBusy}
+                    loading={bulkBusy}
+                    onClick={() => void runBulkStatus(bulkStatusValue)}
+                    data-testid="projects-bulk-status-apply"
+                  >
+                    {t('projects.bulk_set_status', {
+                      defaultValue: 'Set status',
+                    })}
+                  </Button>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={bulkBusy}
+                  onClick={() => setSelectedIds(new Set())}
+                >
+                  {t('common.clear', { defaultValue: 'Clear' })}
+                </Button>
+              </>
+            )}
+          </div>
+
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {paginatedProjects.map((project, i) => (
               <ProjectCard
@@ -1131,7 +1350,16 @@ export function ProjectsPage() {
                 boqStats={boqStatsMap.get(project.id)}
                 fileTypes={fileTypesByProject?.[project.id] ?? []}
                 style={{ animationDelay: `${50 + i * 30}ms` }}
-                onDeleted={() => setStatusFilter('active')}
+                selected={selectedIds.has(project.id)}
+                onToggleSelect={(id, on) => {
+                  setSelectedIds((prev) => {
+                    const next = new Set(prev);
+                    if (on) next.add(id);
+                    else next.delete(id);
+                    return next;
+                  });
+                }}
+                onDeleted={() => setStatusFilter('working')}
               />
             ))}
           </div>
@@ -1220,6 +1448,39 @@ export function ProjectsPage() {
         open={createModalOpen}
         onClose={() => setCreateModalOpen(false)}
       />
+
+      <ConfirmDialog
+        open={bulkConfirm?.kind === 'archive'}
+        onCancel={() => setBulkConfirm(null)}
+        onConfirm={() => void runBulkArchive()}
+        title={t('projects.bulk_archive_title', {
+          defaultValue: 'Archive {{count}} project(s)?',
+          count: selectedIds.size,
+        })}
+        message={t('projects.bulk_archive_desc', {
+          defaultValue:
+            'Projects are soft-deleted (status = archived) and can be restored later. Data is kept.',
+        })}
+        confirmLabel={t('common.archive', { defaultValue: 'Archive' })}
+        variant="warning"
+        loading={bulkBusy}
+      />
+      <ConfirmDialog
+        open={bulkConfirm?.kind === 'restore'}
+        onCancel={() => setBulkConfirm(null)}
+        onConfirm={() => void runBulkRestore()}
+        title={t('projects.bulk_restore_title', {
+          defaultValue: 'Restore {{count}} project(s)?',
+          count: selectedIds.size,
+        })}
+        message={t('projects.bulk_restore_desc', {
+          defaultValue:
+            'Archived projects return to Active (in progress). Non-archived selections are skipped by the server.',
+        })}
+        confirmLabel={t('common.restore', { defaultValue: 'Restore' })}
+        variant="warning"
+        loading={bulkBusy}
+      />
     </div>
   );
 }
@@ -1229,6 +1490,8 @@ function ProjectCard({
   boqStats,
   fileTypes,
   style,
+  selected,
+  onToggleSelect,
   onDeleted,
 }: {
   project: Project;
@@ -1236,6 +1499,8 @@ function ProjectCard({
   /** Uploaded file extensions for this project (e.g. ['rvt','dwg','pdf']). */
   fileTypes?: string[];
   style?: React.CSSProperties;
+  selected?: boolean;
+  onToggleSelect?: (id: string, selected: boolean) => void;
   onDeleted?: () => void;
 }) {
   const { t } = useTranslation();
@@ -1440,14 +1705,31 @@ function ProjectCard({
       )}
       <div className="p-5">
         <div className="flex items-start justify-between gap-3">
-          <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-base font-bold ring-1 ring-inset ring-white/40 dark:ring-white/5 shadow-sm transition-transform duration-normal ease-oe group-hover:scale-105 ${getRegionAvatarClass(project.region)}`}>
-            {project.name.charAt(0).toUpperCase()}
+          <div className="flex items-start gap-2 min-w-0">
+            {onToggleSelect && (
+              <input
+                type="checkbox"
+                className="mt-1 h-4 w-4 shrink-0 rounded border-border"
+                checked={!!selected}
+                onChange={(e) => {
+                  e.stopPropagation();
+                  onToggleSelect(project.id, e.target.checked);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                aria-label={t('projects.select_one', {
+                  defaultValue: 'Select {{name}}',
+                  name: project.name,
+                })}
+                data-testid={`project-select-${project.id}`}
+              />
+            )}
+            <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-base font-bold ring-1 ring-inset ring-white/40 dark:ring-white/5 shadow-sm transition-transform duration-normal ease-oe group-hover:scale-105 ${getRegionAvatarClass(project.region)}`}>
+              {project.name.charAt(0).toUpperCase()}
+            </div>
           </div>
           <div className="flex items-center gap-1.5">
-            {/* Surface any non-active status (on hold / finished / cancelled /
-                archived) as a coloured pill. Active is the implied default,
-                so we omit its badge to keep the common case uncluttered. */}
-            {project.status && project.status !== 'active' && (
+            {/* Always show status badge so 在建 / 收尾 / 结算 are visible. */}
+            {project.status && (
               <ProjectStatusBadge status={project.status} dot={false} />
             )}
             <PinButton projectId={project.id} />

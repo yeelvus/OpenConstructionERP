@@ -10,7 +10,16 @@ import {
 describe('ProjectStatusBadge', () => {
   it('renders curated statuses with their English labels', () => {
     render(<ProjectStatusBadge status="active" />);
-    expect(screen.getByText('Active')).toBeInTheDocument();
+    // active = in-progress construction (在建)
+    expect(screen.getByText('In progress')).toBeInTheDocument();
+  });
+
+  it('includes close-out / settlement statuses in the curated set', () => {
+    expect(CURATED_PROJECT_STATUSES).toContain('closing');
+    expect(CURATED_PROJECT_STATUSES).toContain('settling');
+    expect(CURATED_PROJECT_STATUSES).toContain('settled');
+    render(<ProjectStatusBadge status="settling" />);
+    expect(screen.getByText('Settling')).toBeInTheDocument();
   });
 
   it('humanises the on_hold token to "On hold"', () => {
