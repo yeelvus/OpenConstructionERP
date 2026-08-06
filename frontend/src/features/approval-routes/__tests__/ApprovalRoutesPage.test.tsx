@@ -167,9 +167,7 @@ function renderPage() {
   });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
+      <MemoryRouter>
         <ApprovalRoutesPage />
       </MemoryRouter>
     </QueryClientProvider>,

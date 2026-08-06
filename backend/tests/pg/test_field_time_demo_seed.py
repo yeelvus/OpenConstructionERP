@@ -212,12 +212,19 @@ async def test_payroll_reads_real_hours_from_the_seeded_rows(pg_session) -> None
     assert all(row["source"] == "field_timesheet" for row in rows)
 
 
-async def test_two_projects_do_not_get_the_same_register(pg_session) -> None:
-    """A reader flipping between two demo projects must see two pictures."""
-    first = await _make_project(pg_session, "Alpha")
-    second = await _make_project(pg_session, "Beta")
+async def test_no_two_projects_get_the_same_register(pg_session) -> None:
+    """A reader flipping between demo projects must see a different picture each time.
 
-    await seed_field_time_demo(pg_session, [first, second])
+    Six projects, not two. The history length used to be drawn per project from
+    a tuple of four, so two projects collided one run in four and this test
+    passed most of the time while the defect was live. Six also runs past the
+    end of that tuple, which is where a wrap that adds too little would put a
+    later project back onto an earlier project's register.
+    """
+    names = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"]
+    projects = [await _make_project(pg_session, name) for name in names]
+
+    await seed_field_time_demo(pg_session, projects)
     await pg_session.flush()
 
     def _shape(rows: list[tuple]) -> list[tuple]:
@@ -230,7 +237,14 @@ async def test_two_projects_do_not_get_the_same_register(pg_session) -> None:
             )
         ).all()
 
-    left = _shape(await _rows(first))
-    right = _shape(await _rows(second))
-    assert left and right
-    assert left != right, "both projects rendered the same register, which is the defect this seed exists to fix"
+    shapes = {name: _shape(await _rows(pid)) for name, pid in zip(names, projects, strict=True)}
+    assert all(shapes.values()), f"a project got no register at all: {[n for n, s in shapes.items() if not s]}"
+
+    seen: dict[tuple, str] = {}
+    for name, shape in shapes.items():
+        key = tuple(shape)
+        clash = seen.get(key)
+        assert clash is None, (
+            f"{name} and {clash} rendered the same register, which is the defect this seed exists to fix"
+        )
+        seen[key] = name

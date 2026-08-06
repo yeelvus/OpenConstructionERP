@@ -3,8 +3,10 @@
 /**
  * navigationProgress — visible feedback for slow route transitions.
  *
- * Why this exists: the app runs React Router with `v7_startTransition: true`
- * (main.tsx). Under a transition React keeps the OLD page on screen while a
+ * Why this exists: React Router commits a navigation inside a transition. That
+ * was the opt-in `v7_startTransition` flag on v6 and is plain behaviour on v7,
+ * so grep will no longer find the flag anywhere and the reason below still
+ * holds. Under a transition React keeps the OLD page on screen while a
  * lazy route chunk downloads/compiles, so a click on the sidebar produced
  * zero visual change for 1-3 seconds (founder report 2026-06-06) — no
  * Suspense fallback, no active-state flip, nothing. The user cannot tell

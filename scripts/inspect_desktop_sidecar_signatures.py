@@ -21,15 +21,26 @@ what each Mach-O member is signed with. A member carrying a real Team ID while t
 process carries none is the exact mismatch dyld refuses, whether or not this machine
 happens to enforce it today.
 
-What it measured
-----------------
-Not the cause of the 14.4.0 failure. The 14.4.0 sidecar was read member by member,
-along with two later builds that differ only in the spec's codesign_identity line, and
-all three are the same artifact in this respect: 402 Mach-O members, every one ad-hoc
-with no Team ID. Nothing inside the archive carries an identity that could disagree with
-the process, so whatever supplies one on the affected machine comes from outside the
-file. PyInstaller rewrites rpaths in the binaries it collects, which invalidates their
-original signatures, and re-signs them ad-hoc on its own.
+What it measured, and how far that reaches
+------------------------------------------
+Not the cause of the 14.4.0 failure. The 14.4.0 sidecar was read alongside two later
+builds that differ only in the spec's codesign_identity line, and all three came back the
+same: 402 Mach-O members, every one ad-hoc with no Team ID. PyInstaller rewrites rpaths
+in the binaries it collects, which invalidates their original signatures, and re-signs
+them ad-hoc on its own, so that result is what one would expect.
+
+That result was then read more widely than it can carry, and this file was part of why.
+The count covers only members this script could open and whose signature it could parse.
+A member the reader failed to extract used to drop out of the total silently, and a
+member whose codesign output did not yield a TeamIdentifier line was filed under "no Team
+ID" rather than "could not tell". Either one would remove a framework binary from the
+census without leaving a mark - and a framework binary is precisely what the failure
+names. So "402, all ad-hoc" supported "every member we opened is ad-hoc", not "every
+member is". Both gaps are now reported, both fail the gate, and --require-member makes a
+run fail unless a named member was genuinely inspected.
+
+Whether the shipped archive is clean is therefore still open. What is settled is that the
+spec's codesign_identity line does not change this property either way.
 
 That leaves this script as a tripwire rather than a fix: it fails the build the day a
 dependency or a packer upgrade starts sealing a vendor-signed binary inside the archive,
@@ -153,7 +164,22 @@ def main() -> int:
     parser.add_argument(
         "--fail-on-foreign-team-id",
         action="store_true",
-        help="exit non-zero when a member carries a Team ID the wrapper does not",
+        help=(
+            "exit non-zero when a member carries a Team ID the wrapper does not, "
+            "and also when any member could not be read or parsed - a census "
+            "that skipped members cannot support a claim about all of them"
+        ),
+    )
+    parser.add_argument(
+        "--require-member",
+        action="append",
+        metavar="SUBSTRING",
+        help=(
+            "fail unless a member whose name contains SUBSTRING was actually "
+            "inspected. Repeatable. Use it to name the file in a failure report "
+            "(for example Python.framework) so a run cannot clear it by silently "
+            "never opening it."
+        ),
     )
     args = parser.parse_args()
 
@@ -181,12 +207,21 @@ def main() -> int:
     try:
         checked = 0
         skipped_over_limit = 0
-        unreadable = 0
+        unreadable_names: list[str] = []
+        inspected_names: list[str] = []
         by_team: dict[str, list[str]] = {}
         for name in names:
             data = extract(reader, name)
             if data is None:
-                unreadable += 1
+                # Keep the name, not just a tally. A member the reader cannot
+                # open is not a member without a Team ID: it is a member nobody
+                # looked at, and it drops out of every count below. The 402
+                # figure this script produced was read as "every member is
+                # ad-hoc" when what it could support was "every member we could
+                # open is ad-hoc" - and the one file named in the failure is
+                # precisely the one whose absence from the census would be
+                # invisible.
+                unreadable_names.append(name)
                 continue
             if data[:4] not in MACHO_MAGIC:
                 continue
@@ -197,6 +232,7 @@ def main() -> int:
             target.write_bytes(data)
             info = describe(target)
             by_team.setdefault(info["team"], []).append(name)
+            inspected_names.append(name)
             checked += 1
             target.unlink(missing_ok=True)
 
@@ -205,8 +241,12 @@ def main() -> int:
             print(
                 f"Mach-O members NOT inspected because --limit {args.limit} was reached: {skipped_over_limit}"
             )
-        if unreadable:
-            print(f"members the reader could not extract: {unreadable}")
+        if unreadable_names:
+            print(f"members the reader could not extract: {len(unreadable_names)}")
+            for name in sorted(unreadable_names)[:12]:
+                print(f"    {name}")
+            if len(unreadable_names) > 12:
+                print(f"    ... and {len(unreadable_names) - 12} more")
         print()
         for team in sorted(by_team):
             members = by_team[team]
@@ -221,6 +261,34 @@ def main() -> int:
             for t, m in by_team.items()
             if t not in ("not set", "unsigned", "unknown")
         }
+        # "unknown" means codesign printed something this script could not parse
+        # a TeamIdentifier out of. Folding it into "no Team ID" is how a member
+        # whose signature could not be read came to be counted as evidence that
+        # no member has one. It is inconclusive, and it belongs with the members
+        # that could not be extracted at all.
+        inconclusive = list(by_team.get("unknown", [])) + unreadable_names
+        if inconclusive:
+            print()
+            print(
+                f"INCONCLUSIVE: {len(inconclusive)} member(s) were not read or not parsed, "
+                "so no statement about the archive as a whole is supported by this run."
+            )
+
+        missing_required = [
+            pat
+            for pat in (args.require_member or [])
+            if not any(pat in n for n in inspected_names)
+        ]
+        if missing_required:
+            print()
+            for pat in missing_required:
+                print(
+                    f"NOT INSPECTED: no member whose name contains {pat!r} was measured."
+                )
+            print(
+                "A census that never opened the file named in the failure cannot clear it."
+            )
+
         if foreign and wrapper["team"] in ("not set", "unsigned"):
             print()
             print("MISMATCH: the wrapper carries no Team ID and these members do.")
@@ -229,11 +297,17 @@ def main() -> int:
             )
             if args.fail_on_foreign_team_id:
                 return 1
-        elif not foreign:
+        elif not foreign and not inconclusive and not missing_required:
             print()
             print(
                 "No member carries a Team ID, so no member can disagree with the process about one."
             )
+
+        # Under the gate, an unread member and an unmeasured required member are
+        # failures in their own right: the gate's whole claim is that nothing
+        # foreign is in there, and that claim is only as wide as what was opened.
+        if args.fail_on_foreign_team_id and (inconclusive or missing_required):
+            return 1
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

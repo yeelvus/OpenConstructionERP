@@ -71,9 +71,7 @@ function renderHero() {
   // RecoveryCard (error branch) calls useLocation, so a router is required.
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
+      <MemoryRouter>
         <ProjectKPIHero projectId="proj-1" />
       </MemoryRouter>
     </QueryClientProvider>,

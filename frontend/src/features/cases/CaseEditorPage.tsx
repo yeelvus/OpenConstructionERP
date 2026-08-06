@@ -7,33 +7,42 @@
 // frontend, which makes it a build step rather than a feature. This is the
 // screen that makes it a feature.
 //
-// Two decisions drive the layout.
+// Three decisions drive the layout.
 //
-// Starting from one of the 144 shipped cases is offered first, and prominently.
-// A blank form is the hardest way to write a walkthrough, and the product
-// already ships 144 worked examples of the format; "this, but how we actually
-// do it" is the normal case and should be one click.
+// Starting from one of the 144 shipped cases is offered first, and prominently,
+// with each one's own artwork. A blank form is the hardest way to write a
+// walkthrough, and the product already ships 144 worked examples of the format;
+// "this, but how we actually do it" is the normal case and should be one click.
+// The picture is what makes the right one findable at a glance.
 //
-// The step target is picked from a list, not typed. A case whose steps go
-// nowhere is worse than no case, and the catalogue in ./stepTargets is built
-// from screens the shipped cases already walk, so everything on it works. Free
-// text stays possible for screens no shipped case visits, and the same guard
-// the backend applies runs here so the editor can say no before a round trip.
+// The step target is picked from the screen catalogue, not typed. A case whose
+// steps go nowhere is worse than no case. ./ScreenPicker shows every screen the
+// product has, with the icon it carries in the menu, because an author knows a
+// module by its icon rather than by its path. Free text stays possible for
+// screens no shipped case visits, and the same guard the backend applies runs
+// here so the editor can say no before a round trip.
+//
+// The form is wide, with a rail on the right that shows the case as a reader
+// will meet it: its card, and its steps as a route through the product. A
+// walkthrough is a thing with a shape, and a column of form fields hides that
+// shape from the person writing it.
 //
 // All display text is a translation key with an English default; nothing in
 // this file is a hardcoded user-facing string.
 
 import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle,
   ArrowLeft,
   ChevronDown,
   ChevronUp,
+  Clock,
   Copy,
   FilePlus2,
   Info,
+  LayoutGrid,
   Loader2,
   Plus,
   Save,
@@ -43,14 +52,17 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { Badge, Button, Card, Input } from '@/shared/ui';
+import { getRouteIcon } from '@/app/layout/routeIcons';
 import { useToastStore } from '@/stores/useToastStore';
 import type { CaseBody, CaseFinding, CaseStepWire } from './api';
 import { caseIdFromPlaybookId } from './api';
 import { useAuthoredCase, useCaseMutations } from './useCustomCases';
 import { PLAYBOOKS } from './playbooks';
-import { CATEGORY_META } from './categories';
+import { CATEGORY_BY_ID, CATEGORY_META, tintFor } from './categories';
 import { COMPANY_TYPE_META } from './companyTypes';
-import { STEP_TARGETS, findTarget, isValidTarget } from './stepTargets';
+import { CaseArt } from './CaseArt';
+import { ScreenPicker } from './ScreenPicker';
+import { findTarget, isValidTarget } from './stepTargets';
 import type { CaseCategory, CompanyType } from './types';
 import type { CaseDraft, DraftStep } from './caseDraft';
 import {
@@ -114,7 +126,13 @@ export function CaseEditorPage() {
   const [loadedId, setLoadedId] = useState<string | null>(null);
   const [findings, setFindings] = useState<CaseFinding[]>([]);
   const [startSearch, setStartSearch] = useState('');
-  const [showStart, setShowStart] = useState(!caseId);
+  // The hub offers "from blank" as its own action, and someone who chose it has
+  // already answered the question the copy-one-of-ours panel asks.
+  const [search] = useSearchParams();
+  const [showStart, setShowStart] = useState(!caseId && search.get('blank') !== '1');
+  // Which step's screen is being chosen. Held by index rather than by a boolean
+  // per step, so only one picker can ever be open.
+  const [pickerFor, setPickerFor] = useState<number | null>(null);
 
   // Resolve a shipped playbook's key to the reader's own language. A copy has
   // to be text the author can edit, and a translation key is not that.
@@ -158,6 +176,10 @@ export function CaseEditorPage() {
   // strict index check is done once rather than at each of the two call sites.
   const firstBlocker: string | undefined = blockers[0];
   const saving = create.isPending || update.isPending;
+  // The discipline drives the preview card's colour and its fallback glyph, the
+  // same way it drives a card on the Cases hub.
+  const draftMeta = CATEGORY_BY_ID[draft.category];
+  const draftTint = tintFor(draft.category);
 
   const startPoints = useMemo(() => {
     const needle = startSearch.trim().toLowerCase();
@@ -166,14 +188,16 @@ export function CaseEditorPage() {
       label: resolve(pb.titleKey, pb.titleDefault),
       summary: resolve(pb.descKey, pb.descDefault),
     }));
-    if (!needle) return all.slice(0, 12);
+    // The grid is three across on a wide screen, so the unsearched view shows
+    // whole rows rather than a row and a half.
+    if (!needle) return all.slice(0, 15);
     return all
       .filter(
         (entry) =>
           entry.label.toLowerCase().includes(needle) ||
           entry.summary.toLowerCase().includes(needle),
       )
-      .slice(0, 24);
+      .slice(0, 30);
   }, [startSearch, resolve]);
 
   const patch = useCallback((next: Partial<CaseDraft>) => {
@@ -238,8 +262,8 @@ export function CaseEditorPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-5 p-4 pb-28">
-      <div className="flex items-center gap-3">
+    <div className="w-full p-4 pb-28 2xl:px-8">
+      <div className="mb-5 flex flex-wrap items-center gap-3">
         <Button variant="ghost" size="sm" onClick={() => navigate('/cases')}>
           <ArrowLeft className="h-4 w-4" />
           {t('cases.back_to_list', { defaultValue: 'All cases' })}
@@ -254,14 +278,17 @@ export function CaseEditorPage() {
             {t('cases.editor.badge_shared', { defaultValue: 'Shared with the team' })}
           </Badge>
         )}
+        <p className="w-full text-sm text-content-secondary lg:ml-2 lg:w-auto lg:max-w-3xl lg:flex-1">
+          {t('cases.editor.intro', {
+            defaultValue:
+              'A case is a short walkthrough: why you would do this, and the screens you pass through to do it. Write down how your team actually works, so a new starter can follow it.',
+          })}
+        </p>
       </div>
 
-      <p className="text-sm text-content-secondary">
-        {t('cases.editor.intro', {
-          defaultValue:
-            'A case is a short walkthrough: why you would do this, and the screens you pass through to do it. Write down how your team actually works, so a new starter can follow it.',
-        })}
-      </p>
+      {/* The form on the left, what a reader will meet on the right. */}
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_23rem] 2xl:grid-cols-[minmax(0,1fr)_26rem]">
+        <div className="min-w-0 space-y-5">
 
       {/* Start from a shipped case. Offered first because a blank form is the
           hardest way to write a walkthrough and 144 worked examples exist. */}
@@ -296,21 +323,50 @@ export function CaseEditorPage() {
               })}
             />
           </div>
-          <div className="max-h-72 space-y-1.5 overflow-y-auto">
-            {startPoints.map((entry) => (
-              <button
-                key={entry.playbook.id}
-                type="button"
-                className="w-full rounded-md border border-border-light p-3 text-left hover:border-accent-primary hover:bg-surface-secondary"
-                onClick={() => {
-                  setDraft(draftFromPlaybook(entry.playbook, resolve));
-                  setShowStart(false);
-                }}
-              >
-                <div className="text-sm font-medium text-content-primary">{entry.label}</div>
-                <div className="line-clamp-2 text-xs text-content-tertiary">{entry.summary}</div>
-              </button>
-            ))}
+          {/* Each one carries its own drawing. Ninety-seven of the shipped
+              cases have a bespoke scene and the rest fall back to their
+              discipline's glyph, which is what CaseArt already decides. */}
+          <div className="grid max-h-[28rem] gap-2 overflow-y-auto sm:grid-cols-2 2xl:grid-cols-3">
+            {startPoints.map((entry) => {
+              const meta = CATEGORY_BY_ID[entry.playbook.category];
+              const tint = tintFor(entry.playbook.category);
+              return (
+                <button
+                  key={entry.playbook.id}
+                  type="button"
+                  className={clsx(
+                    'flex gap-3 rounded-lg border border-border-light p-2.5 text-left transition',
+                    'hover:border-accent-primary hover:bg-surface-secondary',
+                  )}
+                  onClick={() => {
+                    setDraft(draftFromPlaybook(entry.playbook, resolve));
+                    setShowStart(false);
+                  }}
+                >
+                  <span
+                    className={clsx(
+                      'h-14 w-20 shrink-0 overflow-hidden rounded-md ring-1 ring-border-light',
+                      tint.softBg ?? 'bg-surface-secondary',
+                    )}
+                  >
+                    <CaseArt
+                      id={entry.playbook.id}
+                      category={entry.playbook.category}
+                      fallbackIcon={meta.icon}
+                      fallbackClass={tint.text}
+                    />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium text-content-primary">
+                      {entry.label}
+                    </span>
+                    <span className="line-clamp-2 block text-xs text-content-tertiary">
+                      {entry.summary}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </Card>
       )}
@@ -455,6 +511,10 @@ export function CaseEditorPage() {
             {draft.steps.map((step, index) => {
               const target = findTarget(step.to);
               const targetBad = Boolean(step.to.trim()) && !isValidTarget(step.to.trim());
+              // The same icon the sidebar row for that screen carries, so the
+              // step reads as the module the author has in mind. A query string
+              // would defeat the prefix match, so it comes off first.
+              const StepIcon = step.to ? getRouteIcon(step.to.split('?')[0] ?? step.to) : null;
               return (
                 <div key={step.id} className="rounded-md border border-border-light p-3">
                   <div className="mb-2 flex items-center gap-2">
@@ -502,22 +562,39 @@ export function CaseEditorPage() {
                       <label className="mb-1 block text-xs text-content-tertiary">
                         {t('cases.editor.step_screen', { defaultValue: 'Screen it opens' })}
                       </label>
-                      <Input
-                        list="case-step-targets"
-                        value={step.to}
-                        onChange={(e) => {
-                          const to = e.target.value;
-                          const match = findTarget(to);
-                          patchStep(index, {
-                            to,
-                            // Fill the module label from the catalogue, but only
-                            // when the author has not written their own.
-                            moduleLabel:
-                              match && !step.moduleLabel ? match.label : step.moduleLabel,
-                          });
-                        }}
-                        placeholder="/boq"
-                      />
+                      <button
+                        type="button"
+                        onClick={() => setPickerFor(index)}
+                        className={clsx(
+                          'flex w-full items-center gap-2.5 rounded-md border p-2 text-left transition',
+                          targetBad
+                            ? 'border-status-error'
+                            : 'border-border-light hover:border-accent-primary hover:bg-surface-secondary',
+                        )}
+                      >
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-surface-secondary text-content-secondary ring-1 ring-border-light">
+                          {StepIcon ? (
+                            <StepIcon className="h-4 w-4" />
+                          ) : (
+                            <LayoutGrid className="h-4 w-4" />
+                          )}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm text-content-primary">
+                            {step.to
+                              ? (target?.label ?? (step.moduleLabel || step.to))
+                              : t('cases.editor.pick_screen', {
+                                  defaultValue: 'Choose a screen',
+                                })}
+                          </span>
+                          {step.to && (
+                            <span className="block truncate font-mono text-[11px] text-content-tertiary">
+                              {step.to}
+                            </span>
+                          )}
+                        </span>
+                        <ChevronDown className="h-4 w-4 shrink-0 text-content-tertiary" />
+                      </button>
                       {targetBad ? (
                         <p className="mt-1 flex items-center gap-1 text-xs text-status-error">
                           <AlertTriangle className="h-3 w-3" />
@@ -601,15 +678,6 @@ export function CaseEditorPage() {
           </div>
         )}
 
-        {/* One datalist for every step input. The catalogue is built from the
-            screens the shipped cases already walk, so everything on it works. */}
-        <datalist id="case-step-targets">
-          {STEP_TARGETS.map((entry) => (
-            <option key={entry.to} value={entry.to}>
-              {entry.label}
-            </option>
-          ))}
-        </datalist>
       </Card>
 
       {/* What validation made of it */}
@@ -637,6 +705,113 @@ export function CaseEditorPage() {
             ))}
           </ul>
         </Card>
+      )}
+
+        </div>
+
+        {/* The rail. Nothing here is an input: it is the case as a reader will
+            meet it, kept in view while the form on the left is edited. */}
+        <aside className="space-y-4 xl:sticky xl:top-4 xl:self-start">
+          <Card className="overflow-hidden rounded-lg border border-border-light bg-surface-primary">
+            <div className={clsx('h-32 w-full', draftTint.softBg ?? 'bg-surface-secondary')}>
+              <CaseArt
+                id={draft.sourcePlaybookId}
+                category={draft.category}
+                fallbackIcon={draftMeta.icon}
+                fallbackClass={draftTint.text}
+              />
+            </div>
+            <div className="p-4">
+              <h2 className="text-sm font-semibold text-content-primary">
+                {draft.title.trim() ||
+                  t('cases.editor.preview_untitled', { defaultValue: 'Your case, untitled' })}
+              </h2>
+              <p className="mt-1 line-clamp-3 text-xs text-content-secondary">
+                {draft.description.trim() ||
+                  t('cases.editor.preview_nosummary', {
+                    defaultValue: 'The one-line summary appears here.',
+                  })}
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                <span className={clsx('rounded-full border px-2 py-0.5 text-[11px]', draftTint.chip)}>
+                  {t(draftMeta.labelKey, { defaultValue: draftMeta.labelDefault })}
+                </span>
+                <span className="flex items-center gap-1 rounded-full border border-border-light px-2 py-0.5 text-[11px] text-content-secondary">
+                  <Clock className="h-3 w-3" />
+                  {t('cases.card.minutes_short', {
+                    defaultValue: '{{count}} min',
+                    count: draft.estMinutes,
+                  })}
+                </span>
+                <span className="rounded-full border border-border-light px-2 py-0.5 text-[11px] text-content-secondary">
+                  {t('cases.card.steps', {
+                    defaultValue: '{{count}} steps',
+                    count: draft.steps.length,
+                  })}
+                </span>
+              </div>
+            </div>
+          </Card>
+
+          <Card className={SECTION}>
+            <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-content-primary">
+              <LayoutGrid className="h-4 w-4 text-content-tertiary" />
+              {t('cases.editor.route_title', { defaultValue: 'The route through the product' })}
+            </h2>
+            {draft.steps.length === 0 ? (
+              <p className="text-xs text-content-tertiary">
+                {t('cases.editor.route_empty', {
+                  defaultValue: 'Steps you add show up here as the path a reader will take.',
+                })}
+              </p>
+            ) : (
+              <ol className="space-y-1">
+                {draft.steps.map((step, index) => {
+                  const Icon = step.to ? getRouteIcon(step.to.split('?')[0] ?? step.to) : null;
+                  return (
+                    <li key={step.id} className="flex items-center gap-2.5 rounded-md p-1.5">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-surface-secondary text-[11px] font-medium text-content-secondary">
+                        {index + 1}
+                      </span>
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-surface-secondary text-content-secondary ring-1 ring-border-light">
+                        {Icon ? <Icon className="h-3.5 w-3.5" /> : <LayoutGrid className="h-3.5 w-3.5" />}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-xs text-content-primary">
+                          {step.title.trim() ||
+                            t('cases.editor.route_step_untitled', { defaultValue: 'Untitled step' })}
+                        </span>
+                        <span className="block truncate font-mono text-[10px] text-content-tertiary">
+                          {step.to || '-'}
+                        </span>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </Card>
+        </aside>
+      </div>
+
+      {pickerFor !== null && (
+        <ScreenPicker
+          value={draft.steps[pickerFor]?.to ?? ''}
+          onClose={() => setPickerFor(null)}
+          onPick={(to, screenLabel) => {
+            const current = draft.steps[pickerFor];
+            patchStep(pickerFor, {
+              to,
+              // Fill the module label from the catalogue, but only when the
+              // author has not written their own.
+              moduleLabel:
+                screenLabel && current && !current.moduleLabel.trim()
+                  ? screenLabel
+                  : (current?.moduleLabel ?? ''),
+            });
+            setPickerFor(null);
+          }}
+        />
       )}
 
       {/* Actions */}

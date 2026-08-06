@@ -561,7 +561,11 @@ export const FormulaCellEditor = forwardRef(
           // Only advance the focus when the value actually committed; on an
           // invalid entry commitFromInput keeps the editor open (Issue #290).
           if (commitFromInput(false)) {
-            props.api.tabToNextCell();
+            // Direction follows the modifier: preventDefault above removed the
+            // grid's own move, so always calling tabToNextCell would send
+            // Shift+Tab forward.
+            if (ev.shiftKey) props.api.tabToPreviousCell();
+            else props.api.tabToNextCell();
           }
         }
       };
@@ -831,7 +835,12 @@ export const RateCellEditor = forwardRef((props: ICellEditorParams, ref) => {
       if (ev.key === 'Tab') {
         ev.preventDefault();
         ev.stopPropagation();
-        if (commit(false)) props.api.tabToNextCell();
+        // Direction follows the modifier, for the same reason as in the other
+        // two editors: the default move is already cancelled above.
+        if (commit(false)) {
+          if (ev.shiftKey) props.api.tabToPreviousCell();
+          else props.api.tabToNextCell();
+        }
       }
     };
     const onBlur = () => commit(false);
@@ -1242,9 +1251,27 @@ export const UnitCellEditor = forwardRef((props: ICellEditorParams, ref) => {
             e.preventDefault();
             setActiveIdx((i) => Math.max(0, i - 1));
           } else if (e.key === 'Tab') {
-            // Plain Tab commits the current text — same behaviour as Enter on
+            // Plain Tab commits the current text - same behaviour as Enter on
             // a free-typed value, lets the user blow past the dropdown.
+            //
+            // Cancelling the keystroke matters as much as committing it. Left
+            // uncancelled, this same Tab also runs ag-grid's own
+            // Tab-during-edit path, so the grid advances a second time and,
+            // with stopEditingWhenCellsLoseFocus on, tears down the popup
+            // editor the first advance had just opened. That is the blink a
+            // user sees on the quantity cell after leaving unit: the editor
+            // opens and is closed by the duplicate of the keystroke that
+            // opened it, and only a mouse click gets it back. Every other
+            // branch in this handler already cancels; this one did not, which
+            // is why this was the only hop that broke.
+            e.preventDefault();
+            e.stopPropagation();
             commit();
+            // preventDefault also removes the grid's own move, so the move has
+            // to be made here, and in the direction the user actually asked
+            // for. Without the shiftKey arm Shift+Tab would walk forward.
+            if (e.shiftKey) props.api.tabToPreviousCell();
+            else props.api.tabToNextCell();
           }
         }}
         onBlur={(e) => {

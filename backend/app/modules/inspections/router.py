@@ -15,11 +15,14 @@ Endpoints:
 import io
 import logging
 import uuid
+from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.party_names import resolve_party_names
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
 from app.modules.inspections.schemas import (
     InspectionCreate,
@@ -42,8 +45,21 @@ def _get_service(session: SessionDep) -> InspectionService:
     return InspectionService(session)
 
 
-def _to_response(item: object) -> InspectionResponse:
+async def _to_response_many(session: AsyncSession, items: Sequence[object]) -> list[InspectionResponse]:
+    """Build responses for a batch, resolving every inspector in one lookup.
+
+    Single-item endpoints go through here too rather than keeping a second
+    code path: an inspector resolved on the list and unresolved on the detail
+    view is exactly the kind of drift that put a UUID on screen in the first
+    place.
+    """
+    names = await resolve_party_names(session, [getattr(i, "inspector_id", None) for i in items])
+    return [_to_response(i, names) for i in items]
+
+
+def _to_response(item: object, names: dict[str, str] | None = None) -> InspectionResponse:
     """Build an InspectionResponse from a QualityInspection ORM object."""
+    inspector_id = str(item.inspector_id) if item.inspector_id else None  # type: ignore[attr-defined]
     return InspectionResponse(
         id=item.id,  # type: ignore[attr-defined]
         project_id=item.project_id,  # type: ignore[attr-defined]
@@ -53,7 +69,11 @@ def _to_response(item: object) -> InspectionResponse:
         description=item.description,  # type: ignore[attr-defined]
         location=item.location,  # type: ignore[attr-defined]
         wbs_id=item.wbs_id,  # type: ignore[attr-defined]
-        inspector_id=str(item.inspector_id) if item.inspector_id else None,  # type: ignore[attr-defined]
+        inspector_id=inspector_id,
+        # Absent rather than empty when nothing resolved, so the client keeps
+        # its own fallback to the stored value - which on a hand-typed row is
+        # already the name.
+        inspector_name=(names or {}).get(inspector_id or ""),
         inspection_date=item.inspection_date,  # type: ignore[attr-defined]
         status=item.status,  # type: ignore[attr-defined]
         result=item.result,  # type: ignore[attr-defined]
@@ -85,7 +105,7 @@ async def list_inspections(
         inspection_type=type_filter,
         status_filter=status_filter,
     )
-    return [_to_response(i) for i in inspections]
+    return await _to_response_many(session, inspections)
 
 
 @router.post("/", response_model=InspectionResponse, status_code=201)
@@ -99,7 +119,7 @@ async def create_inspection(
     """Create a new quality inspection."""
     await verify_project_access(data.project_id, user_id, session)
     inspection = await service.create_inspection(data, user_id=user_id)
-    return _to_response(inspection)
+    return (await _to_response_many(session, [inspection]))[0]
 
 
 @router.get("/export/")
@@ -123,6 +143,9 @@ async def export_inspections(
         .limit(50000)
     )
     items = result.scalars().all()
+    # The spreadsheet has an Inspector column too, and it was writing the same
+    # raw id the screen was. Resolve once for the whole export.
+    inspector_names = await resolve_party_names(session, [i.inspector_id for i in items])
 
     wb = Workbook()
     ws = wb.active
@@ -147,7 +170,8 @@ async def export_inspections(
         ws.cell(row=row_idx, column=1, value=item.inspection_number)
         ws.cell(row=row_idx, column=2, value=item.title)
         ws.cell(row=row_idx, column=3, value=item.inspection_type)
-        ws.cell(row=row_idx, column=4, value=str(item.inspector_id) if item.inspector_id else "")
+        _insp = str(item.inspector_id) if item.inspector_id else ""
+        ws.cell(row=row_idx, column=4, value=inspector_names.get(_insp, _insp))
         ws.cell(row=row_idx, column=5, value=item.inspection_date or "")
         ws.cell(row=row_idx, column=6, value=item.location or "")
         ws.cell(row=row_idx, column=7, value=item.status)
@@ -189,7 +213,7 @@ async def get_inspection(
     """Get a single inspection."""
     inspection = await service.get_inspection(inspection_id)
     await verify_project_access(inspection.project_id, str(user_id), session)
-    return _to_response(inspection)
+    return (await _to_response_many(session, [inspection]))[0]
 
 
 @router.patch("/{inspection_id}", response_model=InspectionResponse)
@@ -205,7 +229,7 @@ async def update_inspection(
     existing = await service.get_inspection(inspection_id)
     await verify_project_access(existing.project_id, str(user_id), session)
     inspection = await service.update_inspection(inspection_id, data)
-    return _to_response(inspection)
+    return (await _to_response_many(session, [inspection]))[0]
 
 
 @router.delete("/{inspection_id}", status_code=204)
@@ -487,4 +511,4 @@ async def complete_inspection(
 
     result = body.result if body else "pass"
     inspection = await service.complete_inspection(inspection_id, result=result)
-    return _to_response(inspection)
+    return (await _to_response_many(session, [inspection]))[0]

@@ -30,7 +30,6 @@ function renderCard(
   return render(
     <MemoryRouter
       initialEntries={[pathname]}
-      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
     >
       <RecoveryCard {...props} />
     </MemoryRouter>,

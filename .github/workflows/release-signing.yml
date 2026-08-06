@@ -1,8 +1,19 @@
 name: Release Signing (Sigstore / cosign)
 
 on:
+  # The release event is kept because it is the correct one, but on its own it
+  # never arrives. release.yml creates the release with softprops/action-gh-release
+  # authenticated by secrets.GITHUB_TOKEN, and GitHub does not start a workflow
+  # from an event that a GITHUB_TOKEN produced. This workflow last ran on v8.0.0
+  # for that reason, and everything released since then is unsigned.
+  #
+  # Desktop Release is the run that finishes last with assets attached, so its
+  # completion is the point at which there is something to sign.
   release:
     types: [published]
+  workflow_run:
+    workflows: ["Desktop Release"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -14,19 +25,69 @@ permissions:
   id-token: write
 
 jobs:
-  sign:
-    name: Sign release artefacts
+  resolve:
+    name: Resolve the tag
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Two ways a Desktop Release completion is not something to sign. It also
+    # runs from workflow_dispatch against a branch, where head_branch is a
+    # branch name and there is no release behind it. And `types: [completed]`
+    # includes a failed run: if one platform fails, the release is short an
+    # installer, and the asset-count check below cannot tell, because it
+    # compares the download against the release rather than the release against
+    # the platforms it should have. Signing that produces a manifest which
+    # verifies cleanly over an incomplete release, which reads as a complete
+    # one. The recovery is to re-run Desktop Release, not this workflow.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - name: Determine tag
         id: tag
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "tag=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
           else
             echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
           fi
 
+  # The licence inventory used to hang off the same dead release event as this
+  # workflow and stopped publishing on the same day. It is a job here rather
+  # than a workflow of its own so the order is decided by the graph: it attaches
+  # its three files first, then they get checksummed with everything else. Two
+  # workflows racing on one trigger would have produced a manifest describing
+  # some of the release, which reads exactly like a manifest describing all of it.
+  sbom:
+    name: SBOM and licences
+    needs: resolve
+    permissions:
+      contents: write
+    uses: ./.github/workflows/sbom-and-licenses.yml
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
+
+  sign:
+    name: Sign release artefacts
+    needs: [resolve, sbom]
+    # Signing proceeds even when the inventory job fails. A manifest over the
+    # installers alone is what every release since v8.0.0 would have had, and
+    # withholding signatures because a licence list broke helps nobody. The run
+    # still goes red, so the failure is not hidden.
+    if: ${{ !cancelled() && needs.resolve.result == 'success' }}
+    runs-on: ubuntu-latest
+    # Observed at 2.8 and 0.6 minutes, the difference being how much of the
+    # 2.6 GB of installers the runner had to pull. This is a backstop against
+    # inheriting the six hour default, not a ceiling sized from a distribution:
+    # two samples do not make one, and the download only grows as platforms are
+    # added. It is far enough above both readings that it cannot fire on a
+    # healthy run.
+    timeout-minutes: 60
+    steps:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
         with:
@@ -35,21 +96,33 @@ jobs:
       - name: Download release artefacts
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           mkdir -p release-assets
           cd release-assets
-          gh release download "$TAG" \
-            --repo "${{ github.repository }}" \
-            --skip-existing || true
+          gh release download "$TAG" --repo "${{ github.repository }}" --skip-existing
+          # A manifest built from some of the assets is worse than none, because
+          # it reads as a complete one. Count what the release says it holds.
+          expected=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq '.assets | length')
+          actual=$(ls -1 | wc -l)
+          echo "release lists $expected assets, downloaded $actual"
+          if [ "$expected" -ne "$actual" ]; then
+            echo "Downloaded $actual of $expected assets, refusing to checksum a partial set." >&2
+            exit 1
+          fi
           ls -la
 
       - name: Produce SHA-256 checksums
         working-directory: release-assets
         run: |
+          # A second run downloads the previous manifest and its signature along
+          # with the real assets, and the glob below would hash those into the
+          # new manifest, which would then describe its own history rather than
+          # the release.
+          rm -f SHA256SUMS SHA256SUMS.sig SHA256SUMS.pem
           if [ -z "$(ls -A . 2>/dev/null)" ]; then
-            echo "No release assets to checksum." >&2
-            exit 0
+            echo "No release assets to checksum, so nothing would be signed." >&2
+            exit 1
           fi
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
@@ -61,24 +134,34 @@ jobs:
         run: |
           if [ ! -f SHA256SUMS ]; then
             echo "No SHA256SUMS to sign." >&2
-            exit 0
+            exit 1
           fi
           cosign sign-blob --yes \
             --output-signature SHA256SUMS.sig \
             --output-certificate SHA256SUMS.pem \
             SHA256SUMS
 
+      # No event filter here. This step used to run only for the release event,
+      # which is the one event that cannot reach this workflow, so every other
+      # path produced a signature and then discarded it: a green run that
+      # published nothing.
       - name: Upload checksums and signature to the release
-        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         working-directory: release-assets
         run: |
+          # All three or none. Uploading two of them and staying green is the
+          # same failure this workflow already had once, wearing a smaller hat:
+          # a signature without its certificate verifies for nobody.
           for f in SHA256SUMS SHA256SUMS.sig SHA256SUMS.pem; do
-            if [ -f "$f" ]; then
-              gh release upload "$TAG" "$f" --repo "${{ github.repository }}" --clobber
+            if [ ! -f "$f" ]; then
+              echo "$f is missing, refusing to publish a partial signature." >&2
+              exit 1
             fi
+          done
+          for f in SHA256SUMS SHA256SUMS.sig SHA256SUMS.pem; do
+            gh release upload "$TAG" "$f" --repo "${{ github.repository }}" --clobber
           done
 
       - name: Verification snippet (for the release notes)

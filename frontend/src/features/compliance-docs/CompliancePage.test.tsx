@@ -61,9 +61,7 @@ function renderWithProviders(projectId: string | null = 'proj-1') {
   // tree must sit inside a router.
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
+      <MemoryRouter>
         <CompliancePage projectId={projectId} />
       </MemoryRouter>
     </QueryClientProvider>,

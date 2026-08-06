@@ -32,6 +32,12 @@ jobs:
   build-sidecar:
     name: Build Sidecar (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Measured over v14.3.0, v14.4.0, v14.5.0 and five sidecar-only runs:
+    # Linux 14.4 to 15.2 min, Windows 15.6 to 17.8, macOS 25.6 to 34.4. The cap
+    # is a little over twice the slowest observed leg, so it cannot fire on a
+    # healthy build. Without one the job inherits the six hour default, which is
+    # what a hung PyInstaller run costs across three parallel legs.
+    timeout-minutes: 75
     strategy:
       # Build every OS even if one fails, so a single-platform break never
       # cancels the others and we still ship the installers that did build.
@@ -211,12 +217,21 @@ jobs:
       # to a user, and fails the build if any of them carries one.
       #
       # Read this gate narrowly. It is a regression tripwire, not a defence
-      # against the macOS start failure reported against 14.4.0. That build was
-      # measured member by member and every one of its 402 Mach-O members was
-      # ad-hoc with no Team ID, exactly like the builds since, so a foreign Team
-      # ID inside the archive is not what stops it. What this catches is the day
-      # a dependency or a packer upgrade starts shipping a vendor-signed binary
-      # inside the archive, which would introduce that failure for real.
+      # against the macOS start failure reported against 14.4.0. What it catches
+      # is the day a dependency or a packer upgrade starts shipping a
+      # vendor-signed binary inside the archive, which would introduce that
+      # failure for real.
+      #
+      # The earlier wording here said that build "was measured member by member
+      # and every one of its 402 Mach-O members was ad-hoc with no Team ID".
+      # That is wider than the measurement supports. The script counted only the
+      # members it could open and parse; anything it failed to extract dropped
+      # out of the total silently, and anything whose signature it could not
+      # parse was filed under "no Team ID". Neither was visible in the number.
+      # The file named in the user's error is a framework member, which is
+      # exactly the kind that would go missing that way, so --require-member
+      # below makes the run fail unless that member was actually opened.
+      # Whether 14.4.0 was clean is still an open question, not a settled one.
       - name: Check what the sidecar archive carries
         if: always() && runner.os == 'macOS'
         shell: bash
@@ -225,6 +240,7 @@ jobs:
           set -uo pipefail
           python scripts/inspect_desktop_sidecar_signatures.py \
             --fail-on-foreign-team-id \
+            --require-member Python.framework \
             desktop/dist/openconstructionerp-server
 
       - name: Copy sidecar binary
@@ -251,6 +267,13 @@ jobs:
     # empty there, so the condition is true.
     if: github.event_name != 'workflow_dispatch' || inputs.sidecar_only != true
     runs-on: ${{ matrix.os }}
+    # Measured over the same three releases: Windows 27.8 to 29.6 min, macOS
+    # 26.4 to 36.2, Linux 119.2 to 123.5. Linux is not an outlier, it is the
+    # normal cost of building the Tauri bundle there with no Rust cache, and it
+    # is stable within four minutes across three releases. The cap is set from
+    # that leg rather than from the average, because a matrix job takes one
+    # number for every OS in it.
+    timeout-minutes: 240
     strategy:
       # Build every OS even if one fails, so a single-platform break never
       # cancels the others and we still ship the installers that did build.
@@ -506,6 +529,12 @@ jobs:
     name: Sign Windows installers
     needs: build-tauri
     runs-on: windows-latest
+    # Measured at 0.3 to 0.6 min, because there are no signing secrets and the
+    # job downloads nothing. The cap is deliberately far above that: if the
+    # secrets ever arrive this job starts downloading and re-uploading two
+    # installers of about 350 MB each, and the timeout should not be the thing
+    # that discovers it.
+    timeout-minutes: 30
     steps:
       - name: Set up .NET 8
         uses: actions/setup-dotnet@v4

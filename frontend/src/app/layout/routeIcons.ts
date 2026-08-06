@@ -3,14 +3,18 @@
 /**
  * Route → lucide icon map for the top-bar page-title chip.
  *
- * ⚠️ This map MIRRORS the nav definitions in `Sidebar.tsx` (the 19
- * `navGroups`, the `adminGridItems` grid, and the footer "Add module"
- * tile). Each route's icon here is the EXACT same lucide icon the sidebar
- * row uses for that destination, so the top-bar title and the sidebar
- * entry can never disagree. The two MUST be kept in sync: when a route's
- * icon changes in `Sidebar.tsx`, change it here too (and vice versa). A
- * later consolidation can make `Sidebar.tsx` consume this map directly so
- * there is a single source of truth; until then, update both together.
+ * The menu half of this map is DERIVED from `./navCatalog`, so a screen's
+ * icon in the top bar is the same object as the icon on its sidebar row and
+ * the two cannot drift. This comment used to say the copy had to be kept in
+ * sync by hand and ask for exactly this consolidation; when the check was
+ * finally written (`navCatalog.test.ts`) the hand-kept copy turned out to be
+ * missing 27 of the menu's routes outright, so those screens had been showing
+ * no icon at all.
+ *
+ * What stays by hand is `EXTRA_ROUTE_ICONS`: child and detail routes, the
+ * admin grid at the foot of the sidebar and the footer "Add module" tile.
+ * Nothing declares those anywhere else. They merge UNDER the derived map, so
+ * a path the menu also names always takes the menu's icon.
  *
  * `getRouteIcon` does longest-prefix matching so detail routes resolve to
  * their parent module's icon (e.g. `/rfi/123` → the `/rfi` icon, and
@@ -90,6 +94,7 @@ import {
   AlarmClock,
   type LucideIcon,
 } from 'lucide-react';
+import { navGroups } from './navCatalog';
 
 /**
  * Route prefix → lucide icon, mirroring `Sidebar.tsx`.
@@ -98,7 +103,33 @@ import {
  * about the destination module, not its sub-tab — so `/takeoff?tab=...`
  * and `/bim/rules?mode=...` are keyed by their pathname only.
  */
-const ROUTE_ICON_MAP: Record<string, LucideIcon> = {
+/** Every screen the menu offers, taking each row's own icon.
+ *
+ *  This is the half of the map that used to be copied by hand, and the copy was
+ *  wrong: a test over `navGroups` found 27 menu rows the map had no entry for at
+ *  all, so the top bar showed those screens with no icon. Derived now, so the
+ *  two cannot disagree and a new screen needs no second edit.
+ *
+ *  A row's `to` may carry a query (`/takeoff?tab=measurements`); the map is
+ *  keyed by path, and `getRouteIcon` strips queries before looking anything up. */
+const FROM_MENU: Record<string, LucideIcon> = (() => {
+  const map: Record<string, LucideIcon> = {};
+  for (const group of navGroups) {
+    for (const item of group.items) {
+      const path = item.to.split('?')[0]!;
+      // First row wins. Two rows sharing a path differ only by query, and the
+      // first is the one the menu lists first.
+      if (!(path in map)) map[path] = item.icon;
+    }
+  }
+  return map;
+})();
+
+/** Routes the menu has no row for: child and detail routes, the admin grid at
+ *  the foot of the sidebar, and the "Add module" tile. Kept by hand because
+ *  nothing declares them anywhere else. Merged under `FROM_MENU`, so a path the
+ *  menu also names always takes the menu's icon. */
+const EXTRA_ROUTE_ICONS: Record<string, LucideIcon> = {
   // ── 1. Overview ───────────────────────────────────────────────────
   '/': LayoutDashboard,
   '/projects': FolderOpen,
@@ -236,6 +267,8 @@ const ROUTE_ICON_MAP: Record<string, LucideIcon> = {
   // ── Footer CTA ────────────────────────────────────────────────────
   '/modules/developer-guide': Plus,
 };
+
+const ROUTE_ICON_MAP: Record<string, LucideIcon> = { ...EXTRA_ROUTE_ICONS, ...FROM_MENU };
 
 /** Pre-sorted route prefixes, longest first, so the first prefix that
  *  matches in `getRouteIcon` is also the most specific (longest) one. */

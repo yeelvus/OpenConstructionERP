@@ -979,8 +979,9 @@ export default function App() {
 
   return (
     <Suspense fallback={<LoadingScreen />}>
-      {/* Route-transition pending feedback: under v7_startTransition the
-          old page stays on screen while a lazy chunk loads, so this binder
+      {/* Route-transition pending feedback: a navigation commits inside a
+          transition, so the old page stays on screen while a lazy chunk
+          loads and nothing on screen moves. This binder
           drives the top progress bar + sidebar row spinner for the gap
           between history push and location commit (navigationProgress.ts). */}
       <NavigationProgress />

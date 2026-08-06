@@ -26,7 +26,7 @@ import { useProjectContextStore } from '@/stores/useProjectContextStore';
 
 function renderGate(props: { emptyHint?: string; emptyTitle?: string } = {}) {
   return render(
-    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <BrowserRouter>
       <RequiresProject {...props}>
         <div data-testid="protected-content">Protected content</div>
       </RequiresProject>

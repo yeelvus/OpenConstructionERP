@@ -50,10 +50,20 @@ logger = logging.getLogger(__name__)
 
 _SEED = 42
 
-# How many working days of history a project gets. Picked per project from a
-# stable hash of its id so two demo projects never render the same register -
-# a reader flipping between two projects has to see two different pictures.
+# How many working days of history a project gets, indexed by the project's
+# position in the seeding call rather than drawn from its id. A reader flipping
+# between two demo projects has to see two different pictures, and a draw from
+# four values hands two projects the same register one time in four.
+#
+# Past the end of the tuple the position wraps and a whole span is added, which
+# keeps the mapping injective: every block of four occupies a range of day
+# counts disjoint from every other block. Adding 1 per wrap instead would put
+# position 11 back on 21 days alongside position 1. Since all registers end on
+# the same date, distinct day counts mean distinct sets of dates, so no two
+# projects can render the same one. Everything inside a register still comes
+# from the project id, so re-seeding one project reproduces it.
 _HISTORY_DAYS = (25, 21, 16, 19)
+_HISTORY_SPAN = max(_HISTORY_DAYS) - min(_HISTORY_DAYS) + 1
 
 # Timekeeping rules stamped onto each timesheet's metadata and read back by
 # ``field_time_math.read_hours_config``. Field Time makes no worldwide
@@ -384,8 +394,13 @@ async def _seed_project(
     session: AsyncSession,
     project_id: uuid.UUID,
     owner_id: uuid.UUID,
+    ordinal: int,
 ) -> dict[str, int]:
-    """Seed one project's register. Returns per-entity counts (zeros when skipped)."""
+    """Seed one project's register. Returns per-entity counts (zeros when skipped).
+
+    ``ordinal`` is the project's position in the seeding call and decides how far
+    back the register runs, which is what keeps two demo projects apart.
+    """
     empty = {"timesheets": 0, "lines": 0, "reversals": 0, "projects": 0}
 
     already = (
@@ -414,9 +429,10 @@ async def _seed_project(
     submitter, approver = await _actors(session, owner_id)
 
     rng = _rng_for(project_id)
-    slot = rng.randrange(len(_HISTORY_DAYS))
+    slot = ordinal % len(_HISTORY_DAYS)
+    history = _HISTORY_DAYS[slot] + (ordinal // len(_HISTORY_DAYS)) * _HISTORY_SPAN
     working_codes = rng.sample(cost_codes, k=min(_WORKING_CODE_COUNT, len(cost_codes)))
-    days = _working_days(_HISTORY_DAYS[slot], ending=datetime.now(UTC).date())
+    days = _working_days(history, ending=datetime.now(UTC).date())
     plan = _status_plan(len(days))
     to_reverse = _reversal_index(plan)
     hours_config = dict(_HOURS_CONFIGS[slot % len(_HOURS_CONFIGS)])
@@ -514,7 +530,7 @@ async def seed_field_time_demo(
     rows = (await session.execute(select(Project.id, Project.owner_id).where(Project.id.in_(ids)))).all()
     owners = {pid: owner for pid, owner in rows}
 
-    for project_id in ids:
+    for ordinal, project_id in enumerate(ids):
         owner_id = owners.get(project_id)
         if owner_id is None:
             continue
@@ -525,7 +541,7 @@ async def seed_field_time_demo(
             # every later project would then fail on a poisoned session rather
             # than on anything wrong with itself.
             async with session.begin_nested():
-                counts = await _seed_project(session, project_id, owner_id)
+                counts = await _seed_project(session, project_id, owner_id, ordinal)
         except Exception:
             logger.warning("Field time demo seed skipped for project=%s (non-fatal)", project_id, exc_info=True)
             continue

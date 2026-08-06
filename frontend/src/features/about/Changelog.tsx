@@ -38,6 +38,13 @@ interface ChangelogEntry {
 // date, title and meaning intact; trim the prose, not the facts.
 const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '14.6.0',
+    date: '2026-08-06',
+    tag: 'FIX',
+    summary:
+      'Tabbing from the unit column to quantity in a bill of quantities no longer opens the editor and closes it in the same keystroke, and Shift with Tab now walks backwards in all three hand-written editors instead of forwards. An inspection shows who carried it out by name rather than as an identifier, on the list, in the drawer and in the spreadsheet export, resolving against parties first and people second and keeping a typed name as typed.',
+  },
+  {
     version: '14.5.0',
     date: '2026-08-05',
     tag: 'NEW',

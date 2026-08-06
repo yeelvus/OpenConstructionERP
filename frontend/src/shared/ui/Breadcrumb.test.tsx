@@ -5,7 +5,7 @@ import { Breadcrumb } from './Breadcrumb';
 
 function renderBreadcrumb(items: { label: string; to?: string }[]) {
   return render(
-    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <BrowserRouter>
       <Breadcrumb items={items} />
     </BrowserRouter>,
   );

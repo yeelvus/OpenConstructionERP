@@ -90,6 +90,12 @@ class InspectionResponse(BaseModel):
     location: str | None = None
     wbs_id: str | None = None
     inspector_id: str | None = None
+    # Who the inspector is, in words. ``inspector_id`` holds a contact id on
+    # seeded rows, a user id when a picker wrote it and a typed name otherwise,
+    # so the id alone cannot be shown to anybody - a register that printed it
+    # raw put a bare UUID in the inspector column. Absent when the id resolves
+    # to nothing, which tells the client to fall back to the stored value.
+    inspector_name: str | None = None
     inspection_date: str | None = None
     status: str = "scheduled"
     result: str | None = None

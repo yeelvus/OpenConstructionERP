@@ -6,7 +6,7 @@ import { NotFoundPage } from './NotFoundPage';
 
 function renderWithRouter() {
   return render(
-    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <BrowserRouter>
       <NotFoundPage />
     </BrowserRouter>,
   );

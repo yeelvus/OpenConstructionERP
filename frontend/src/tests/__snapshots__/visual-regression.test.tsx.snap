@@ -64,6 +64,7 @@ exports[`Visual Regression - Breadcrumb > renders multi-level breadcrumb with li
     <a
       aria-label="Dashboard"
       class="flex items-center text-content-tertiary hover:text-content-secondary transition-colors"
+      data-discover="true"
       href="/"
     >
       <svg
@@ -107,6 +108,7 @@ exports[`Visual Regression - Breadcrumb > renders multi-level breadcrumb with li
       </svg>
       <a
         class="text-content-tertiary hover:text-content-secondary transition-colors truncate max-w-[200px]"
+        data-discover="true"
         href="/projects"
       >
         Projects
@@ -133,6 +135,7 @@ exports[`Visual Regression - Breadcrumb > renders multi-level breadcrumb with li
       </svg>
       <a
         class="text-content-tertiary hover:text-content-secondary transition-colors truncate max-w-[200px]"
+        data-discover="true"
         href="/projects/proj-001"
       >
         Office Tower Berlin
@@ -6158,6 +6161,7 @@ exports[`Visual Regression - NotFoundPage > renders the 404 page with navigation
         </button>
         <a
           class="inline-flex items-center gap-2 rounded-lg bg-oe-blue px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-oe-blue-dark"
+          data-discover="true"
           href="/"
         >
           <svg

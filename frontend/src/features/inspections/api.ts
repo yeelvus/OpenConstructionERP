@@ -127,6 +127,7 @@ type ChecklistEntryWire = {
 type InspectionWire = Omit<Inspection, 'inspector' | 'date' | 'checklist'> & {
   inspector?: string;
   inspector_id?: string | null;
+  inspector_name?: string | null;
   date?: string;
   inspection_date?: string | null;
   checklist?: ChecklistEntryWire[];
@@ -154,7 +155,13 @@ function normaliseInspection(raw: InspectionWire): Inspection {
   const checklistSrc = raw.checklist ?? raw.checklist_data ?? [];
   return {
     ...raw,
-    inspector: raw.inspector ?? raw.inspector_id ?? '',
+    // ``inspector_name`` is the backend's resolution of ``inspector_id``, which
+    // may hold a contact id, a user id or a typed name depending on who wrote
+    // the row. It is absent when nothing resolved, and then the stored value is
+    // the best thing to show: on a hand-typed row it is already the name, and
+    // on a deleted party it is the only trace left. Showing the id unresolved
+    // is what printed a bare UUID in the inspector column.
+    inspector: raw.inspector_name ?? raw.inspector ?? raw.inspector_id ?? '',
     date: raw.date ?? raw.inspection_date ?? '',
     checklist: checklistSrc.map(normaliseChecklistItem),
     notes: raw.notes ?? '',

@@ -128,7 +128,7 @@ function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <PayrollPage />
       </MemoryRouter>
     </QueryClientProvider>,

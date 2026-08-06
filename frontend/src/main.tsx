@@ -116,7 +116,7 @@ const routerBasename =
 ReactDOM.createRoot(__rootEl).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter basename={routerBasename} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <BrowserRouter basename={routerBasename}>
         <App />
       </BrowserRouter>
     </QueryClientProvider>

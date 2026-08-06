@@ -44,7 +44,9 @@ import {
   UserRound,
   Flag,
   Loader2,
+  FilePlus2,
   PenLine,
+  Shuffle,
   Pencil,
   X,
   SlidersHorizontal,
@@ -478,6 +480,16 @@ function CasesList() {
     setActiveStage(activeStage === id ? "all" : id);
   };
 
+  // A hub of 144 cases is easy to bounce off: none of them is wrong, so none of
+  // them is obviously the one to open. This opens one at random from whatever
+  // the filters currently leave on screen, so it stays inside the discipline
+  // and role the reader already chose rather than throwing them anywhere.
+  const openRandomCase = useCallback(() => {
+    const pool = visible.length > 0 ? visible : allPlaybooks;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    if (pick) navigate(`/cases/${pick.id}`);
+  }, [visible, allPlaybooks, navigate]);
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* ── Header ──────────────────────────────────────────────────────── */}
@@ -513,16 +525,45 @@ function CasesList() {
           </div>
           {/* The catalogue is not only ours: a user writes their own case the
               way their firm actually works, and it then lives in this same hub
-              beside the shipped ones. */}
-          <Button
-            variant="primary"
-            size="sm"
-            icon={<PenLine size={13} />}
-            onClick={() => navigate("/cases/new")}
-            className="shrink-0"
-          >
-            {t("cases.write_own", { defaultValue: "Write your own case" })}
-          </Button>
+              beside the shipped ones. That route used to be a small button in
+              the corner, which reads as a footnote rather than as half of what
+              this page is for.
+
+              Three actions, because they are one decision asked three ways:
+              write one starting from ours, write one from nothing, or just
+              show me a case. The third exists because a hub of 144 equally
+              good things is easy to bounce off. */}
+          <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto">
+            <Button
+              variant="primary"
+              size="lg"
+              icon={<PenLine size={16} />}
+              onClick={() => navigate("/cases/new")}
+              className="w-full justify-center sm:w-auto"
+            >
+              {t("cases.write_own", { defaultValue: "Write your own case" })}
+            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<FilePlus2 size={13} />}
+                onClick={() => navigate("/cases/new?blank=1")}
+                className="flex-1 justify-center"
+              >
+                {t("cases.write_blank", { defaultValue: "From blank" })}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Shuffle size={13} />}
+                onClick={openRandomCase}
+                className="flex-1 justify-center"
+              >
+                {t("cases.show_me_one", { defaultValue: "Show me one" })}
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
 

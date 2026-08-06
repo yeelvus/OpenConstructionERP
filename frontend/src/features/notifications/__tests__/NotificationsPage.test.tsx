@@ -104,7 +104,6 @@ function renderPage(initialEntry = '/notifications') {
     <QueryClientProvider client={qc}>
       <MemoryRouter
         initialEntries={[initialEntry]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <Routes>
           <Route path="/notifications" element={<NotificationsPage />} />

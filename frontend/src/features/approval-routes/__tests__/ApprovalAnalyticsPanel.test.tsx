@@ -117,9 +117,7 @@ function renderPanel(props: {
   });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
+      <MemoryRouter>
         <ApprovalAnalyticsPanel
           projectId={props.projectId}
           targetKind={props.targetKind}
