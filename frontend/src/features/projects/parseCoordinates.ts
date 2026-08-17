@@ -139,7 +139,11 @@ function splitPairTokens(text: string): [string, string] | null {
 
   // Prefer comma / semicolon / | as separators between lat and lng.
   const sepSplit = n.split(/\s*[,;|]\s*/).filter(Boolean);
-  if (sepSplit.length === 2) return [sepSplit[0], sepSplit[1]];
+  if (sepSplit.length === 2) {
+    const a = sepSplit[0];
+    const b = sepSplit[1];
+    if (a && b) return [a, b];
+  }
 
   // Hemisphere-terminated pair: ...N ...E  or  ...S ...W
   const hemPair = n.match(
@@ -148,23 +152,27 @@ function splitPairTokens(text: string): [string, string] | null {
       'u',
     ),
   );
-  if (hemPair) return [hemPair[1], hemPair[2 + 5]]; // fragile — rebuild below
+  if (hemPair?.[1] && hemPair[2]) return [hemPair[1], hemPair[2]];
 
   // Two hemisphere markers → split after the first trailing hem letter.
   const hemPositions: number[] = [];
   for (let i = 0; i < n.length; i++) {
-    if ('NSEW北南东西東nsew'.includes(n[i])) hemPositions.push(i);
+    const ch = n[i];
+    if (ch && 'NSEW北南东西東nsew'.includes(ch)) hemPositions.push(i);
   }
   if (hemPositions.length >= 2) {
-    const mid = hemPositions[0] + 1;
-    const a = n.slice(0, mid).trim();
-    const b = n.slice(mid).trim();
-    if (a && b) return [a, b];
+    const firstHem = hemPositions[0];
+    if (firstHem != null) {
+      const mid = firstHem + 1;
+      const a = n.slice(0, mid).trim();
+      const b = n.slice(mid).trim();
+      if (a && b) return [a, b];
+    }
   }
 
   // Decimal pair separated by whitespace: "13.59 100.96"
   const decPair = n.match(/^(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)$/);
-  if (decPair) return [decPair[1], decPair[2]];
+  if (decPair?.[1] && decPair[2]) return [decPair[1], decPair[2]];
 
   // Space-separated DMS without clear hem mid-split: look for two degree marks.
   const degIdx: number[] = [];
@@ -174,14 +182,16 @@ function splitPairTokens(text: string): [string, string] | null {
   if (degIdx.length >= 2) {
     // Find space between the two ° groups that is a good split.
     const afterFirst = degIdx[0];
-    // Walk forward past first component's min/sec to a space before second number block.
-    const rest = n.slice(afterFirst + 1);
-    const m = rest.match(/^[\d.'"\s]*[NSns北南]?\s+/);
-    if (m) {
-      const splitAt = afterFirst + 1 + m[0].length;
-      const a = n.slice(0, splitAt).trim();
-      const b = n.slice(splitAt).trim();
-      if (a && b) return [a, b];
+    if (afterFirst != null) {
+      // Walk forward past first component's min/sec to a space before second number block.
+      const rest = n.slice(afterFirst + 1);
+      const m = rest.match(/^[\d.'"\s]*[NSns北南]?\s+/);
+      if (m) {
+        const splitAt = afterFirst + 1 + m[0].length;
+        const a = n.slice(0, splitAt).trim();
+        const b = n.slice(splitAt).trim();
+        if (a && b) return [a, b];
+      }
     }
   }
 

@@ -128,6 +128,7 @@ function renderDrawer(status: ContractStatus = 'draft') {
         <ContractDetailDrawer
           contractId={CONTRACT_ID}
           contracts={[contract({ status })]}
+          projectId="proj-test"
           onClose={onClose}
         />
       </QueryClientProvider>

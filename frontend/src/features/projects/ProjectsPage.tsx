@@ -2444,10 +2444,13 @@ function ProjectCard({
 
   /** Soft-archive for active projects; hard-delete when already archived. */
   const deleteMutation = useMutation({
-    mutationFn: () =>
-      isArchived
-        ? projectsApi.hardDelete(project.id)
-        : apiDelete(`/v1/projects/${project.id}`),
+    mutationFn: async () => {
+      if (isArchived) {
+        await projectsApi.hardDelete(project.id);
+      } else {
+        await apiDelete(`/v1/projects/${project.id}`);
+      }
+    },
     onSuccess: () => {
       setConfirmDelete(false);
       queryClient.invalidateQueries({ queryKey: ['projects'] });

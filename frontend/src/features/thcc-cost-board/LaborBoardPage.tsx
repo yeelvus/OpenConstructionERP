@@ -196,9 +196,9 @@ export function LaborBoardPage() {
                       <XAxis dataKey="month" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
                       <YAxis tick={{ fontSize: 11 }} />
                       <Tooltip
-                        formatter={(v: number, name: string) => [
-                          fmtWan(v, 2),
-                          LABOR_CAT_LABELS[name] || name,
+                        formatter={(v, name) => [
+                          fmtWan(Number(v ?? 0), 2),
+                          LABOR_CAT_LABELS[String(name)] || String(name),
                         ]}
                       />
                       <Legend

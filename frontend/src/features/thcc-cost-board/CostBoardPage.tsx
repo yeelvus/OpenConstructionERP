@@ -215,7 +215,7 @@ export function CostBoardPage() {
                 <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-30} textAnchor="end" height={50} />
                 <YAxis tick={{ fontSize: 11 }} />
                 <Tooltip
-                  formatter={(v: number) => [`${v}%`, '预估毛利']}
+                  formatter={(v) => [`${Number(v ?? 0)}%`, '预估毛利']}
                   labelFormatter={(_, payload) => payload?.[0]?.payload?.full || ''}
                 />
                 <Bar dataKey="margin" radius={[3, 3, 0, 0]}>
