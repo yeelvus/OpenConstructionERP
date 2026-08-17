@@ -60,6 +60,7 @@ const playbook: Playbook = {
       whyDefault:
         "Plant that is not on a register gets hired twice or serviced late. One list is the base for both cost and maintenance.",
       moduleLabel: "Equipment",
+      moduleLabelKey: "nav.equipment",
       to: "/equipment",
     },
     {
@@ -101,6 +102,7 @@ const playbook: Playbook = {
       whyDefault:
         "Plant that is not booked to a job never lands on the cost report. Capturing it with labour gives the true cost of the work done.",
       moduleLabel: "Field Time",
+      moduleLabelKey: "nav.field_time",
       to: "/projects/:projectId/field-time",
     },
     {
@@ -142,6 +144,7 @@ const playbook: Playbook = {
       whyDefault:
         "An uninspected lift or a machine past service is a stop-work and a safety risk. Flagging early keeps plant legal and running.",
       moduleLabel: "Equipment",
+      moduleLabelKey: "nav.equipment",
       to: "/projects/:projectId/equipment",
     },
     {
@@ -181,6 +184,7 @@ const playbook: Playbook = {
       whyDefault:
         "Idle hired plant burns money every day. Utilization figures tell you what to off-hire and what to move, instead of guessing.",
       moduleLabel: "Reports",
+      moduleLabelKey: "nav.reports",
       to: "/reports",
     },
   ],

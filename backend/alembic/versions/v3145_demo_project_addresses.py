@@ -105,6 +105,27 @@ def _column_exists(bind: sa.engine.Connection, table: str, column: str) -> bool:
     return any(c["name"] == column for c in inspector.get_columns(table))
 
 
+# Dead guard, tracked as #144: no migration has ever created a table named
+# "oe_projects" (the model's __tablename__ has been "oe_projects_project"
+# since it was introduced), so _table_exists(bind, _TABLE) below is always
+# False and the backfill below it has never executed on any database. Do
+# not "fix" this by changing the literal - this revision is applied history
+# on every install that reached it, and an edited v3145 never re-runs there
+# (a fresh install has no pre-3.2.0 demo projects to repair either). Any
+# real fix has to be a new forward revision at head, targeting
+# oe_projects_project - and it needs its own reference addresses, not the
+# ones hardcoded below: read against the live demo box (2026-08-12) showed
+# the current demo_projects.py seed no longer agrees with _DEMO_ADDRESSES
+# (e.g. medical-us is Houston in the live seed, Cleveland here), so copying
+# them into a forward fix would repair one defect by writing another. No
+# NULL address turned up on that box - but every demo project there was
+# created after the 2026-05-16 seed fix, so it cannot speak for an install
+# seeded before 3.2.0 and never reseeded, which is the population this
+# guard was meant to repair and the only one this repo cannot inspect.
+# Read this as cannot-reproduce-on-the-only-install-we-can-check, not as
+# not-a-bug: the question stays open, and no forward revision gets written
+# on evidence that never covered the population it would be fixing.
+# data-rewrite-ack: table=oe_projects growth=dead-code rows=#144: guard above is always False (table never existed), statement has never executed on any database this repo can inspect
 def upgrade() -> None:
     bind = op.get_bind()
     if not _table_exists(bind, _TABLE):

@@ -6,7 +6,7 @@
  * All endpoints are prefixed with /v1/transmittals/.
  */
 
-import { apiDelete, apiGet, apiPatch, apiPost } from '@/shared/lib/api';
+import { apiDelete, apiGet, apiPatch, apiPost, type Page } from '@/shared/lib/api';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -214,7 +214,14 @@ function normaliseTransmittal(t: TransmittalWire): Transmittal {
   return { ...t, purpose, response_due, locked, recipients, items, metadata } as Transmittal;
 }
 
-export async function fetchTransmittals(filters?: TransmittalFilters): Promise<Transmittal[]> {
+/**
+ * Read one page of the register, and say how big the register is.
+ *
+ * The ceiling below is 100 rows, so on a busy project this is a slice. The
+ * caller gets the whole envelope rather than the rows alone, because a count
+ * the caller never sees is a count it cannot show the reader.
+ */
+export async function fetchTransmittals(filters?: TransmittalFilters): Promise<Page<Transmittal>> {
   const params = new URLSearchParams();
   if (filters?.project_id) params.set('project_id', filters.project_id);
   if (filters?.status) params.set('status', filters.status);
@@ -223,11 +230,8 @@ export async function fetchTransmittals(filters?: TransmittalFilters): Promise<T
   // silently dropping older rows.
   params.set('limit', '100');
   const qs = params.toString();
-  const res = await apiGet<TransmittalWire[] | { items: TransmittalWire[] }>(
-    `/v1/transmittals/${qs ? `?${qs}` : ''}`,
-  );
-  const items = Array.isArray(res) ? res : res.items ?? [];
-  return items.map(normaliseTransmittal);
+  const page = await apiGet<Page<TransmittalWire>>(`/v1/transmittals/?${qs}`);
+  return { ...page, items: page.items.map(normaliseTransmittal) };
 }
 
 export async function createTransmittal(data: CreateTransmittalPayload): Promise<Transmittal> {

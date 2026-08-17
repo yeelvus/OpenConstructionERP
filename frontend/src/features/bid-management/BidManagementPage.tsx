@@ -655,6 +655,7 @@ export function BidManagementPage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       <DismissibleInfo

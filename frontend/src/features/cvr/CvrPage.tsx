@@ -683,6 +683,7 @@ export function CvrPage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       {/* New report inline form */}

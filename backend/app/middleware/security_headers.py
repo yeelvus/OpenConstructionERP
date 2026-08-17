@@ -63,10 +63,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         #     its own (same-origin) parent. ``'self'`` still blocks cross-origin
         #     clickjacking while letting the app frame its own previews.
         #
-        # The font hosts also appear on ``connect-src``: the service worker
-        # (Workbox) precaches the Google Fonts files with ``fetch()``, which is
-        # governed by ``connect-src`` - NOT ``font-src`` - so without the hosts
-        # there the SW install rejected with an uncaught "no-response" error.
+        # No font host appears anywhere in this policy. The app serves its own
+        # typefaces from ``/assets/vendor/fonts/``, so ``'self'`` on font-src
+        # and style-src covers them, and the service worker precaches them as
+        # ordinary same-origin build output. The Google Fonts hosts used to sit
+        # on style-src, font-src and connect-src (the last because Workbox
+        # precached the files with ``fetch()``, which connect-src governs).
+        # Leaving them behind would keep permitting the third-party fetch the
+        # self-hosting removed, so they came out with it.
         self._csp = csp or (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: "
@@ -74,15 +78,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "script-src-elem 'self' 'unsafe-inline' "
             "https://www.googletagmanager.com https://www.google-analytics.com; "
             "worker-src 'self' blob:; "
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "style-src 'self' 'unsafe-inline'; "
+            "style-src-elem 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob: https:; "
-            "font-src 'self' data: https://fonts.gstatic.com; "
+            "font-src 'self' data:; "
             "frame-src 'self' blob: data:; "
             "connect-src 'self' https://www.google-analytics.com "
             "https://*.google-analytics.com https://*.analytics.google.com "
             "https://api.github.com "
-            "https://fonts.googleapis.com https://fonts.gstatic.com "
             "https://tiles.openfreemap.org https://*.openfreemap.org "
             "https://nominatim.openstreetmap.org "
             "https://tile.openstreetmap.org https://*.tile.openstreetmap.org "

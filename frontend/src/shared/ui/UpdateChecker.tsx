@@ -32,28 +32,65 @@ import {
   Plus, Wrench, Palette, Loader2, Download, RotateCcw,
 } from 'lucide-react';
 import { APP_VERSION } from '@/shared/lib/version';
-import { apiPost, ApiError } from '@/shared/lib/api';
+import { apiGet, apiPost, ApiError } from '@/shared/lib/api';
 import { copyToClipboard } from '@/shared/lib/browser';
 import { isTauri } from '@/shared/lib/desktop';
 
-/* ── One-click upgrade — runs `pip install --upgrade` server-side ──── */
+/* ── One-click upgrade — starts `pip install --upgrade` server-side ───
+ *
+ *  The server starts a job and answers straight away; we poll it. It used to
+ *  do the whole install inside the request, which no browser waits for: on a
+ *  slow link the client gave up at 45s and told the user the upgrade had
+ *  failed, over an upgrade that was still running and went on to succeed
+ *  (issue #430).
+ */
 
-interface UpgradeResult {
-  ok: boolean;
-  exit_code: number;
-  command: string;
-  stdout: string;
-  stderr: string;
-  installed_version: string;
-  running_version: string;
-  restart_required: boolean;
-  restart_hint: string;
+interface UpgradeJob {
+  job_id: string | null;
+  /** ``idle`` means this server process has not run one, which is also what
+   *  it says after the restart a finished upgrade asks for. */
+  status: 'idle' | 'running' | 'succeeded' | 'failed';
+  ok?: boolean;
+  command?: string;
+  exit_code?: number | null;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+  installed_version?: string;
+  running_version?: string;
+  restart_required?: boolean;
+  restart_hint?: string;
 }
 
-async function runRuntimeUpgrade(version?: string): Promise<UpgradeResult> {
+const UPGRADE_POLL_MS = 2_000;
+/** Stop polling eventually. The server stops pip itself at 600s, so this only
+ *  has to outlast that. Reaching it leaves the dialog saying "running", which
+ *  is the truthful thing to say about an upgrade that is still running. */
+const UPGRADE_POLL_CEILING_MS = 15 * 60 * 1000;
+/** Consecutive failed polls tolerated. An install replaces files under a
+ *  process a watchdog may restart, so one quiet moment is not a failure. */
+const UPGRADE_POLL_RETRIES = 5;
+
+async function startRuntimeUpgrade(version?: string): Promise<UpgradeJob> {
   const qs = version ? `?version=${encodeURIComponent(version)}` : '';
-  return apiPost<UpgradeResult>(`/system/upgrade${qs}`, {});
+  try {
+    return await apiPost<UpgradeJob>(`/system/upgrade${qs}`, {});
+  } catch (err) {
+    // 409 carries the job already running. Pressing the button twice, or
+    // pressing it again after the browser gave up waiting, is the ordinary
+    // way that happens, so attach to it instead of reporting an error.
+    if (err instanceof ApiError && err.status === 409 && err.body && typeof err.body === 'object') {
+      return err.body as UpgradeJob;
+    }
+    throw err;
+  }
 }
+
+async function readUpgradeStatus(): Promise<UpgradeJob> {
+  return apiGet<UpgradeJob>('/system/upgrade/status');
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const CURRENT_VERSION = APP_VERSION;
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;       // 1 hour between polls
@@ -506,18 +543,40 @@ function UpdateFullModal({
    *  copy-paste path while localhost / Windows installer users get the
    *  one-click button working out of the box. */
   const [upgradeStatus, setUpgradeStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
-  const [upgradeResult, setUpgradeResult] = useState<UpgradeResult | null>(null);
+  const [upgradeResult, setUpgradeResult] = useState<UpgradeJob | null>(null);
   const [upgradeError, setUpgradeError] = useState<string | null>(null);
 
   const handleApplyUpgrade = useCallback(async () => {
     setUpgradeStatus('running');
     setUpgradeError(null);
     try {
-      const res = await runRuntimeUpgrade(release.version);
-      setUpgradeResult(res);
-      setUpgradeStatus(res.ok ? 'done' : 'error');
-      if (!res.ok) {
-        setUpgradeError(res.stderr || res.stdout || `pip exited ${res.exit_code}`);
+      let job = await startRuntimeUpgrade(release.version);
+      setUpgradeResult(job);
+
+      const ceiling = Date.now() + UPGRADE_POLL_CEILING_MS;
+      let failures = 0;
+      while (job.status === 'running' && Date.now() < ceiling) {
+        await sleep(UPGRADE_POLL_MS);
+        try {
+          job = await readUpgradeStatus();
+          setUpgradeResult(job);
+          failures = 0;
+        } catch (pollErr) {
+          if (++failures >= UPGRADE_POLL_RETRIES) throw pollErr;
+        }
+      }
+
+      if (job.status === 'failed') {
+        setUpgradeStatus('error');
+        setUpgradeError(job.error || job.stderr || job.stdout || `pip exited ${job.exit_code}`);
+      } else if (job.status === 'running') {
+        // Still going when we stopped watching. Leaving the dialog on
+        // "running" says exactly that, and reopening it attaches again.
+        setUpgradeStatus('running');
+      } else {
+        // succeeded, or idle because the server restarted under us, which is
+        // the thing a finished upgrade asks the user to do.
+        setUpgradeStatus('done');
       }
     } catch (err) {
       if (err instanceof ApiError) {

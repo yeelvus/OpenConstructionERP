@@ -27,9 +27,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer
 SCOPE_VALUES: tuple[str, ...] = ("builtin", "project", "pack")
 _SCOPE_PATTERN = r"^(?:builtin|project|pack)$"
 
-# Cascade step kinds - kept in sync with cascade.KIND_PERCENTAGE / KIND_FIXED.
-STEP_KINDS: tuple[str, ...] = ("percentage", "fixed")
-_STEP_KIND_PATTERN = r"^(?:percentage|fixed)$"
+# Cascade step kinds - kept in sync with cascade.KIND_PERCENTAGE / KIND_FIXED /
+# KIND_GROSS_UP. "gross_up" is a rate levied on the total that already contains
+# it, which is how Brazilian BDI carries PIS, COFINS and ISS.
+STEP_KINDS: tuple[str, ...] = ("percentage", "fixed", "gross_up")
+_STEP_KIND_PATTERN = r"^(?:percentage|fixed|gross_up)$"
 
 # Dimension kinds - kept in sync with AnalyticDimension.kind.
 DIMENSION_KINDS: tuple[str, ...] = ("flat", "tree")

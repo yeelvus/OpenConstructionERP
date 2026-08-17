@@ -131,6 +131,20 @@ class ScheduleResponse(BaseModel):
     updated_at: datetime
 
 
+class ScheduleListResponse(BaseModel):
+    """One page of schedules plus the size of the whole set.
+
+    ``total`` is the row count matching the filter, not the length of
+    ``items``. A client that renders ``items`` without reading ``total``
+    shows a truncated list and cannot tell that it did.
+    """
+
+    items: list[ScheduleResponse] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 50
+
+
 # ── Activity schemas ─────────────────────────────────────────────────────────
 
 
@@ -273,6 +287,21 @@ class ActivityResponse(BaseModel):
     # dedicated PUT /activities/{id}/calendar/ endpoint; exposed here so the
     # grid can show and pick the activity's calendar. None -> schedule default.
     calendar_id: UUID | None = None
+
+
+class ActivityListResponse(BaseModel):
+    """One page of activities plus the size of the whole set.
+
+    ``total`` is the activity count of the schedule, not the length of
+    ``items``. The default page is large (1000), which is exactly why the
+    truncation is easy to miss: a schedule only has to cross that line once
+    for a viewer to start drawing an incomplete programme.
+    """
+
+    items: list[ActivityResponse] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 1000
 
 
 class LinkPositionRequest(BaseModel):

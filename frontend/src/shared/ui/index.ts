@@ -171,6 +171,8 @@ export type {
 
 export { ModuleGuideButton } from './ModuleGuideButton';
 export type { ModuleGuideButtonProps } from './ModuleGuideButton';
+export { ModuleInfoButton } from './ModuleInfoButton';
+export type { ModuleInfoButtonProps } from './ModuleInfoButton';
 
 // Shared spotlight primitives behind the anchored coach-marks.
 export {

@@ -4,18 +4,18 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Search, ChevronDown, ChevronRight, LogOut, User, Settings, Menu, MessageSquarePlus, FolderOpen, CheckCircle2, XCircle, Bug, BookOpen, Loader2, Upload, HelpCircle, GraduationCap, Mail, ExternalLink, Github, Sun, Moon, Monitor, Info, Globe } from 'lucide-react';
+import { Search, ChevronDown, ChevronRight, LogOut, User, Settings, Menu, MessageSquarePlus, FolderOpen, CheckCircle2, XCircle, Bug, BookOpen, Loader2, Upload, HelpCircle, GraduationCap, Mail, ExternalLink, Github, Sun, Moon, Monitor, Globe } from 'lucide-react';
 import clsx from 'clsx';
 import { SUPPORTED_LANGUAGES, getLanguageByCode, changeLanguage } from '../i18n';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useUploadQueueStore } from '@/stores/useUploadQueueStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
-import { useModuleInfoStore } from '@/stores/useModuleInfoStore';
 import { useThemeStore } from '@/stores/useThemeStore';
-import { CountryFlag, PartnerLogoBadge } from '@/shared/ui';
+import { CountryFlag, ModuleInfoButton, PartnerLogoBadge } from '@/shared/ui';
 import { usePartnerPack } from '@/shared/hooks/usePartnerPack';
 import { NotificationBell } from '@/shared/ui/NotificationBell';
 import { HeaderNewsButton } from '@/shared/ui/HeaderNewsButton';
+import { ModuleBuilderButton } from '@/features/module-builder';
 import { apiGet } from '@/shared/lib/api';
 import { copyToClipboard } from '@/shared/lib/browser';
 import {
@@ -50,7 +50,9 @@ const TITLE_I18N_MAP: Record<string, string> = {
   'New Project': 'projects.new_project',
   'Project': 'nav.projects',
   'Project Settings': 'nav.settings',
-  'Project Files': 'nav.project_files',
+  // Legacy title of the module now called Documents. Kept so a page still
+  // emitting the old title resolves to the current name rather than the old one.
+  'Project Files': 'nav.documents',
   'Project Intelligence': 'nav.estimation_dashboard',
   // Estimation
   'Match Elements': 'match_elements.title',
@@ -271,13 +273,17 @@ export function Header({ title, onMenuClick }: HeaderProps) {
           </>
         )}
 
-        {/* Collapsed module-info re-opener. When the page's DismissibleInfo
-            card is collapsed it vanishes from the page entirely (founder
-            decision 2026-06-06) and registers here: project pill › module
-            name › THIS icon. One click re-expands the card in the page.
-            Visible at every breakpoint - on mobile the in-page card is the
-            only other surface, so this is the sole way back. */}
-        <ModuleInfoReopener />
+        {/* Collapsed module-info re-opener. When a page's info block is
+            collapsed it vanishes from the page entirely (founder decision
+            2026-06-06) and registers here: project pill › module name › THIS
+            icon. One click re-expands it in the page.
+
+            This is the ONLY re-open control in the product (founder
+            2026-08-07). It sits outside the `translatedTitle` block on
+            purpose: the title is `hidden lg:flex`, and below lg the icon is
+            the sole way back, so gating it on the title would strand a
+            collapsed block on every narrow screen. */}
+        <ModuleInfoButton />
       </div>
 
       {/* ── Partner co-brand chip (center column) ───────────────────────
@@ -365,6 +371,10 @@ export function Header({ title, onMenuClick }: HeaderProps) {
             report doesn't have to scan past the marketing CTAs. */}
         <NotificationBell />
         <HeaderNewsButton />
+        {/* Building a module is something you do from wherever you noticed the
+            platform was missing one, so it lives here rather than in the
+            sidebar. Renders nothing for anyone who may not install one. */}
+        <ModuleBuilderButton />
         <SupportUsButton />
         <SubscribeButton />
         <BugReportMenu />
@@ -386,38 +396,6 @@ export function Header({ title, onMenuClick }: HeaderProps) {
         <UserMenu />
       </div>
     </header>
-  );
-}
-
-/* ── Module info re-opener (top bar) ──────────────────────────────────── */
-
-/** Small info icon after the module title. FALLBACK re-open control, shown
- *  ONLY while the page's DismissibleInfo card is collapsed AND the page has no
- *  "How it works" button (which hosts the primary re-open pill next to it -
- *  founder 2026-07-23). This keeps a collapsed card reachable on the rare page
- *  without a guide button, without doubling the affordance elsewhere. Clicking
- *  re-expands the card (and this icon disappears, because the card
- *  unregisters itself). */
-function ModuleInfoReopener() {
-  const { t } = useTranslation();
-  const hasCollapsed = useModuleInfoStore((s) => s.entries.length > 0);
-  const guidePresent = useModuleInfoStore((s) => s.guideKeys.length > 0);
-  const expandAll = useModuleInfoStore((s) => s.expandAll);
-  // The pill next to "How it works" owns re-open whenever a guide button is on
-  // the page; only fall back to this top-bar icon when there is none.
-  if (!hasCollapsed || guidePresent) return null;
-  const label = t('common.module_info', { defaultValue: 'Module information' });
-  return (
-    <button
-      type="button"
-      onClick={expandAll}
-      aria-label={label}
-      title={label}
-      data-testid="header-module-info"
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-content-tertiary transition-colors hover:bg-surface-secondary hover:text-content-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
-    >
-      <Info size={15} strokeWidth={1.75} />
-    </button>
   );
 }
 
@@ -1055,7 +1033,7 @@ const ROUTE_COMPONENT_MAP: ReadonlyArray<readonly [string, string]> = [
   ['/tendering', 'Tendering'],
   ['/changeorders', 'Change Orders'],
   ['/photos', 'Project Photos'],
-  ['/files', 'Files'],
+  ['/files', 'Documents'],
   ['/risks', 'Risk Register'],
   ['/markups', 'Markups'],
   ['/punchlist', 'Punch List'],
@@ -1088,6 +1066,13 @@ const ROUTE_COMPONENT_MAP: ReadonlyArray<readonly [string, string]> = [
   ['/portal', 'Client & Partner Portal'],
   ['/resources', 'Resources & Crew'],
   ['/contracts', 'Contracts'],
+  ['/payment-clock', 'Payment Clock'],
+  ['/tax-withholding', 'Withholding Tax'],
+  ['/einvoice-clearance', 'E-invoice Clearance'],
+  ['/inbound-email', 'Email Delay Scan'],
+  ['/cost-match', 'Cost Match'],
+  ['/full-evm', 'Earned Value'],
+  ['/fx', 'Currencies'],
   ['/ai-estimate', 'AI Quick Estimate'],
   ['/ai-agents', 'AI Agents'],
   ['/advisor', 'AI Cost Advisor'],

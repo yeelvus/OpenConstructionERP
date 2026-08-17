@@ -15,7 +15,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { X, Search, Calendar, Link2, Loader2 } from 'lucide-react';
-import { apiGet, apiPatch } from '@/shared/lib/api';
+import { apiGet, apiPatch, type Page } from '@/shared/lib/api';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useToastStore } from '@/stores/useToastStore';
 
 interface ScheduleHeader {
@@ -70,13 +71,17 @@ export default function LinkActivityToDwgModal({
   const schedulesQuery = useQuery({
     queryKey: ['schedules-for-dwg-link', projectId],
     queryFn: () =>
-      apiGet<ScheduleHeader[]>(
+      apiGet<Page<ScheduleHeader>>(
         `/v1/schedule/schedules/?project_id=${encodeURIComponent(projectId)}`,
       ),
     enabled: !!projectId,
   });
-  const schedules = schedulesQuery.data ?? [];
+  const schedulePage = schedulesQuery.data;
+  const schedules = schedulePage?.items ?? [];
 
+  // Both reads are capped server-side. Carry each schedule's activity
+  // total through the flatten so the picker can say how much of the
+  // programme it is actually offering.
   const activitiesQuery = useQuery({
     queryKey: [
       'activities-for-dwg-link',
@@ -85,21 +90,24 @@ export default function LinkActivityToDwgModal({
     ],
     queryFn: async () => {
       const all: Activity[] = [];
+      let total = 0;
       for (const s of schedules) {
         try {
-          const acts = await apiGet<Activity[]>(
+          const page = await apiGet<Page<Activity>>(
             `/v1/schedule/schedules/${encodeURIComponent(s.id)}/activities/`,
           );
-          all.push(...acts);
+          all.push(...page.items);
+          total += page.total;
         } catch {
           // ignore per-schedule failures
         }
       }
-      return all;
+      return { items: all, total };
     },
     enabled: schedules.length > 0,
   });
-  const activities = activitiesQuery.data ?? [];
+  const activities = activitiesQuery.data?.items ?? [];
+  const activityTotal = activitiesQuery.data?.total ?? 0;
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -232,6 +240,12 @@ export default function LinkActivityToDwgModal({
             </div>
           ) : (
             <ul className="space-y-1">
+              <li>
+                <TruncationNotice
+                  page={{ items: activities, total: activityTotal }}
+                  className="px-2.5 pb-1"
+                />
+              </li>
               {filtered.slice(0, visibleCount).map((act) => (
                 <li key={act.id}>
                   <button

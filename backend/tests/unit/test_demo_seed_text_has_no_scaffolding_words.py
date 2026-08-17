@@ -64,7 +64,37 @@ from pathlib import Path
 _BACKEND = Path(__file__).resolve().parents[2]
 
 # Words that admit the row came from a seeder rather than from a project.
-_SCAFFOLDING = re.compile(r"\b(demo|seeded|sample|placeholder|dummy)\b", re.IGNORECASE)
+#
+# "sample" is not one of them on its own, and treating it as one made this test
+# reject the product's own vocabulary. In construction English a sample is a
+# thing you take and test: a water sample sent for potability, a concrete cube,
+# a sample room built for the client to approve. The seed tree writes it in
+# that sense sixty-odd times, and the only reason this rule stayed green for so
+# long is that most of those are ``rng.sample`` calls the AST walk never reads.
+# The one that finally fired, "sample taken for potability", admits nothing.
+#
+# So the word is matched by sense rather than by spelling. It counts as
+# scaffolding only where it modifies a noun naming an artefact a seeder
+# produces, or where the sentence says outright that the row is an example.
+# "sample data" and "sample record" still fail. "sample taken", "sample room",
+# "sample with the laboratory" do not, because in each of those the word is the
+# head noun of a real thing on a real site.
+#
+# The same collision exists for "demo", which is how this trade abbreviates
+# demolition - ``bid_management/seed.py`` already carries a "DEMO" bid for a
+# demolition phase. Nothing trips on it today because that value is a bare
+# code rather than prose, so it is left alone rather than pre-emptively
+# loosened; if a demolition description ever fails here, this is the reason.
+_SCAFFOLDING = re.compile(
+    r"""
+      \b (?: demo | seeded | placeholder | dummy ) \b
+    | \b samples? \b (?= \s+ (?: data | dataset | record s? | row s? | entry | entries
+                              | value s? | text | string s? | content | payload
+                              | fixture s? | placeholder s? | seed | only ) \b )
+    | \b (?: this \s+ is \s+ (?: a | an ) \s+ sample | for \s+ sample \s+ purposes ) \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
 # Rule two. A code opening with DEMO- is user-visible wherever it sits: the
 # estimator reads it off the card. Position-independent on purpose, because the

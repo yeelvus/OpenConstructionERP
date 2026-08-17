@@ -27,10 +27,19 @@ PRIORITY_LABELS: dict[str, dict[str, str]] = {
     "should": {"en": "should have", "de": "Soll-Anforderung", "ru": "желательно"},
     "could": {"en": "could have", "de": "Kann-Anforderung", "ru": "возможно"},
     "wont": {"en": "will not have", "de": "wird nicht umgesetzt", "ru": "не будет"},
+    #: ``may`` is the spelling this module's API accepted before this catalog
+    #: existed, and rows still carry it. It means ``could``, and without an
+    #: entry here it rendered as the raw word "may" in every language.
+    "may": {"en": "could have", "de": "Kann-Anforderung", "ru": "возможно"},
 }
 
-#: MoSCoW order, most important first, for stable sorting.
+#: MoSCoW order, most important first, for stable sorting. ``may`` is absent on
+#: purpose: it is a spelling of ``could``, not a fifth priority, and
+#: :func:`priority_rank` gives it the same rank through :data:`PRIORITY_ALIASES`.
 PRIORITY_ORDER: tuple[str, ...] = ("must", "should", "could", "wont")
+
+#: Legacy spellings mapped onto the MoSCoW word they mean.
+PRIORITY_ALIASES: dict[str, str] = {"may": "could"}
 
 #: Coverage bands over the percentage.
 BAND_NONE = "none"
@@ -56,9 +65,14 @@ def priority_label(priority: str, lang: str = "en") -> str:
 
 
 def priority_rank(priority: str) -> int:
-    """Sort rank for a MoSCoW priority (0 = must). Unknown sorts last."""
+    """Sort rank for a MoSCoW priority (0 = must). Unknown sorts last.
+
+    A legacy spelling ranks where the word it means ranks, so a list holding
+    both ``could`` and ``may`` does not split one priority into two groups.
+    """
+    canonical = PRIORITY_ALIASES.get(priority, priority)
     try:
-        return PRIORITY_ORDER.index(priority)
+        return PRIORITY_ORDER.index(canonical)
     except ValueError:
         return len(PRIORITY_ORDER)
 

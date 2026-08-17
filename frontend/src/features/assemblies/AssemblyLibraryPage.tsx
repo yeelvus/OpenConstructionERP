@@ -12,6 +12,7 @@ import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useDisplayQuantity } from '@/shared/hooks/useDisplayQuantity';
 import { unitGlyph } from '@/shared/lib/unitLabels';
+import { currencyFractionDigits } from '@/shared/lib/money';
 import { projectsApi } from '@/features/projects/api';
 
 import {
@@ -322,7 +323,7 @@ export function PreviewTotalsFooter({
             {t('assemblies.library.grand_total', 'Grand total')}
           </td>
           <td className="py-2 text-right font-mono">
-            {`${Number(grandTotal).toFixed(2)} ${currencyLabel}`.trim()}
+            {`${Number(grandTotal).toFixed(currencyFractionDigits(currencyLabel))} ${currencyLabel}`.trim()}
           </td>
         </tr>
       </tfoot>
@@ -348,7 +349,7 @@ export function PreviewTotalsFooter({
               : t('assemblies.library.subtotal_currency_not_set', 'Subtotal, currency not set')}
           </td>
           <td className="py-1 text-right font-mono">
-            {`${Number(sub.amount).toFixed(2)} ${sub.currency}`.trim()}
+            {`${Number(sub.amount).toFixed(currencyFractionDigits(sub.currency))} ${sub.currency}`.trim()}
           </td>
         </tr>
       ))}
@@ -744,12 +745,12 @@ function TemplateDrawer({
                         </td>
                         <td className="py-1.5 pr-2 text-right font-mono">
                           {matched
-                            ? `${q.convertRate(Number(c.unit_rate), c.unit || '').toFixed(2)} ${rowCurrency(c)}`.trim()
+                            ? `${q.convertRate(Number(c.unit_rate), c.unit || '').toFixed(currencyFractionDigits(rowCurrency(c)))} ${rowCurrency(c)}`.trim()
                             : '—'}
                         </td>
                         <td className="py-1.5 text-right font-mono">
                           {matched
-                            ? `${c.total.toFixed(2)} ${rowCurrency(c)}`.trim()
+                            ? `${c.total.toFixed(currencyFractionDigits(rowCurrency(c)))} ${rowCurrency(c)}`.trim()
                             : '—'}
                         </td>
                       </tr>

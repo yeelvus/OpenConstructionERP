@@ -6989,13 +6989,19 @@ async def _extract_from_cad(content: bytes, ext: str, filename: str) -> dict[str
         parse_cad_excel,
         summarize_cad_elements,
     )
+    from app.modules.boq.dxf_native import is_natively_readable
 
     # Resolve the converter, auto-downloading it on first use if missing.
     # Only when it genuinely cannot be provisioned (unsupported platform /
     # download failed) do we fall back to the help message + the
     # ``cad_no_converter`` flag the AI summary path branches on.
+    #
+    # Formats the platform reads in-process skip this entirely. A .dxf needs no
+    # binary, so demanding one here would answer "no converter available" for a
+    # file the next call reads without difficulty.
     try:
-        await ensure_converter_async(ext)
+        if not is_natively_readable(ext):
+            await ensure_converter_async(ext)
     except ConverterUnavailableError as exc:
         return {
             "text": (

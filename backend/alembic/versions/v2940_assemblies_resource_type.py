@@ -46,6 +46,7 @@ def _existing_indexes(bind: sa.engine.Connection) -> set[str]:
     return {ix["name"] for ix in inspector.get_indexes(_TABLE)}
 
 
+# data-rewrite-ack: table=oe_assemblies_component growth=bounded rows=assembly template library, grows with the recipe catalogue, not per project
 def upgrade() -> None:
     bind = op.get_bind()
     cols = _existing_columns(bind)

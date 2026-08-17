@@ -332,7 +332,9 @@ async def test_owner_can_still_list_activities(http_client, two_schedule_tenants
         headers=a["headers"],
     )
     assert resp.status_code == 200, resp.text
-    assert len(resp.json()) == 1
+    body = resp.json()
+    assert body["total"] == 1
+    assert len(body["items"]) == 1
 
 
 @pytest.mark.asyncio

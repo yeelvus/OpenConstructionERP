@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -34,15 +35,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.i18n import get_locale
 from app.core.json_merge import merge_metadata
 from app.core.validation.engine import ValidationReport, validation_engine
+
+# The offline idempotency ledger is shared field infrastructure, not the diary's
+# private business: the diary declares it as "offline-replayed field writes" and
+# keys it on nothing but the op id. Field time records its entries in the same
+# table so one worker's replayed ops read as one list, which is why
+# ``oe_field_diary`` is a declared dependency in this module's manifest.
+from app.modules.field_diary.models import FieldSyncLedger
+from app.modules.field_diary.repository import FieldSyncLedgerRepository
 from app.modules.field_time import field_time_math as ft
 from app.modules.field_time.models import FieldTimesheet, FieldTimesheetLine
 from app.modules.field_time.repository import FieldTimeRepository
 from app.modules.field_time.schemas import (
+    OUTCOME_CREATED,
+    OUTCOME_REPLAYED,
+    OUTCOME_UPDATED,
+    OUTCOME_WITHDRAWN,
     CostCodeSuggestionOut,
     FieldTimesheetCreate,
     FieldTimesheetLineCreate,
     FieldTimesheetLineUpdate,
     FieldTimesheetUpdate,
+    OfflineEntrySubmission,
+    OfflineEntryWithdraw,
 )
 
 if TYPE_CHECKING:
@@ -59,6 +74,46 @@ _DRAFT = "draft"
 _SUBMITTED = "submitted"
 _APPROVED = "approved"
 _REVERSED = "reversed"
+
+# How an offline field-time entry is filed in the shared field sync ledger. The
+# op kind groups a worker's replayed ops beside the diary's; the result types
+# say whether the key produced a timesheet or was withdrawn. A withdrawal keeps
+# its row: it is the only thing that can stop a create which overtook it from
+# resurrecting a day the foreman deleted.
+_LEDGER_OP_KIND = "field.time.timesheet"
+_LEDGER_RESULT_TIMESHEET = "field_timesheet"
+_LEDGER_RESULT_WITHDRAWN = "field_timesheet_withdrawn"
+
+
+def _offline_scope_error() -> HTTPException:
+    """The refusal for an entry key that is not this project's to touch.
+
+    404 rather than 403, matching every other read in this module: a caller who
+    may not see the entry must not learn from the answer that it exists.
+    """
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="No offline entry with that key on this project.",
+    )
+
+
+@dataclass(frozen=True)
+class OfflineOpOutcome:
+    """What one offline op did, for the router to render.
+
+    Attributes:
+        timesheet: The entry as it now stands, or None once withdrawn.
+        outcome: One of the ``OUTCOME_*`` tokens. The client renders its own
+            localized sentence from this and never parses ``detail``.
+        submitted: True when the entry has moved past draft, so the office can
+            see it. False with a stored draft means it still needs a correction.
+        detail: English technical note for a log, or None.
+    """
+
+    timesheet: FieldTimesheet | None
+    outcome: str
+    submitted: bool = False
+    detail: str | None = None
 
 
 def _utcnow() -> datetime:
@@ -316,8 +371,11 @@ class FieldTimeService:
         """Approve a submitted timesheet (submitted -> approved).
 
         On approval the hours become authoritative actuals: the cost rollup is
-        computed, each daywork line is mirrored onto a signed daywork sheet, and
-        ``field_time.timesheet_approved`` is published for payroll / cost.
+        computed, each daywork line is mirrored onto a signed daywork sheet,
+        ``field_time.timesheet_approved`` is published for payroll, and the
+        labour rows go to the cost model as ``fieldreports.labour.logged`` -
+        the same pipe the field diary uses, so a day recorded both on a phone
+        and here reaches the budget once.
         """
         timesheet = await self.get_timesheet(timesheet_id)
         if timesheet.status != _SUBMITTED:
@@ -350,6 +408,7 @@ class FieldTimeService:
 
         roll = ft.rollup(line_dicts, labour_rates=labour_rates, plant_rates=plant_rates)
         self._publish_approved(timesheet, roll, currency, user_id)
+        self._publish_labour_actuals(timesheet, line_dicts, labour_rates, currency, user_id)
         logger.info("Field timesheet approved: %s by %s", timesheet_id, user_id)
         return timesheet
 
@@ -414,8 +473,452 @@ class FieldTimeService:
 
         roll = ft.rollup(self._line_dicts(reversal))
         self._publish_reversed(reversal, original, roll, user_id)
+        # Rates only matter to a cost model that has no record of what the
+        # approval posted; when it has one it credits that figure instead.
+        labour_rates = await self._labour_rates(mirrored)
+        currency = await self._project_base_currency(original.project_id)
+        self._publish_labour_credit(reversal, original, mirrored, labour_rates, currency, user_id)
         logger.info("Field timesheet %s reversed by %s (reversal=%s)", timesheet_id, user_id, reversal.id)
         return reversal
+
+    # ── Offline capture and replay ───────────────────────────────────────────
+
+    async def record_offline_entry(
+        self,
+        data: OfflineEntrySubmission,
+        user_id: str | None,
+    ) -> OfflineOpOutcome:
+        """Apply one day recorded offline, exactly once however often it arrives.
+
+        The device queues the day and replays it when there is signal again. That
+        replay is at-least-once - a reconnect that fires twice, or a request that
+        reached the server but whose response was lost, both re-send it - so the
+        entry key is looked up first and a known key returns what it produced the
+        first time instead of writing a second timesheet.
+
+        The op carries the entry's whole state, not a diff. Re-applying a whole
+        state is idempotent by construction, which is why a replayed update needs
+        no revision counter to be safe: applying the same content twice leaves
+        the same content.
+
+        Replay cannot move money or claim a worker-day, because this path only
+        ever produces a draft or a submitted timesheet. Approval is what posts
+        labour actuals and takes the ``(project, day, worker)`` claim, and
+        approval stays a deliberate desk action - nothing subscribes to
+        ``field_time.timesheet_submitted`` and does anything durable. Anyone
+        adding a submit-time subscriber that posts cost breaks that guarantee and
+        has to re-read this method.
+
+        Args:
+            data: The entry's full state, keyed by ``entry_key``.
+            user_id: The authenticated caller, recorded against the ledger row.
+
+        Returns:
+            An :class:`OfflineOpOutcome` naming what happened and the entry.
+
+        Raises:
+            HTTPException: 409 when the entry was withdrawn (a create that
+                overtook its own withdrawal must not resurrect the day), when an
+                edit arrives for a day that is no longer a draft, or when the key
+                is already spent on another module's op; 404 when the key belongs
+                to a different project.
+        """
+        for line in data.lines:
+            self._assert_line_xor(line.resource_id, line.equipment_id)
+
+        ledger_repo = FieldSyncLedgerRepository(self.session)
+        ledger = await ledger_repo.get_by_client_op_id(data.entry_key)
+        if ledger is not None:
+            self._assert_offline_key_is_ours(data.entry_key, ledger, data.project_id)
+
+        if ledger is not None and ledger.result_type == _LEDGER_RESULT_WITHDRAWN:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "This day was withdrawn on the device, so it was not recorded again. "
+                    "Enter it as a new day if the hours were real."
+                ),
+            )
+
+        existing: FieldTimesheet | None = None
+        if ledger is not None and ledger.result_id is not None:
+            existing = await self.repo.get_by_id(ledger.result_id)
+
+        if existing is not None:
+            if existing.project_id != data.project_id:
+                # The ledger row and the timesheet are two separate records.
+                # That they agreed when they were written is not proof they
+                # agree now, and this one rewrites lines, so check the row it
+                # actually resolved rather than trusting the key that found it.
+                raise _offline_scope_error()
+            return await self._apply_offline_revision(existing, data, user_id)
+
+        # No entry behind this key yet. Either it is genuinely new, or a previous
+        # attempt claimed the key and never got as far as writing the timesheet
+        # (it crashed, or its transaction rolled back). Both want the same thing:
+        # write the day and point the key at it. Self-healing on purpose - a key
+        # that could be poisoned by one failed attempt would lose the day for
+        # good, since the device will only ever send that same key.
+        timesheet = await self.create_timesheet(
+            FieldTimesheetCreate(
+                project_id=data.project_id,
+                date=data.date,
+                note=data.note,
+                metadata={**dict(data.metadata or {}), ft.OFFLINE_METADATA_KEY: self._offline_record(data)},
+                lines=list(data.lines),
+            ),
+            user_id=user_id,
+        )
+        await self._record_offline_key(
+            data.entry_key,
+            project_id=data.project_id,
+            user_id=user_id,
+            timesheet_id=timesheet.id,
+            existing=ledger,
+        )
+        timesheet, submitted, detail = await self._offline_submit(timesheet, data, user_id)
+        logger.info(
+            "Field timesheet %s recorded from an offline entry (key=%s)",
+            timesheet.id,
+            data.entry_key,
+        )
+        return OfflineOpOutcome(timesheet, OUTCOME_CREATED, submitted=submitted, detail=detail)
+
+    async def withdraw_offline_entry(
+        self,
+        data: OfflineEntryWithdraw,
+        user_id: str | None,
+    ) -> OfflineOpOutcome:
+        """Withdraw a day recorded offline, by the key the device gave it.
+
+        Remembering the withdrawal is the whole point. A device that queued a
+        create and then a withdrawal can deliver them in either order once the
+        two requests are in flight, and a withdrawal that arrives first must stop
+        the create behind it - otherwise the day the foreman deleted comes back
+        and nobody can tell it was ever meant to be gone. So an unknown key is
+        recorded as withdrawn rather than answered with "no such entry".
+
+        Only a draft can be withdrawn. Refusing everything else is what keeps a
+        worker-day claim from being stranded: approving a timesheet posts labour
+        actuals and claims each ``(project, day, worker)``, the claim is released
+        by reversing the timesheet, and there is no foreign key tying the claim
+        to the row. Deleting an approved timesheet here would leave a claim that
+        nothing can ever release, so that day could never be costed again - not
+        by a corrected sheet and not by the phone.
+
+        Args:
+            data: The entry key and its project.
+            user_id: The authenticated caller, recorded against the ledger row.
+
+        Returns:
+            An :class:`OfflineOpOutcome` with ``OUTCOME_WITHDRAWN`` and no
+            timesheet.
+
+        Raises:
+            HTTPException: 409 when the entry has already been sent on for
+                approval or approved, or when the key is already spent on
+                another module's op; 404 when the key belongs to a different
+                project.
+        """
+        ledger_repo = FieldSyncLedgerRepository(self.session)
+        ledger = await ledger_repo.get_by_client_op_id(data.entry_key)
+        if ledger is not None:
+            self._assert_offline_key_is_ours(data.entry_key, ledger, data.project_id)
+
+        if ledger is not None and ledger.result_type == _LEDGER_RESULT_WITHDRAWN:
+            return OfflineOpOutcome(None, OUTCOME_WITHDRAWN, detail="Already withdrawn.")
+
+        timesheet: FieldTimesheet | None = None
+        if ledger is not None and ledger.result_id is not None:
+            timesheet = await self.repo.get_by_id(ledger.result_id)
+
+        if timesheet is not None:
+            if timesheet.project_id != data.project_id:
+                raise _offline_scope_error()
+            if timesheet.status != _DRAFT:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"This day is already '{timesheet.status}' in the office, so the device cannot "
+                        "withdraw it. An approved timesheet is corrected by reversing it."
+                    ),
+                )
+            await self.repo.delete(timesheet.id)
+
+        await self._record_offline_key(
+            data.entry_key,
+            project_id=data.project_id,
+            user_id=user_id,
+            timesheet_id=None,
+            existing=ledger,
+            withdrawn=True,
+        )
+        logger.info("Offline field-time entry withdrawn (key=%s)", data.entry_key)
+        return OfflineOpOutcome(None, OUTCOME_WITHDRAWN)
+
+    async def _apply_offline_revision(
+        self,
+        timesheet: FieldTimesheet,
+        data: OfflineEntrySubmission,
+        user_id: str | None,
+    ) -> OfflineOpOutcome:
+        """Reconcile an offline op against the entry that key already produced."""
+        matches = self._offline_entry_matches(timesheet, data)
+        past_draft = timesheet.status != _DRAFT
+
+        if matches:
+            # The same content arriving again: a redelivery, not an edit. Say so
+            # and touch nothing, whatever state the office has moved it to.
+            return OfflineOpOutcome(timesheet, OUTCOME_REPLAYED, submitted=past_draft)
+
+        if past_draft:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"This day is already '{timesheet.status}' in the office, so the correction made on "
+                    "the device was not applied. An approved timesheet is corrected by reversing it."
+                ),
+            )
+
+        # A newer full state for a day still in draft: replace it wholesale.
+        for line in list(timesheet.lines):
+            await self.repo.delete_line(line.id)
+        for line in data.lines:
+            await self.repo.add_line(self._line_from_create(timesheet.id, line))
+        await self.repo.update_fields(
+            timesheet.id,
+            date=data.date,
+            note=data.note,
+            metadata_=merge_metadata(
+                getattr(timesheet, "metadata_", None),
+                {**dict(data.metadata or {}), ft.OFFLINE_METADATA_KEY: self._offline_record(data)},
+            ),
+        )
+        await self.session.refresh(timesheet)
+        timesheet, submitted, detail = await self._offline_submit(timesheet, data, user_id)
+        return OfflineOpOutcome(timesheet, OUTCOME_UPDATED, submitted=submitted, detail=detail)
+
+    async def _offline_submit(
+        self,
+        timesheet: FieldTimesheet,
+        data: OfflineEntrySubmission,
+        user_id: str | None,
+    ) -> tuple[FieldTimesheet, bool, str | None]:
+        """Send the entry on for approval when the op asked for it.
+
+        A validation failure keeps the draft instead of losing the day. The whole
+        reason this path exists is that the hours were recorded where nobody
+        could check them; refusing to store them because they need a correction
+        would throw away the only record of the shift. The caller reports the
+        entry as stored-but-not-submitted and the foreman fixes it on the screen.
+
+        Safe to swallow the refusal: validation reads and never writes, so
+        nothing is half-applied when it raises.
+        """
+        if not data.submit or timesheet.status != _DRAFT:
+            return timesheet, timesheet.status != _DRAFT, None
+        try:
+            submitted = await self.submit_timesheet(timesheet.id, user_id)
+        except HTTPException as exc:
+            if exc.status_code not in (
+                status.HTTP_400_BAD_REQUEST,
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+            ):
+                raise
+            logger.info(
+                "Offline entry %s stored as a draft: it cannot be submitted yet (%s)",
+                timesheet.id,
+                exc.status_code,
+            )
+            return timesheet, False, "Stored as a draft: validation must pass before it can be submitted."
+        return submitted, True, None
+
+    @staticmethod
+    def _offline_record(data: OfflineEntrySubmission) -> dict[str, Any]:
+        """Build the ``offline`` metadata block recorded on the timesheet.
+
+        ``synced_at`` is the server's own clock. The device's ``captured_at`` is
+        kept beside it but never trusted to order anything, which is why a wrong
+        phone clock is a warning here and not a refusal.
+        """
+        return {
+            "entry_key": data.entry_key,
+            "captured_at": data.captured_at.isoformat() if data.captured_at else None,
+            "synced_at": _utcnow().isoformat(),
+            "device": (data.device or "").strip(),
+        }
+
+    @staticmethod
+    def _offline_entry_matches(timesheet: FieldTimesheet, data: OfflineEntrySubmission) -> bool:
+        """True when the stored entry already says exactly what the op says.
+
+        Compares the day, the note and the set of lines. Metadata is left out on
+        purpose: the server stamps its own arrival time into it, so comparing it
+        would make every redelivery look like an edit.
+
+        Hours are compared on their value, not their spelling. The column is
+        ``Numeric(18, 4)``, so eight hours reads back as ``8.0000`` while the
+        device sends ``8``; comparing the two as text would call every single
+        redelivery an edit and quietly rewrite the day on each one.
+        """
+
+        def line_key(
+            resource: object,
+            equipment: object,
+            hours: object,
+            cost_code: object,
+            wbs: object,
+            is_daywork: object,
+            variation: object,
+            note: object,
+        ) -> tuple[str, ...]:
+            return (
+                str(resource or ""),
+                str(equipment or ""),
+                format(ft.to_decimal(hours).normalize(), "f"),
+                str(cost_code or ""),
+                str(wbs or ""),
+                "1" if is_daywork else "0",
+                str(variation or ""),
+                str(note or ""),
+            )
+
+        if timesheet.date != data.date:
+            return False
+        if (timesheet.note or "") != (data.note or ""):
+            return False
+        stored = sorted(
+            line_key(
+                line.resource_id,
+                line.equipment_id,
+                line.hours,
+                line.cost_code,
+                line.wbs,
+                line.is_daywork,
+                line.variation_id,
+                line.note,
+            )
+            for line in timesheet.lines
+        )
+        incoming = sorted(
+            line_key(
+                line.resource_id,
+                line.equipment_id,
+                line.hours,
+                line.cost_code,
+                line.wbs,
+                line.is_daywork,
+                line.variation_id,
+                line.note,
+            )
+            for line in data.lines
+        )
+        return stored == incoming
+
+    @staticmethod
+    def _assert_offline_key_is_ours(
+        entry_key: str,
+        ledger: FieldSyncLedger,
+        project_id: uuid.UUID,
+    ) -> None:
+        """Refuse an entry key that already belongs to someone else.
+
+        Neither check can be done by the router. The router verifies that the
+        caller may reach the project named in the *payload*, but it is the key,
+        not the payload, that selects the row this path goes on to rewrite.
+
+        A key held by another module. The ledger is shared with the field diary
+        and its uniqueness is on ``client_op_id`` alone, so a key already spent
+        on a diary op resolves to a row this module does not own. The result id
+        on such a row points into another table, so it reads back as "no
+        timesheet yet" and this path would write one and then repoint the diary's
+        row at it. That destroys the diary's own replay guard, and the next
+        redelivery of the diary op - which the guard existed to absorb - lands a
+        second time as a duplicate activity with duplicate hours. Refused rather
+        than worked around: the key is spent and the device must mint a new one.
+
+        A key held by another project. Nothing in the key says which project it
+        belongs to, so a stale key replayed after the active project changed
+        would otherwise reach the other project's day and rewrite or delete it.
+
+        Args:
+            entry_key: The device's key, for the log line.
+            ledger: The row that key resolved to.
+            project_id: The project the caller was authorised against.
+
+        Raises:
+            HTTPException: 409 when another module holds the key, 404 when
+                another project does.
+        """
+        if ledger.op_kind != _LEDGER_OP_KIND:
+            logger.warning(
+                "Offline entry key %s is already held by op kind %s; refused",
+                entry_key,
+                ledger.op_kind,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "This entry key is already in use by another field record. "
+                    "Record the day again so the device gives it a new key."
+                ),
+            )
+        if ledger.project_id != project_id:
+            logger.warning("Offline entry key %s belongs to another project; refused", entry_key)
+            raise _offline_scope_error()
+
+    async def _record_offline_key(
+        self,
+        entry_key: str,
+        *,
+        project_id: uuid.UUID,
+        user_id: str | None,
+        timesheet_id: uuid.UUID | None,
+        existing: FieldSyncLedger | None,
+        withdrawn: bool = False,
+    ) -> None:
+        """Point the entry key at what it produced, in the shared field ledger.
+
+        The ledger is the durable half of the promise the device's queue makes:
+        the in-browser dedup only survives one tab, this survives the server.
+
+        A fresh insert is wrapped in a SAVEPOINT so that two drains racing on the
+        same key lose only the duplicate insert. A bare rollback would discard
+        the timesheet this very request just wrote - the same trap the diary
+        documents at its own ledger write.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        result_type = _LEDGER_RESULT_WITHDRAWN if withdrawn else _LEDGER_RESULT_TIMESHEET
+        actor = _as_uuid(user_id)
+        if existing is not None:
+            existing.result_type = result_type
+            existing.result_id = None if withdrawn else timesheet_id
+            await self.session.flush()
+            return
+        if actor is None:
+            # The ledger is scoped to a real user (a NOT NULL foreign key). A
+            # caller with no identity is a service-level call, not a device, so
+            # there is nothing to replay and nothing to record.
+            logger.debug("Offline entry key %s not recorded: no authenticated user", entry_key)
+            return
+        try:
+            async with self.session.begin_nested():
+                self.session.add(
+                    FieldSyncLedger(
+                        client_op_id=entry_key,
+                        project_id=project_id,
+                        user_id=actor,
+                        op_kind=_LEDGER_OP_KIND,
+                        result_type=result_type,
+                        result_id=None if withdrawn else timesheet_id,
+                    ),
+                )
+                await self.session.flush()
+        except IntegrityError:
+            # A racing drain recorded the key first. Its row is the canonical
+            # one; the SAVEPOINT rolled back only this insert.
+            logger.info("Offline entry key %s was recorded by a concurrent replay", entry_key)
 
     # ── Validation ───────────────────────────────────────────────────────────
 
@@ -439,6 +942,10 @@ class FieldTimeService:
             "date": str(timesheet.date),
             "status": timesheet.status,
             "lines": self._line_dicts(timesheet),
+            # The timesheet's own metadata, so the offline rules can read how the
+            # day travelled from the phone. An ordinary desk-entered timesheet
+            # carries no offline block and those rules simply return nothing.
+            "metadata": dict(getattr(timesheet, "metadata_", None) or {}),
         }
         metadata: dict[str, Any] = {
             "locale": get_locale(),
@@ -805,6 +1312,131 @@ class FieldTimeService:
             currency=currency,
             actor_id=user_id,
         )
+
+    def _publish_labour_actuals(
+        self,
+        timesheet: FieldTimesheet,
+        line_dicts: list[dict[str, Any]],
+        labour_rates: dict[str, Decimal],
+        currency: str,
+        user_id: str | None,
+    ) -> None:
+        """Send the approved labour hours to the cost model.
+
+        ``field_time.timesheet_approved`` carries only a rollup, and nothing
+        subscribes to it, so approving a timesheet used to move no money at all
+        while its own docstring said the hours had become authoritative
+        actuals. The hours a foreman captures on a phone have reached the
+        budget through ``fieldreports.labour.logged`` since the diary shipped;
+        this sends the desktop timesheet's hours down the same pipe rather than
+        inventing a second one.
+
+        Per worker, not in aggregate. The cost model needs each row's own
+        ``resource_id`` to tell that a day already costed from the phone is the
+        same day, and an aggregate cannot say who it is made of.
+
+        Plant is not here. Machine hours are not labour and do not belong on
+        the labour budget line; they keep flowing through the rollup event.
+        """
+        rows: list[dict[str, Any]] = []
+        for line in line_dicts:
+            resource_id = str(line.get("resource_id") or "").strip()
+            if not resource_id:
+                continue  # plant, handled by the rollup event
+            hours = ft.to_decimal(line.get("hours"))
+            if hours <= 0:
+                continue
+            rows.append(
+                {
+                    "worker_type": "labour",
+                    "hours": float(hours),
+                    "headcount": 1,
+                    "resource_id": resource_id,
+                    "cost_rate": str(labour_rates.get(resource_id, Decimal("0"))),
+                    "currency": currency,
+                },
+            )
+        if not rows:
+            return
+
+        try:
+            from app.modules.fieldreports.events import publish_labour_logged
+
+            publish_labour_logged(
+                report_id=str(timesheet.id),
+                project_id=str(timesheet.project_id),
+                report_date=str(timesheet.date),
+                status="approved",
+                rows=rows,
+                actor_id=user_id,
+                source="field_time",
+            )
+        except Exception:
+            # A cost rollup must never undo an approval a manager has made.
+            logger.exception(
+                "Labour actuals publish failed for timesheet=%s - approval unaffected",
+                timesheet.id,
+            )
+
+    def _publish_labour_credit(
+        self,
+        reversal: FieldTimesheet,
+        original: FieldTimesheet,
+        mirrored: list[dict[str, Any]],
+        labour_rates: dict[str, Decimal],
+        currency: str,
+        user_id: str | None,
+    ) -> None:
+        """Take the reversed timesheet's labour actuals back off the budget.
+
+        Approval posts money and claims each worker-day. Undoing only the money
+        would leave the claim held, so the corrected sheet could never cost that
+        day and neither could the phone: a reversal would strand the worker's
+        day rather than free it. This releases both together.
+
+        The rows are the reversal's own mirrored lines, hours positive. The sign
+        is in the event name because the cost calculator skips non-positive
+        hours - a negative payload would be ignored, not subtracted.
+        """
+        rows: list[dict[str, Any]] = []
+        for line in mirrored:
+            resource_id = str(line.get("resource_id") or "").strip()
+            if not resource_id:
+                continue  # plant, never posted to the labour line
+            hours = ft.to_decimal(line.get("hours"))
+            if hours <= 0:
+                continue
+            rows.append(
+                {
+                    "worker_type": "labour",
+                    "hours": float(hours),
+                    "headcount": 1,
+                    "resource_id": resource_id,
+                    "cost_rate": str(labour_rates.get(resource_id, Decimal("0"))),
+                    "currency": currency,
+                },
+            )
+        if not rows:
+            return
+
+        try:
+            from app.modules.fieldreports.events import publish_labour_reversed
+
+            publish_labour_reversed(
+                report_id=str(reversal.id),
+                reverses_id=str(original.id),
+                project_id=str(reversal.project_id),
+                report_date=str(reversal.date),
+                rows=rows,
+                actor_id=user_id,
+                source="field_time",
+            )
+        except Exception:
+            # A cost credit must never undo a reversal a manager has made.
+            logger.exception(
+                "Labour credit publish failed for reversal=%s - the reversal is unaffected",
+                reversal.id,
+            )
 
     def _publish_reversed(
         self,

@@ -58,7 +58,7 @@ const playbook: Playbook = {
       whyKey: "cases.track_a_design_change_to_site_record.step.revise.why",
       whyDefault:
         "A change that only exists as a verbal instruction on site has no paper trail behind it if the cost or the time is ever questioned.",
-      moduleLabel: "Files",
+      moduleLabel: "Documents",
       moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },

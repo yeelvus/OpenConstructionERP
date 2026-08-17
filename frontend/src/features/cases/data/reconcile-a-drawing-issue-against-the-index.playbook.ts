@@ -63,7 +63,7 @@ const playbook: Playbook = {
       whyKey: "cases.reconcile_a_drawing_issue_against_the_index.step.intake.why",
       whyDefault:
         "You cannot reconcile a bundle. Until the issue is broken into numbered sheets the only way to answer whether A-114 arrived is for somebody to scroll, and nobody scrolls the same set twice, which is how a missing sheet survives three weeks of everybody assuming it is in there.",
-      moduleLabel: "Project files",
+      moduleLabel: "Documents",
       moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },
@@ -146,6 +146,7 @@ const playbook: Playbook = {
       whyDefault:
         "A designer answers we sent everything in one line, and answers a list of eleven sheet numbers in a day. Naming the gap precisely, against the transmittal that was meant to carry it, turns a fortnight of email into a short conversation, and leaves a dated trail if the missing sheet later costs somebody a week.",
       moduleLabel: "Transmittals",
+      moduleLabelKey: "transmittals.title",
       to: "/files/transmittals",
     },
     {
@@ -186,7 +187,7 @@ const playbook: Playbook = {
         "cases.reconcile_a_drawing_issue_against_the_index.step.account.why",
       whyDefault:
         "An extra sheet is usually one somebody issued without updating the index, which makes it the drawing nobody is tracking. A revision mismatch is worse, because both parties are certain they hold the current sheet and one of them is pricing or pouring to geometry that has already moved.",
-      moduleLabel: "Project files",
+      moduleLabel: "Documents",
       moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },

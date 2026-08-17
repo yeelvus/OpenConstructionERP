@@ -107,6 +107,17 @@ class DiaryEntry(Base):
         ForeignKey("oe_users_user.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # When this entry's work hours were handed to the labour cost flow.
+    #
+    # Hours reach a budget line's actuals exactly once, and this is what says
+    # so. The publish used to happen on submit and now happens on approval, so
+    # without a mark an entry submitted under the old behaviour would publish a
+    # second time the moment somebody approved it, and the project would carry
+    # those hours twice with nothing on screen to explain the difference.
+    labour_published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     metadata_: Mapped[dict] = mapped_column(  # type: ignore[assignment]
         "metadata",
         JSON,

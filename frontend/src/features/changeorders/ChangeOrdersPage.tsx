@@ -182,6 +182,8 @@ function getReasonLabels(t: (key: string, opts?: Record<string, unknown>) => str
     unforeseen: t('changeorders.reason_unforeseen', { defaultValue: 'Unforeseen Conditions' }),
     regulatory: t('changeorders.reason_regulatory', { defaultValue: 'Regulatory' }),
     error: t('changeorders.reason_error', { defaultValue: 'Error/Omission' }),
+    non_conformance: t('changeorders.reason_non_conformance', { defaultValue: 'Non-Conformance' }),
+    value_engineering: t('changeorders.reason_value_engineering', { defaultValue: 'Value Engineering' }),
   };
 }
 
@@ -2112,6 +2114,7 @@ export function ChangeOrdersPage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       <DismissibleInfo

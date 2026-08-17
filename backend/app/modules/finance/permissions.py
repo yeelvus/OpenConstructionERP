@@ -31,6 +31,11 @@ def register_finance_permissions() -> None:
             "finance.approve": Role.MANAGER,
             "finance.pay": Role.MANAGER,
             "finance.record_payment": Role.MANAGER,
+            # Seller identity and the account buyers pay into are the company's
+            # legal and banking details, and every invoice the instance issues
+            # carries them. Changing them redirects money, so MANAGER, beside
+            # the other financial commitments rather than beside finance.update.
+            "finance.einvoice_settings": Role.MANAGER,
             # Gap E (Wave 6): manually raising the receivable from a certified
             # claim is a financial commitment (it books revenue against the
             # client), so it sits at MANAGER alongside approve/pay. The event

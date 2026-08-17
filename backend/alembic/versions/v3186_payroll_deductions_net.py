@@ -72,6 +72,8 @@ def _cols(table: str) -> set[str]:
     return {c["name"] for c in insp.get_columns(table)}
 
 
+# data-rewrite-ack: table=oe_payroll_entry growth=tenure rows=one row per employee per pay period, classic tenure growth
+# data-rewrite-ack: table=oe_payroll_batch growth=tenure rows=one row per payroll run, accumulates every pay period
 def upgrade() -> None:
     # 1) Net pay column on the payslip (entry), backfilled to gross. -----------
     entry_cols = _cols(_ENTRY_TABLE)

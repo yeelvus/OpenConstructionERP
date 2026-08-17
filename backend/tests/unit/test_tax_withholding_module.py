@@ -261,6 +261,7 @@ class TestComputeDeduction:
         figures = service.compute_deduction(
             _uk_regime(),
             gross_amount=Decimal("10000.00"),
+            currency_code="GBP",
             qualifying_materials=Decimal("2500.00"),
             party_status=_standing(),
             as_of=TODAY,
@@ -274,6 +275,7 @@ class TestComputeDeduction:
         figures = service.compute_deduction(
             _uk_regime(),
             gross_amount=Decimal("10000.00"),
+            currency_code="GBP",
             qualifying_materials=Decimal("2500.00"),
             party_status=_standing(valid_to=date(2026, 6, 30)),
             as_of=TODAY,
@@ -286,6 +288,7 @@ class TestComputeDeduction:
         figures = service.compute_deduction(
             _de_regime(),
             gross_amount=Decimal("20000.00"),
+            currency_code="EUR",
             qualifying_materials=Decimal("8000.00"),
             vat_amount=Decimal("3192.00"),
             as_of=TODAY,
@@ -297,10 +300,48 @@ class TestComputeDeduction:
     def test_a_payment_under_the_exemption_limit_is_flagged_not_zeroed(self):
         # The limit is an annual figure per payee, and one payment cannot see
         # the year. Reporting the possibility is honest; zeroing it is not.
-        figures = service.compute_deduction(_de_regime(), gross_amount=Decimal("4000.00"), as_of=TODAY)
+        figures = service.compute_deduction(
+            _de_regime(), gross_amount=Decimal("4000.00"), currency_code="EUR", as_of=TODAY
+        )
         assert figures.below_threshold is True
         assert figures.tax_withheld == Decimal("600.00")
         assert any("exemption limit" in reason for reason in figures.reasons)
+
+    def test_the_limit_is_not_applied_to_a_payment_in_another_currency(self):
+        # The scheme's limit is 5000 EUR. Holding 4000 USD up against it
+        # compares two different units and answers with whichever way the rate
+        # happened to fall that morning.
+        figures = service.compute_deduction(
+            _de_regime(), gross_amount=Decimal("4000.00"), currency_code="USD", as_of=TODAY
+        )
+        assert figures.below_threshold is False
+        # Not applying it silently would be its own defect: the payment may
+        # well be under the limit once converted, and the reader has to be told
+        # that the question was left open rather than answered no.
+        assert any("has not been applied" in reason for reason in figures.reasons)
+        assert any("5000.00 EUR" in reason and "USD" in reason for reason in figures.reasons)
+        # The deduction itself is unaffected either way - the flag never was a
+        # rate change.
+        assert figures.tax_withheld == Decimal("600.00")
+
+    def test_currency_is_matched_case_and_space_insensitively(self):
+        figures = service.compute_deduction(
+            _de_regime(), gross_amount=Decimal("4000.00"), currency_code=" eur ", as_of=TODAY
+        )
+        assert figures.below_threshold is True
+
+    def test_a_scheme_with_no_limit_says_nothing_about_currency(self):
+        # UK CIS has no exemption limit, so a payment in any currency should
+        # not collect a note about a limit that does not exist.
+        figures = service.compute_deduction(
+            _uk_regime(),
+            gross_amount=Decimal("100.00"),
+            currency_code="USD",
+            party_status=_standing(),
+            as_of=TODAY,
+        )
+        assert figures.below_threshold is False
+        assert not any("exemption limit" in reason for reason in figures.reasons)
 
 
 class TestShippedData:
@@ -489,6 +530,40 @@ class TestPartyStandings:
         # The row itself still says "active": the state on the record is what
         # somebody typed, and the answer is what the calendar says.
         assert row.status == "active"
+
+    async def test_a_standing_recorded_expired_with_no_end_date_reads_as_expired(self, session):
+        # The calendar wins over a record left at "active", but here there is no
+        # calendar to consult and the record is the only evidence there is.
+        # Answering "not expired" would have put a current-looking row on the
+        # screen for a standing verification_is_current already refuses.
+        regime = await _stored_regime(session)
+        row = await repository.add_party_status(
+            session, _standing(regime_id=regime.id, status="expired", valid_to=None)
+        )
+        expired, days = service.expiry_view(row, TODAY)
+        assert expired is True
+        # Nothing to count down to, so no countdown is offered.
+        assert days is None
+        assert service.verification_is_current(row, TODAY) is False
+
+    async def test_an_open_ended_active_standing_is_not_expired(self, session):
+        # The ordinary case for a standing with no end date, and the control
+        # that keeps the check above from swallowing it.
+        regime = await _stored_regime(session)
+        row = await repository.add_party_status(session, _standing(regime_id=regime.id, valid_to=None))
+        assert service.expiry_view(row, TODAY) == (False, None)
+        assert service.verification_is_current(row, TODAY) is True
+
+    async def test_a_revoked_standing_is_refused_without_being_called_expired(self, session):
+        # Revocation is not expiry. Both are refused, but printing "expired" on
+        # a standing an authority withdrew would send somebody looking for a
+        # renewal date that was never the problem.
+        regime = await _stored_regime(session)
+        row = await repository.add_party_status(
+            session, _standing(regime_id=regime.id, status="revoked", valid_to=None)
+        )
+        assert service.expiry_view(row, TODAY) == (False, None)
+        assert service.verification_is_current(row, TODAY) is False
 
 
 @pytest.mark.asyncio

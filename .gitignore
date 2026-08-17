@@ -108,6 +108,7 @@ data/takeoff_documents/
 data/dwg_uploads/
 data/dwg_entities/
 data/dwg_thumbnails/
+data/pointcloud/
 frontend/debug-bim/
 
 # MCP artifacts
@@ -497,3 +498,6 @@ email-delivery-failures*.jsonl
 *contacts-export*.csv
 *leads-export*.csv
 *audience*.csv
+
+# Locale bootstrap batches, see scripts/i18n_new_locale.py
+.i18n-work/

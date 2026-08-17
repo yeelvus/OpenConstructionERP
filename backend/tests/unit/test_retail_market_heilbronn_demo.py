@@ -156,9 +156,12 @@ def test_template_identity() -> None:
     assert template.currency == "EUR"
     assert template.locale == "de"
     assert template.validation_rule_sets == ["din276", "gaeb", "boq_quality"]
-    # The two fictional legal entities.
-    assert template.project_metadata.get("client") == "Sueddeutsche Handelsimmobilien GmbH"
-    assert template.project_metadata.get("operator") == "Sueddeutsche Lebensmittelmaerkte GmbH"
+    # The two fictional legal entities, spelled the way a German company name is
+    # spelled. These are display data, not identifiers, so the umlauts belong in
+    # them; the transliterated forms this once asserted match no string the pack
+    # ever produced.
+    assert template.project_metadata.get("client") == "Süddeutsche Handelsimmobilien GmbH"
+    assert template.project_metadata.get("operator") == "Süddeutsche Lebensmittelmärkte GmbH"
     # Structured address with coordinates (offline map + weather).
     address = template.address or {}
     assert address.get("city") == "Heilbronn"
@@ -437,8 +440,8 @@ async def test_install_is_end_to_end_and_idempotent() -> None:
         )
         assert len(contacts) == 18
         companies = {c.company_name for c in contacts}
-        assert "Sueddeutsche Handelsimmobilien GmbH" in companies
-        assert "Sueddeutsche Lebensmittelmaerkte GmbH" in companies
+        assert "Süddeutsche Handelsimmobilien GmbH" in companies
+        assert "Süddeutsche Lebensmittelmärkte GmbH" in companies
         assert "Trautwein Bau GmbH & Co. KG" in companies
         assert "Stadt Heilbronn, Planungs- und Baurechtsamt" in companies
 

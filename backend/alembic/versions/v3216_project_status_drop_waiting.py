@@ -47,6 +47,7 @@ def _table_exists(bind: sa.engine.Connection, table: str) -> bool:
     return table in sa.inspect(bind).get_table_names()
 
 
+# data-rewrite-ack: table=oe_projects_project growth=bounded rows=one row per construction project, a coarse hand-created unit, not a per-event row
 def upgrade() -> None:
     bind = op.get_bind()
     # Guard so the migration is a safe no-op on a fresh install where the

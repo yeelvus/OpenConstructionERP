@@ -28,6 +28,7 @@ from app.modules.price_breakdown.model import (
     PriceBreakdown,
     ResourceKind,
     kind_i18n_key,
+    money_quantum,
 )
 
 _2P = Decimal("0.01")
@@ -161,8 +162,16 @@ def get_preset(name: str | None) -> Preset:
     return PRESETS.get((name or "").strip().lower(), _INTERNATIONAL)
 
 
-def _q(value: Decimal) -> str:
-    return str(Decimal(value).quantize(_2P, rounding=ROUND_HALF_UP))
+def _q(value: Decimal, quant: Decimal = _2P) -> str:
+    """Format one money amount. Callers pass the currency's own quantum.
+
+    The default is two decimals only so an omitted argument keeps the old
+    behaviour; every renderer in this module passes ``money_quantum(bd.currency)``
+    because a peso rate printed with cents is false precision on a tendered
+    number. Leaving one renderer on the default would fix the API and leave the
+    CSV wrong, which is harder to notice than fixing neither.
+    """
+    return str(Decimal(value).quantize(quant, rounding=ROUND_HALF_UP))
 
 
 def _qty(value: Decimal) -> str:
@@ -174,17 +183,18 @@ def efb_221_view(bd: PriceBreakdown) -> dict:
     resource category plus the markup lines, keyed by category."""
     kt = bd.kind_totals
     preset = _EFB
-    rows = [{"kind": kind.value, "label": label, "amount": _q(kt[kind])} for kind, label in preset.kind_labels]
+    money = money_quantum(bd.currency)
+    rows = [{"kind": kind.value, "label": label, "amount": _q(kt[kind], money)} for kind, label in preset.kind_labels]
     return {
         "position_ref": bd.position_ref,
         "unit": bd.unit,
         "currency": bd.currency,
         "rows": rows,
-        "direct_unit_cost": _q(bd.direct_unit_cost),
-        "overhead_amount": _q(bd.overhead_amount),
-        "risk_amount": _q(bd.risk_amount),
-        "profit_amount": _q(bd.profit_amount),
-        "unit_rate": _q(bd.unit_rate),
+        "direct_unit_cost": _q(bd.direct_unit_cost, money),
+        "overhead_amount": _q(bd.overhead_amount, money),
+        "risk_amount": _q(bd.risk_amount, money),
+        "profit_amount": _q(bd.profit_amount, money),
+        "unit_rate": _q(bd.unit_rate, money),
     }
 
 
@@ -193,6 +203,7 @@ def render_markdown(bd: PriceBreakdown, *, preset: str = "international") -> str
     once the labels move to i18n; the numbers are the point)."""
     p = get_preset(preset)
     cur = bd.currency
+    money = money_quantum(cur)
     lines: list[str] = []
     lines.append(f"# {p.label}: {bd.position_ref} {bd.description}".rstrip())
     lines.append("")
@@ -204,18 +215,18 @@ def render_markdown(bd: PriceBreakdown, *, preset: str = "international") -> str
     for c in bd.components:
         lines.append(
             f"| {label_by_kind.get(c.kind, c.kind.value)} | {c.description} | "
-            f"{c.quantity} | {_q(c.unit_cost)} | {_q(c.amount)} |"
+            f"{c.quantity} | {_q(c.unit_cost, money)} | {_q(c.amount, money)} |"
         )
     lines.append("")
-    lines.append(f"Direct cost per unit: {_q(bd.direct_unit_cost)} {cur}")
+    lines.append(f"Direct cost per unit: {_q(bd.direct_unit_cost, money)} {cur}")
     if bd.overhead_pct:
-        lines.append(f"Overhead ({bd.overhead_pct}%): {_q(bd.overhead_amount)} {cur}")
+        lines.append(f"Overhead ({bd.overhead_pct}%): {_q(bd.overhead_amount, money)} {cur}")
     if bd.risk_pct:
-        lines.append(f"Risk ({bd.risk_pct}%): {_q(bd.risk_amount)} {cur}")
+        lines.append(f"Risk ({bd.risk_pct}%): {_q(bd.risk_amount, money)} {cur}")
     if bd.profit_pct:
-        lines.append(f"Profit ({bd.profit_pct}%): {_q(bd.profit_amount)} {cur}")
-    lines.append(f"Unit rate: {_q(bd.unit_rate)} {cur}")
-    lines.append(f"Position total: {_q(bd.position_total)} {cur}")
+        lines.append(f"Profit ({bd.profit_pct}%): {_q(bd.profit_amount, money)} {cur}")
+    lines.append(f"Unit rate: {_q(bd.unit_rate, money)} {cur}")
+    lines.append(f"Position total: {_q(bd.position_total, money)} {cur}")
     return "\n".join(lines)
 
 
@@ -231,6 +242,7 @@ def render_csv(bd: PriceBreakdown, *, preset: str = "international") -> str:
     """
     p = get_preset(preset)
     cur = bd.currency
+    money = money_quantum(cur)
     label_by_kind = dict(p.kind_labels)
     buf = io.StringIO()
     # Fixed line terminator so the output is deterministic across platforms.
@@ -248,15 +260,15 @@ def render_csv(bd: PriceBreakdown, *, preset: str = "international") -> str:
                 c.description,
                 c.unit,
                 _qty(c.quantity),
-                _q(c.unit_cost),
-                _q(c.amount),
+                _q(c.unit_cost, money),
+                _q(c.amount, money),
             ]
         )
     writer.writerow([])
-    writer.writerow(["Direct cost per unit", "", "", "", "", _q(bd.direct_unit_cost)])
-    writer.writerow([f"Overhead ({bd.overhead_pct}%)", "", "", "", "", _q(bd.overhead_amount)])
-    writer.writerow([f"Risk ({bd.risk_pct}%)", "", "", "", "", _q(bd.risk_amount)])
-    writer.writerow([f"Profit ({bd.profit_pct}%)", "", "", "", "", _q(bd.profit_amount)])
-    writer.writerow(["Unit rate", "", "", "", "", _q(bd.unit_rate)])
-    writer.writerow(["Position total", "", "", "", "", _q(bd.position_total)])
+    writer.writerow(["Direct cost per unit", "", "", "", "", _q(bd.direct_unit_cost, money)])
+    writer.writerow([f"Overhead ({bd.overhead_pct}%)", "", "", "", "", _q(bd.overhead_amount, money)])
+    writer.writerow([f"Risk ({bd.risk_pct}%)", "", "", "", "", _q(bd.risk_amount, money)])
+    writer.writerow([f"Profit ({bd.profit_pct}%)", "", "", "", "", _q(bd.profit_amount, money)])
+    writer.writerow(["Unit rate", "", "", "", "", _q(bd.unit_rate, money)])
+    writer.writerow(["Position total", "", "", "", "", _q(bd.position_total, money)])
     return buf.getvalue()

@@ -99,6 +99,7 @@ def _audit_columns() -> list[sa.Column]:
 # ── upgrade ─────────────────────────────────────────────────────────────
 
 
+# data-rewrite-ack: table=oe_property_dev_reservation growth=bounded rows=one row per unit reserved, bounded by development inventory
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)

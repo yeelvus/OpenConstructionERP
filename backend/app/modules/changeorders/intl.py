@@ -71,14 +71,28 @@ APPROVAL_DECISION_LABELS: dict[str, str] = {
     "rejected": "This approver declined the change order",
 }
 
-# Reason categories, mirroring the schema pattern for reason_category.
+# Reason categories. This dict is the vocabulary, not a copy of it: the request
+# schemas' pattern, the service's guard and the wording handed to the extraction
+# model are all derived from these keys below.
+#
+# It is written in one place because writing it in four drifted. The NCR route
+# raises a variation with "non_conformance" and the demo seed wrote
+# "value_engineering", and neither was in the pattern, so a change order created
+# by a shipped feature could not be updated through its own schema and the
+# register printed the raw code where the reason belongs.
 REASON_CATEGORY_LABELS: dict[str, str] = {
     "client_request": "Requested by the client",
     "design_change": "Change in the design",
     "unforeseen": "Unforeseen site condition",
     "regulatory": "Required by a regulation or authority",
     "error": "Correction of an error or omission",
+    "non_conformance": "Correction of a non-conformance",
+    "value_engineering": "Value engineering proposal",
 }
+
+# Insertion order is the order the chooser offers, so keep the common causes first.
+REASON_CATEGORIES: tuple[str, ...] = tuple(REASON_CATEGORY_LABELS)
+REASON_CATEGORY_PATTERN: str = "^(" + "|".join(REASON_CATEGORIES) + ")$"
 
 # Line change types, mirroring the schema pattern for change_type.
 CHANGE_TYPE_LABELS: dict[str, str] = {
@@ -588,7 +602,9 @@ __all__ = [
     "CHANGE_ORDER_STATUSES",
     "CHANGE_ORDER_STATUS_LABELS",
     "CHANGE_TYPE_LABELS",
+    "REASON_CATEGORIES",
     "REASON_CATEGORY_LABELS",
+    "REASON_CATEGORY_PATTERN",
     "ChangeOrderPrice",
     "ContractSumEffect",
     "LinePrice",

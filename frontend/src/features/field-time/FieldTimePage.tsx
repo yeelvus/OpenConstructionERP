@@ -43,6 +43,7 @@ import { getErrorMessage } from '@/shared/lib/api';
 import { todayLocalISO } from '@/shared/lib/dates';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { TimesheetEditor } from './TimesheetEditor';
+import { OfflineDayRecorder } from './OfflineDayRecorder';
 import {
   listTimesheets,
   fetchTimesheetSummary,
@@ -281,6 +282,16 @@ function FieldTimeContent() {
     <div className="space-y-5">
       <HowFieldTimeWorks />
 
+      {/* Above the list, not inside a tab: a foreman who cannot find where to
+          record a day without signal will record it on paper instead. */}
+      <OfflineDayRecorder
+        projectId={projectId}
+        onRecorded={() => {
+          void listQ.refetch();
+          void summaryQ.refetch();
+        }}
+      />
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           {/* The toggle lives here rather than in PageHeader actions because
@@ -336,6 +347,7 @@ function FieldTimeContent() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       {listQ.isLoading ? (

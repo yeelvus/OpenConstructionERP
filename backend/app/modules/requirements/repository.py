@@ -20,6 +20,7 @@ from app.modules.requirements.models import (
     GateResult,
     Requirement,
     RequirementDeliverable,
+    RequirementPositionLink,
     RequirementSet,
 )
 
@@ -138,6 +139,18 @@ class RequirementRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_by_linked_position(self, position_id: uuid.UUID) -> list[Requirement]:
+        """Requirements pointing at a position through the legacy single column.
+
+        Kept alongside the link table rather than replaced by it: rows written
+        before the table existed are only reachable this way, and a reader that
+        consulted the table alone would report a position as ungoverned when it
+        is not.
+        """
+        stmt = select(Requirement).where(Requirement.linked_position_id == position_id).order_by(Requirement.created_at)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def create(self, item: Requirement) -> Requirement:
         """Insert a new requirement."""
         self.session.add(item)
@@ -251,6 +264,77 @@ class GateResultRepository:
         self.session.add(item)
         await self.session.flush()
         return item
+
+
+class RequirementPositionLinkRepository:
+    """Data access for the requirement-to-BOQ-position links (Womit)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get(
+        self,
+        requirement_id: uuid.UUID,
+        position_id: uuid.UUID,
+    ) -> RequirementPositionLink | None:
+        """The link between one requirement and one position, if it exists."""
+        stmt = select(RequirementPositionLink).where(
+            RequirementPositionLink.requirement_id == requirement_id,
+            RequirementPositionLink.position_id == position_id,
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def list_for_requirement(
+        self,
+        requirement_id: uuid.UUID,
+    ) -> list[RequirementPositionLink]:
+        """Every position link on one requirement, oldest first."""
+        stmt = (
+            select(RequirementPositionLink)
+            .where(RequirementPositionLink.requirement_id == requirement_id)
+            .order_by(RequirementPositionLink.created_at)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_for_position(
+        self,
+        position_id: uuid.UUID,
+    ) -> list[RequirementPositionLink]:
+        """Every requirement governing one position.
+
+        The direction the bill is read in: a quantity surveyor opening a
+        position wants to know what it has to satisfy, which the single column
+        could only answer by scanning every requirement in the project.
+        """
+        stmt = (
+            select(RequirementPositionLink)
+            .where(RequirementPositionLink.position_id == position_id)
+            .order_by(RequirementPositionLink.created_at)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def create(self, link: RequirementPositionLink) -> RequirementPositionLink:
+        """Persist a new link."""
+        self.session.add(link)
+        await self.session.flush()
+        await self.session.refresh(link)
+        return link
+
+    async def delete(
+        self,
+        requirement_id: uuid.UUID,
+        position_id: uuid.UUID,
+    ) -> bool:
+        """Remove a link. Answers whether there was one to remove."""
+        link = await self.get(requirement_id, position_id)
+        if link is None:
+            return False
+        await self.session.delete(link)
+        await self.session.flush()
+        return True
 
 
 class RequirementDeliverableRepository:

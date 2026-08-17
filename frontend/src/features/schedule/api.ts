@@ -8,6 +8,7 @@ import {
   apiDelete,
   API_BASE,
   getAuthToken,
+  type Page,
 } from '@/shared/lib/api';
 
 export interface Schedule {
@@ -817,8 +818,20 @@ async function downloadScheduleExport(
 
 export const scheduleApi = {
   // Schedules
-  listSchedules: (projectId: string) =>
-    apiGet<Schedule[] | { items: Schedule[] }>(`/v1/schedule/schedules/?project_id=${projectId}`).then(unwrapList),
+  /**
+   * One page of the project's schedules, with the project's total.
+   *
+   * Returns the envelope rather than a bare array on purpose. The previous
+   * signature ran the response through `unwrapList`, which took `.items`
+   * and dropped `.total` — so the server could count the full set and the
+   * client would still have no idea it had been handed a slice.
+   */
+  listSchedules: (projectId: string, opts?: { limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams({ project_id: projectId });
+    if (opts?.limit != null) qs.set('limit', String(opts.limit));
+    if (opts?.offset != null) qs.set('offset', String(opts.offset));
+    return apiGet<Page<Schedule>>(`/v1/schedule/schedules/?${qs}`);
+  },
   getSchedule: (id: string) => apiGet<Schedule>(`/v1/schedule/schedules/${id}`),
   createSchedule: (data: { project_id: string; name: string; description?: string; start_date?: string; end_date?: string }) =>
     apiPost<Schedule>('/v1/schedule/schedules/', data),

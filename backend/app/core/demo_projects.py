@@ -64,6 +64,26 @@ def _id() -> uuid.UUID:
     return uuid.uuid4()
 
 
+def _phase_progress(start: datetime, end: datetime, now: datetime) -> tuple[int, str]:
+    """Percent complete and status of a programme phase, read off the calendar.
+
+    How far a phase has run is a fact about its dates: one that finished last
+    year is complete, one that has not started is planned, and one in flight is
+    somewhere in between. Deriving it from the phase's position in the list
+    instead puts every activity strictly between 0 and 100, so no phase is ever
+    finished or ever still to come, and every status collapses to
+    ``in_progress`` - which any screen counting activities by status then
+    reports as a programme permanently under way.
+    """
+    if end <= now:
+        prog = 100
+    elif start >= now:
+        prog = 0
+    else:
+        prog = max(0, min(99, int((now - start).days / max((end - start).days, 1) * 100)))
+    return prog, "completed" if prog >= 100 else "in_progress" if prog > 0 else "planned"
+
+
 def _make_section(
     *,
     boq_id: uuid.UUID,
@@ -230,9 +250,9 @@ _BERLIN = DemoTemplate(
     demo_id="residential-berlin",
     project_name="Wohnanlage Berlin-Mitte",
     project_description=(
-        "Neubau einer Wohnanlage mit 48 Wohneinheiten, 3 Treppenhaeuser, "
-        "Tiefgarage mit 60 Stellplaetzen. 5 Geschosse + Staffelgeschoss. "
-        "Grundstueck ca. 4.200 m2, BGF ca. 7.840 m2. "
+        "Neubau einer Wohnanlage mit 48 Wohneinheiten, 3 Treppenhäuser, "
+        "Tiefgarage mit 60 Stellplätzen. 5 Geschosse + Staffelgeschoss. "
+        "Grundstück ca. 4.200 m2, BGF ca. 7.840 m2. "
         "KfW Effizienzhaus 55. Baukosten ca. 12 Mio EUR."
     ),
     region="DACH",
@@ -275,20 +295,20 @@ _BERLIN = DemoTemplate(
                     18000.00,
                     {"din276": "300"},
                 ),
-                ("300.6", "Verfuellung und Hinterfuellung (Backfill)", "m3", 1200, 16.50, {"din276": "300"}),
+                ("300.6", "Verfüllung und Hinterfüllung (Backfill)", "m3", 1200, 16.50, {"din276": "300"}),
                 ("300.7", "Verdichtung Planum (Compaction)", "m2", 2800, 4.80, {"din276": "300"}),
-                ("300.8", "Boeschungssicherung (Slope protection)", "m2", 650, 38.00, {"din276": "300"}),
+                ("300.8", "Böschungssicherung (Slope protection)", "m2", 650, 38.00, {"din276": "300"}),
                 ("300.9", "Kampfmittelsondierung (Ordnance survey)", "m2", 4200, 3.20, {"din276": "300"}),
-                ("300.10", "Baustrasse Schottertragschicht (Temporary haul road)", "m2", 800, 28.00, {"din276": "300"}),
+                ("300.10", "Baustraße Schottertragschicht (Temporary haul road)", "m2", 800, 28.00, {"din276": "300"}),
             ],
         ),
         # ── KG 320 Gruendung (Foundation) ─────────────────────────────
         (
             "320",
-            "KG 320 - Gruendung",
+            "KG 320 - Gründung",
             {"din276": "320"},
             [
-                ("320.1", "Bohrpfaehle d=600mm, L=12m (Bored piles)", "m", 960, 145.00, {"din276": "320"}),
+                ("320.1", "Bohrpfähle d=600mm, L=12m (Bored piles)", "m", 960, 145.00, {"din276": "320"}),
                 ("320.2", "Pfahlkopfplatten (Pile caps)", "m3", 85, 310.00, {"din276": "320"}),
                 ("320.3", "Grundbalken (Ground beams)", "m3", 120, 295.00, {"din276": "320"}),
                 ("320.4", "Sauberkeitsschicht C12/15 (Blinding concrete)", "m2", 2800, 12.50, {"din276": "320"}),
@@ -304,7 +324,7 @@ _BERLIN = DemoTemplate(
                 ("320.7", "Drainageleitung DN150 (Drainage channels)", "m", 320, 65.00, {"din276": "320"}),
                 (
                     "320.8",
-                    "Perimeterdaemmung XPS 120mm (Insulation to foundation)",
+                    "Perimeterdämmung XPS 120mm (Insulation to foundation)",
                     "m2",
                     1600,
                     48.00,
@@ -315,43 +335,43 @@ _BERLIN = DemoTemplate(
         # ── KG 330 Aussenwande (External Walls) ──────────────────────
         (
             "330",
-            "KG 330 - Aussenwande",
+            "KG 330 - Außenwände",
             {"din276": "330"},
             [
-                ("330.1", "Stahlbetonwaende C30/37, 25cm (RC walls)", "m3", 420, 380.00, {"din276": "330"}),
-                ("330.2", "Schalung Waende Rahmenschalung (Wall formwork)", "m2", 3360, 32.00, {"din276": "330"}),
+                ("330.1", "Stahlbetonwände C30/37, 25cm (RC walls)", "m3", 420, 380.00, {"din276": "330"}),
+                ("330.2", "Schalung Wände Rahmenschalung (Wall formwork)", "m2", 3360, 32.00, {"din276": "330"}),
                 ("330.3", "Bewehrung BSt 500 S, inkl. Biegen (Reinforcement)", "t", 52, 1850.00, {"din276": "330"}),
                 ("330.4", "WDVS Mineralwolle 160mm (EIFS insulation)", "m2", 4800, 98.00, {"din276": "330"}),
                 ("330.5", "Mineralischer Oberputz (Mineral render)", "m2", 4800, 28.00, {"din276": "330"}),
                 ("330.6", "Fenstersturz Stahlbeton (Window lintels)", "m", 480, 65.00, {"din276": "330"}),
-                ("330.7", "Fensterbanke aussen Aluminium (Window cills)", "m", 480, 42.00, {"din276": "330"}),
+                ("330.7", "Fensterbanke außen Aluminium (Window cills)", "m", 480, 42.00, {"din276": "330"}),
                 ("330.8", "Dehnungsfugen Fassade (Movement joints)", "m", 260, 35.00, {"din276": "330"}),
                 ("330.9", "Eckschutzprofile Aluminium (Corner protection)", "m", 380, 18.50, {"din276": "330"}),
                 (
                     "330.10",
-                    "Sockelputz Keller geschlaemmt (Basement plinth render)",
+                    "Sockelputz Keller geschlämmt (Basement plinth render)",
                     "m2",
                     480,
                     32.00,
                     {"din276": "330"},
                 ),
-                ("330.11", "Kelleraussenwand WU-Beton 30cm (Basement RC wall)", "m3", 185, 395.00, {"din276": "330"}),
+                ("330.11", "Kelleraußenwand WU-Beton 30cm (Basement RC wall)", "m3", 185, 395.00, {"din276": "330"}),
             ],
         ),
         # ── KG 340 Innenwaende (Internal Walls) ─────────────────────
         (
             "340",
-            "KG 340 - Innenwaende",
+            "KG 340 - Innenwände",
             {"din276": "340"},
             [
                 ("340.1", "Tragendes Mauerwerk KS 17,5cm (Load-bearing masonry)", "m2", 3200, 68.00, {"din276": "340"}),
                 ("340.2", "Trennwand Trockenbau 12,5cm CW75 (Partition drywall)", "m2", 4200, 52.00, {"din276": "340"}),
                 ("340.3", "Gipskartonvorsatzschale (Plasterboard lining)", "m2", 1800, 38.00, {"din276": "340"}),
                 ("340.4", "Brandschutzwand F90 Trockenbau (Fire-rated wall)", "m2", 800, 125.00, {"din276": "340"}),
-                ("340.5", "Tueroffnungen/Zargen Stahl (Door openings/frames)", "pcs", 192, 285.00, {"din276": "340"}),
+                ("340.5", "Türöffnungen/Zargen Stahl (Door openings/frames)", "pcs", 192, 285.00, {"din276": "340"}),
                 (
                     "340.6",
-                    "Schallschutz Trennwaende Mineralwolle (Acoustic insulation)",
+                    "Schallschutz Trennwände Mineralwolle (Acoustic insulation)",
                     "m2",
                     3200,
                     18.00,
@@ -359,7 +379,7 @@ _BERLIN = DemoTemplate(
                 ),
                 (
                     "340.7",
-                    "Wandfliesen Nassraeume 60x30cm (Wall tiling wet areas)",
+                    "Wandfliesen Nassräume 60x30cm (Wall tiling wet areas)",
                     "m2",
                     2400,
                     65.00,
@@ -368,13 +388,13 @@ _BERLIN = DemoTemplate(
                 ("340.8", "Innenanstrich Dispersionsfarbe (Paint finish)", "m2", 14000, 8.50, {"din276": "340"}),
                 (
                     "340.9",
-                    "Vorsatzschalen Installationswaende (Service wall linings)",
+                    "Vorsatzschalen Installationswände (Service wall linings)",
                     "m2",
                     960,
                     48.00,
                     {"din276": "340"},
                 ),
-                ("340.10", "Spiegel Nassraeume 80x60cm (Wet area mirrors)", "pcs", 96, 65.00, {"din276": "340"}),
+                ("340.10", "Spiegel Nassräume 80x60cm (Wet area mirrors)", "pcs", 96, 65.00, {"din276": "340"}),
             ],
         ),
         # ── KG 350 Decken (Floor Slabs) ──────────────────────────────
@@ -396,7 +416,7 @@ _BERLIN = DemoTemplate(
                 ),
                 (
                     "350.5",
-                    "Trittschalldaemmung EPS-T 30mm (Impact sound insulation)",
+                    "Trittschalldämmung EPS-T 30mm (Impact sound insulation)",
                     "m2",
                     5200,
                     18.00,
@@ -405,23 +425,23 @@ _BERLIN = DemoTemplate(
                 ("350.6", "Bodenfliesen 60x60cm Feinsteinzeug (Floor tiling)", "m2", 2200, 68.00, {"din276": "350"}),
                 ("350.7", "Parkett Eiche 3-Schicht (Parquet flooring)", "m2", 3000, 85.00, {"din276": "350"}),
                 ("350.8", "Balkonabdichtung FLK (Balcony waterproofing)", "m2", 960, 55.00, {"din276": "350"}),
-                ("350.9", "Randdaemmstreifen PE 10mm (Edge insulation strips)", "m", 4200, 2.80, {"din276": "350"}),
+                ("350.9", "Randdämmstreifen PE 10mm (Edge insulation strips)", "m", 4200, 2.80, {"din276": "350"}),
                 ("350.10", "Sockelleisten Eiche furniert (Skirting boards oak)", "m", 3600, 12.50, {"din276": "350"}),
             ],
         ),
         # ── KG 360 Daecher (Roof) ────────────────────────────────────
         (
             "360",
-            "KG 360 - Daecher",
+            "KG 360 - Dächer",
             {"din276": "360"},
             [
                 ("360.1", "Stahlbeton-Dachdecke C30/37 (RC roof slab)", "m3", 195, 340.00, {"din276": "360"}),
-                ("360.2", "Warmdachdaemmung PIR 200mm (Warm roof insulation)", "m2", 1400, 62.00, {"din276": "360"}),
+                ("360.2", "Warmdachdämmung PIR 200mm (Warm roof insulation)", "m2", 1400, 62.00, {"din276": "360"}),
                 ("360.3", "Dachabdichtung EPDM 1,5mm (EPDM membrane)", "m2", 1400, 48.00, {"din276": "360"}),
-                ("360.4", "Kiesschuettung 50mm (Gravel ballast)", "m2", 600, 14.00, {"din276": "360"}),
+                ("360.4", "Kiesschüttung 50mm (Gravel ballast)", "m2", 600, 14.00, {"din276": "360"}),
                 (
                     "360.5",
-                    "Dachdurchfuehrungen und Entlueftung (Roof penetrations)",
+                    "Dachdurchführungen und Entlüftung (Roof penetrations)",
                     "pcs",
                     32,
                     280.00,
@@ -429,14 +449,14 @@ _BERLIN = DemoTemplate(
                 ),
                 (
                     "360.6",
-                    "Absturzsicherung Attika Gelaender (Fall protection rails)",
+                    "Absturzsicherung Attika Geländer (Fall protection rails)",
                     "m",
                     260,
                     145.00,
                     {"din276": "360"},
                 ),
                 ("360.7", "Blitzschutzanlage komplett (Lightning protection)", "lsum", 1, 28000.00, {"din276": "360"}),
-                ("360.8", "Extensivbegruenungs-Substrat (Green roof substrate)", "m2", 800, 52.00, {"din276": "360"}),
+                ("360.8", "Extensivbegrünungs-Substrat (Green roof substrate)", "m2", 800, 52.00, {"din276": "360"}),
                 ("360.9", "Lichtkuppeln Treppenhaus (Stairwell rooflights)", "pcs", 3, 2800.00, {"din276": "360"}),
             ],
         ),
@@ -449,7 +469,7 @@ _BERLIN = DemoTemplate(
                 ("370.1", "Stahlbetontreppen Fertigteil (RC precast stairs)", "pcs", 15, 4200.00, {"din276": "370"}),
                 (
                     "370.2",
-                    "Treppengelaender Edelstahl (Stainless steel balustrade)",
+                    "Treppengeländer Edelstahl (Stainless steel balustrade)",
                     "m",
                     180,
                     285.00,
@@ -473,7 +493,7 @@ _BERLIN = DemoTemplate(
                 ),
                 (
                     "370.5",
-                    "Balkongelaender Stahl pulverbeschichtet (Balcony railings)",
+                    "Balkongeländer Stahl pulverbeschichtet (Balcony railings)",
                     "m",
                     480,
                     165.00,
@@ -481,7 +501,7 @@ _BERLIN = DemoTemplate(
                 ),
                 (
                     "370.6",
-                    "Schachtwaende Aufzug Stahlbeton (Elevator shaft walls)",
+                    "Schachtwände Aufzug Stahlbeton (Elevator shaft walls)",
                     "m3",
                     42,
                     420.00,
@@ -498,53 +518,53 @@ _BERLIN = DemoTemplate(
             [
                 ("410.1", "Schmutzwasserleitung HDPE DN110 (Soil pipes HDPE)", "m", 1600, 42.00, {"din276": "410"}),
                 ("410.2", "Abwassersammelleitung DN150 (Waste pipes)", "m", 800, 58.00, {"din276": "410"}),
-                ("410.3", "Revisionsschaechte DN400 (Inspection chambers)", "pcs", 12, 680.00, {"din276": "410"}),
-                ("410.4", "ACO Entwaesserungsrinnen (ACO drainage channels)", "m", 85, 145.00, {"din276": "410"}),
+                ("410.3", "Revisionsschächte DN400 (Inspection chambers)", "pcs", 12, 680.00, {"din276": "410"}),
+                ("410.4", "ACO Entwässerungsrinnen (ACO drainage channels)", "m", 85, 145.00, {"din276": "410"}),
                 ("410.5", "Regenfallrohre DN100 Edelstahl (Rainwater pipes)", "m", 320, 65.00, {"din276": "410"}),
                 ("410.6", "Hebeanlage Tiefgarage (Pump station)", "pcs", 2, 4800.00, {"din276": "410"}),
-                ("410.7", "Fettabscheider Kueche (Separator)", "pcs", 1, 3200.00, {"din276": "410"}),
+                ("410.7", "Fettabscheider Küche (Separator)", "pcs", 1, 3200.00, {"din276": "410"}),
                 ("410.8", "Trinkwasserleitung PE-X/Kupfer (Water supply)", "m", 3600, 38.00, {"din276": "410"}),
-                ("410.9", "Sanitaerobjekte komplett je WE (Sanitary fixtures)", "pcs", 192, 1850.00, {"din276": "410"}),
+                ("410.9", "Sanitärobjekte komplett je WE (Sanitary fixtures)", "pcs", 192, 1850.00, {"din276": "410"}),
             ],
         ),
         # ── KG 420 Waermeversorgung (Heating) ────────────────────────
         (
             "420",
-            "KG 420 - Waermeversorgung",
+            "KG 420 - Wärmeversorgung",
             {"din276": "420"},
             [
-                ("420.1", "Luft-Wasser-Waermepumpe 80kW (Air-source heat pump)", "pcs", 2, 38000.00, {"din276": "420"}),
+                ("420.1", "Luft-Wasser-Wärmepumpe 80kW (Air-source heat pump)", "pcs", 2, 38000.00, {"din276": "420"}),
                 ("420.2", "Pufferspeicher 500L (Buffer storage)", "pcs", 2, 2800.00, {"din276": "420"}),
                 (
                     "420.3",
-                    "Fussbodenheizung PE-Xa Rohr (Underfloor heating pipes)",
+                    "Fußbodenheizung PE-Xa Rohr (Underfloor heating pipes)",
                     "m2",
                     4800,
                     48.00,
                     {"din276": "420"},
                 ),
                 ("420.4", "Heizkreisverteiler je Geschoss (Manifolds)", "pcs", 12, 1200.00, {"din276": "420"}),
-                ("420.5", "Heizkoerper Typ 22 Badzimmer (Radiators bathrooms)", "pcs", 48, 420.00, {"din276": "420"}),
+                ("420.5", "Heizkörper Typ 22 Badzimmer (Radiators bathrooms)", "pcs", 48, 420.00, {"din276": "420"}),
                 ("420.6", "Thermostatventile Regulan (Thermostatic valves)", "pcs", 192, 45.00, {"din276": "420"}),
                 ("420.7", "Isolierte Rohrleitungen Heizung (Insulated pipework)", "m", 1600, 32.00, {"din276": "420"}),
-                ("420.8", "Gebaeudeautomation GLT Regelung (BMS controls)", "lsum", 1, 35000.00, {"din276": "420"}),
+                ("420.8", "Gebäudeautomation GLT Regelung (BMS controls)", "lsum", 1, 35000.00, {"din276": "420"}),
             ],
         ),
         # ── KG 430 Lueftung (Ventilation) ────────────────────────────
         (
             "430",
-            "KG 430 - Lueftungsanlagen",
+            "KG 430 - Lüftungsanlagen",
             {"din276": "430"},
             [
-                ("430.1", "Wohnraumlueftung KWL mit WRG je WE (MVHR unit)", "pcs", 48, 3200.00, {"din276": "430"}),
+                ("430.1", "Wohnraumlüftung KWL mit WRG je WE (MVHR unit)", "pcs", 48, 3200.00, {"din276": "430"}),
                 ("430.2", "Zuluftleitungen Wickelfalzrohr (Supply ductwork)", "m", 1200, 42.00, {"din276": "430"}),
                 ("430.3", "Abluftleitungen Wickelfalzrohr (Extract ductwork)", "m", 1200, 42.00, {"din276": "430"}),
-                ("430.4", "Kuechenabluft Dunstabzug (Kitchen extract)", "pcs", 48, 280.00, {"din276": "430"}),
-                ("430.5", "Badentlueftung DN100 (Bathroom extract)", "pcs", 96, 185.00, {"din276": "430"}),
+                ("430.4", "Küchenabluft Dunstabzug (Kitchen extract)", "pcs", 48, 280.00, {"din276": "430"}),
+                ("430.5", "Badentlüftung DN100 (Bathroom extract)", "pcs", 96, 185.00, {"din276": "430"}),
                 ("430.6", "Brandschutzklappen EI90 (Fire dampers)", "pcs", 36, 320.00, {"din276": "430"}),
                 (
                     "430.7",
-                    "Schalldaempfer Telefonieschalldaempfer (Acoustic attenuators)",
+                    "Schalldämpfer Telefonieschalldämpfer (Acoustic attenuators)",
                     "pcs",
                     48,
                     145.00,
@@ -554,7 +574,7 @@ _BERLIN = DemoTemplate(
                 ("430.9", "Luftleitungen flexibel DN125 (Flexible ductwork)", "m", 960, 18.50, {"din276": "430"}),
                 (
                     "430.10",
-                    "Lueftungsgitter Zuluft/Abluft (Supply/extract grilles)",
+                    "Lüftungsgitter Zuluft/Abluft (Supply/extract grilles)",
                     "pcs",
                     192,
                     32.00,
@@ -611,7 +631,7 @@ _BERLIN = DemoTemplate(
             {"din276": "500"},
             [
                 ("500.1", "Personenaufzug 630kg / 8 Personen (Passenger lift)", "pcs", 3, 85000.00, {"din276": "500"}),
-                ("500.2", "Schachttueren Edelstahl (Shaft doors)", "pcs", 18, 1200.00, {"din276": "500"}),
+                ("500.2", "Schachttüren Edelstahl (Shaft doors)", "pcs", 18, 1200.00, {"din276": "500"}),
                 ("500.3", "Maschinenraumausstattung (Machine room equipment)", "pcs", 3, 4500.00, {"din276": "500"}),
                 ("500.4", "Aufzugssteuerung und Notruf (Lift controls)", "pcs", 3, 6800.00, {"din276": "500"}),
             ],
@@ -619,12 +639,12 @@ _BERLIN = DemoTemplate(
         # ── KG 540 Aussenanlagen (External Works) ────────────────────
         (
             "540",
-            "KG 540 - Aussenanlagen",
+            "KG 540 - Außenanlagen",
             {"din276": "540"},
             [
                 (
                     "540.1",
-                    "Asphaltzufahrt und Stellplaetze (Asphalt access road)",
+                    "Asphaltzufahrt und Stellplätze (Asphalt access road)",
                     "m2",
                     1200,
                     48.00,
@@ -633,10 +653,10 @@ _BERLIN = DemoTemplate(
                 ("540.2", "Betonpflaster Gehwege 200x100 (Concrete paving)", "m2", 1600, 68.00, {"din276": "540"}),
                 ("540.3", "Bepflanzung und Rasen (Landscaping/planting)", "m2", 2400, 28.00, {"din276": "540"}),
                 ("540.4", "Kinderspielplatz EN 1176 (Children's playground)", "lsum", 1, 48000.00, {"din276": "540"}),
-                ("540.5", "Fahrradabstellanlage ueberdacht (Bicycle storage)", "pcs", 96, 120.00, {"din276": "540"}),
-                ("540.6", "Muellstandplatz mit Einhausung (Waste enclosure)", "pcs", 2, 9500.00, {"din276": "540"}),
-                ("540.7", "Aussenbeleuchtung Pollerleuchten (External lighting)", "pcs", 45, 850.00, {"din276": "540"}),
-                ("540.8", "Grundstueckseinfriedung Zaun (Boundary fencing)", "m", 280, 95.00, {"din276": "540"}),
+                ("540.5", "Fahrradabstellanlage überdacht (Bicycle storage)", "pcs", 96, 120.00, {"din276": "540"}),
+                ("540.6", "Müllstandplatz mit Einhausung (Waste enclosure)", "pcs", 2, 9500.00, {"din276": "540"}),
+                ("540.7", "Außenbeleuchtung Pollerleuchten (External lighting)", "pcs", 45, 850.00, {"din276": "540"}),
+                ("540.8", "Grundstückseinfriedung Zaun (Boundary fencing)", "m", 280, 95.00, {"din276": "540"}),
                 ("540.9", "Tiefgarage Zufahrtsrampe Beton (Garage access ramp)", "m2", 180, 185.00, {"din276": "540"}),
                 ("540.10", "Briefkastenanlage Edelstahl (Mailbox installation)", "pcs", 48, 95.00, {"din276": "540"}),
                 ("540.11", "Schmutzfangmatte Eingangsbereich (Entrance matting)", "m2", 24, 145.00, {"din276": "540"}),
@@ -645,7 +665,7 @@ _BERLIN = DemoTemplate(
     ],
     markups=[
         ("Baustellengemeinkosten (BGK)", 10.0, "overhead", "direct_cost"),
-        ("Allgemeine Geschaeftskosten (AGK)", 8.0, "overhead", "direct_cost"),
+        ("Allgemeine Geschäftskosten (AGK)", 8.0, "overhead", "direct_cost"),
         ("Wagnis (W)", 2.0, "contingency", "direct_cost"),
         ("Gewinn (G)", 3.0, "profit", "direct_cost"),
         ("Mehrwertsteuer (MwSt.)", 19.0, "tax", "cumulative"),
@@ -658,7 +678,7 @@ _BERLIN = DemoTemplate(
         ("Kessmar Rohbau GmbH", "vergabe@kessmar-rohbau.example", 1.02),
     ],
     project_metadata={
-        "address": "Chausseestrasse 45, 10115 Berlin",
+        "address": "Chausseestraße 45, 10115 Berlin",
         "client": "Vennhof Wohnbaugesellschaft mbH",
         "architect": "Rehwald Tannberg",
         "gfa_m2": 7800,
@@ -670,7 +690,7 @@ _BERLIN = DemoTemplate(
     tender_packages=[
         (
             "Rohbau (Structural)",
-            "Erdarbeiten, Gruendung, Stahlbetonrohbau, Mauerwerk",
+            "Erdarbeiten, Gründung, Stahlbetonrohbau, Mauerwerk",
             "evaluating",
             [
                 ("Verdanko Hochbau AG", "tender@verdanko-hochbau.example", 0.98),
@@ -680,7 +700,7 @@ _BERLIN = DemoTemplate(
         ),
         (
             "Fassade/Dach (Envelope)",
-            "WDVS, Putzarbeiten, Flachdachabdichtung, Begruenungen",
+            "WDVS, Putzarbeiten, Flachdachabdichtung, Begrünungen",
             "evaluating",
             [
                 ("Sanverth Fassadensysteme SE & Co. KGaA", "vergabe@sanverth.example", 0.97),
@@ -689,18 +709,18 @@ _BERLIN = DemoTemplate(
             ],
         ),
         (
-            "HLS Heizung/Lueftung/Sanitaer (MEP Mechanical)",
-            "Waermepumpe, Fussbodenheizung, Lueftung, Sanitaerinstallation",
+            "HLS Heizung/Lüftung/Sanitär (MEP Mechanical)",
+            "Wärmepumpe, Fußbodenheizung, Lüftung, Sanitärinstallation",
             "evaluating",
             [
-                ("Norvent Gebaeudetechnik", "vergabe@norvent.example", 0.99),
-                ("Thalvent Gebaeudetechnik GmbH", "angebote@thalvent.example", 1.06),
-                ("Weidmar Gebaeudetechnik", "hls@weidmar.example", 1.03),
+                ("Norvent Gebäudetechnik", "vergabe@norvent.example", 0.99),
+                ("Thalvent Gebäudetechnik GmbH", "angebote@thalvent.example", 1.06),
+                ("Weidmar Gebäudetechnik", "hls@weidmar.example", 1.03),
             ],
         ),
         (
             "Elektro (MEP Electrical)",
-            "Stark- und Schwachstrominstallation, Beleuchtung, E-Mobilitaet",
+            "Stark- und Schwachstrominstallation, Beleuchtung, E-Mobilität",
             "evaluating",
             [
                 ("Elvenau / Vercelin Energies", "angebote@elvenau.example", 0.97),
@@ -710,7 +730,7 @@ _BERLIN = DemoTemplate(
         ),
         (
             "Innenausbau (Interior Finishes)",
-            "Trockenbau, Estrich, Fliesen, Parkett, Malerarbeiten, Tueren",
+            "Trockenbau, Estrich, Fliesen, Parkett, Malerarbeiten, Türen",
             "evaluating",
             [
                 ("Falkwerk Innenausbau Gruppe", "vergabe@falkwerk-gruppe.example", 0.96),
@@ -719,7 +739,7 @@ _BERLIN = DemoTemplate(
             ],
         ),
         (
-            "Aussenanlagen (External Works)",
+            "Außenanlagen (External Works)",
             "Pflasterung, Bepflanzung, Spielplatz, Zaun, Beleuchtung",
             "evaluating",
             [
@@ -2430,24 +2450,24 @@ _MATERIAL_HEAVY_KW = (
     "abdichtung",
     "waterproof",
     "insulation",
-    "daemmung",
+    "dämmung",
     "isolation",
     "window",
     "fenster",
     "glazing",
     "door",
-    "tuer",
+    "tür",
     "porte",
     "cladding",
     "fassade",
     "bardage",
     "hvac",
     "heating",
-    "lueftung",
+    "lüftung",
     "electrical",
     "elektro",
     "plumbing",
-    "sanitaer",
+    "sanitär",
     "elevator",
     "aufzug",
     "lift",
@@ -2671,7 +2691,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
                 ("Scaffolding", "equipment", 0.05, 40.0),
             ],
         )
-    elif any(k in desc_lower for k in ["insulation", "daemmung", "dämmung", "isolation", "thermal"]):
+    elif any(k in desc_lower for k in ["insulation", "dämmung", "dämmung", "isolation", "thermal"]):
         meta["cwicr_ref"] = "CWICR-INS-001"
         meta["resources"] = _make_resources(
             unit_rate,
@@ -2729,15 +2749,15 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
         for k in [
             "hvac",
             "heating",
-            "lueftung",
+            "lüftung",
             "lüftung",
             "heizung",
             "ventilation",
             "air handling",
             "klima",
-            "waermepumpe",
+            "wärmepumpe",
             "wärme",
-            "fussbodenheizung",
+            "fußbodenheizung",
             "heizk",
         ]
     ):
@@ -2756,14 +2776,14 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
         k in desc_lower
         for k in [
             "plumbing",
-            "sanitaer",
+            "sanitär",
             "sanitär",
             "drainage",
             "water supply",
             "plomberie",
             "abwasser",
             "trinkwasser",
-            "entwaesserung",
+            "entwässerung",
         ]
     ):
         meta["cwicr_ref"] = "CWICR-PLB-001"
@@ -2849,7 +2869,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
                 ("Cutting tools", "equipment", 0.05, 30.0),
             ],
         )
-    elif any(k in desc_lower for k in ["door", "tuer", "tür", "porte"]):
+    elif any(k in desc_lower for k in ["door", "tür", "tür", "porte"]):
         meta["cwicr_ref"] = "CWICR-DOR-001"
         meta["resources"] = _make_resources(
             unit_rate,
@@ -2873,7 +2893,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
                 ("Testing equipment", "equipment", 0.10, 45.0),
             ],
         )
-    elif any(k in desc_lower for k in ["pile", "pfahl", "pieux", "bohrpfaehle"]):
+    elif any(k in desc_lower for k in ["pile", "pfahl", "pieux", "bohrpfähle"]):
         meta["cwicr_ref"] = "CWICR-PIL-001"
         meta["resources"] = _make_resources(
             unit_rate,
@@ -2953,15 +2973,15 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
             "dewatering",
             "wasserhaltung",
             "backfill",
-            "verfuellung",
-            "hinterfuellung",
+            "verfüllung",
+            "hinterfüllung",
             "verdichtung",
             "compaction",
-            "boeschung",
+            "böschung",
             "slope",
             "kampfmittel",
             "ordnance",
-            "baustrasse",
+            "baustraße",
             "haul road",
             "soil disposal",
             "bodenabtransport",
@@ -3045,7 +3065,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
             "separator",
             "revisionsschae",
             "inspection chamber",
-            "sanitaerobjekt",
+            "sanitärobjekt",
             "sanitary fixture",
             "trinkwasser",
         ]
@@ -3066,15 +3086,15 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
         for k in [
             "pufferspeicher",
             "buffer",
-            "gebaeudeautomation",
+            "gebäudeautomation",
             "bms",
             "dunstabzug",
             "kitchen extract",
-            "schalldaempfer",
+            "schalldämpfer",
             "attenuator",
             "dachhaube",
             "cowl",
-            "lueftungsgitter",
+            "lüftungsgitter",
             "grille",
         ]
     ):
@@ -3120,7 +3140,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
             "escalier",
             "podest",
             "landing",
-            "gelaender",
+            "geländer",
             "balustrade",
             "railing",
             "garde-corps",
@@ -3227,11 +3247,11 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
             "gravel",
             "ballast",
             "substrat",
-            "gruendach",
+            "gründach",
             "green roof",
             "lichtkuppel",
             "rooflight",
-            "durchfuehrung",
+            "durchführung",
             "penetration",
         ]
     ):
@@ -3255,7 +3275,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
             "fahrrad",
             "bicycle",
             "vélo",
-            "muellstand",
+            "müllstand",
             "waste enclosure",
             "poubelle",
             "briefkasten",
@@ -3408,7 +3428,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
             "refriger",
             "chambre froide",
             "cooling",
-            "kuehlung",
+            "kühlung",
         ]
     ):
         meta["cwicr_ref"] = "CWICR-REF-001"
@@ -3758,12 +3778,12 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
     elif any(
         k in desc_lower
         for k in [
-            "ft-stuetzen",
+            "ft-stützen",
             "ft-attika",
             "fertigteil",
-            "koecher",
-            "vergussmoertel",
-            "sichtoberflaechen",
+            "köcher",
+            "vergussmörtel",
+            "sichtoberflächen",
         ]
     ):
         meta["cwicr_ref"] = "CWICR-FTC-001"
@@ -3805,14 +3825,14 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
         k in desc_lower
         for k in [
             "co2",
-            "kuehlraum",
+            "kühlraum",
             "tk-zelle",
-            "luftkuehler",
+            "luftkühler",
             "verdampfer",
             "enthitzer",
             "kondensator",
-            "waermerueckgewinnung",
-            "kaeltetechnik",
+            "wärmerückgewinnung",
+            "kältetechnik",
             "wartungsvertrag",
         ]
     ):
@@ -3836,7 +3856,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
             "bodentank",
             "einbruchmelde",
             "m-bus",
-            "energiezaehler",
+            "energiezähler",
             "din vde",
             "leerrohrtrasse",
             "trafostation",
@@ -3881,13 +3901,13 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
     elif any(
         k in desc_lower
         for k in [
-            "wasserzaehler",
+            "wasserzähler",
             "druckminderer",
             "feinfilter",
-            "spuelung",
+            "spülung",
             "desinfektion",
             "zisterne",
-            "uebergabescha",
+            "übergabescha",
         ]
     ):
         meta["cwicr_ref"] = "CWICR-PLB-003"
@@ -3909,7 +3929,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
             "ballenpresse",
             "scheuersaug",
             "wertstoffe",
-            "muellpress",
+            "müllpress",
             "rvm",
             "sortieranlage",
             "verschleisspaket",
@@ -3937,12 +3957,12 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
             "einkaufswagen",
             "pfandbon",
             "backstation",
-            "praesentation",
-            "aktionsmoebel",
-            "moebel",
+            "präsentation",
+            "aktionsmöbel",
+            "möbel",
             "spinde",
             "gondelkopf",
-            "erstbestueckung",
+            "erstbestückung",
             "ladeneinrichtung",
             "warentrenner",
             "brotregal",
@@ -3982,7 +4002,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
         k in desc_lower
         for k in [
             "rasterdecke",
-            "revisionsoeffnung",
+            "revisionsöffnung",
             "unterdecke",
         ]
     ):
@@ -4004,8 +4024,8 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
             "dock-tor",
             "rolltor",
             "schnelllauftor",
-            "beschlaege",
-            "schliessanlage",
+            "beschläge",
+            "schließanlage",
             "glasreinigung",
             "einstellarbeiten",
         ]
@@ -4038,9 +4058,9 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
         for k in [
             "bodenaustausch",
             "tragschicht",
-            "auffuellung",
+            "auffüllung",
             "verdichtet",
-            "ueberschussmassen",
+            "überschussmassen",
             "entsorgung",
             "abfuhr",
             "frostschutzschicht",
@@ -4064,7 +4084,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
             "einbauteile",
             "kernbohrung",
             "industrieboden",
-            "oberflaechenhaert",
+            "oberflächenhärt",
             "trennlage",
             "pe-folie",
         ]
@@ -4085,7 +4105,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
         for k in [
             "bordstein",
             "einfassung",
-            "belagsflaechen",
+            "belagsflächen",
         ]
     ):
         meta["cwicr_ref"] = "CWICR-PAV-002"
@@ -4103,7 +4123,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
         k in desc_lower
         for k in [
             "baumscheibe",
-            "bewaesserung",
+            "bewässerung",
             "pflanzung",
             "hochbeet",
             "entwicklungspflege",
@@ -4129,7 +4149,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
         k in desc_lower
         for k in [
             "sozialcontainer",
-            "buerocontainer",
+            "bürocontainer",
             "container",
             "bauschild",
             "verkehrssicherung",
@@ -4139,7 +4159,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
             "endreinigung",
             "gemeinkosten",
             "bautagesbericht",
-            "schnurgeruest",
+            "schnurgerüst",
             "absteckung",
         ]
     ):
@@ -4193,7 +4213,7 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
 def _clean_trade(section_title: str) -> str:
     """Extract a short, human trade label from a section title.
 
-    Section titles look like ``"KG 330 - Aussenwande"`` or
+    Section titles look like ``"KG 330 - Außenwände"`` or
     ``"Division 03 - Concrete"`` or ``"2.1 Structural Steel"``. Strip a
     leading code token + separator so we keep the readable trade name.
     """
@@ -4512,14 +4532,79 @@ def _generate_module_data(
         )
 
     # ── Safety incidents (3-4) ───────────────────────────────────────────
-    incident_seeds = [
+    # Every project that falls through to this generator used to get the same
+    # four incidents with the same titles and the same root causes, so two
+    # projects rendered a safety register identical down to the pixel -
+    # measured across two demo projects whose screens compared 0 bits apart
+    # and 1.00 alike on text.
+    #
+    # A sliding window over the pool does not fix that: it can only produce as
+    # many registers as the pool is long, so a pool of seven left all 34
+    # templates sharing seven registers. Both the start and the step vary, which
+    # makes the slice a combination rather than a window. The pool length is
+    # prime, so every step from 1 to 10 walks all 11 entries before repeating
+    # and the four picks within one register are always distinct.
+    #
+    # Both are taken from the template's rank rather than from a hash of its
+    # id. A hash only makes a collision unlikely, and unlikely was not good
+    # enough here - hashing the id left four pairs of projects still sharing a
+    # register. Rank makes the (start, step) pair injective up to 110 templates,
+    # so no two projects can collide by construction. Ranking is over the sorted
+    # ids, so it does not move when the template literal is reordered, and it is
+    # stable across re-seeds of one build.
+    incident_pool = [
         ("near_miss", "moderate", "Near miss - material fell from height", "Edge protection gap"),
-        ("first_aid", "minor", "Minor hand laceration during handling", "Cut-resistant gloves not worn"),
+        ("injury", "minor", "Minor hand laceration during handling", "Cut-resistant gloves not worn"),
         ("near_miss", "moderate", "Plant / pedestrian near miss in laydown area", "Segregation not enforced"),
         ("property_damage", "minor", "Temporary services strike during excavation", "Service scan not refreshed"),
+        (
+            "near_miss",
+            "major",
+            "Load swung outside the exclusion zone during a lift",
+            "Lift plan not re-briefed after the crane moved",
+        ),
+        ("injury", "minor", "Eye irritation from airborne dust", "Water suppression not connected before cutting"),
+        (
+            "property_damage",
+            "moderate",
+            "Stacked materials toppled in high wind",
+            "Stack height above the method statement limit",
+        ),
+        (
+            "environmental",
+            "minor",
+            "Silt-laden runoff reached the site drain",
+            "Bunding not reinstated after the pour",
+        ),
+        ("injury", "moderate", "Slip on a wet access ramp", "Ramp left uncovered after the wash-down"),
+        (
+            "fire",
+            "minor",
+            "Smouldering waste bin beside hot works",
+            "Fire watch stood down before the cooling period ended",
+        ),
+        ("near_miss", "minor", "Scaffold board dislodged underfoot", "Board not clipped after an inspection"),
     ]
+    known = sorted(DEMO_TEMPLATES)
+    # An id outside the shipped estate still has to land somewhere, so it falls
+    # back to a position-weighted sum of its characters, offset past the known
+    # ranks. Weighting by position keeps two ids built from the same letters apart.
+    rank = (
+        known.index(demo_id)
+        if demo_id in DEMO_TEMPLATES
+        else len(known) + sum((i + 1) * ord(ch) for i, ch in enumerate(demo_id))
+    )
+    offset = rank % len(incident_pool)
+    step = 1 + (rank // len(incident_pool)) % (len(incident_pool) - 1)
+    incident_seeds = [incident_pool[(offset + k * step) % len(incident_pool)] for k in range(4)]
     safety_incidents: list[dict] = []
     for i, (itype, sev, title, cause) in enumerate(incident_seeds):
+        # The most recent incident is still under investigation and the one
+        # before it still has an action outstanding. Seeded entirely closed,
+        # the Open Incidents tile reads zero on every project and the register
+        # gives a reader nothing to work from.
+        last = i == len(incident_seeds) - 1
+        pending = i == len(incident_seeds) - 2
         safety_incidents.append(
             {
                 "incident_number": f"INC-{i + 1:03d}",
@@ -4529,30 +4614,46 @@ def _generate_module_data(
                 "incident_type": itype,
                 "severity": sev,
                 "description": f"{title} during {trades[i % len(trades)][1].lower() if trades else 'works'}.",
-                "root_cause": cause,
+                "root_cause": None if last else cause,
                 "corrective_actions": [
                     {
-                        "description": "Toolbox talk and re-brief affected crew",
+                        "description": (
+                            "Toolbox talk and re-brief affected crew"
+                            if not last
+                            else "Investigation under way, actions to follow"
+                        ),
                         "due_date": _d(13 + i * 9),
-                        "status": "completed",
+                        "status": "completed" if not (last or pending) else "open" if last else "in_progress",
                     }
                 ],
-                "status": "closed",
+                "status": "investigating" if last else "corrective_action" if pending else "closed",
             }
         )
 
     # ── Safety observations (6) ──────────────────────────────────────────
+    # (type, severity, likelihood, status, description).
+    #
+    # The types are the four ``ObservationCreate`` accepts. This list used to
+    # carry unsafe_behavior, housekeeping and environmental, none of which the
+    # API will take back and none of which the type picker offers, so a reader
+    # who opened one of those rows could not re-select the value it already
+    # held.
+    #
+    # The statuses are not all terminal on purpose. Seeded entirely closed, an
+    # observation register shows nothing to act on, and the whole point of the
+    # register is what is still outstanding.
     obs_seeds = [
-        ("unsafe_condition", 4, 3, "Scaffold handrail incomplete on working platform"),
-        ("unsafe_behavior", 3, 4, "Operative without eye protection during cutting"),
-        ("housekeeping", 3, 2, "Access route partially blocked by stored materials"),
-        ("unsafe_condition", 4, 3, "Unprotected slab edge at leading edge of works"),
-        ("environmental", 2, 3, "Dust generation during dry cutting"),
-        ("positive", 1, 1, "Good practice - full PPE and clean work area observed"),
+        ("unsafe_condition", 4, 3, "closed", "Scaffold handrail incomplete on working platform"),
+        ("unsafe_act", 3, 4, "closed", "Operative without eye protection during cutting"),
+        ("unsafe_condition", 3, 2, "closed", "Access route partially blocked by stored materials"),
+        ("unsafe_condition", 4, 3, "in_progress", "Unprotected slab edge at leading edge of works"),
+        ("unsafe_condition", 2, 3, "open", "Dust generation during dry cutting"),
+        ("positive", 1, 1, "closed", "Good practice - full PPE and clean work area observed"),
     ]
     safety_observations: list[dict] = []
-    for i, (otype, sev, lik, desc) in enumerate(obs_seeds):
+    for i, (otype, sev, lik, ostatus, desc) in enumerate(obs_seeds):
         positive = otype == "positive"
+        done = ostatus == "closed"
         safety_observations.append(
             {
                 "observation_number": f"OBS-{i + 1:03d}",
@@ -4562,8 +4663,16 @@ def _generate_module_data(
                 "severity": sev,
                 "likelihood": lik,
                 "immediate_action": None if positive else "Corrected on the spot",
-                "corrective_action": None if positive else "Re-brief crew and add to inspection checklist",
-                "status": "closed" if positive else "resolved",
+                # An outstanding observation names what is still to be done
+                # rather than reporting it as already done.
+                "corrective_action": (
+                    None
+                    if positive
+                    else "Re-brief crew and add to inspection checklist"
+                    if done
+                    else "Awaiting re-inspection before the entry can be closed"
+                ),
+                "status": ostatus,
             }
         )
 
@@ -4969,14 +5078,22 @@ def _generate_module_data(
             "code": f"{demo_id}-MAIN",
             "title": f"Main construction contract - {proj}",
             "contract_type": "lump_sum",
-            "counterparty_type": "contractor",
+            # client, not contractor. The contracts module records the
+            # counterparty as client or subcontractor, which is a statement of
+            # which side of the demo estate the money is on, and the estate
+            # holds the trade subcontracts below, so the party keeping these
+            # books is the main contractor and its head contract is with the
+            # client. "contractor" was not on the list at all: neither the
+            # create endpoint nor the picker in the UI offers it, so the seeded
+            # row was one the product itself would refuse.
+            "counterparty_type": "client",
             # The contact role to link to, kept separate from counterparty_type
             # above even though the two words agree today. They are two
             # vocabularies owned by two modules: the contracts one describes the
             # contract, the contacts one describes the register. Reusing one as
             # a key into the other would break silently the first time either
             # adds a value the other does not have.
-            "party": "contractor",
+            "party": "client",
             "party_index": 0,
             # Who actually signs. The counterparty pair above records one side
             # and a category; the signature register needs both sides by name,
@@ -5373,7 +5490,10 @@ def _generate_module_data(
     #   (code, title, description, reason_category, status, cost_impact,
     #    schedule_impact_days, items_list) where each item is
     #   (description, change_type, orig_qty, new_qty, orig_rate, new_rate, unit)
-    co_reasons = ["client_request", "design_change", "site_condition", "value_engineering", "client_request"]
+    # Every code here has to be in REASON_CATEGORY_LABELS, or the register prints
+    # it raw and the change order cannot be updated through its own schema.
+    # "site_condition" was such a code: it is the same cause as "unforeseen".
+    co_reasons = ["client_request", "design_change", "unforeseen", "value_engineering", "regulatory"]
     co_statuses = ["approved", "pending", "approved", "implemented", "pending"]
     change_orders: list[dict] = []
     co_n = min(max(len(trades), 3), 5)
@@ -5490,6 +5610,29 @@ def _seeded_party_id(contact_ids_by_type: dict[str, list[str]], role: str | None
     if not ids or not 0 <= index < len(ids):
         return None
     return ids[index]
+
+
+def _contacts_for_project(hand_written: list[dict] | None, generated: list[dict]) -> list[dict]:
+    """The contacts to seed: the hand-written list if there is one, else the generated one.
+
+    With one repair on top. Every hand-written list names a client, its
+    subcontractors and its consultants, and no main contractor, while the
+    registers seeded afterwards point at one anyway: the punchlist assigns to
+    "contractor" by default, and both contract signature blocks name it. A role
+    nobody seeded resolves to ``None`` without complaining, which is deliberate
+    in ``_seeded_party_id`` and wrong here. Measured on five of the six
+    hand-written projects: every punch item read as unassigned, and the contract
+    parties carried a company name with no contact behind it.
+
+    The generated list always carries a main contractor built from the same
+    template metadata, so it is borrowed rather than a firm being invented per
+    project. It also means a hand-written list added later cannot reopen this
+    hole by forgetting the same row.
+    """
+    contacts = list(hand_written or generated)
+    if not any(c.get("contact_type") == "contractor" for c in contacts):
+        contacts += [c for c in generated if c.get("contact_type") == "contractor"]
+    return contacts
 
 
 def _uuid_or_none(value: str | None) -> uuid.UUID | None:
@@ -5931,33 +6074,33 @@ async def _seed_module_data(
         "retail-market-heilbronn": [
             {
                 "contact_type": "client",
-                "company_name": "Sueddeutsche Handelsimmobilien GmbH",
+                "company_name": "Süddeutsche Handelsimmobilien GmbH",
                 "first_name": "Marion",
                 "last_name": "Roesler",
-                "primary_email": "m.roesler@sueddeutsche-handelsimmobilien.example",
+                "primary_email": "m.roesler@süddeutsche-handelsimmobilien.example",
                 "primary_phone": "+49 7131 562300",
                 "country_code": "DE",
-                "notes": "S01 Bauherr / owner (retail real-estate company), Bereichsleitung Expansion Sued",
+                "notes": "S01 Bauherr / owner (retail real-estate company), Bereichsleitung Expansion Süd",
             },
             {
                 "contact_type": "client",
-                "company_name": "Sueddeutsche Lebensmittelmaerkte GmbH",
+                "company_name": "Süddeutsche Lebensmittelmärkte GmbH",
                 "first_name": "Thomas",
                 "last_name": "Gerlach",
-                "primary_email": "t.gerlach@sueddeutsche-lebensmittelmaerkte.example",
+                "primary_email": "t.gerlach@süddeutsche-lebensmittelmärkte.example",
                 "primary_phone": "+49 7131 894120",
                 "country_code": "DE",
                 "notes": "S02 Betreiber und Mieter / operator and tenant (store operations), Verkaufsleitung Region Unterland",
             },
             {
                 "contact_type": "consultant",
-                "company_name": "Architekturbuero Sandweg + Partner Architekten PartG mbB",
+                "company_name": "Architekturbüro Sandweg + Partner Architekten PartG mbB",
                 "first_name": "Jens",
                 "last_name": "Sandweg",
                 "primary_email": "j.sandweg@sandweg-partner.example",
                 "primary_phone": "+49 7131 204510",
                 "country_code": "DE",
-                "notes": "S03 Objektplanung LP 1-5, kuenstlerische Oberleitung, Bauueberwachung Bauherrenseite (architect)",
+                "notes": "S03 Objektplanung LP 1-5, künstlerische Oberleitung, Bauüberwachung Bauherrenseite (architect)",
             },
             {
                 "contact_type": "consultant",
@@ -5971,13 +6114,13 @@ async def _seed_module_data(
             },
             {
                 "contact_type": "consultant",
-                "company_name": "Dr.-Ing. Carsten Mahler, Pruefingenieur fuer Standsicherheit",
+                "company_name": "Dr.-Ing. Carsten Mahler, Prüfingenieur für Standsicherheit",
                 "first_name": "Carsten",
                 "last_name": "Mahler",
-                "primary_email": "kontakt@pruefingenieur-mahler.example",
+                "primary_email": "kontakt@prüfingenieur-mahler.example",
                 "primary_phone": "+49 711 6339400",
                 "country_code": "DE",
-                "notes": "S05 Pruefstatiker (independent checking engineer), Stuttgart",
+                "notes": "S05 Prüfstatiker (independent checking engineer), Stuttgart",
             },
             {
                 "contact_type": "consultant",
@@ -5987,7 +6130,7 @@ async def _seed_module_data(
                 "primary_email": "s.klein@klein-tga.example",
                 "primary_phone": "+49 7134 915020",
                 "country_code": "DE",
-                "notes": "S06 TGA-Planung HLSK/ELT, GEG-Nachweis, Entwaesserungsgesuch (MEP design), Weinsberg",
+                "notes": "S06 TGA-Planung HLSK/ELT, GEG-Nachweis, Entwässerungsgesuch (MEP design), Weinsberg",
             },
             {
                 "contact_type": "consultant",
@@ -6007,21 +6150,21 @@ async def _seed_module_data(
                 "primary_email": "h.volz@baugrund-neckartal.example",
                 "primary_phone": "+49 7133 209880",
                 "country_code": "DE",
-                "notes": "S08 Baugrundgutachter, geotechnische Pruefungen (geotechnical consultant), Lauffen am Neckar",
+                "notes": "S08 Baugrundgutachter, geotechnische Prüfungen (geotechnical consultant), Lauffen am Neckar",
             },
             {
                 "contact_type": "consultant",
-                "company_name": "Vermessungsbuero Stehle, OebVI",
+                "company_name": "Vermessungsbüro Stehle, ÖbVI",
                 "first_name": "Peter",
                 "last_name": "Stehle",
                 "primary_email": "info@vermessung-stehle.example",
                 "primary_phone": "+49 7131 781220",
                 "country_code": "DE",
-                "notes": "S09 Amtlicher Lageplan, Absteckung, Gebaeudeeinmessung (licensed surveyor), Heilbronn",
+                "notes": "S09 Amtlicher Lageplan, Absteckung, Gebäudeeinmessung (licensed surveyor), Heilbronn",
             },
             {
                 "contact_type": "consultant",
-                "company_name": "Ingenieurbuero Wanner Arbeitssicherheit",
+                "company_name": "Ingenieurbüro Wanner Arbeitssicherheit",
                 "first_name": "Ralf",
                 "last_name": "Wanner",
                 "primary_email": "r.wanner@wanner-sigeko.example",
@@ -6037,7 +6180,7 @@ async def _seed_module_data(
                 "primary_email": "d.seybold@trautwein-bau.example",
                 "primary_phone": "+49 791 946100",
                 "country_code": "DE",
-                "notes": "S11 Generalunternehmer Rohbau, Ausbau, Standard-TGA, Aussenanlagen-Option (general contractor), Schwaebisch Hall",
+                "notes": "S11 Generalunternehmer Rohbau, Ausbau, Standard-TGA, Außenanlagen-Option (general contractor), Schwäbisch Hall",
             },
             {
                 "contact_type": "subcontractor",
@@ -6047,7 +6190,7 @@ async def _seed_module_data(
                 "primary_email": "f.schenkel@betonwerk-hohenlohe.example",
                 "primary_phone": "+49 7940 922070",
                 "country_code": "DE",
-                "notes": "S12 Nachunternehmer Stahlbeton-Fertigteile und Montage (precast subcontractor), Kuenzelsau",
+                "notes": "S12 Nachunternehmer Stahlbeton-Fertigteile und Montage (precast subcontractor), Künzelsau",
             },
             {
                 "contact_type": "subcontractor",
@@ -6061,13 +6204,13 @@ async def _seed_module_data(
             },
             {
                 "contact_type": "subcontractor",
-                "company_name": "Sommerfeld Kaeltetechnik GmbH",
+                "company_name": "Sommerfeld Kältetechnik GmbH",
                 "first_name": "Patrick",
                 "last_name": "Sommerfeld",
-                "primary_email": "p.sommerfeld@sommerfeld-kaeltetechnik.de",
+                "primary_email": "p.sommerfeld@sommerfeld-kältetechnik.de",
                 "primary_phone": "+49 7131 396620",
                 "country_code": "DE",
-                "notes": "S14 Direktauftrag Kaeltetechnik CO2-Verbund und Kuehlmoebel (owner direct award refrigeration), Heilbronn",
+                "notes": "S14 Direktauftrag Kältetechnik CO2-Verbund und Kühlmöbel (owner direct award refrigeration), Heilbronn",
             },
             {
                 "contact_type": "subcontractor",
@@ -6087,7 +6230,7 @@ async def _seed_module_data(
                 "primary_email": "baurechtsamt@stadt-heilbronn.example",
                 "primary_phone": "+49 7131 562700",
                 "country_code": "DE",
-                "notes": "S16 Untere Baurechtsbehoerde, Genehmigung und Abnahmen (building permit authority), Heilbronn",
+                "notes": "S16 Untere Baurechtsbehörde, Genehmigung und Abnahmen (building permit authority), Heilbronn",
             },
             {
                 "contact_type": "authority",
@@ -6107,7 +6250,7 @@ async def _seed_module_data(
                 "primary_email": "u.haeberlen@elektro-haeberlen.de",
                 "primary_phone": "+49 7941 920310",
                 "country_code": "DE",
-                "notes": "S18 Nachunternehmer Elektrotechnik unter GU (electrical subcontractor), Oehringen",
+                "notes": "S18 Nachunternehmer Elektrotechnik unter GU (electrical subcontractor), Öhringen",
             },
         ],
     }
@@ -6120,7 +6263,7 @@ async def _seed_module_data(
     contact_ids_by_type: dict[str, list[str]] = {}
 
     try:
-        contact_list = _CONTACTS.get(demo_id) or generated.get("contacts", [])
+        contact_list = _contacts_for_project(_CONTACTS.get(demo_id), generated.get("contacts", []))
         for c in contact_list:
             contact_id = _id()
             contact_ids_by_type.setdefault(c["contact_type"], []).append(str(contact_id))
@@ -6158,7 +6301,7 @@ async def _seed_module_data(
             },
             {
                 "task_type": "task",
-                "title": "Spundwandverbau Statik pruefen",
+                "title": "Spundwandverbau Statik prüfen",
                 "description": "Review sheet pile wall structural calculations with engineer",
                 "status": "completed",
                 "priority": "high",
@@ -6174,7 +6317,7 @@ async def _seed_module_data(
             },
             {
                 "task_type": "topic",
-                "title": "KfW 55 Foerdermittel Antrag",
+                "title": "KfW 55 Fördermittel Antrag",
                 "description": "Prepare KfW subsidy application for energy-efficient building",
                 "status": "in_progress",
                 "priority": "high",
@@ -6263,7 +6406,10 @@ async def _seed_module_data(
                 "title": "Medical equipment list freeze",
                 "description": "Obtain frozen equipment list from radiology, surgery, and ED departments",
                 "status": "in_progress",
-                "priority": "critical",
+                # urgent, not critical: the task scale runs low / normal / high /
+                # urgent. critical is the top of the punchlist scale, which is a
+                # different module with a different vocabulary.
+                "priority": "urgent",
                 "due_date": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
             },
             {
@@ -6697,7 +6843,7 @@ async def _seed_module_data(
                 "meeting_type": "site",
                 "title": "Bauanlaufbesprechung",
                 "meeting_date": base.strftime("%Y-%m-%d"),
-                "location": "Baubuero Chausseestr. 45",
+                "location": "Baubüro Chausseestr. 45",
                 "status": "completed",
                 "attendees": [
                     {"name": "Klaus Weber", "company": "VWB", "status": "present"},
@@ -6729,7 +6875,7 @@ async def _seed_module_data(
                 "meeting_type": "site",
                 "title": "Wochenbesprechung KW 16",
                 "meeting_date": (base + timedelta(days=7)).strftime("%Y-%m-%d"),
-                "location": "Baubuero Chausseestr. 45",
+                "location": "Baubüro Chausseestr. 45",
                 "status": "completed",
                 "attendees": [
                     {"name": "Hans Mueller", "company": "Verdanko", "status": "present"},
@@ -6753,7 +6899,7 @@ async def _seed_module_data(
                 "meeting_type": "design",
                 "title": "Fassadendetails Abstimmung",
                 "meeting_date": (base + timedelta(days=21)).strftime("%Y-%m-%d"),
-                "location": "Buero Rehwald Tannberg",
+                "location": "Büro Rehwald Tannberg",
                 "status": "scheduled",
                 "attendees": [
                     {"name": "Louisa Tannberg", "company": "RT Arch", "status": "present"},
@@ -7041,7 +7187,7 @@ async def _seed_module_data(
                 "title": "Minor hand injury - rebar handling",
                 "incident_date": (base + timedelta(days=35)).strftime("%Y-%m-%d"),
                 "location": "Foundation zone, Grid A-B / 1-3",
-                "incident_type": "first_aid",
+                "incident_type": "injury",
                 "severity": "minor",
                 "description": "Worker cut left hand while handling rebar ties. Cut treated on site with first aid.",
                 "treatment_type": "first_aid",
@@ -7065,7 +7211,7 @@ async def _seed_module_data(
                 "incident_date": (base + timedelta(days=60)).strftime("%Y-%m-%d"),
                 "location": "Level 5, perimeter zone",
                 "incident_type": "near_miss",
-                "severity": "serious",
+                "severity": "major",
                 "description": "M24 bolt dropped from Level 5 during steel erection. "
                 "Landed in exclusion zone - no one injured.",
                 "root_cause": "Tool tether not attached to impact wrench",
@@ -7092,7 +7238,7 @@ async def _seed_module_data(
                 "incident_date": (base + timedelta(days=45)).strftime("%Y-%m-%d"),
                 "location": "Level 2, Surgical Suite corridor",
                 "incident_type": "environmental",
-                "severity": "serious",
+                "severity": "major",
                 "description": "ICRA Class IV barrier was breached during ductwork installation. "
                 "Negative air pressure lost for 15 minutes in adjacent occupied area.",
                 "root_cause": "Subcontractor cut opening in barrier without notifying ICRA monitor",
@@ -7122,7 +7268,7 @@ async def _seed_module_data(
                 "title": "Slip and fall - wet concrete pour area",
                 "incident_date": (base + timedelta(days=25)).strftime("%Y-%m-%d"),
                 "location": "Level 1, ED wing foundation",
-                "incident_type": "recordable",
+                "incident_type": "injury",
                 "severity": "moderate",
                 "description": "Worker slipped on wet concrete near pour area. Bruised knee, "
                 "returned to work next day.",
@@ -7147,7 +7293,7 @@ async def _seed_module_data(
                 "incident_date": (base + timedelta(days=50)).strftime("%Y-%m-%d"),
                 "location": "Zone de stockage, aire nord",
                 "incident_type": "near_miss",
-                "severity": "serious",
+                "severity": "major",
                 "description": "CLT panel slipped from storage rack due to improper bracing. "
                 "No injuries - area was cordoned off.",
                 "root_cause": "Storage rack not rated for CLT panel weight. Wind loading not considered.",
@@ -7173,7 +7319,7 @@ async def _seed_module_data(
                 "title": "Heat exhaustion - steel erector",
                 "incident_date": (base + timedelta(days=75)).strftime("%Y-%m-%d"),
                 "location": "Warehouse bay 3, roof level",
-                "incident_type": "recordable",
+                "incident_type": "injury",
                 "severity": "moderate",
                 "description": "Steel erector showed signs of heat exhaustion at 14:00 during "
                 "June operations. Temperature 48C. Worker evacuated and treated.",
@@ -7201,7 +7347,7 @@ async def _seed_module_data(
                 "incident_date": (base + timedelta(days=30)).strftime("%Y-%m-%d"),
                 "location": "Eastern yard, crane pad area",
                 "incident_type": "near_miss",
-                "severity": "serious",
+                "severity": "major",
                 "description": "Mobile crane outrigger pad sank 150mm into soft ground during "
                 "steel beam lift. Crane immediately halted and load secured.",
                 "root_cause": "Ground bearing capacity not verified at crane position. "
@@ -7266,29 +7412,29 @@ async def _seed_module_data(
                 "likelihood": 3,
                 "immediate_action": "Area cordoned off until handrail installed",
                 "corrective_action": "Scaffolders to complete handrails before platform use",
-                "status": "resolved",
+                "status": "closed",
             },
             {
                 "observation_number": "OBS-002",
-                "observation_type": "unsafe_behavior",
+                "observation_type": "unsafe_act",
                 "description": "Two workers observed not wearing safety glasses during concrete cutting.",
                 "location": "Ground floor slab, Grid E/5",
                 "severity": 3,
                 "likelihood": 4,
                 "immediate_action": "Workers stopped and issued PPE",
                 "corrective_action": "Toolbox talk on mandatory eye protection for cutting works",
-                "status": "resolved",
+                "status": "closed",
             },
             {
                 "observation_number": "OBS-003",
-                "observation_type": "housekeeping",
+                "observation_type": "unsafe_condition",
                 "description": "Debris and loose materials blocking emergency exit route at level 1.",
                 "location": "Stairwell 2, Level 1",
                 "severity": 3,
                 "likelihood": 2,
                 "immediate_action": "Area cleared immediately",
                 "corrective_action": "Weekly housekeeping audit added to site inspection schedule",
-                "status": "resolved",
+                "status": "in_progress",
             },
         ],
         "office-london": [
@@ -7301,18 +7447,18 @@ async def _seed_module_data(
                 "likelihood": 2,
                 "immediate_action": "Barrier installed within 30 minutes",
                 "corrective_action": "Daily check of all temporary edge protection",
-                "status": "resolved",
+                "status": "closed",
             },
             {
                 "observation_number": "OBS-002",
-                "observation_type": "unsafe_behavior",
+                "observation_type": "unsafe_act",
                 "description": "Operative working at height without harness clip attached.",
                 "location": "Perimeter, Level 7",
                 "severity": 5,
                 "likelihood": 3,
                 "immediate_action": "Operative removed from site for remainder of day",
                 "corrective_action": "All operatives re-inducted on working at height procedures",
-                "status": "resolved",
+                "status": "closed",
             },
             {
                 "observation_number": "OBS-003",
@@ -7322,7 +7468,7 @@ async def _seed_module_data(
                 "location": "Basement Level -1",
                 "severity": 1,
                 "likelihood": 1,
-                "status": "closed",
+                "status": "in_progress",
             },
         ],
         "medical-us": [
@@ -7335,7 +7481,7 @@ async def _seed_module_data(
                 "likelihood": 4,
                 "immediate_action": "Filter replaced immediately, air quality test performed",
                 "corrective_action": "Filter change schedule posted on each machine with daily check log",
-                "status": "resolved",
+                "status": "closed",
             },
             {
                 "observation_number": "OBS-002",
@@ -7346,18 +7492,18 @@ async def _seed_module_data(
                 "likelihood": 3,
                 "immediate_action": "Temporary illuminated exit sign installed",
                 "corrective_action": "All fire exit signs checked weekly during construction phase",
-                "status": "resolved",
+                "status": "closed",
             },
             {
                 "observation_number": "OBS-003",
-                "observation_type": "housekeeping",
+                "observation_type": "unsafe_condition",
                 "description": "Sharp rebar ends protruding from slab edge not capped.",
                 "location": "Level 3 slab edge, grid D/7",
                 "severity": 4,
                 "likelihood": 3,
                 "immediate_action": "Mushroom caps installed on all exposed rebar",
                 "corrective_action": "Rebar capping added to daily checklist for concrete crew",
-                "status": "resolved",
+                "status": "closed",
             },
             {
                 "observation_number": "OBS-004",
@@ -7367,7 +7513,7 @@ async def _seed_module_data(
                 "location": "Level 1, radiology suite",
                 "severity": 1,
                 "likelihood": 1,
-                "status": "closed",
+                "status": "in_progress",
             },
         ],
         "school-paris": [
@@ -7381,11 +7527,11 @@ async def _seed_module_data(
                 "likelihood": 4,
                 "immediate_action": "Barriers and warning signs installed",
                 "corrective_action": "Daily perimeter check for public safety hazards",
-                "status": "resolved",
+                "status": "closed",
             },
             {
                 "observation_number": "OBS-002",
-                "observation_type": "noise",
+                "observation_type": "unsafe_condition",
                 "description": "Demolition noise exceeding 85 dB at property boundary at 07:30. "
                 "Mairie restriction is 08:00 start for noisy works.",
                 "location": "Boundary fence, rue de Belleville",
@@ -7393,18 +7539,18 @@ async def _seed_module_data(
                 "likelihood": 3,
                 "immediate_action": "Works stopped until 08:00, noise barrier repositioned",
                 "corrective_action": "Site manager to confirm noise levels before 08:00 start",
-                "status": "resolved",
+                "status": "closed",
             },
             {
                 "observation_number": "OBS-003",
-                "observation_type": "housekeeping",
+                "observation_type": "unsafe_condition",
                 "description": "Stockage CLT non bache - CLT panels stored without weather protection.",
                 "location": "Zone de stockage nord",
                 "severity": 3,
                 "likelihood": 4,
                 "immediate_action": "Panels covered with tarpaulin",
                 "corrective_action": "All CLT deliveries to be stored in covered area only",
-                "status": "resolved",
+                "status": "in_progress",
             },
         ],
         "warehouse-dubai": [
@@ -7417,7 +7563,7 @@ async def _seed_module_data(
                 "likelihood": 4,
                 "immediate_action": "Water replenished, additional cooler boxes provided",
                 "corrective_action": "Hourly water station checks during summer months",
-                "status": "resolved",
+                "status": "closed",
             },
             {
                 "observation_number": "OBS-002",
@@ -7428,18 +7574,18 @@ async def _seed_module_data(
                 "likelihood": 3,
                 "immediate_action": "All loose materials secured, lightweight items moved to warehouse",
                 "corrective_action": "Weather alert response procedure updated and drilled",
-                "status": "resolved",
+                "status": "closed",
             },
             {
                 "observation_number": "OBS-003",
-                "observation_type": "unsafe_behavior",
+                "observation_type": "unsafe_act",
                 "description": "Welding in progress without fire watch posted nearby.",
                 "location": "Bay 4, steel connection area",
                 "severity": 4,
                 "likelihood": 3,
                 "immediate_action": "Welding stopped, fire watch assigned",
                 "corrective_action": "Hot work permit must include fire watch name before issuance",
-                "status": "resolved",
+                "status": "closed",
             },
             {
                 "observation_number": "OBS-004",
@@ -7449,7 +7595,7 @@ async def _seed_module_data(
                 "location": "General site",
                 "severity": 1,
                 "likelihood": 1,
-                "status": "closed",
+                "status": "in_progress",
             },
         ],
     }
@@ -7556,7 +7702,7 @@ async def _seed_module_data(
             {
                 "inspection_number": "INS-003",
                 "inspection_type": "fire_stopping",
-                "title": "Brandschutz Durchfuehrungen - Fire Stopping",
+                "title": "Brandschutz Durchführungen - Fire Stopping",
                 "description": "Inspection of fire stopping at service penetrations Level 1-2",
                 "location": "Levels 1-2, all risers",
                 "status": "completed",
@@ -7948,7 +8094,7 @@ async def _seed_module_data(
                 "inspection_number": "I-01",
                 "inspection_type": "earthworks",
                 "title": "Abnahme Erdplanum mit Lastplattendruckversuchen (subgrade acceptance, plate load tests)",
-                "description": "Ev2 >= 45 MN/m2 nachgewiesen. Pruefberichte D22/D23. Durchgefuehrt durch S08.",
+                "description": "Ev2 >= 45 MN/m2 nachgewiesen. Prüfberichte D22/D23. Durchgeführt durch S08.",
                 "location": "Baufeld, Planum Bauwerk",
                 "status": "completed",
                 "result": "pass",
@@ -7956,7 +8102,7 @@ async def _seed_module_data(
                 "checklist_data": [
                     {
                         "id": "1",
-                        "category": "Tragfaehigkeit",
+                        "category": "Tragfähigkeit",
                         "question": "Ev2 >= 45 MN/m2 erreicht?",
                         "response": "yes",
                         "critical": True,
@@ -7971,7 +8117,7 @@ async def _seed_module_data(
                     {
                         "id": "3",
                         "category": "Dokumentation",
-                        "question": "Pruefbericht D22 erstellt?",
+                        "question": "Prüfbericht D22 erstellt?",
                         "response": "yes",
                     },
                 ],
@@ -7979,8 +8125,8 @@ async def _seed_module_data(
             {
                 "inspection_number": "I-02",
                 "inspection_type": "rebar",
-                "title": "Bewehrungsabnahme Bodenplatte durch Pruefstatiker (slab rebar inspection by checking engineer)",
-                "description": "Bestanden mit Auflage: Randbewehrung Feld A1 nachgelegt, erledigt 2026-04-16. Durchgefuehrt durch S05. Protokoll D24.",
+                "title": "Bewehrungsabnahme Bodenplatte durch Prüfstatiker (slab rebar inspection by checking engineer)",
+                "description": "Bestanden mit Auflage: Randbewehrung Feld A1 nachgelegt, erledigt 2026-04-16. Durchgeführt durch S05. Protokoll D24.",
                 "location": "Bodenplatte, Feld A1",
                 "status": "completed",
                 "result": "pass",
@@ -7996,7 +8142,7 @@ async def _seed_module_data(
                     {
                         "id": "2",
                         "category": "Randzonen",
-                        "question": "Randbewehrung Feld A1 vollstaendig?",
+                        "question": "Randbewehrung Feld A1 vollständig?",
                         "response": "no",
                         "notes": "Auflage: nachgelegt und erledigt 2026-04-16",
                     },
@@ -8011,8 +8157,8 @@ async def _seed_module_data(
             {
                 "inspection_number": "I-03",
                 "inspection_type": "drainage",
-                "title": "Dichtheitspruefung und Kamerabefahrung Grundleitungen DIN EN 1610 (drainage tightness test and CCTV)",
-                "description": "Teilweise bestanden, Mangel M-007 (Gefaelle 0,3 % statt 0,5 % Abschnitt S3-S4). Wiederholungspruefung geplant 2026-06-26. Pruefprotokoll D25 an S16.",
+                "title": "Dichtheitsprüfung und Kamerabefahrung Grundleitungen DIN EN 1610 (drainage tightness test and CCTV)",
+                "description": "Teilweise bestanden, Mangel M-007 (Gefälle 0,3 % statt 0,5 % Abschnitt S3-S4). Wiederholungsprüfung geplant 2026-06-26. Prüfprotokoll D25 an S16.",
                 "location": "Grundleitungen unter Bodenplatte, Anlieferzone",
                 "status": "completed",
                 "result": "fail",
@@ -8026,8 +8172,8 @@ async def _seed_module_data(
                     },
                     {
                         "id": "2",
-                        "category": "Gefaelle",
-                        "question": "Mindestgefaelle 0,5 % eingehalten?",
+                        "category": "Gefälle",
+                        "question": "Mindestgefälle 0,5 % eingehalten?",
                         "response": "no",
                         "critical": True,
                         "notes": "Abschnitt S3-S4 nur 0,3 %, siehe Mangel M-007",
@@ -8044,7 +8190,7 @@ async def _seed_module_data(
                 "inspection_number": "I-04",
                 "inspection_type": "safety",
                 "title": "SiGeKo-Baustellenbegehung Nr. 7 (H&S coordinator site walkthrough no. 7)",
-                "description": "3 Feststellungen: Absturzsicherung Dachrandarbeiten nachruesten, Verkehrsweg Fassadengeruest freihalten, Erste-Hilfe-Aushang aktualisieren. Frist 2026-06-16. Durchgefuehrt durch S10.",
+                "description": "3 Feststellungen: Absturzsicherung Dachrandarbeiten nachrüsten, Verkehrsweg Fassadengerüst freihalten, Erste-Hilfe-Aushang aktualisieren. Frist 2026-06-16. Durchgeführt durch S10.",
                 "location": "Gesamte Baustelle",
                 "status": "completed",
                 "result": None,
@@ -8055,12 +8201,12 @@ async def _seed_module_data(
                         "category": "Absturzsicherung",
                         "question": "Dachrandarbeiten gesichert?",
                         "response": "no",
-                        "notes": "Nachruesten bis 2026-06-16",
+                        "notes": "Nachrüsten bis 2026-06-16",
                     },
                     {
                         "id": "2",
                         "category": "Verkehrswege",
-                        "question": "Verkehrsweg am Fassadengeruest frei?",
+                        "question": "Verkehrsweg am Fassadengerüst frei?",
                         "response": "no",
                         "notes": "Freihalten",
                     },
@@ -8145,10 +8291,10 @@ async def _seed_module_data(
                 "due_date": (base + timedelta(days=90)).strftime("%Y-%m-%d"),
                 "currency_code": "EUR",
                 "status": "approved",
-                "notes": "Verdanko - 2. Abschlagsrechnung Gruendung",
+                "notes": "Verdanko - 2. Abschlagsrechnung Gründung",
                 "line_items": [
                     {
-                        "description": "Bohrpfaehle d=600mm 480 m",
+                        "description": "Bohrpfähle d=600mm 480 m",
                         "quantity": "480",
                         "unit": "m",
                         "unit_rate": "145.00",
@@ -8484,7 +8630,7 @@ async def _seed_module_data(
                 "forecast_final": "462000",
             },
             {
-                "category": "Gruendung",
+                "category": "Gründung",
                 "original_budget": "680000",
                 "revised_budget": "680000",
                 "committed": "650000",
@@ -8679,7 +8825,7 @@ async def _seed_module_data(
         # committed/actual/forecast.
         "retail-market-heilbronn": [
             {
-                "category": "KG 200 Vorbereitende Massnahmen / Erschliessung",
+                "category": "KG 200 Vorbereitende Massnahmen / Erschließung",
                 "original_budget": "280000.00",
                 "revised_budget": "280000.00",
                 "committed": "264500.00",
@@ -8703,7 +8849,7 @@ async def _seed_module_data(
                 "forecast_final": "2665000.00",
             },
             {
-                "category": "KG 500 Aussenanlagen und Freiflaechen",
+                "category": "KG 500 Außenanlagen und Freiflächen",
                 "original_budget": "1150000.00",
                 "revised_budget": "1150000.00",
                 "committed": "0.00",
@@ -8804,7 +8950,7 @@ async def _seed_module_data(
                 "location_y": 0.42,
             },
             {
-                "title": "WDVS Blasenbildung Suedseite OG2",
+                "title": "WDVS Blasenbildung Südseite OG2",
                 "description": "EIFS adhesive blistering on south facade Level 2, approx 2m2 area.",
                 "priority": "high",
                 "status": "open",
@@ -8823,7 +8969,7 @@ async def _seed_module_data(
                 "resolution_notes": "Fire collars ordered, installation scheduled for next week",
             },
             {
-                "title": "Fussbodenheizungsverteiler Wohnung 3.04 undicht",
+                "title": "Fußbodenheizungsverteiler Wohnung 3.04 undicht",
                 "description": "Minor leak at manifold connection in apartment 3.04.",
                 "priority": "medium",
                 "status": "resolved",
@@ -8983,8 +9129,8 @@ async def _seed_module_data(
         # (slab flatness) links to NCR-02. Severities map to punch priorities.
         "retail-market-heilbronn": [
             {
-                "title": "M-001 Betonabplatzung Fertigteilstuetze Achse C/4 (concrete spalling, precast column C/4)",
-                "description": "Abplatzung im Sichtbereich Verkaufsraum, Achse C/4. Aus der Rohbau-Zwischenbegehung D26. Faellig 2026-06-26.",
+                "title": "M-001 Betonabplatzung Fertigteilstütze Achse C/4 (concrete spalling, precast column C/4)",
+                "description": "Abplatzung im Sichtbereich Verkaufsraum, Achse C/4. Aus der Rohbau-Zwischenbegehung D26. Fällig 2026-06-26.",
                 "priority": "medium",
                 "status": "open",
                 "category": "structural",
@@ -8994,7 +9140,7 @@ async def _seed_module_data(
             },
             {
                 "title": "M-002 Dachbahn Attika Nord nicht verklebt (roof membrane at north parapet unbonded)",
-                "description": "Dachbahn auf 3 lfm an der Attika Nord nicht verklebt. Meldung Bauleitung GU. Faellig 2026-06-17.",
+                "description": "Dachbahn auf 3 lfm an der Attika Nord nicht verklebt. Meldung Bauleitung GU. Fällig 2026-06-17.",
                 "priority": "high",
                 "status": "in_progress",
                 "category": "roofing",
@@ -9004,7 +9150,7 @@ async def _seed_module_data(
             },
             {
                 "title": "M-003 Ebenheitsabweichung Bodenplatte Kassenzone (slab flatness deviation, checkout zone)",
-                "description": "4 mm/2 m, DIN 18202 Tab. 3 Z. 3 ueberschritten. Ausgleichsspachtelung vor Industrieboden T23. Linked to NCR-02. Faellig 2026-07-10.",
+                "description": "4 mm/2 m, DIN 18202 Tab. 3 Z. 3 überschritten. Ausgleichsspachtelung vor Industrieboden T23. Linked to NCR-02. Fällig 2026-07-10.",
                 "priority": "medium",
                 "status": "open",
                 "category": "structural",
@@ -9013,8 +9159,8 @@ async def _seed_module_data(
                 "location_y": 0.15,
             },
             {
-                "title": "M-004 Vergussdokumentation Koecherfundament B/7 unvollstaendig (grouting documentation incomplete)",
-                "description": "Nachweis Vergussmoertel-Charge fuer Koecherfundament B/7 nachreichen. Faellig 2026-06-19.",
+                "title": "M-004 Vergussdokumentation Köcherfundament B/7 unvollständig (grouting documentation incomplete)",
+                "description": "Nachweis Vergussmörtel-Charge für Köcherfundament B/7 nachreichen. Fällig 2026-06-19.",
                 "priority": "low",
                 "status": "open",
                 "category": "structural",
@@ -9023,8 +9169,8 @@ async def _seed_module_data(
                 "location_y": 0.60,
             },
             {
-                "title": "M-005 Transportkratzer an 2 Sandwichpaneelen Suedfassade (transport scratches, south facade)",
-                "description": "Entscheidung Austausch vs. Ausbesserung nach Bemusterung D21. Faellig 2026-07-03.",
+                "title": "M-005 Transportkratzer an 2 Sandwichpaneelen Südfassade (transport scratches, south facade)",
+                "description": "Entscheidung Austausch vs. Ausbesserung nach Bemusterung D21. Fällig 2026-07-03.",
                 "priority": "low",
                 "status": "open",
                 "category": "facade",
@@ -9033,28 +9179,28 @@ async def _seed_module_data(
                 "location_y": 0.05,
             },
             {
-                "title": "M-006 Tuer Technikraum ohne T30 geliefert (plant room door without required T30 rating)",
-                "description": "Brandschutztuer Technikraum EG ohne geforderte Qualitaet T30 geliefert. Feststellung Fachbauleitung Brandschutz S07. Faellig 2026-07-17.",
+                "title": "M-006 Tür Technikraum ohne T30 geliefert (plant room door without required T30 rating)",
+                "description": "Brandschutztür Technikraum EG ohne geforderte Qualität T30 geliefert. Feststellung Fachbauleitung Brandschutz S07. Fällig 2026-07-17.",
                 "priority": "high",
                 "status": "open",
                 "category": "fire_protection",
-                "trade": "Tueren (doors)",
+                "trade": "Türen (doors)",
                 "location_x": 0.72,
                 "location_y": 0.55,
             },
             {
-                "title": "M-007 Grundleitung DN150 Abschnitt S3-S4: Gefaelle 0,3 % statt 0,5 % (drain slope below spec)",
-                "description": "Teilstueck 8 m ausserhalb Bodenplatte neu verlegen, Wiederholungspruefung erforderlich. Aus Dichtheitspruefung D25, feeds repeat test I-03. Faellig 2026-06-24.",
+                "title": "M-007 Grundleitung DN150 Abschnitt S3-S4: Gefälle 0,3 % statt 0,5 % (drain slope below spec)",
+                "description": "Teilstück 8 m ausserhalb Bodenplatte neu verlegen, Wiederholungsprüfung erforderlich. Aus Dichtheitsprüfung D25, feeds repeat test I-03. Fällig 2026-06-24.",
                 "priority": "high",
                 "status": "in_progress",
                 "category": "mep",
-                "trade": "Sanitaer/Entwaesserung (drainage)",
+                "trade": "Sanitär/Entwässerung (drainage)",
                 "location_x": 0.85,
                 "location_y": 0.50,
             },
             {
-                "title": "M-008 Kollision Kabeltrasse mit Lueftungskanal Achse 5 (cable tray clashes with duct at axis 5)",
-                "description": "Umverlegung gem. Koordinationsplan S06 vom 2026-06-09, Lager Achse 5. Faellig 2026-06-22.",
+                "title": "M-008 Kollision Kabeltrasse mit Lüftungskanal Achse 5 (cable tray clashes with duct at axis 5)",
+                "description": "Umverlegung gem. Koordinationsplan S06 vom 2026-06-09, Lager Achse 5. Fällig 2026-06-22.",
                 "priority": "medium",
                 "status": "open",
                 "category": "mep",
@@ -9064,7 +9210,7 @@ async def _seed_module_data(
             },
             {
                 "title": "M-009 Anschlussblech RWA-Lichtkuppel Feld D3 fehlt (flashing for smoke vent rooflight, bay D3, missing)",
-                "description": "Anschlussblech der RWA-Lichtkuppel in Feld D3 fehlt. Faellig 2026-06-19.",
+                "description": "Anschlussblech der RWA-Lichtkuppel in Feld D3 fehlt. Fällig 2026-06-19.",
                 "priority": "medium",
                 "status": "open",
                 "category": "roofing",
@@ -9074,11 +9220,11 @@ async def _seed_module_data(
             },
             {
                 "title": "M-010 Anfahrschutz Rampe Anlieferung nicht montiert (impact protection at delivery ramp not installed)",
-                "description": "Anfahrschutz an der Anlieferrampe noch nicht montiert. Faellig 2026-08-14.",
+                "description": "Anfahrschutz an der Anlieferrampe noch nicht montiert. Fällig 2026-08-14.",
                 "priority": "low",
                 "status": "open",
                 "category": "general",
-                "trade": "Aussenanlagen (external works)",
+                "trade": "Außenanlagen (external works)",
                 "location_x": 0.90,
                 "location_y": 0.45,
             },
@@ -9287,7 +9433,7 @@ async def _seed_module_data(
             },
             {
                 "submittal_number": "SUB-002",
-                "title": "Bohrpfahl Ausfuehrungsplan",
+                "title": "Bohrpfahl Ausführungsplan",
                 "spec_section": "KG 320",
                 "submittal_type": "shop_drawing",
                 "status": "approved",
@@ -9436,7 +9582,7 @@ async def _seed_module_data(
         "residential-berlin": [
             {
                 "ncr_number": "NCR-001",
-                "title": "Brandschutz Durchfuehrungen fehlend",
+                "title": "Brandschutz Durchführungen fehlend",
                 "description": "3 fire stopping penetrations missing in riser R2 (identified in INS-003).",
                 "ncr_type": "workmanship",
                 "severity": "major",
@@ -9525,22 +9671,22 @@ async def _seed_module_data(
                 "severity": "major",
                 "root_cause": "Massabweichung aus der Werksproduktion der Auflagerkonsole",
                 "root_cause_category": "workmanship",
-                "corrective_action": "Sonderloesung Stahlauflagerplatte 250x250x20 mm gem. statischem Nachweis S04, geprueft und freigegeben durch S05 (Pruefbericht Nachtrag 1); Kosten zulasten Betonwerk.",
-                "preventive_action": "Werksabnahme der Auflagerkonsolen vor Lieferung verschaerft, Montagetoleranzkontrolle dokumentiert.",
+                "corrective_action": "Sonderlösung Stahlauflagerplatte 250x250x20 mm gem. statischem Nachweis S04, geprüft und freigegeben durch S05 (Prüfbericht Nachtrag 1); Kosten zulasten Betonwerk.",
+                "preventive_action": "Werksabnahme der Auflagerkonsolen vor Lieferung verschärft, Montagetoleranzkontrolle dokumentiert.",
                 "status": "closed",
                 "cost_impact": "6200",
                 "schedule_impact_days": 0,
             },
             {
                 "ncr_number": "NCR-02",
-                "title": "Betoncharge Bodenplatte 2026-04-21: Wuerfeldruckfestigkeit 28d unter Soll C25/30 (slab concrete batch below specified strength)",
-                "description": "Einzelwert 26,1 N/mm2 unter Soll C25/30. Erhoben durch S11 (Eigenueberwachung) gegen den Transportbetonlieferanten am 2026-05-22. Linked to punch item M-003.",
+                "title": "Betoncharge Bodenplatte 2026-04-21: Würfeldruckfestigkeit 28d unter Soll C25/30 (slab concrete batch below specified strength)",
+                "description": "Einzelwert 26,1 N/mm2 unter Soll C25/30. Erhoben durch S11 (Eigenüberwachung) gegen den Transportbetonlieferanten am 2026-05-22. Linked to punch item M-003.",
                 "ncr_type": "material",
                 "severity": "major",
-                "root_cause": "Betoncharge vom 2026-04-21 mit zu geringer Wuerfeldruckfestigkeit nach 28 Tagen",
+                "root_cause": "Betoncharge vom 2026-04-21 mit zu geringer Würfeldruckfestigkeit nach 28 Tagen",
                 "root_cause_category": "material_defect",
-                "corrective_action": "Bohrkernpruefung im Bereich Anlieferzone beauftragt (3 Kerne, Pruefbericht erwartet 2026-06-19); Freigabeentscheidung durch S04/S05; Rueckstellung 15.000 EUR im Forecast KG 300 beruecksichtigt.",
-                "preventive_action": "Erweiterte Eigenueberwachung der Transportbeton-Anlieferung, zusaetzliche Probekoerper je Charge.",
+                "corrective_action": "Bohrkernprüfung im Bereich Anlieferzone beauftragt (3 Kerne, Prüfbericht erwartet 2026-06-19); Freigabeentscheidung durch S04/S05; Rückstellung 15.000 EUR im Forecast KG 300 berücksichtigt.",
+                "preventive_action": "Erweiterte Eigenüberwachung der Transportbeton-Anlieferung, zusätzliche Probekörper je Charge.",
                 "status": "under_review",
                 "cost_impact": "15000",
                 "schedule_impact_days": 0,
@@ -10681,6 +10827,8 @@ async def install_demo_project(
     session.add(schedule)
     await session.flush()
 
+    sched_now = datetime.now()
+
     if template.schedule_activities:
         # Explicit schedule activities defined in template
         prev_id = None
@@ -10688,7 +10836,14 @@ async def install_demo_project(
             s_start = datetime.strptime(act_start, "%Y-%m-%d")
             s_end = datetime.strptime(act_end, "%Y-%m-%d")
             dur = (s_end - s_start).days
-            prog = min(90, int((i / max(len(template.schedule_activities), 1)) * 75 + 10))
+            # Read off the phase's own dates, the same way the generated branch
+            # below does. Computing it from the row index instead put every
+            # phase between 10 and 90 percent regardless of when it ran, so a
+            # programme whose first phases finished last year still showed them
+            # part done, nothing was ever complete or yet to start, and the
+            # progress column climbed in an even ramp that reads as generated
+            # the moment anyone looks at two rows together.
+            prog, act_status = _phase_progress(s_start, s_end, sched_now)
 
             act = Activity(
                 id=_id(),
@@ -10704,7 +10859,7 @@ async def install_demo_project(
                 # type, so an int here raises "expected str, got int" on the
                 # PG quickstart path. Cast everywhere we set it.
                 progress_pct=str(prog),
-                status="in_progress" if prog > 0 else "planned",
+                status=act_status,
                 color="#ef4444" if i % 3 == 0 else "#0071e3",
                 dependencies=[str(prev_id)] if prev_id else [],
                 boq_position_ids=[],
@@ -10716,7 +10871,6 @@ async def install_demo_project(
         # Auto-generate schedule activities from BOQ sections
         current_start = start
         prev_id = None
-        sched_now = datetime.now()
 
         for i, sec in enumerate(sections_list):
             sec_items = [p for p in items_list if str(p.parent_id) == str(sec.id)]
@@ -10733,12 +10887,7 @@ async def install_demo_project(
             end_date = current_start + timedelta(days=dur)
             # Progress relative to the current date so finished phases read
             # complete and future ones planned (no false "delayed" badges).
-            if end_date <= sched_now:
-                prog = 100
-            elif current_start >= sched_now:
-                prog = 0
-            else:
-                prog = max(0, min(99, int((sched_now - current_start).days / max(dur, 1) * 100)))
+            prog, act_status = _phase_progress(current_start, end_date, sched_now)
 
             act = Activity(
                 id=_id(),
@@ -10750,7 +10899,7 @@ async def install_demo_project(
                 end_date=end_date.strftime("%Y-%m-%d"),
                 duration_days=dur,
                 progress_pct=str(prog),  # see note above - String(10), asyncpg-strict
-                status="completed" if prog >= 100 else "in_progress" if prog > 0 else "planned",
+                status=act_status,
                 color="#ef4444" if i % 3 == 0 else "#0071e3",
                 dependencies=[str(prev_id)] if prev_id else [],
                 boq_position_ids=[str(p.id) for p in sec_items],
@@ -11149,7 +11298,7 @@ async def install_demo_project(
             (
                 "R-001",
                 "Ground: non-bearing fill in northern building area",
-                "Nicht tragfaehige Auffuellungen Baufeld Nord; Bodenaustausch ausgefuehrt, Nachtrag N-01 beauftragt, Puffer in P03 verbraucht.",
+                "Nicht tragfähige Auffüllungen Baufeld Nord; Bodenaustausch ausgeführt, Nachtrag N-01 beauftragt, Puffer in P03 verbraucht.",
                 "technical",
                 1.0,
                 86400,
@@ -11161,7 +11310,7 @@ async def install_demo_project(
             (
                 "R-002",
                 "Lead time CO2 refrigeration rack over 24 weeks",
-                "Lieferzeit CO2-Kaelteverbundanlage; Fruehvergabe VP-07, Anzahlung geleistet, woechentliches Lieferanten-Tracking, Liefertermin KW 33 bestaetigt.",
+                "Lieferzeit CO2-Kälteverbundanlage; Frühvergabe VP-07, Anzahlung geleistet, wöchentliches Lieferanten-Tracking, Liefertermin KW 33 bestätigt.",
                 "procurement",
                 0.8,
                 0,
@@ -11173,7 +11322,7 @@ async def install_demo_project(
             (
                 "R-003",
                 "Winter working: frost during foundations and slab",
-                "Frostperioden waehrend Gruendung/Bodenplatte; Winterbaumassnahmen im GU-Vertrag eingepreist, nur 3 Ausfalltage.",
+                "Frostperioden während Gründung/Bodenplatte; Winterbaumassnahmen im GU-Vertrag eingepreist, nur 3 Ausfalltage.",
                 "environmental",
                 0.6,
                 12500,
@@ -11185,7 +11334,7 @@ async def install_demo_project(
             (
                 "R-004",
                 "External works tender above budget",
-                "Vergabeergebnis Aussenanlagen ueber Budget; 3 Bieter, Submission 2026-06-18, Einsparoptionen vorbereitet, Forecast KG 500 mit Risikozuschlag.",
+                "Vergabeergebnis Außenanlagen über Budget; 3 Bieter, Submission 2026-06-18, Einsparoptionen vorbereitet, Forecast KG 500 mit Risikozuschlag.",
                 "procurement",
                 0.6,
                 35000,
@@ -11197,7 +11346,7 @@ async def install_demo_project(
             (
                 "R-005",
                 "Grid connection and transformer: DSO delay",
-                "Verzug Netzbetreiber; Anmeldung 2025-11 erfolgt, Eskalationsgespraech 2026-06-04, Rueckfallebene Baustrom-Provisorium 250 kVA.",
+                "Verzug Netzbetreiber; Anmeldung 2025-11 erfolgt, Eskalationsgespräch 2026-06-04, Rückfallebene Baustrom-Provisorium 250 kVA.",
                 "schedule",
                 0.8,
                 18000,
@@ -11209,7 +11358,7 @@ async def install_demo_project(
             (
                 "R-006",
                 "PV feed-in approval delayed (grid compatibility check)",
-                "Netzvertraeglichkeitspruefung laeuft; Eroeffnung nicht PV-abhaengig, ggf. Einspeisebegrenzung 70 %, Batteriespeicher erhoeht Eigenverbrauch.",
+                "Netzverträglichkeitsprüfung läuft; Eröffnung nicht PV-abhängig, ggf. Einspeisebegrenzung 70 %, Batteriespeicher erhöht Eigenverbrauch.",
                 "regulatory",
                 0.6,
                 9500,
@@ -11221,7 +11370,7 @@ async def install_demo_project(
             (
                 "R-007",
                 "Capacity bottleneck industrial flooring contractor",
-                "Kapazitaetsengpass Fachfirma Industrieboden; verbindliche NU-Terminbestaetigung KW 24, Ersatzfirma angefragt, Vertragsstrafe im NU-Vertrag.",
+                "Kapazitätsengpass Fachfirma Industrieboden; verbindliche NU-Terminbestätigung KW 24, Ersatzfirma angefragt, Vertragsstrafe im NU-Vertrag.",
                 "procurement",
                 0.6,
                 0,
@@ -11233,7 +11382,7 @@ async def install_demo_project(
             (
                 "R-008",
                 "Heavy rain: waterlogging of subgrade before slab",
-                "Vernaessung Baugrube/Planum vor Bodenplatte; offene Wasserhaltung und Pumpensumpf vorgehalten, einmalig genutzt KW 12.",
+                "Vernässung Baugrube/Planum vor Bodenplatte; offene Wasserhaltung und Pumpensumpf vorgehalten, einmalig genutzt KW 12.",
                 "environmental",
                 0.4,
                 4800,
@@ -11257,7 +11406,7 @@ async def install_demo_project(
             (
                 "R-010",
                 "Permit conditions: delivery noise limits at night",
-                "Schallschutz Anlieferung (TA Laerm); Anlieferzeiten 06-22 Uhr im Betriebskonzept, eingehauste Rampe, optional Laermschutzwand 18 m.",
+                "Schallschutz Anlieferung (TA Lärm); Anlieferzeiten 06-22 Uhr im Betriebskonzept, eingehauste Rampe, optional Lärmschutzwand 18 m.",
                 "regulatory",
                 0.6,
                 28000,
@@ -11269,7 +11418,7 @@ async def install_demo_project(
             (
                 "R-011",
                 "Contamination or archaeology in commercial zone",
-                "Historische Recherche und Beprobung im Baugrundgutachten unauffaellig; Erdbau ohne Funde abgeschlossen.",
+                "Historische Recherche und Beprobung im Baugrundgutachten unauffällig; Erdbau ohne Funde abgeschlossen.",
                 "regulatory",
                 0.2,
                 0,
@@ -11281,7 +11430,7 @@ async def install_demo_project(
             (
                 "R-012",
                 "Quality and dimension deviations of precast elements",
-                "Massabweichungen Fertigteile; Werksabnahme vor Lieferung, Montagetoleranzkontrolle, ein Abweichungsfall als NCR-01 dokumentiert und geloest.",
+                "Massabweichungen Fertigteile; Werksabnahme vor Lieferung, Montagetoleranzkontrolle, ein Abweichungsfall als NCR-01 dokumentiert und gelöst.",
                 "technical",
                 0.6,
                 6200,
@@ -11293,7 +11442,7 @@ async def install_demo_project(
             (
                 "R-013",
                 "Fixed pre-Christmas opening: refrigeration to fit-out to stocking cascade",
-                "Fixtermin Eroeffnung; 1 Woche Puffer vor M8, Taktplanung P08 mit S14/S15 abgestimmt, 14-taegige Terminkonferenz, Eskalationsplan Wochenendarbeit.",
+                "Fixtermin Eröffnung; 1 Woche Puffer vor M8, Taktplanung P08 mit S14/S15 abgestimmt, 14-tägige Terminkonferenz, Eskalationsplan Wochenendarbeit.",
                 "schedule",
                 0.6,
                 120000,
@@ -11520,14 +11669,14 @@ async def install_demo_project(
             (
                 "N-01",
                 "Soil replacement for fill, northern building area",
-                "Baugrundnachtrag D05: organische Auffuellungen unter Gruendungsniveau, von der GU-Pauschale nicht erfasst (1.450 m3 Mehrmengen Bodenaustausch). Linked to risk R01 and activity T05.",
+                "Baugrundnachtrag D05: organische Auffüllungen unter Gründungsniveau, von der GU-Pauschale nicht erfasst (1.450 m3 Mehrmengen Bodenaustausch). Linked to risk R01 and activity T05.",
                 "unforeseen",
                 "approved",
                 86400,
                 7,
                 [
                     (
-                        "Bodenaustausch Auffuellungen Baufeld Nord, lagenweise verdichtet (soil replacement, compacted in layers)",
+                        "Bodenaustausch Auffüllungen Baufeld Nord, lagenweise verdichtet (soil replacement, compacted in layers)",
                         "added",
                         "0",
                         "1450",
@@ -11540,14 +11689,14 @@ async def install_demo_project(
             (
                 "N-02",
                 "Relocation of transformer station, longer MV route",
-                "Netzbetreiber-Vorgabe: Stationsstandort an die oeffentliche Zuwegung verschoben, laengere Mittelspannungstrasse. Linked to risk R05 and activity T21.",
+                "Netzbetreiber-Vorgabe: Stationsstandort an die öffentliche Zuwegung verschoben, längere Mittelspannungstrasse. Linked to risk R05 and activity T21.",
                 "regulatory",
                 "approved",
                 24800,
                 0,
                 [
                     (
-                        "Umverlegung Trafostation und Mehrlaenge Mittelspannungstrasse (transformer relocation and extra MV trench)",
+                        "Umverlegung Trafostation und Mehrlänge Mittelspannungstrasse (transformer relocation and extra MV trench)",
                         "added",
                         "0",
                         "1",
@@ -11560,14 +11709,14 @@ async def install_demo_project(
             (
                 "N-03",
                 "Additional 60 m3 retention trench per drainage permit condition",
-                "Auflage aus D04/D06: Drosselabfluss 12 l/s, urspruenglicher Versickerungsnachweis nicht ausreichend. Linked to risk R04 and activity T27 (to be ordered with VP-09).",
+                "Auflage aus D04/D06: Drosselabfluss 12 l/s, ursprünglicher Versickerungsnachweis nicht ausreichend. Linked to risk R04 and activity T27 (to be ordered with VP-09).",
                 "regulatory",
                 "submitted",
                 41200,
                 0,
                 [
                     (
-                        "Zusaetzliche Retentionsrigole 60 m3, DWA-A 138 (additional 60 m3 retention trench)",
+                        "Zusätzliche Retentionsrigole 60 m3, DWA-A 138 (additional 60 m3 retention trench)",
                         "added",
                         "0",
                         "60",
@@ -11580,7 +11729,7 @@ async def install_demo_project(
             (
                 "N-04",
                 "Deposit-return room redesign and bake-off extension (tenant request)",
-                "Betreiberstandard aktualisiert: 2. Ruecknahmeautomat, groesserer Backofenblock; Planindex D der LP5 in Arbeit (D14). Linked to activity T31.",
+                "Betreiberstandard aktualisiert: 2. Rücknahmeautomat, größerer Backofenblock; Planindex D der LP5 in Arbeit (D14). Linked to activity T31.",
                 "client_request",
                 "approved",
                 18900,
@@ -11836,12 +11985,12 @@ async def install_demo_project(
                 ["gutachten", "baugrund", "S08", "N-01"],
             ),
             (
-                "D06_EWG-2025-77_Entwaesserungsgesuch.pdf",
+                "D06_EWG-2025-77_Entwässerungsgesuch.pdf",
                 "Drainage permit application with infiltration and retention verification per DWA-A 138 (issuer S06, granted 2025-11-28)",
                 "permit",
                 "application/pdf",
                 5_300_000,
-                ["genehmigung", "entwaesserung", "DWA-A138", "S06"],
+                ["genehmigung", "entwässerung", "DWA-A138", "S06"],
             ),
             (
                 "D07_ST-2025-041_Statische_Berechnung.pdf",
@@ -11852,12 +12001,12 @@ async def install_demo_project(
                 ["planung", "statik", "fertigteile", "S04"],
             ),
             (
-                "D08_PB-ST-2025-203_Pruefbericht_Standsicherheit.pdf",
+                "D08_PB-ST-2025-203_Prüfbericht_Standsicherheit.pdf",
                 "Independent structural check report (issuer S05, released)",
                 "engineering",
                 "application/pdf",
                 3_400_000,
-                ["pruefung", "standsicherheit", "S05"],
+                ["prüfung", "standsicherheit", "S05"],
             ),
             (
                 "D09_BSK-2025-19_Brandschutzkonzept.pdf",
@@ -11877,11 +12026,11 @@ async def install_demo_project(
             ),
             (
                 "D11_SIP-2025-88_Schallimmissionsprognose.pdf",
-                "Noise emission forecast per TA Laerm: delivery, refrigeration units, parking traffic (external acoustics consultant)",
+                "Noise emission forecast per TA Lärm: delivery, refrigeration units, parking traffic (external acoustics consultant)",
                 "engineering",
                 "application/pdf",
                 3_600_000,
-                ["gutachten", "schallschutz", "TA-Laerm"],
+                ["gutachten", "schallschutz", "TA-Lärm"],
             ),
             (
                 "D12_SIGE-2026-04_SiGe-Plan.pdf",
@@ -11900,36 +12049,36 @@ async def install_demo_project(
                 ["vermessung", "absteckung", "S09"],
             ),
             (
-                "D14_AP-100-148_Ausfuehrungsplaene_Architektur.pdf",
+                "D14_AP-100-148_Ausführungspläne_Architektur.pdf",
                 "Architectural execution drawings work stage 5, index C valid, index D in progress for deposit room (N-04) (issuer S03)",
                 "drawing",
                 "application/pdf",
                 28_700_000,
-                ["planung", "ausfuehrungsplaene", "architektur", "index-C", "S03"],
+                ["planung", "ausführungspläne", "architektur", "index-C", "S03"],
             ),
             (
-                "D15_TGA-200-261_Ausfuehrungsplaene_HLSK_ELT.pdf",
+                "D15_TGA-200-261_Ausführungspläne_HLSK_ELT.pdf",
                 "MEP execution drawings, mechanical and electrical (issuer S06, valid)",
                 "drawing",
                 "application/pdf",
                 24_500_000,
-                ["planung", "ausfuehrungsplaene", "TGA", "S06"],
+                ["planung", "ausführungspläne", "TGA", "S06"],
             ),
             (
-                "D16_FT-001-074_Werkplaene_Fertigteile.pdf",
+                "D16_FT-001-074_Werkpläne_Fertigteile.pdf",
                 "Precast shop and erection drawings, checked (issuer S12, released)",
                 "drawing",
                 "application/pdf",
                 19_200_000,
-                ["planung", "werkplaene", "fertigteile", "S12"],
+                ["planung", "werkpläne", "fertigteile", "S12"],
             ),
             (
-                "D17_KS-2026-12_Anlagenschema_CO2-Kaelte.pdf",
+                "D17_KS-2026-12_Anlagenschema_CO2-Kälte.pdf",
                 "CO2 refrigeration system schematic with heat recovery (issuer S14, under review by S06)",
                 "drawing",
                 "application/pdf",
                 5_100_000,
-                ["planung", "kaelte", "CO2", "S14"],
+                ["planung", "kälte", "CO2", "S14"],
             ),
             (
                 "D18_BE-2026-01_BE-Plan_Kranstellplan.pdf",
@@ -11937,7 +12086,7 @@ async def install_demo_project(
                 "drawing",
                 "application/pdf",
                 4_600_000,
-                ["ausfuehrung", "BE-plan", "kran", "S11"],
+                ["ausführung", "BE-plan", "kran", "S11"],
             ),
             (
                 "D19_GV-2025-09_Bauvertrag_Generalunternehmer.pdf",
@@ -11948,7 +12097,7 @@ async def install_demo_project(
                 ["vertrag", "bauvertrag", "VOB", "S01"],
             ),
             (
-                "D20_LV-VP07_Kaeltetechnik_GAEB-X83.pdf",
+                "D20_LV-VP07_Kältetechnik_GAEB-X83.pdf",
                 "BoQ refrigeration and cabinets in GAEB X83 (issuer S06, awarded 2026-04-24)",
                 "contract",
                 "application/pdf",
@@ -11961,15 +12110,15 @@ async def install_demo_project(
                 "specification",
                 "application/pdf",
                 3_900_000,
-                ["qualitaet", "bemusterung", "S03"],
+                ["qualität", "bemusterung", "S03"],
             ),
             (
-                "D22_PB-EB-2026-03_Pruefbericht_Erdbau.pdf",
+                "D22_PB-EB-2026-03_Prüfbericht_Erdbau.pdf",
                 "Earthworks test report: plate load tests Ev2 >= 45 MN/m2 (issuer S08, passed)",
                 "specification",
                 "application/pdf",
                 1_800_000,
-                ["qualitaet", "erdbau", "plattendruck", "S08"],
+                ["qualität", "erdbau", "plattendruck", "S08"],
             ),
             (
                 "D23_AN-2026-01_Abnahmeprotokoll_Erdplanum.pdf",
@@ -11988,20 +12137,20 @@ async def install_demo_project(
                 ["abnahme", "bewehrung", "bodenplatte", "S05"],
             ),
             (
-                "D25_AN-2026-03_Dichtheitspruefung_Grundleitungen.pdf",
+                "D25_AN-2026-03_Dichtheitsprüfung_Grundleitungen.pdf",
                 "Drainage tightness test per DIN EN 1610 with CCTV (issuer S11, partly passed, defect M-007 open)",
                 "specification",
                 "application/pdf",
                 2_100_000,
-                ["abnahme", "dichtheitspruefung", "M-007", "S11"],
+                ["abnahme", "dichtheitsprüfung", "M-007", "S11"],
             ),
             (
-                "D26_ML-2026-01_Maengelliste_Rohbau.pdf",
+                "D26_ML-2026-01_Mängelliste_Rohbau.pdf",
                 "Defect list from the interim shell walkthrough (issuer S03, being worked off, see punch list)",
                 "specification",
                 "application/pdf",
                 1_900_000,
-                ["qualitaet", "maengelliste", "rohbau", "S03"],
+                ["qualität", "mängelliste", "rohbau", "S03"],
             ),
             (
                 "D27_BSD-2026_Brandschottungsdokumentation.pdf",
@@ -12009,7 +12158,7 @@ async def install_demo_project(
                 "specification",
                 "application/pdf",
                 2_700_000,
-                ["qualitaet", "brandschottung", "S11"],
+                ["qualität", "brandschottung", "S11"],
             ),
             (
                 "D28_NAB-2026-1142_Netzanschlussbegehren_PV.pdf",
@@ -12036,7 +12185,7 @@ async def install_demo_project(
                 ["dokumentation", "revision", "as-built", "S11"],
             ),
             (
-                "D31_WV-2026-01-04_Wartungsvertraege.pdf",
+                "D31_WV-2026-01-04_Wartungsverträge.pdf",
                 "Maintenance contracts refrigeration, HVAC, doors and gates, smoke vents (issuer S02, draft, to be concluded before opening)",
                 "contract",
                 "application/pdf",

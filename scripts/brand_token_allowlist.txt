@@ -21,9 +21,15 @@ locales/||community_type_integration_desc
 docs/MASTER_PLAN_v2.7.md||XER
 docs/rfc/35-eac-v2-platform.md||PMXML
 
-# Portuguese-language demo content: an "acrilica" facade-paint line in the Sao Paulo
-# demo pack uses the ordinary Portuguese word for "textured", not a brand.
-demo_packs/residential-saopaulo||acrilica
+# Portuguese-language demo content: the facade-paint line in the Sao Paulo demo
+# pack uses the ordinary Portuguese word for "textured", not a brand.
+# The context used to be the unaccented spelling of the word beside it, which
+# stopped matching the moment the demo packs were given their accents, and the
+# check went red on a line nobody had touched. It is pinned to the accent-free
+# opening of the description now, which no spelling pass will move. As with the
+# Czech entries below, the context deliberately stops short of the flagged token:
+# this file is scanned like any other.
+demo_packs/residential-saopaulo||Pintura de fachada
 
 # Czech case content: the five letters flagged on these two lines are the ordinary
 # Czech past-tense verb "flowed", which happens to spell one of the denied product

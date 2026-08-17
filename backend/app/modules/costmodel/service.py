@@ -28,6 +28,7 @@ from app.modules.costmodel.models import (
     ControlAccount,
     CostLine,
     CostSnapshot,
+    LabourWorkerDay,
 )
 from app.modules.costmodel.repository import (
     BudgetLineRepository,
@@ -3070,6 +3071,17 @@ class LabourActualsService:
     event is applied at most once (the ``(report_id, status)`` key is recorded
     in the line metadata).
 
+    That key stops a replay and nothing else. Two honest records of the same
+    day - the foreman's phone and the office timesheet - carry different report
+    ids by construction, so both used to land and the project read as having
+    paid twice for one shift. A second, coarser claim closes that: the first
+    source to cost a given ``(project, day, worker)`` takes it, and a later one
+    skips those rows and says so. See :class:`LabourWorkerDay`.
+
+    Rows with no ``resource_id`` cannot be claimed and are costed as they
+    arrive - there is nothing to match them on. That is the case the field
+    roster picker exists to make rare.
+
     FX is never blended: a row's own currency (explicit, or the resource's
     currency) is converted to the project base via the project ``fx_rates``
     using the shared :func:`_amount_in_base` helper.
@@ -3140,13 +3152,26 @@ class LabourActualsService:
             total += _amount_in_base(str(amount_native), row_ccy, base, fx)
         return total
 
-    async def _get_or_create_labour_line(self, project_id: uuid.UUID) -> BudgetLine:
-        """Find (or create) the single auto-maintained labour budget line."""
+    async def _find_labour_line(self, project_id: uuid.UUID) -> BudgetLine | None:
+        """The auto-maintained labour budget line, or ``None`` if there is none.
+
+        Separate from :meth:`_get_or_create_labour_line` because a reversal must
+        never mint the line it is crediting. Posting is what creates it; if the
+        line is absent then no labour was ever costed here and there is nothing
+        to take back.
+        """
         lines, _ = await self.budget_repo.list_for_project(project_id, category="labor", limit=1000)
         for line in lines:
             md = line.metadata_ if isinstance(line.metadata_, dict) else {}
             if md.get("kind") == _LABOUR_LINE_MARKER:
                 return line
+        return None
+
+    async def _get_or_create_labour_line(self, project_id: uuid.UUID) -> BudgetLine:
+        """Find (or create) the single auto-maintained labour budget line."""
+        existing = await self._find_labour_line(project_id)
+        if existing is not None:
+            return existing
 
         currency = await CostModelService(self.session)._get_project_currency(project_id)
         line = BudgetLine(
@@ -3162,6 +3187,272 @@ class LabourActualsService:
         )
         return await self.budget_repo.create(line)
 
+    async def _claim_worker_days(
+        self,
+        project_id: uuid.UUID,
+        rows: list[dict],
+        *,
+        work_date: str,
+        source_module: str,
+        source_ref: str,
+    ) -> tuple[list[dict], list[str]]:
+        """Take the ``(project, day, worker)`` claim for every row that can hold one.
+
+        Returns ``(countable_rows, skipped_workers)``. A row is countable when
+        nobody else has already costed that worker on that day; the workers
+        dropped are named so the caller can say whose hours were left out and
+        an approver can go and look at the other document.
+
+        Rows with no worker are always countable - there is no key to compare
+        them on, so refusing them would drop real hours to avoid a duplicate we
+        cannot prove exists.
+
+        With no ``work_date`` there is no claim to take and every row passes,
+        which is exactly how this behaved before the claim existed. An older
+        publisher that does not send a date is therefore not silently changed.
+        """
+        from sqlalchemy import select
+        from sqlalchemy.exc import IntegrityError
+
+        if not work_date:
+            logger.debug(
+                "Labour event from %s carries no work date, worker-day claims skipped",
+                source_module or "an unnamed module",
+            )
+            return list(rows), []
+
+        countable: list[dict] = []
+        skipped: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            resource_id = str(row.get("resource_id") or "").strip()
+            if not resource_id:
+                countable.append(row)
+                continue
+
+            existing = (
+                await self.session.execute(
+                    select(LabourWorkerDay).where(
+                        LabourWorkerDay.project_id == project_id,
+                        LabourWorkerDay.work_date == work_date,
+                        LabourWorkerDay.resource_id == resource_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                # Held by this same document: a redelivery, not a second source.
+                if existing.source_ref == source_ref:
+                    countable.append(row)
+                else:
+                    # Name both figures. The claim keeps the first source's
+                    # hours, so a phone punch of 4h beating a 10h timesheet
+                    # costs the day at 4h - a discrepancy somebody has to see,
+                    # not just a worker who was skipped.
+                    skipped.append(
+                        f"{resource_id} ({self._to_decimal(row.get('hours'))}h here, "
+                        f"{self._to_decimal(existing.hours)}h costed by {existing.source_module or 'another source'})"
+                    )
+                continue
+
+            claim = LabourWorkerDay(
+                project_id=project_id,
+                work_date=work_date,
+                resource_id=resource_id,
+                source_module=source_module,
+                source_ref=source_ref,
+                hours=self._to_decimal(row.get("hours")),
+            )
+            try:
+                async with self.session.begin_nested():
+                    self.session.add(claim)
+                    await self.session.flush()
+            except IntegrityError:
+                # Another source claimed the same worker-day between the read
+                # and the write. Losing the race means the hours are already
+                # counted, so this row drops out rather than doubling.
+                skipped.append(resource_id)
+                continue
+            countable.append(row)
+        return countable, skipped
+
+    async def _release_worker_days(
+        self,
+        project_id: uuid.UUID,
+        rows: list[dict],
+        *,
+        work_date: str,
+        source_ref: str,
+    ) -> tuple[list[dict], list[str]]:
+        """Give back the ``(project, day, worker)`` claims ``source_ref`` holds.
+
+        Returns ``(refundable_rows, foreign_workers)``. A row is refundable when
+        the document being reversed is the one that actually costed it: either
+        it holds the claim, or the row names no worker and so was costed
+        unconditionally and must be taken back unconditionally.
+
+        A day whose claim belongs to somebody else was never costed by this
+        document. Subtracting it would take money off the budget that the other
+        source correctly posted, so those rows are named and left alone - the
+        other document keeps both its claim and its money.
+
+        Without a ``work_date`` there are no claims to consult, so nothing is
+        held back; the reversal simply undoes what the original added.
+        """
+        from sqlalchemy import select
+
+        if not work_date:
+            return list(rows), []
+
+        refundable: list[dict] = []
+        foreign: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            resource_id = str(row.get("resource_id") or "").strip()
+            if not resource_id:
+                refundable.append(row)
+                continue
+
+            claim = (
+                await self.session.execute(
+                    select(LabourWorkerDay).where(
+                        LabourWorkerDay.project_id == project_id,
+                        LabourWorkerDay.work_date == work_date,
+                        LabourWorkerDay.resource_id == resource_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if claim is None:
+                # Nothing holds the day. The original was costed with the guard
+                # standing down (no date, or before this table existed), so the
+                # reversal has to undo it all the same.
+                refundable.append(row)
+                continue
+            if claim.source_ref != source_ref:
+                foreign.append(resource_id)
+                continue
+            await self.session.delete(claim)
+            refundable.append(row)
+        await self.session.flush()
+        return refundable, foreign
+
+    async def reverse_labour_event(
+        self,
+        *,
+        project_id: uuid.UUID,
+        report_id: str,
+        reverses_id: str,
+        rows: list[dict],
+        work_date: str = "",
+        source_module: str = "",
+    ) -> Decimal:
+        """Take a reversed document's labour actuals back off the budget line.
+
+        The mirror of :meth:`apply_labour_event`. Approving a timesheet posts
+        money and claims each worker-day; reversing it has to undo both. Undoing
+        only the money would leave the day claimed forever, so neither the
+        corrected sheet nor the phone could ever cost it again - the reversal
+        would strand the worker's day rather than free it.
+
+        Idempotent on the *reversing* document's own id, so a redelivered
+        reversal subtracts once. Returns the amount taken off (0 when skipped).
+
+        Args:
+            project_id: The project whose labour line is being credited.
+            report_id: The reversing document's id - its replay key.
+            reverses_id: The original document, matched against each claim so a
+                day costed by another source is not given away here.
+            rows: The reversing document's rows, hours positive.
+            work_date: ISO ``YYYY-MM-DD`` of the work. Empty means the claims
+                were never taken, so there is nothing to hand back.
+            source_module: Who reversed, for the log.
+        """
+        line = await self._find_labour_line(project_id)
+        if line is None:
+            return Decimal("0")  # nothing was ever posted here
+
+        md = dict(line.metadata_) if isinstance(line.metadata_, dict) else {}
+        applied = md.get("applied_events")
+        if not isinstance(applied, list):
+            applied = []
+        event_key = f"{report_id}:reversed"
+        if event_key in applied:
+            return Decimal("0")
+
+        refundable, foreign = await self._release_worker_days(
+            project_id,
+            rows,
+            work_date=work_date,
+            source_ref=reverses_id,
+        )
+        if foreign:
+            logger.warning(
+                "Labour reversal: project=%s reversal=%s of=%s left %d worker-day(s) on %s alone, "
+                "another source had costed them (%s)",
+                project_id,
+                report_id,
+                reverses_id,
+                len(foreign),
+                work_date,
+                ", ".join(sorted(set(foreign))),
+            )
+        # Credit what was posted, not what these hours would cost today. The
+        # amount each event put on the line is recorded beside its replay key
+        # precisely so a rate edited in between cannot leave a residue.
+        posted = md.get("applied_amounts")
+        posted = posted if isinstance(posted, dict) else {}
+        recorded = [posted[key] for key in posted if str(key).startswith(f"{reverses_id}:")]
+        if recorded:
+            amount = sum((self._to_decimal(value) for value in recorded), Decimal("0"))
+        else:
+            # Posted before the amount was recorded, so today's rates are the
+            # only figure available. Say so: the credit may not match the debit.
+            amount = await self.compute_labour_cost(project_id, refundable)
+            logger.info(
+                "Labour reversal: project=%s of=%s has no recorded posting, crediting %s recomputed at current rates",
+                project_id,
+                reverses_id,
+                amount,
+            )
+        if amount <= 0:
+            return Decimal("0")
+
+        prior = self._to_decimal(line.actual_amount)
+        new_actual = (prior - amount).quantize(Decimal("0.01"))
+        if new_actual < 0:
+            # The original's hours are not on this line - its event was lost, or
+            # somebody edited the actual by hand. Crediting past zero would
+            # invent a negative cost, so the column floors and the gap is said
+            # out loud rather than absorbed.
+            logger.warning(
+                "Labour reversal: project=%s reversal=%s wanted to credit %s but only %s was posted, floored at zero",
+                project_id,
+                report_id,
+                amount,
+                prior,
+            )
+            amount = prior
+            new_actual = Decimal("0.00")
+
+        applied = [*applied, event_key]
+        md["applied_events"] = applied
+        await self.budget_repo.update_fields(
+            line.id,
+            actual_amount=str(new_actual),
+            metadata_=md,
+        )
+        logger.info(
+            "Labour actuals: project=%s reversal=%s of=%s source=%s -%s -> %s",
+            project_id,
+            report_id,
+            reverses_id,
+            source_module or "unnamed",
+            amount,
+            new_actual,
+        )
+        return amount
+
     async def apply_labour_event(
         self,
         *,
@@ -3169,12 +3460,29 @@ class LabourActualsService:
         report_id: str,
         status_value: str,
         rows: list[dict],
+        work_date: str = "",
+        source_module: str = "",
     ) -> Decimal:
         """Fold one labour event into the labour budget line's ``actual_amount``.
 
         Idempotent on ``(report_id, status_value)``: re-firing the same event
         (or a submit followed by an approve carrying identical hours) adds the
         amount at most once. Returns the amount applied (0 when skipped).
+
+        A second guard runs per worker per day. The same shift arrives here from
+        the foreman's phone and from the office timesheet under two different
+        report ids, so the event key cannot see it; ``work_date`` plus each
+        row's ``resource_id`` can. Whichever source arrives first costs the day
+        and the other is skipped, named in the log.
+
+        Args:
+            project_id: The project whose labour line is being updated.
+            report_id: The source document id, used as the replay key.
+            status_value: The source document status at publish time.
+            rows: Workforce rows (``hours``, ``resource_id``, ``cost_rate``...).
+            work_date: ISO ``YYYY-MM-DD`` the work was performed. Empty disables
+                the worker-day guard, which is what an older publisher gets.
+            source_module: Who published, recorded on the claim for trace.
         """
         amount = await self.compute_labour_cost(project_id, rows)
         if amount <= 0:
@@ -3189,10 +3497,38 @@ class LabourActualsService:
         if event_key in applied:
             return Decimal("0")  # already counted
 
+        countable, skipped = await self._claim_worker_days(
+            project_id,
+            rows,
+            work_date=work_date,
+            source_module=source_module,
+            source_ref=report_id,
+        )
+        if skipped:
+            logger.warning(
+                "Labour actuals: project=%s report=%s skipped %d worker-day(s) on %s already "
+                "costed from another source (%s)",
+                project_id,
+                report_id,
+                len(skipped),
+                work_date,
+                ", ".join(sorted(set(skipped))),
+            )
+        if len(countable) != len(rows):
+            amount = await self.compute_labour_cost(project_id, countable)
+
         prior = self._to_decimal(line.actual_amount)
         new_actual = (prior + amount).quantize(Decimal("0.01"))
         applied = [*applied, event_key]
         md["applied_events"] = applied
+        # What this event actually put on the line, so a later reversal credits
+        # the figure that was posted rather than re-deriving it from today's
+        # rates. A rate edited between approval and reversal would otherwise
+        # leave a residue on the budget that nothing accounts for.
+        posted = md.get("applied_amounts")
+        if not isinstance(posted, dict):
+            posted = {}
+        md["applied_amounts"] = {**posted, event_key: str(amount)}
 
         await self.budget_repo.update_fields(
             line.id,
@@ -3222,6 +3558,11 @@ async def _on_labour_logged(event: object) -> None:
     project_id_raw = data.get("project_id")
     report_id = str(data.get("report_id") or "")
     status_value = str(data.get("status") or "")
+    # The day the work was done, which is what makes one source's hours
+    # comparable with another's. Absent on an older publisher, and then the
+    # worker-day guard stands down rather than guessing a date.
+    work_date = str(data.get("report_date") or "")
+    source_module = str(data.get("source_module") or getattr(event, "source_module", "") or "")
     if not project_id_raw or not isinstance(rows, list) or not rows:
         return
     try:
@@ -3239,6 +3580,8 @@ async def _on_labour_logged(event: object) -> None:
                 report_id=report_id,
                 status_value=status_value,
                 rows=rows,
+                work_date=work_date,
+                source_module=source_module,
             )
             await session.commit()
     except Exception:
@@ -3248,12 +3591,55 @@ async def _on_labour_logged(event: object) -> None:
         )
 
 
-# Register the subscriber at import time. The module loader imports
+async def _on_labour_reversed(event: object) -> None:
+    """Detached subscriber: take a reversed document's labour back off budget.
+
+    Same shape as :func:`_on_labour_logged` - its own session, errors swallowed
+    so a credit failure never breaks the reversal a manager has just made.
+    """
+    data = getattr(event, "data", None) or {}
+    rows = data.get("rows")
+    project_id_raw = data.get("project_id")
+    report_id = str(data.get("report_id") or "")
+    reverses_id = str(data.get("reverses_id") or "")
+    work_date = str(data.get("report_date") or "")
+    source_module = str(data.get("source_module") or "")
+    if not project_id_raw or not reverses_id or not isinstance(rows, list) or not rows:
+        return
+    try:
+        project_id = uuid.UUID(str(project_id_raw))
+    except (ValueError, AttributeError, TypeError):
+        return
+
+    from app.database import async_session_factory
+
+    try:
+        async with async_session_factory() as session:
+            service = LabourActualsService(session)
+            await service.reverse_labour_event(
+                project_id=project_id,
+                report_id=report_id,
+                reverses_id=reverses_id,
+                rows=rows,
+                work_date=work_date,
+                source_module=source_module,
+            )
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "Labour actuals credit failed for reversal=%s - the reversal itself is unaffected",
+            report_id,
+        )
+
+
+# Register the subscribers at import time. The module loader imports
 # ``costmodel.events`` (absent) AND ``costmodel.service`` indirectly via the
 # router, so binding here keeps the wiring inside an allowed file. Guard
 # against double-registration on repeated imports (test reload, etc.).
 if _on_labour_logged not in event_bus._handlers.get("fieldreports.labour.logged", []):
     event_bus.subscribe("fieldreports.labour.logged", _on_labour_logged)
+if _on_labour_reversed not in event_bus._handlers.get("fieldreports.labour.reversed", []):
+    event_bus.subscribe("fieldreports.labour.reversed", _on_labour_reversed)
 
 
 # ── Cost-overrun alerts (Gap D - actual breaches planned + threshold) ─────────

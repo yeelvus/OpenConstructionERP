@@ -66,6 +66,7 @@ def _dedupe_existing(bind: sa.engine.Connection) -> None:
         )
 
 
+# data-rewrite-ack: table=oe_procurement_po growth=tenure rows=one row per purchase order issued, accumulates across projects and years
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)

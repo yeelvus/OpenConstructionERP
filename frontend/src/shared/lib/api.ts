@@ -524,6 +524,30 @@ async function request<TResponse>(
 // ---------------------------------------------------------------------------
 
 /**
+ * One page of a collection endpoint, plus the size of the whole set.
+ *
+ * Mirrors the `{items, total, offset, limit}` envelope the backend returns
+ * from list endpoints. `total` is the count matching the filter, NOT
+ * `items.length` — that distinction is the whole point of the shape. A
+ * surface that renders `items` and never compares it to `total` shows a
+ * truncated list and cannot tell the user that it did.
+ *
+ * Use `isTruncated` rather than writing the comparison at each call site,
+ * so "did I get everything" has one answer everywhere.
+ */
+export interface Page<T> {
+  items: T[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+/** True when the page holds fewer rows than exist behind it. */
+export function isTruncated(page: Pick<Page<unknown>, 'items' | 'total'>): boolean {
+  return page.total > page.items.length;
+}
+
+/**
  * Typed GET request.
  *
  * @example
@@ -608,4 +632,39 @@ export function triggerDownload(blob: Blob, filename: string): void {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }, 203);
+}
+
+/**
+ * GET a file behind the bearer token and hand it to the browser.
+ *
+ * Lives here rather than beside each caller because the failure branch is
+ * the part worth writing once: an endpoint that refuses the request answers
+ * with a JSON problem, and a caller that skips the `response.ok` check saves
+ * that JSON under a `.xml` or `.pdf` name and hands the user a file that
+ * looks like a broken export instead of a message they can act on.
+ *
+ * @param url - Absolute or API-relative URL to fetch.
+ * @param fallbackFilename - Used when the response carries no Content-Disposition.
+ * @throws Error carrying the server's message when the response is not ok.
+ */
+export async function downloadWithAuth(url: string, fallbackFilename: string): Promise<void> {
+  const token = getAuthToken();
+  const headers: Record<string, string> = { Accept: 'application/octet-stream' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const response = await fetch(url, { method: 'GET', headers });
+  if (!response.ok) {
+    let detail = `Download failed (HTTP ${response.status})`;
+    try {
+      detail = extractErrorMessageFromBody(await response.json()) ?? detail;
+    } catch {
+      // Body was not JSON; keep the status-based message.
+    }
+    throw new Error(detail);
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get('Content-Disposition');
+  const filename = disposition?.match(/filename="?(.+?)"?$/)?.[1] || fallbackFilename;
+  triggerDownload(blob, filename);
 }

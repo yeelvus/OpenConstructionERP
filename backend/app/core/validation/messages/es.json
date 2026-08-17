@@ -33,6 +33,14 @@
     "approved_immutable": {
       "fail": "Este parte de horas está {status} y no se puede editar",
       "suggestion": "Registre un parte de horas de reversión para corregir las horas aprobadas"
+    },
+    "offline_clock_plausible": {
+      "fail": "El dispositivo que registró este día iba {minutes} minutos por delante del reloj del servidor",
+      "suggestion": "Ajuste el reloj del dispositivo para que las horas registradas se lean en el orden correcto"
+    },
+    "offline_sync_delay": {
+      "fail": "Este día se trabajó el {date} y no llegó a la oficina hasta {days} días después",
+      "suggestion": "Compruebe las horas contra el propio día antes de aprobar, la valoración puede estar ya cerrada"
     }
   },
   "mexico": {

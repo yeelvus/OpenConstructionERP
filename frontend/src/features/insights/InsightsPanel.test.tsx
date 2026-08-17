@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 // Partial mock: the app's i18n bootstrap imports initReactI18next from here,
 // so replacing the whole module breaks the import chain before any test runs.
@@ -50,7 +50,7 @@ const builtins = [
   { id: 'c1', title: 'By trade', datasetId: 'ds', chart: 'bar' as const, dimension: 'trade', measure: 'amount', agg: 'sum' as const, builtin: true },
 ];
 
-function renderPanel(datasets) {
+function renderPanel(datasets, onCollapse = vi.fn()) {
   return render(
     <InsightsPanel
       open
@@ -60,6 +60,7 @@ function renderPanel(datasets) {
       onAdd={vi.fn()}
       onUpdate={vi.fn()}
       onRemove={vi.fn()}
+      onCollapse={onCollapse}
     />,
   );
 }
@@ -116,5 +117,42 @@ describe('InsightsPanel', () => {
     expect(screen.queryByText('No data to chart yet')).toBeNull();
     expect(screen.getByText('Total amount')).toBeTruthy();
     expect(screen.getByText('By trade')).toBeTruthy();
+  });
+});
+
+describe('InsightsPanel collapse control', () => {
+  it('closes the panel through the caller, never on its own', () => {
+    const onCollapse = vi.fn();
+    renderPanel(realDataset, onCollapse);
+    const footer = screen.getByRole('button', { name: /Collapse insights/i });
+    fireEvent.click(footer);
+    expect(onCollapse).toHaveBeenCalledTimes(1);
+    // The page owns open/hide so the header toggle and this control cannot
+    // drift apart. A panel that hid itself would leave that toggle claiming
+    // the panel is open, which is the bug this assertion exists to prevent.
+    expect(screen.getByText('Total amount')).toBeTruthy();
+  });
+
+  it('offers the control on an empty panel too', () => {
+    // The emptier the panel, the more a reader wants it out of the way, so the
+    // footer must not be tied to there being charts to show.
+    renderPanel(sampleDataset);
+    expect(screen.getByRole('button', { name: /Collapse insights/i })).toBeTruthy();
+  });
+
+  it('renders nothing at all once the caller reports it closed', () => {
+    const { container } = render(
+      <InsightsPanel
+        open={false}
+        datasets={realDataset}
+        builtins={builtins}
+        custom={[]}
+        onAdd={vi.fn()}
+        onUpdate={vi.fn()}
+        onRemove={vi.fn()}
+        onCollapse={vi.fn()}
+      />,
+    );
+    expect(container.innerHTML).toBe('');
   });
 });

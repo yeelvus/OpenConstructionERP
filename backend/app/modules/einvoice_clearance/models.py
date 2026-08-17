@@ -147,6 +147,18 @@ def can_transition(from_status: str, to_status: str) -> bool:
     return to_status in ALLOWED_TRANSITIONS.get(from_status, frozenset())
 
 
+def can_be_sent(from_status: str) -> bool:
+    """Whether sending a document in this state could get anywhere.
+
+    Read off the transition table rather than kept as a second list of statuses,
+    so the check a caller makes up front and the one the move itself makes can
+    never drift apart. A queued document counts, because re-driving a stuck
+    queue is not a state change. A submitted one does not: it has already gone,
+    and sending it again is how one sale ends up with two cleared invoices.
+    """
+    return from_status == STATUS_QUEUED or can_transition(from_status, STATUS_QUEUED)
+
+
 class EInvoiceProfile(Base):
     """How one legal entity is registered with one country's platform.
 
@@ -380,5 +392,6 @@ __all__ = [
     "EInvoiceDocument",
     "EInvoiceEvent",
     "EInvoiceProfile",
+    "can_be_sent",
     "can_transition",
 ]

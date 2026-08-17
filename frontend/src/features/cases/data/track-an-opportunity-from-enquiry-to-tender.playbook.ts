@@ -61,6 +61,7 @@ const playbook: Playbook = {
       whyDefault:
         "Enquiries arrive by phone and email and get lost. One clean contact record is who you chase and who signs.",
       moduleLabel: "Contacts",
+      moduleLabelKey: "nav.contacts",
       to: "/contacts",
     },
     {
@@ -102,6 +103,7 @@ const playbook: Playbook = {
       whyDefault:
         "A pipeline you cannot see is one you cannot forecast. Stage and probability tell you what to chase and what to staff for.",
       moduleLabel: "CRM",
+      moduleLabelKey: "nav.crm",
       to: "/crm",
     },
     {
@@ -143,6 +145,7 @@ const playbook: Playbook = {
       whyDefault:
         "Re-keying a won job into a fresh system loses detail and wastes a day. Converting keeps the history and starts delivery clean.",
       moduleLabel: "New project",
+      moduleLabelKey: "nav.projects_new",
       to: "/projects/new",
     },
     {
@@ -184,6 +187,7 @@ const playbook: Playbook = {
       whyDefault:
         "The commercial thread should run unbroken from first enquiry to submitted price. A gap is where scope and margin leak out.",
       moduleLabel: "Tendering",
+      moduleLabelKey: "nav.tendering",
       to: "/tendering",
     },
   ],

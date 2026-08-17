@@ -4,6 +4,8 @@ This guide explains how to turn on Apple notarization for the OpenConstructionER
 
 This is a developer and maintainer document. If you are a user trying to open the app, read `docs/desktop/INSTALL.md` instead.
 
+For where every published release actually stands across all four signature mechanisms, and how to check a download yourself, see `docs/desktop/RELEASE_SIGNATURE_INVENTORY.md`.
+
 ## Why notarization matters
 
 When you download a `.dmg` from the web, macOS attaches a quarantine flag to it. Gatekeeper then inspects the app before it will run. An app that Apple has notarized passes that inspection silently and opens with a normal double-click. An app that is only ad-hoc signed does not, and on Apple Silicon a download with a broken or missing notarization ticket is often reported as "damaged and can't be opened" rather than the milder "unidentified developer". That is the friction we want to remove.
@@ -58,16 +60,20 @@ Two files change. Neither change is in place yet. This section is the whole acti
 
 ### (a) desktop/src-tauri/tauri.conf.json
 
-Today the macOS bundle block ad-hoc signs with `"signingIdentity": "-"` and sets nothing else.
+Today the macOS bundle block ad-hoc signs with `"signingIdentity": "-"`, turns the hardened runtime off, and points at the entitlements file.
 
 Before:
 
 ```json
     "macOS": {
       "minimumSystemVersion": "10.15",
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "hardenedRuntime": false,
+      "entitlements": "Entitlements.plist"
     },
 ```
+
+`hardenedRuntime` is written out because Tauri's own default is `true`, not `false`. A config that says nothing about it gets the hardened runtime, and an ad-hoc signature under the hardened runtime enforces library validation with no identity that can satisfy it, so the app is refused the payload it unpacks for itself. macOS reports that refusal as a Team ID disagreement even though neither side carries a Team ID at all. Turning notarization on is what makes the hardened runtime meaningful, so the line flips back to `true` as part of the change below rather than being removed.
 
 After:
 

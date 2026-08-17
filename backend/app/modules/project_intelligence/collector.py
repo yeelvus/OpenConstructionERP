@@ -968,7 +968,11 @@ async def _collect_requirements(
             state.last_modified = str(sets_row[2]) if sets_row[2] else None
 
         if state.total_items > 0:
-            # Count items linked to a BOQ position via the FK column.
+            # Count items linked to a BOQ position through either
+            # representation. The single column holds one position and predates
+            # the link table, which holds every position a requirement governs.
+            # Reading only the column would report a requirement attached to
+            # ten positions as unlinked.
             linked_boq_row = (
                 await session.execute(
                     text(
@@ -976,7 +980,9 @@ async def _collect_requirements(
                         "JOIN oe_requirements_set s "
                         "  ON i.requirement_set_id = s.id "
                         "WHERE s.project_id = :pid "
-                        "  AND i.linked_position_id IS NOT NULL"
+                        "  AND (i.linked_position_id IS NOT NULL "
+                        "       OR EXISTS (SELECT 1 FROM oe_requirement_position_link l "
+                        "                   WHERE l.requirement_id = i.id))"
                     ),
                     {"pid": project_id},
                 )

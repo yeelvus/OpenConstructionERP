@@ -49,14 +49,31 @@ ROOT_FILES = "tests (root files)"
 
 PUSH_FULL = "push, full"
 PUSH_FILTERED = "push, -k filtered"
+PUSH_SOME_FILES = "push, only the files it names"
 PUSH_PATH_FILTERED = "push, only when its own paths change"
 ON_DEMAND = "nightly or manual only"
 UNNAMED = "no lane names it"
+
+# PUSH_SOME_FILES sits below PUSH_FILTERED rather than beside it, and the
+# reason is what happens to a file added tomorrow. A -k runs against the tree
+# as it stands at the time, so a new test file is at least a candidate for
+# the filter. A step that lists its files by name cannot pick one up at all
+# until somebody edits the workflow, which makes it the weaker promise about
+# a tree even when it happens to name a lot of files today.
 
 # What each tree is gated by today. Read this as the current contract, not as
 # an endorsement of it: PUSH_FILTERED in particular means the tree is named
 # but that a -k narrows it to a small slice, which is much closer to
 # ON_DEMAND than the workflow file makes it look.
+#
+# tests/unit reads PUSH_FULL because ci.yml runs the tree whole and declares no
+# continue-on-error, so by configuration it blocks. In practice that job has
+# been red for a long time for an unrelated reason and is treated as advisory,
+# which is why the steps in the PostgreSQL lane keep naming unit files one at a
+# time. Both statements are true at once, and this file can only see the first
+# of them. Do not read PUSH_FULL here as "a break in tests/unit turns something
+# red that anybody acts on"; five tests in that tree were failing on main when
+# this line was written.
 EXPECTED: dict[str, str] = {
     "tests/unit": PUSH_FULL,
     "tests/pg": PUSH_FULL,
@@ -120,6 +137,25 @@ class Invocation:
     def whole_tree(self) -> bool:
         """A pytest with no path argument collects everything under testpaths."""
         return not self.paths
+
+    @property
+    def names_only_files(self) -> bool:
+        """True when every path this step gives pytest is narrower than a directory.
+
+        A step that writes out ``tests/integration`` hands pytest the tree and
+        collects whatever is in it. A step that lists thirty two files by name
+        collects those thirty two, and the difference is invisible if you only
+        look at whether the tree's name appears somewhere in the command. That
+        is how the access control step came to be read as full coverage of two
+        trees it names a handful of files from.
+
+        A path that does not resolve to a directory on disk is counted as the
+        narrower case, including one that resolves to nothing at all. The two
+        mistakes are not symmetric: reading a tree as narrower than it is makes
+        this guard fail and somebody reads it, while reading a file list as a
+        whole tree is the silence that had to be noticed by hand.
+        """
+        return bool(self.paths) and not any((BACKEND / p.split("::")[0]).is_dir() for p in self.paths)
 
 
 def _split_args(raw: str) -> list[str]:
@@ -188,7 +224,14 @@ def _push_triggered(name: str) -> tuple[bool, bool]:
 def _classify(tree: str, invocations: list[Invocation]) -> str:
     """Rank a tree by the strongest coverage any blocking push lane gives it."""
     best = UNNAMED
-    rank = {UNNAMED: 0, ON_DEMAND: 1, PUSH_PATH_FILTERED: 2, PUSH_FILTERED: 3, PUSH_FULL: 4}
+    rank = {
+        UNNAMED: 0,
+        ON_DEMAND: 1,
+        PUSH_PATH_FILTERED: 2,
+        PUSH_SOME_FILES: 3,
+        PUSH_FILTERED: 4,
+        PUSH_FULL: 5,
+    }
     target = "tests" if tree == ROOT_FILES else tree
     for call in invocations:
         if not call.whole_tree and not any(
@@ -209,6 +252,8 @@ def _classify(tree: str, invocations: list[Invocation]) -> str:
                 found = PUSH_FILTERED
             elif narrowed:
                 found = PUSH_PATH_FILTERED
+            elif call.names_only_files:
+                found = PUSH_SOME_FILES
             else:
                 found = PUSH_FULL
         if rank[found] > rank[best]:
@@ -305,3 +350,43 @@ def test_the_backend_steps_are_still_counted() -> None:
 
     assert from_backend, "no pytest invocation survived the working-directory filter"
     assert any(c.paths == ["tests/pg"] for c in from_backend), "the PostgreSQL suite step was filtered out"
+
+
+def test_naming_files_in_a_tree_is_not_running_the_tree() -> None:
+    """Listing a tree's files by name must not read as coverage of the tree.
+
+    The access control job names nineteen files under tests/integration and
+    five under tests/modules, one per register it checks for cross tenant
+    reads. None of those steps carries a -k, so a classifier that only asks
+    whether the tree's name occurs in the command and whether a filter is
+    present graded both trees as fully gated on every push. They are not: a
+    twentieth integration test can be added and no push lane will ever collect
+    it.
+
+    That mistake is the one this file is least able to survive, because it
+    turns the guard's answer from "nothing runs this tree" into "everything
+    does" while the guard stays green.
+    """
+    by_file = [
+        c
+        for c in _invocations()
+        if c.blocking and c.names_only_files and any(p.startswith("tests/integration/") for p in c.paths)
+    ]
+    assert by_file, "no step names integration files any more; this test no longer covers what it names"
+
+    assert all(not c.filtered for c in by_file), (
+        "these steps carry a -k, so this test would pass through the filtered "
+        "branch and prove nothing about naming files"
+    )
+
+
+def test_a_step_that_names_the_directory_still_counts_as_the_whole_tree() -> None:
+    """Control. Telling a file list apart from a directory must not demote both.
+
+    Without this, the check above passes just as well if every path argument
+    were treated as narrower than its tree, which would report tests/pg and
+    tests/unit as partly gated and quietly invert the map.
+    """
+    whole = [c for c in _invocations() if c.paths == ["tests/pg"]]
+    assert whole, "the PostgreSQL suite step moved; this control no longer covers what it names"
+    assert not whole[0].names_only_files, "a directory argument is being read as a list of files"

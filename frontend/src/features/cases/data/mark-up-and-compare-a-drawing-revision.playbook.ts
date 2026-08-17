@@ -58,7 +58,8 @@ const playbook: Playbook = {
       whyKey: "cases.mark_up_and_compare_a_drawing_revision.step.open.why",
       whyDefault:
         "A markup on last month sheet is wasted the moment it lands, and worse, it can send the design team correcting a detail that has already moved on. Start from the controlled current revision every time.",
-      moduleLabel: "Files",
+      moduleLabel: "Documents",
+      moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },
     {
@@ -98,6 +99,7 @@ const playbook: Playbook = {
       whyDefault:
         "A clear redline on the actual drawing tells the designer exactly where and what, so the query comes back as a proper revision instead of a vague email thread that drags on for weeks.",
       moduleLabel: "Markups",
+      moduleLabelKey: "nav.markups",
       to: "/markups",
     },
     {
@@ -137,6 +139,7 @@ const playbook: Playbook = {
       whyDefault:
         "Design teams do not always cloud everything they change. Seeing the true difference is what stops a quiet dimension change from being built wrong because nobody spotted it.",
       moduleLabel: "Compare",
+      moduleLabelKey: "dwg_compare.compare_short",
       to: "/markups/compare",
     },
   ],

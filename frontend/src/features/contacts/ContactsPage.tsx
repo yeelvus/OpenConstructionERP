@@ -223,6 +223,8 @@ interface ContactFormData {
   website: string;
   country: string;
   address: string;
+  postcode: string;
+  city: string;
   payment_terms: string;
   prequalification_status: PrequalificationStatus;
   notes: string;
@@ -240,10 +242,46 @@ const EMPTY_FORM: ContactFormData = {
   website: '',
   country: '',
   address: '',
+  postcode: '',
+  city: '',
   payment_terms: '30',
   prequalification_status: 'pending',
   notes: '',
 };
+
+/**
+ * Read one address field out of the JSON blob, trying the spellings this
+ * codebase already stores it under.
+ *
+ * `text` is the single unstructured line the form wrote before it had separate
+ * fields, `street` is what project addresses use, and `line1` is the e-invoice
+ * engine's own name for it. A contact captured before this existed keeps its
+ * one line in the street field, where the user can see it and move the city and
+ * post code out by hand. Nothing splits it automatically: a post code guessed
+ * out of free text is exported as fact, while a missing one is reported.
+ */
+function addressField(address: Record<string, unknown> | null | undefined, keys: string[]): string {
+  if (!address || typeof address !== 'object') return '';
+  for (const key of keys) {
+    const value = address[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+/**
+ * The address blob to store, or `null` when the user has emptied every part.
+ *
+ * Absent keys rather than empty ones, because the e-invoice merge treats an
+ * empty string as an answer and would stop the invoice supplying its own.
+ */
+function addressPayload(form: ContactFormData): Record<string, string> | null {
+  const stored: Record<string, string> = {};
+  if (form.address) stored.text = form.address;
+  if (form.postcode) stored.postcode = form.postcode;
+  if (form.city) stored.city = form.city;
+  return Object.keys(stored).length > 0 ? stored : null;
+}
 
 /**
  * The form state a contact opens with.
@@ -254,8 +292,11 @@ const EMPTY_FORM: ContactFormData = {
  * with the values they held when the list was last read, quietly undoing an
  * edit somebody else made in between.
  *
- * `address` is a JSON blob on the record but a single line of text on the
- * form, so the flattening lives here and both sides see the same string.
+ * `address` is a JSON blob on the record and three fields on the form, so the
+ * flattening lives here and both sides see the same strings. Post code and city
+ * are separate because EN 16931 asks for them separately and XRechnung refuses
+ * an invoice that lacks either (BR-DE-8, BR-DE-9), which no amount of street
+ * text can answer.
  */
 export function contactFormData(contact?: Contact): ContactFormData {
   if (!contact) return EMPTY_FORM;
@@ -270,10 +311,9 @@ export function contactFormData(contact?: Contact): ContactFormData {
     phone: contact.primary_phone || '',
     website: contact.website || '',
     country: contact.country_code || '',
-    address:
-      contact.address && typeof contact.address === 'object' && 'text' in contact.address
-        ? String(contact.address.text)
-        : '',
+    address: addressField(contact.address, ['text', 'line1', 'street']),
+    postcode: addressField(contact.address, ['postcode', 'postal_code', 'zip']),
+    city: addressField(contact.address, ['city']),
     payment_terms: contact.payment_terms_days || '30',
     prequalification_status: (contact.prequalification_status as PrequalificationStatus) || 'pending',
     notes: contact.notes || '',
@@ -307,8 +347,11 @@ export function buildContactPatch(
   if (form.phone !== base.phone) data.primary_phone = form.phone || null;
   if (form.website !== base.website) data.website = form.website || null;
   if (form.country !== base.country) data.country_code = form.country || null;
-  if (form.address !== base.address) {
-    data.address = form.address ? { text: form.address } : null;
+  // One blob, so any of its three fields changing rewrites the whole of it.
+  // Sending only the changed part would drop the other two: the column is
+  // replaced, not merged.
+  if (form.address !== base.address || form.postcode !== base.postcode || form.city !== base.city) {
+    data.address = addressPayload(form);
   }
   if (form.payment_terms !== base.payment_terms) {
     data.payment_terms_days = form.payment_terms || null;
@@ -565,8 +608,29 @@ function AddContactModal({
             rows={2}
             className="w-full rounded-lg border border-border bg-surface-primary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue resize-none"
             placeholder={t('contacts.address_placeholder', {
-              defaultValue: 'Street address, City, ZIP / Postal code',
+              defaultValue: 'Street & number',
             })}
+          />
+        </WideModalField>
+
+        {/* Separate fields because an e-invoice asks for them separately: the
+            post code is BT-53 and the city BT-52, and XRechnung rejects an
+            invoice missing either. A single address line cannot answer them. */}
+        <WideModalField label={t('contacts.field_postcode', { defaultValue: 'Postcode' })}>
+          <input
+            value={form.postcode}
+            onChange={(e) => set('postcode', e.target.value)}
+            maxLength={20}
+            className={inputCls}
+          />
+        </WideModalField>
+
+        <WideModalField label={t('contacts.field_city', { defaultValue: 'City' })}>
+          <input
+            value={form.city}
+            onChange={(e) => set('city', e.target.value)}
+            maxLength={100}
+            className={inputCls}
           />
         </WideModalField>
       </WideModalSection>
@@ -1677,7 +1741,7 @@ export function ContactsPage() {
         primary_phone: formData.phone || undefined,
         website: formData.website || undefined,
         country_code: formData.country || undefined,
-        address: formData.address ? { text: formData.address } : undefined,
+        address: addressPayload(formData) ?? undefined,
         payment_terms_days: formData.payment_terms || undefined,
         prequalification_status: formData.prequalification_status || undefined,
         notes: formData.notes || undefined,

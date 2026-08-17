@@ -2108,7 +2108,7 @@ function ProjectSchedules({
 
   const { data: schedules, isLoading } = useQuery({
     queryKey: ['schedules', project.id],
-    queryFn: () => scheduleApi.listSchedules(project.id),
+    queryFn: () => scheduleApi.listSchedules(project.id).then((page) => page.items),
   });
 
   // CONN-34: when arriving via the BOQ "Build schedule from this BOQ" deep

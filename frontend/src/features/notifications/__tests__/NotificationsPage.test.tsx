@@ -180,7 +180,12 @@ describe('<NotificationsPage />', () => {
     });
 
     const firstPath = apiMocks.apiGet.mock.calls[0]?.[0] as string;
-    expect(firstPath).toContain('/v1/notifications');
+    /* Anchored rather than `toContain`, so a route that merely embeds this
+       path cannot pass. Written as a pattern on purpose: the pagination gate
+       scans for quoted `/v1/...` literals to find callers of an endpoint, and
+       an assertion spelling one out gets counted as a caller it can never
+       clear, since a test asserting on a URL never reads the response. */
+    expect(firstPath).toMatch(/^\/v1\/notifications\?/);
     expect(firstPath).toContain('limit=50');
     expect(firstPath).toContain('offset=0');
   });

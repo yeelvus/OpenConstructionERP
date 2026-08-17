@@ -17,6 +17,7 @@ import {
   Circle,
   XCircle,
   Clock,
+  CalendarClock,
   FileDown,
   FileUp,
   Loader2,
@@ -117,6 +118,13 @@ const STATUS_CONFIG: Record<
   MeetingStatus,
   { variant: 'neutral' | 'blue' | 'success' | 'error' | 'warning'; cls: string }
 > = {
+  // Draft has to look unlike scheduled. Without an entry here the lookup below
+  // fell through to the scheduled styling, so a meeting that cannot be
+  // completed yet was painted the same blue as one that can.
+  draft: {
+    variant: 'neutral',
+    cls: 'bg-surface-secondary text-content-secondary',
+  },
   scheduled: { variant: 'blue', cls: '' },
   in_progress: { variant: 'warning', cls: '' },
   completed: { variant: 'success', cls: '' },
@@ -186,7 +194,7 @@ const MEETING_TYPE_CARD_CONFIG: Record<
   },
 };
 
-const MEETING_STATUSES: MeetingStatus[] = ['scheduled', 'in_progress', 'completed', 'cancelled'];
+const MEETING_STATUSES: MeetingStatus[] = ['draft', 'scheduled', 'in_progress', 'completed', 'cancelled'];
 
 /* -- Create Meeting Modal -------------------------------------------------- */
 
@@ -1660,6 +1668,7 @@ const MeetingRow = React.memo(function MeetingRow({
   meeting,
   onComplete,
   onExportPdf,
+  onSchedule,
   onEdit,
   onDelete,
   isExporting,
@@ -1667,6 +1676,7 @@ const MeetingRow = React.memo(function MeetingRow({
 }: {
   meeting: Meeting;
   onComplete: (id: string) => void;
+  onSchedule: (id: string) => void;
   onExportPdf: (id: string) => void;
   onEdit: (meeting: Meeting) => void;
   onDelete: (meeting: Meeting) => void;
@@ -1908,6 +1918,19 @@ const MeetingRow = React.memo(function MeetingRow({
 
           {/* Actions */}
           <div className="flex items-center gap-2 pt-1 flex-wrap">
+            {meeting.status === 'draft' && (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSchedule(meeting.id);
+                }}
+              >
+                <CalendarClock size={14} className="mr-1.5" />
+                {t('meetings.action_schedule', { defaultValue: 'Schedule Meeting' })}
+              </Button>
+            )}
             {(meeting.status === 'scheduled' || meeting.status === 'in_progress') && (
               <Button
                 variant="primary"
@@ -2156,6 +2179,29 @@ export function MeetingsPage() {
       }),
   });
 
+  // Moving a draft on to scheduled. It reuses the update endpoint rather than
+  // asking for one of its own, because the API validates the hop against its
+  // own transition table and draft -> scheduled is the only way forward.
+  // Meetings made in this app are created scheduled; this is for the ones that
+  // arrive as drafts from an import, the API or a generated module, which had
+  // no way to be completed at all.
+  const scheduleMut = useMutation({
+    mutationFn: (id: string) => updateMeeting(id, { status: 'scheduled' }),
+    onSuccess: () => {
+      invalidateAll();
+      addToast({
+        type: 'success',
+        title: t('meetings.scheduled_ok', { defaultValue: 'Meeting scheduled' }),
+      });
+    },
+    onError: (e: Error) =>
+      addToast({
+        type: 'error',
+        title: t('meetings.schedule_failed', { defaultValue: 'Failed to schedule meeting' }),
+        message: e.message,
+      }),
+  });
+
   const deleteMut = useMutation({
     mutationFn: (id: string) => deleteMeeting(id),
     onSuccess: () => {
@@ -2262,6 +2308,11 @@ export function MeetingsPage() {
         title: formData.title,
         meeting_type: formData.meeting_type,
         meeting_date: formData.date?.split('T')[0] || formData.date,
+        // The API defaults to draft when no status is sent, and a draft cannot
+        // be completed until it is scheduled. This form has just collected a
+        // date, a chair and an agenda, so the meeting it describes is
+        // scheduled. Left unsent, every meeting made here was stuck.
+        status: 'scheduled',
         location: formData.location || undefined,
         // Prefer the picked contact id; fall back to the typed name so a
         // guest chair (not in the directory) is still recorded.
@@ -2392,6 +2443,7 @@ export function MeetingsPage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       {/* Canonical module info card — pain-named title + workflow body.
@@ -2589,6 +2641,7 @@ export function MeetingsPage() {
                   key={meeting.id}
                   meeting={meeting}
                   onComplete={handleComplete}
+                  onSchedule={(id) => scheduleMut.mutate(id)}
                   onExportPdf={handleExportPdf}
                   onEdit={(m) => setEditingMeeting(m)}
                   onDelete={handleDelete}

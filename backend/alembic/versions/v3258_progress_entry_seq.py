@@ -62,6 +62,7 @@ _INDEXES = (
 )
 
 
+# data-rewrite-ack: table=oe_progress_entry growth=tenure rows=daily/periodic site progress log, the textbook tenure-tracking shape
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)

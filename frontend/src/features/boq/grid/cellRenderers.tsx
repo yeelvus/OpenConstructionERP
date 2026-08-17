@@ -164,30 +164,13 @@ export function SectionFullWidthRenderer(params: ICellRendererParams) {
   const { data, context } = params;
   const ctx = context as FullGridContext | undefined;
 
-  if (!data?._isSection || !ctx) return null;
-
-  const isCollapsed = ctx.collapsedSections?.has(data.id) ?? false;
-  const childCount: number = data._childCount ?? 0;
-  const subtotal: number = data._subtotal ?? data.total ?? 0;
-  const description: string = data.description ?? '';
-  // Issue #136 — nesting level drives left-indentation so a sub-section
-  // reads as a real child of its parent section in the смета.
-  const depth: number = typeof data._depth === 'number' ? data._depth : 0;
-  const ordinal: string = data.ordinal ?? '';
-
-  // Issue #88 — when a non-base display currency is active, divide the
-  // subtotal by the rate before formatting and print in the active code.
-  // The base value stored in `_subtotal` is unchanged; this is a pure
-  // view conversion. Mirrors `totalFormatter` in columnDefs.ts.
-  const dc = ctx.displayCurrency;
-  const displayedSubtotal = dc && dc.rate > 0 ? subtotal / dc.rate : subtotal;
-  const displayCode = dc && dc.rate > 0 ? dc.code : (ctx.currencyCode ?? 'EUR');
-  const formattedSubtotal = ctx.fmt
-    ? fmtWithCurrency(displayedSubtotal, ctx.locale ?? 'de-DE', displayCode)
-    : `${displayedSubtotal.toFixed(2)}`;
-
-  const t = ctx.t ?? ((key: string, opts?: Record<string, string | number>) =>
-    (opts?.defaultValue as string) ?? key);
+  // Every hook this component owns runs ABOVE the guard below, and has to.
+  // AG Grid reuses a full-width renderer instance across rows as it scrolls,
+  // so one instance can render a section row (hooks run) and then a row that
+  // fails the guard (hooks skipped). React rejects that second render with
+  // "rendered fewer hooks than expected" and takes the grid down with it.
+  // Reading `data` optionally is the whole cost of keeping them up here.
+  const description: string = data?.description ?? '';
 
   const [dragOver, setDragOver] = useState(false);
 
@@ -206,13 +189,37 @@ export function SectionFullWidthRenderer(params: ICellRendererParams) {
     const next = nameDraft.trim();
     setRenaming(false);
     if (next && next !== description) {
-      ctx.onUpdatePosition?.(
+      ctx?.onUpdatePosition?.(
         data.id,
         { description: next },
         { description },
       );
     }
   }, [nameDraft, description, ctx, data]);
+
+  if (!data?._isSection || !ctx) return null;
+
+  const isCollapsed = ctx.collapsedSections?.has(data.id) ?? false;
+  const childCount: number = data._childCount ?? 0;
+  const subtotal: number = data._subtotal ?? data.total ?? 0;
+  // Issue #136 — nesting level drives left-indentation so a sub-section
+  // reads as a real child of its parent section in the смета.
+  const depth: number = typeof data._depth === 'number' ? data._depth : 0;
+  const ordinal: string = data.ordinal ?? '';
+
+  // Issue #88 — when a non-base display currency is active, divide the
+  // subtotal by the rate before formatting and print in the active code.
+  // The base value stored in `_subtotal` is unchanged; this is a pure
+  // view conversion. Mirrors `totalFormatter` in columnDefs.ts.
+  const dc = ctx.displayCurrency;
+  const displayedSubtotal = dc && dc.rate > 0 ? subtotal / dc.rate : subtotal;
+  const displayCode = dc && dc.rate > 0 ? dc.code : (ctx.currencyCode ?? 'EUR');
+  const formattedSubtotal = ctx.fmt
+    ? fmtWithCurrency(displayedSubtotal, ctx.locale ?? 'de-DE', displayCode)
+    : `${displayedSubtotal.toFixed(2)}`;
+
+  const t = ctx.t ?? ((key: string, opts?: Record<string, string | number>) =>
+    (opts?.defaultValue as string) ?? key);
 
   return (
     <div

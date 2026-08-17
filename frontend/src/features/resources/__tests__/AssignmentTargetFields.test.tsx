@@ -85,7 +85,12 @@ describe('AssignmentTargetFields', () => {
       vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {});
     }
     (projectsApi.list as any).mockResolvedValue(PROJECTS);
-    (scheduleApi.listSchedules as any).mockResolvedValue(SCHEDULES);
+    (scheduleApi.listSchedules as any).mockResolvedValue({
+      items: SCHEDULES,
+      total: SCHEDULES.length,
+      offset: 0,
+      limit: 50,
+    });
     (scheduleApi.getGantt as any).mockImplementation(async (id: string) => GANTT[id]);
   });
 
@@ -133,7 +138,12 @@ describe('AssignmentTargetFields', () => {
   });
 
   it('says a project has no activities rather than showing an empty picker', async () => {
-    (scheduleApi.listSchedules as any).mockResolvedValue([]);
+    (scheduleApi.listSchedules as any).mockResolvedValue({
+      items: [],
+      total: 0,
+      offset: 0,
+      limit: 50,
+    });
     renderFields({ projectId: 'p1' });
     expect(
       await screen.findByText(/no schedule activities yet/i),

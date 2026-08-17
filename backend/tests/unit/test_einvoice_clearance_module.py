@@ -34,6 +34,7 @@ from app.modules.einvoice_clearance.models import (
     DOCUMENT_STATUSES,
     TERMINAL_SUCCESS,
     EInvoiceProfile,
+    can_be_sent,
     can_transition,
 )
 from app.modules.einvoice_clearance.permissions import register_einvoice_clearance_permissions
@@ -151,6 +152,26 @@ class TestStatusMachine:
 
     def test_an_unknown_status_moves_nowhere(self):
         assert can_transition("banana", "cleared") is False
+
+    def test_a_document_that_has_already_gone_cannot_be_sent_again(self):
+        # The one that matters: submitted means the platform has it, and a
+        # second send is how one sale collects two cleared invoices.
+        assert can_be_sent("submitted") is False
+        assert can_be_sent("cleared") is False
+        assert can_be_sent("reported") is False
+        assert can_be_sent("delivered") is False
+        assert can_be_sent("cancelled") is False
+        assert can_be_sent("banana") is False
+
+    def test_a_document_that_has_not_gone_yet_can_be_sent(self):
+        assert can_be_sent("draft") is True
+        assert can_be_sent("validated") is True
+        # Re-driving a stuck queue is not a state change, so the machine has no
+        # queued -> queued edge and this one has to be allowed on its own.
+        assert can_be_sent("queued") is True
+        assert can_transition("queued", "queued") is False
+        # A rejection is fixed on the same document and sent again.
+        assert can_be_sent("rejected") is True
 
 
 # ── Schema guards (no DB) ────────────────────────────────────────────────────
@@ -595,6 +616,24 @@ class TestDocumentInDoubt:
             )
         assert document.status == "submitted"
 
+    async def test_a_document_in_doubt_cannot_simply_be_sent_again(self, session, failing_adapter):
+        # The way out of doubt is an operator reading the platform, not a retry.
+        # A retry is what puts two cleared invoices against one sale, which is
+        # the whole reason resolve_document exists.
+        profile = await _profile(session, "MX", adapter_key=failing_adapter)
+        document, _ = await service.create_document(session, profile=profile, body=_body(profile))
+        with pytest.raises(service.ClearanceError):
+            await service.submit_document(session, document=document, profile=profile)
+        assert document.status == "submitted"
+
+        before = len(await repository.list_events(session, document.id))
+        with pytest.raises(service.ClearanceError, match="two cleared invoices") as excinfo:
+            await service.submit_document(session, document=document, profile=profile)
+        assert excinfo.value.conflict is True
+        # Refused before anything was written, not part way through it.
+        assert document.status == "submitted"
+        assert len(await repository.list_events(session, document.id)) == before
+
     async def test_resolving_by_hand_is_only_open_to_a_document_in_doubt(self, session):
         profile = await _profile(session, "MX")
         document, _ = await service.create_document(session, profile=profile, body=_body(profile))
@@ -762,6 +801,10 @@ class TestSharedEngineIsReused:
                         "line1": "Dock Road 1",
                         "postcode": "20457",
                         "city": "Hamburg",
+                        # BG-6, mandatory on the seller under XRechnung (BR-DE-2).
+                        "contact_name": "Anke Reimann",
+                        "contact_phone": "+49 40 1234560",
+                        "contact_email": "rechnung@harbour-civils.example",
                     },
                     "buyer": {
                         "name": "City Works Department",

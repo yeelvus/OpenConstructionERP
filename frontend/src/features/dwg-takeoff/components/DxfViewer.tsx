@@ -220,6 +220,9 @@ export function DxfViewer({
   const lastMouseRef = useRef({ x: 0, y: 0 });
   const drawPointsRef = useRef<{ x: number; y: number }[]>([]);
   const mousePosRef = useRef<{ x: number; y: number } | null>(null);
+  // Written by the draw loop, never rendered. See the block at the end of `draw`.
+  const coordReadoutRef = useRef<HTMLDivElement>(null);
+  const zoomReadoutRef = useRef<HTMLSpanElement>(null);
   const activeToolRef = useRef(activeTool);
   activeToolRef.current = activeTool;
   const activeColorRef = useRef(activeColor);
@@ -498,7 +501,40 @@ export function DxfViewer({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // The coordinate box and the zoom badge report values that live in refs, and
+    // a ref does not re-render. Read inside JSX, as they were, both froze for the
+    // whole of a pan or a zoom: the drawing moved under the cursor while the
+    // numbers held whatever the last render had captured. The canvas was never
+    // the slow part, but an interface that does not answer the gesture is read
+    // as slowness.
+    //
+    // So they are written from the frame loop instead, which keeps React out of
+    // the gesture entirely. It runs before the dirty check on purpose. A React
+    // re-render can put the inline display back while nothing is dirty, and a
+    // readout that waits for the next dirty frame to reappear is the same defect
+    // in a smaller window. Each write is guarded by a comparison, so a still
+    // canvas costs two string builds a frame and no DOM work at all.
+    const syncReadouts = () => {
+      const coord = coordReadoutRef.current;
+      if (coord) {
+        const world = mousePosRef.current;
+        if (world && entities.length > 0) {
+          const text = `X: ${world.x.toFixed(2)}   Y: ${world.y.toFixed(2)}`;
+          if (coord.textContent !== text) coord.textContent = text;
+          if (coord.style.display !== '') coord.style.display = '';
+        } else if (coord.style.display !== 'none') {
+          coord.style.display = 'none';
+        }
+      }
+      const zoom = zoomReadoutRef.current;
+      if (zoom) {
+        const text = `${Math.round(vpRef.current.scale * 100)}%`;
+        if (zoom.textContent !== text) zoom.textContent = text;
+      }
+    };
+
     const draw = () => {
+      syncReadouts();
       if (!dirtyRef.current) {
         rafRef.current = requestAnimationFrame(draw);
         return;
@@ -1225,21 +1261,32 @@ export function DxfViewer({
           onCancel={() => setTextPinPopup(null)}
         />
       )}
-      {/* Bottom-left overlay: world coordinate readout */}
-      {mousePosRef.current && entities.length > 0 && (
-        <div
-          className="absolute bottom-3 left-3 h-7 px-2.5 rounded-lg bg-white/10 backdrop-blur-sm
-                     text-white/40 text-[10px] font-mono flex items-center gap-2
-                     border border-white/10 select-none pointer-events-none"
-        >
-          <span>X: {mousePosRef.current.x.toFixed(2)}</span>
-          <span>Y: {mousePosRef.current.y.toFixed(2)}</span>
-        </div>
-      )}
+      {/* Bottom-left overlay: world coordinate readout.
+          Mounted once and filled by the draw loop, which also hides it when
+          there is no cursor position or nothing to measure against. It cannot be
+          rendered conditionally on `mousePosRef`, because moving the cursor does
+          not re-render and the box would then reflect a stale frame. */}
+      <div
+        ref={coordReadoutRef}
+        style={{ display: 'none' }}
+        className="absolute bottom-3 left-3 h-7 px-2.5 rounded-lg bg-white/10 backdrop-blur-sm
+                   text-white/40 text-[10px] font-mono flex items-center whitespace-pre
+                   border border-white/10 select-none pointer-events-none"
+      />
       {/* Bottom-right overlay: zoom level + Fit button */}
-      {extentsRef.current && (
+      {/* Gated on the prop, not on `extentsRef`. Extents are computed in an
+          effect, so on the render that follows a drawing loading the ref is
+          still null and this whole group, Fit button included, would be absent
+          until some unrelated re-render happened to come along. `handleFitAll`
+          already refuses when there are no extents, so the prop is both the
+          honest condition and the safe one. */}
+      {entities.length > 0 && (
         <div className="absolute bottom-3 right-3 flex items-center gap-1.5">
+          {/* Filled by the draw loop for the same reason as the coordinate box.
+              The initial text is the viewport's starting scale, so the badge is
+              never blank between mount and the first frame. */}
           <span
+            ref={zoomReadoutRef}
             className="h-8 px-2.5 rounded-lg bg-white/10 backdrop-blur-sm text-white/50 text-[11px]
                        font-mono flex items-center border border-white/10 select-none"
           >

@@ -1,20 +1,23 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 //
-// Feature test for the collapse -> re-open flow of a module info card.
+// Feature test for the collapse -> re-open flow of a module info block.
 //
-// Founder 2026-07-23: a DismissibleInfo card can be collapsed into a button
-// next to "How it works" and re-opened from there, and the choice is saved
-// per-user (localStorage now, server on the next boot). These tests drive the
-// real DismissibleInfo + ModuleInfoButton pair (they talk through the real
+// Founder 2026-08-07: a collapsed block folds into an information icon beside
+// the module name, and re-opens from there. The choice is saved per-user
+// (localStorage now, server on the next boot). These tests drive the real
+// DismissibleInfo + ModuleInfoButton pair (they talk through the real
 // useModuleInfoStore registry and the real useInfoBlockPrefsStore) and assert:
 //
-//   1. Card starts expanded; no re-open pill.
-//   2. Collapsing hides the card and shows the pill; the choice lands in the
+//   1. Block starts expanded; no re-open icon.
+//   2. Collapsing hides the block and shows the icon; the choice lands in the
 //      per-user store + its localStorage bucket and is pushed to the server.
-//   3. The pill re-opens the card and clears the collapsed flag.
-//   4. A legacy per-browser `oce.intro.<key>` flag still collapses the card
+//   3. The icon re-opens the block and clears the collapsed flag.
+//   4. A legacy per-browser `oce.intro.<key>` flag still collapses the block
 //      once, so preferences set before this change carry over.
+//   5. The control is icon-only but keeps an accessible name, because it now
+//      shares the top bar with the module name.
+//   6. One click restores BOTH kinds of block when a page carries both.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
@@ -33,6 +36,7 @@ vi.mock('@/shared/lib/api', () => ({
   apiPut: apiMocks.apiPut,
 }));
 
+import { CollapsibleSection } from './CollapsibleSection';
 import { DismissibleInfo } from './DismissibleInfo';
 import { ModuleInfoButton } from './ModuleInfoButton';
 import { useInfoBlockPrefsStore } from '@/stores/useInfoBlockPrefsStore';
@@ -56,7 +60,7 @@ beforeEach(() => {
   apiMocks.apiPut.mockClear();
   // Reset the two singleton stores between tests.
   useInfoBlockPrefsStore.setState({ blocks: {}, hydrated: false });
-  useModuleInfoStore.setState({ entries: [], guideKeys: [] });
+  useModuleInfoStore.setState({ entries: [] });
 });
 
 afterEach(() => {
@@ -64,26 +68,26 @@ afterEach(() => {
 });
 
 describe('module info card collapse / re-open', () => {
-  it('starts expanded with no re-open pill', () => {
+  it('starts expanded with no re-open icon', () => {
     render(<Harness storageKey="ib-a" />);
     expect(screen.getByText('Test card')).toBeTruthy();
     expect(screen.queryByTestId('module-info-button')).toBeNull();
   });
 
-  it('collapses into the pill and re-opens from it', () => {
+  it('collapses into the icon and re-opens from it', () => {
     render(<Harness storageKey="ib-b" />);
 
     // Collapse via the card title (a dedicated toggle button).
     fireEvent.click(screen.getByText('Test card'));
 
-    // Card is gone from the flow; the re-open pill appears.
+    // Card is gone from the flow; the re-open icon appears.
     expect(screen.queryByText('Test card')).toBeNull();
-    const pill = screen.getByTestId('module-info-button');
-    expect(pill).toBeTruthy();
+    const icon = screen.getByTestId('module-info-button');
+    expect(icon).toBeTruthy();
     expect(useInfoBlockPrefsStore.getState().blocks['ib-b']).toBe(true);
 
-    // Re-open from the pill.
-    fireEvent.click(pill);
+    // Re-open from the icon.
+    fireEvent.click(icon);
     expect(screen.getByText('Test card')).toBeTruthy();
     expect(useInfoBlockPrefsStore.getState().blocks['ib-b']).toBe(false);
     expect(screen.queryByTestId('module-info-button')).toBeNull();
@@ -110,8 +114,48 @@ describe('module info card collapse / re-open', () => {
     localStorage.setItem('oce.intro.ib-legacy', '1');
     render(<Harness storageKey="ib-legacy" />);
 
-    // Collapsed on first render from the legacy flag, pill available.
+    // Collapsed on first render from the legacy flag, icon available.
     expect(screen.queryByText('Test card')).toBeNull();
     expect(screen.getByTestId('module-info-button')).toBeTruthy();
+  });
+
+  it('carries a name without spending a word of the top bar on it', () => {
+    render(<Harness storageKey="ib-name" />);
+    fireEvent.click(screen.getByText('Test card'));
+
+    const icon = screen.getByTestId('module-info-button');
+    // The control sits beside the module name in a bar already holding the
+    // project switcher, the search box and the action cluster. A visible
+    // label there pushes the module name into truncation at lg widths, which
+    // is why this is icon-only - and why the name has to come from aria.
+    expect(icon.textContent).toBe('');
+    expect(icon.getAttribute('aria-label')).toBe('Module information');
+  });
+
+  it('restores a card and an explainer collapsed on the same page in one click', () => {
+    render(
+      <>
+        <ModuleInfoButton />
+        <DismissibleInfo storageKey="ib-both" title="Test card">
+          Body copy
+        </DismissibleInfo>
+        <CollapsibleSection storageKey="ib-both" title="Test explainer">
+          Explainer body
+        </CollapsibleSection>
+      </>,
+    );
+
+    fireEvent.click(screen.getByText('Test card'));
+    fireEvent.click(screen.getByText('Test explainer'));
+    expect(screen.queryByText('Test card')).toBeNull();
+    expect(screen.queryByText('Test explainer')).toBeNull();
+
+    // Both blocks are registered under the SAME storageKey here on purpose:
+    // the store namespaces an explainer as `section:<key>`, and without that
+    // prefix one block would overwrite the other's entry and only one of the
+    // two would ever come back. One control, one click, both blocks.
+    fireEvent.click(screen.getByTestId('module-info-button'));
+    expect(screen.getByText('Test card')).toBeTruthy();
+    expect(screen.getByText('Test explainer')).toBeTruthy();
   });
 });

@@ -55,6 +55,7 @@ def publish_diary_labour(
         status="submitted",
         rows=activity_rows,
         actor_id=author_id,
+        source="field_diary",
     )
     logger.info(
         "Published %s from diary entry=%s (%d activity rows)",

@@ -15,8 +15,8 @@ render with meaningful demo data.
 The run references EXISTING ``app.modules.bim_hub.models.BIMModel`` rows
 for the project when available (it never creates BIM models); when a
 project has no models the result rows fall back to synthetic model ids so
-the demo still populates. Safe to call repeatedly: if a ClashRun already
-exists for the first project id the seeder returns ``{}`` immediately.
+the demo still populates. Safe to call repeatedly: a project that already
+carries a clash run is skipped, one project at a time.
 """
 
 from __future__ import annotations
@@ -33,9 +33,6 @@ from app.modules.bim_hub.models import BIMModel
 from app.modules.clash.models import ClashCluster, ClashResult, ClashRun
 
 logger = logging.getLogger(__name__)
-
-# Flagship demo project - always covered when present in the input list.
-FLAGSHIP_PROJECT_ID = uuid.UUID("f1a95000-0001-4a00-8b00-000000000001")
 
 # Review-workflow status mix for the seeded result rows. Mirrors
 # ``clash.schemas.CLASH_STATUSES`` and the coordination_hub dashboard
@@ -98,38 +95,35 @@ async def seed_clash(
 
     Args:
         session: Active async SQLAlchemy session (caller owns the commit).
-        project_ids: Candidate projects to seed. At most the first 3 are
-            covered, with the flagship project always included when present.
+        project_ids: Projects to seed. Every one of them is covered; a project
+            that already carries a clash run is skipped.
 
     Returns:
         A summary dict of inserted row counts keyed by entity
-        (``runs`` / ``results`` / ``clusters``). Returns an empty dict when
-        a clash run already exists for ``project_ids[0]`` (idempotent guard).
+        (``runs`` / ``results`` / ``clusters``).
     """
     if not project_ids:
         return {}
 
-    # --- idempotency guard: bail if the first project already has a run ---
-    existing = (
-        await session.execute(select(ClashRun.id).where(ClashRun.project_id == project_ids[0]).limit(1))
-    ).scalar_one_or_none()
-    if existing is not None:
-        return {}
-
-    # --- pick the covered projects (flagship first, then first 3 total) ---
     covered: list[uuid.UUID] = []
-    if FLAGSHIP_PROJECT_ID in project_ids:
-        covered.append(FLAGSHIP_PROJECT_ID)
     for pid in project_ids:
         if pid not in covered:
             covered.append(pid)
-        if len(covered) >= 3:
-            break
 
     counts: dict[str, int] = {"runs": 0, "results": 0, "clusters": 0}
     now = datetime.now(UTC)
 
     for proj_idx, project_id in enumerate(covered):
+        # Idempotency is per project, not per call. A marker read off the first
+        # project id would be satisfied by that one project and leave every
+        # other project without a run for good - including a project installed
+        # after the first run, which is the case a re-seed cannot route around.
+        existing = (
+            await session.execute(select(ClashRun.id).where(ClashRun.project_id == project_id).limit(1))
+        ).scalar_one_or_none()
+        if existing is not None:
+            continue
+
         model_ids = await _models_for_project(session, project_id)
         # Reference real model ids when available; otherwise fall back to
         # synthetic ids so the demo still populates a result set.

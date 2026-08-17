@@ -138,8 +138,8 @@ const playbook: Playbook = {
       whyKey: "cases.witness_and_record_mep_commissioning.step.record.why",
       whyDefault:
         "Commissioning proof scattered across inboxes is proof the operator cannot find when a system fails under warranty. A single filed pack is what backs a warranty claim and shows the building was handed over working.",
-      moduleLabel: "Files",
-      moduleLabelKey: "nav.project_files",
+      moduleLabel: "Documents",
+      moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },
   ],

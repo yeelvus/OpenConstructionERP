@@ -15,9 +15,10 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, ChevronDown, Download, Loader2, Search } from 'lucide-react';
-import { CountryFlag } from '@/shared/ui';
+import { CountryFlag, CountryFlagBackdrop } from '@/shared/ui';
 import type { BaseCatalog, BaseFamily, BaseVariant } from './baseCatalog';
 import { variantMatches } from './baseCatalog';
+import { DEPTH_BANDS, baseDepthLevel } from './baseDepth';
 
 // Founder-requested family order for the base picker: China first, then the
 // flagship Global CWICR base (GESN / FER / TER) second, then every other family
@@ -71,6 +72,44 @@ interface BaseCatalogBrowserProps {
 
 function positionsLabel(n: number): string {
   return n.toLocaleString('en-US');
+}
+
+/**
+ * How thoroughly the base is worked out, as filled segments.
+ *
+ * The bar is decorative on its own, so the level and the count it comes from
+ * are both in the title: a reader who wonders what four segments mean gets the
+ * answer without leaving the row. `aria-hidden` on the segments and a plain
+ * text label for assistive tech, because five divs read as nothing.
+ */
+function DepthMeter({ positions }: { positions: number }) {
+  const { t } = useTranslation();
+  const level = baseDepthLevel(positions);
+  const label = t('costs.base_depth_hint', {
+    defaultValue: 'Catalogue depth {{level}} of {{total}}: {{positions}} work items',
+    level,
+    total: DEPTH_BANDS,
+    positions: positionsLabel(positions),
+  });
+
+  return (
+    <div className="flex flex-col items-end gap-1" title={label}>
+      <div className="flex items-center gap-[3px]" role="img" aria-label={label}>
+        {Array.from({ length: DEPTH_BANDS }, (_, i) => (
+          <span
+            key={i}
+            aria-hidden
+            className={`h-3 w-[5px] rounded-[2px] transition-colors duration-normal ease-oe ${
+              i < level ? 'bg-oe-blue' : 'bg-border-light'
+            }`}
+          />
+        ))}
+      </div>
+      <span className="text-[10px] font-medium uppercase tracking-wide text-content-quaternary">
+        {t('costs.base_depth', { defaultValue: 'Depth' })}
+      </span>
+    </div>
+  );
 }
 
 interface CardProps {
@@ -210,7 +249,7 @@ function BaseVariantCard({
                 type="button"
                 disabled={disabled}
                 onClick={() => onReprice?.(variant)}
-                className="w-full rounded-lg border border-border-light px-2.5 py-1.5 text-xs font-medium text-content-secondary transition-colors hover:bg-surface-secondary disabled:opacity-50"
+                className="w-full rounded-lg border border-border-light bg-surface-elevated px-2.5 py-1.5 text-xs font-medium text-content-secondary shadow-xs transition-all duration-fast ease-oe hover:border-border hover:bg-surface-secondary hover:shadow-sm active:translate-y-px disabled:opacity-50"
               >
                 {t('costs.base_market_switch', { defaultValue: 'Switch to {{market}}', market: variant.market })}
               </button>
@@ -219,7 +258,7 @@ function BaseVariantCard({
                 type="button"
                 disabled={disabled}
                 onClick={() => onReprice?.(variant)}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-oe-blue px-2.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-oe-blue/90 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-oe-blue px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm ring-1 ring-inset ring-white/15 transition-all duration-fast ease-oe hover:bg-oe-blue-hover hover:shadow-md active:translate-y-px active:bg-oe-blue-active disabled:opacity-50 disabled:shadow-none"
               >
                 <Download size={13} />
                 {t('costs.base_market_load', { defaultValue: 'Price into {{market}}', market: variant.market })}
@@ -230,7 +269,7 @@ function BaseVariantCard({
               type="button"
               disabled={active}
               onClick={() => onSetActive?.(variant.region)}
-              className="w-full rounded-lg border border-border-light px-2.5 py-1.5 text-xs font-medium text-content-secondary transition-colors hover:bg-surface-secondary disabled:cursor-default disabled:opacity-60"
+              className="w-full rounded-lg border border-border-light bg-surface-elevated px-2.5 py-1.5 text-xs font-medium text-content-secondary shadow-xs transition-all duration-fast ease-oe hover:border-border hover:bg-surface-secondary hover:shadow-sm active:translate-y-px disabled:cursor-default disabled:opacity-60 disabled:shadow-none disabled:hover:translate-y-0"
             >
               {active
                 ? t('costs.base_is_active', { defaultValue: 'Active database' })
@@ -415,24 +454,43 @@ export function BaseCatalogBrowser({
             variants.filter((v) => isLoaded(v)).map((v) => v.base_region),
           ).size;
           const multiMarket = family.market_count > 1;
-          // Keep a family open while searching, when the user opened it, or when
-          // it holds the loading / active / selected card (so state stays shown).
+          // Which card of this family is the current choice, if any. Shown as a
+          // chip in the header so the state survives collapsing.
+          const activeVariant = variants.find((v) => isActive(v));
+          // A codeless base: it prices through a resource sheet rather than by
+          // resource code. A real difference between families, so it is said in
+          // the header rather than folded into the depth meter.
+          const coefficient = variants.some((v) => v.coefficient);
+          // When a family stays open regardless of the toggle.
+          //
+          // `isActive` used to be one of these, and it made the row that mattered
+          // most the one row that could not be closed: once a base was loaded and
+          // a market active, every click on the header was overridden on the next
+          // render and the chevron just twitched. The active market is now a chip
+          // in the header instead, which is what the force-open was really for.
+          // `selectedRegion` is kept only in 'select' mode, where the catalog is a
+          // picker and hiding the user's own selection would be the same mistake.
           const open =
             searching ||
             openFamilies.has(family.key) ||
-            variants.some((v) => v.variant_id === loadingRegion || v.variant_id === selectedRegion || isActive(v));
+            variants.some((v) => v.variant_id === loadingRegion) ||
+            (mode === 'select' && variants.some((v) => v.variant_id === selectedRegion));
           return (
             <section key={family.key}>
               <button
                 type="button"
                 aria-expanded={open}
                 onClick={() => toggleFamily(family.key)}
-                className="flex w-full items-center gap-3 rounded-xl border border-border-light bg-surface-elevated p-3 text-left transition-colors hover:border-border hover:bg-surface-secondary"
+                className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left shadow-xs transition-all duration-normal ease-oe hover:shadow-sm ${
+                  open
+                    ? 'border-border bg-surface-elevated'
+                    : 'border-border-light bg-surface-elevated hover:border-border hover:bg-surface-secondary'
+                }`}
               >
                 <CountryFlag
                   code={flagCode}
-                  size={34}
-                  className="shrink-0 rounded shadow-xs border border-black/5"
+                  size={38}
+                  className="shrink-0 rounded-md shadow-xs border border-black/5"
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -448,12 +506,31 @@ export function BaseCatalogBrowser({
                         })}
                       </span>
                     )}
+                    {coefficient && (
+                      <span
+                        className="rounded bg-surface-secondary px-1.5 py-0.5 text-[10px] font-medium text-content-tertiary"
+                        title={t('costs.base_coefficient_hint', {
+                          defaultValue: 'Priced through a resource price sheet rather than by resource code',
+                        })}
+                      >
+                        {t('costs.base_coefficient', { defaultValue: 'coefficient base' })}
+                      </span>
+                    )}
                     {loadedInFamily > 0 && (
                       <span className="inline-flex items-center gap-1 rounded-full bg-semantic-success/15 px-1.5 py-0.5 text-[10px] font-semibold text-semantic-success">
                         <Check size={10} />
                         {t('costs.base_family_loaded_count', {
                           defaultValue: '{{count}} loaded',
                           count: loadedInFamily,
+                        })}
+                      </span>
+                    )}
+                    {activeVariant && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-oe-blue/15 px-1.5 py-0.5 text-[10px] font-semibold text-oe-blue">
+                        <Check size={10} />
+                        {t('costs.base_family_active', {
+                          defaultValue: 'Active: {{market}}',
+                          market: activeVariant.market,
                         })}
                       </span>
                     )}
@@ -468,14 +545,32 @@ export function BaseCatalogBrowser({
                     {t('costs.base_positions', { defaultValue: 'positions' })}
                   </div>
                 </div>
+                <div className="hidden shrink-0 sm:block">
+                  <DepthMeter positions={family.positions} />
+                </div>
                 <ChevronDown
                   size={18}
-                  className={`shrink-0 text-content-tertiary transition-transform ${open ? '' : '-rotate-90'}`}
+                  className={`shrink-0 text-content-tertiary transition-transform duration-normal ease-oe ${
+                    open ? '' : '-rotate-90'
+                  }`}
                 />
               </button>
               {open && (
-                <div className="mt-2.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-                  {variants.map((v) => renderCard(v, v.market, v.language))}
+                // The country wash sits behind the cards so an expanded family
+                // reads as one country's shelf rather than as a loose grid.
+                //
+                // `relative` here is deliberate and safe: nothing inside this
+                // block opens an overlay - the cards only call handlers the page
+                // owns, and the page renders its modals outside this component -
+                // so the per-family positioning context cannot trap a fixed z-50
+                // dialog the way a page-level `isolate` would
+                // (modal_relative_isolate_trap). The grid takes `relative` of its
+                // own so it paints above the absolutely-positioned backdrop.
+                <div className="relative mt-2.5 overflow-hidden rounded-xl border border-border-light/70 bg-surface-secondary/30 p-2.5">
+                  <CountryFlagBackdrop code={flagCode} variant="panel" />
+                  <div className="relative grid grid-cols-1 gap-2.5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+                    {variants.map((v) => renderCard(v, v.market, v.language))}
+                  </div>
                 </div>
               )}
             </section>

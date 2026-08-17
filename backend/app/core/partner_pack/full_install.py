@@ -126,18 +126,24 @@ def resolve_cwicr_db_id(slug: str) -> str | None:
 
     Pack slugs are ``cwicr-<lang>-<city>`` (the lang token is unreliable -
     ``eng``/``fra`` both mean Canada), so we match on the slug's **last**
-    segment against the city-suffix index, falling back to the explicit alias
-    map. Returns ``None`` when the slug resolves to no known live region (e.g.
-    ``cwicr-fra-montreal``, ``cwicr-eng-wellington`` - no CWICR data yet); the
-    caller reports those in ``detail.skipped``.
+    segment against the explicit alias map first, falling back to the
+    city-suffix index. Returns ``None`` when the slug resolves to no known
+    live region (e.g. ``cwicr-fra-montreal``, ``cwicr-eng-wellington`` - no
+    CWICR data yet); the caller reports those in ``detail.skipped``.
     """
     token = (slug or "").strip().lower().rsplit("-", 1)[-1]
     if not token:
         return None
+    # The alias map must win over the index: it exists precisely to override
+    # an index entry that would otherwise answer for the same token (e.g.
+    # "gbp" also matches the ordinary UK_GBP catalogue entry the index derives
+    # from _REGION_CURRENCY, but the UK-wide slug needs GB_LONDON instead -
+    # checking the index first silently shadowed the alias below it exists
+    # for). Index-first was never deliberate; alias-first is.
+    if token in _CITY_TOKEN_ALIASES:
+        return _CITY_TOKEN_ALIASES[token]
     index = _build_city_index()
-    if token in index:
-        return index[token]
-    return _CITY_TOKEN_ALIASES.get(token)
+    return index.get(token)
 
 
 # ── Orchestrator ─────────────────────────────────────────────────────────────

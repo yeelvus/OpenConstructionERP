@@ -59,6 +59,7 @@ def _column_type(table: str, column: str) -> str | None:
     return None
 
 
+# data-rewrite-ack: table=oe_requirements_gate_result growth=tenure rows=one row per gate evaluation over a project's life, not bounded by a catalogue
 def upgrade() -> None:
     col_type = _column_type(TABLE_NAME, COLUMN_NAME)
     if col_type is None:

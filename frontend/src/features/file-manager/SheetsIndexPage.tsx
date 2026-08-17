@@ -65,7 +65,7 @@ const inputCls =
 /** Modules this register reads from and hands off to. Written out rather than
  *  derived so the row names real destinations, and reusing the sidebar's own
  *  label keys means a link here never drifts from the menu entry it points at. */
-const PULLS_FROM = [{ key: 'nav.project_files', def: 'Project files', to: '/files' }];
+const PULLS_FROM = [{ key: 'nav.documents', def: 'Documents', to: '/files' }];
 
 const FEEDS = [
   { key: 'nav.plan_room', def: 'Plan Room', to: '/plan-room' },
@@ -336,7 +336,7 @@ export function SheetsIndexPage() {
       <Breadcrumb
         items={[
           { label: t('nav.dashboard', { defaultValue: 'Dashboard' }), to: '/' },
-          { label: t('files.title', { defaultValue: 'Files' }), to: '/files' },
+          { label: t('nav.documents', { defaultValue: 'Documents' }), to: '/files' },
           ...(projectName ? [{ label: projectName }] : []),
           { label: t('sheets.title', { defaultValue: 'Sheets' }) },
         ]}
@@ -376,6 +376,7 @@ export function SheetsIndexPage() {
             onAdd={insights.addCustom}
             onUpdate={insights.updateCustom}
             onRemove={insights.removeCustom}
+            onCollapse={() => insights.setOpen(false)}
           />
 
           {/* Discipline filter chips */}

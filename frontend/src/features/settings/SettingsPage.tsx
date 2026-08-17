@@ -7,6 +7,7 @@ import { getIntlLocale } from '@/shared/lib/formatters';
 import { TranslationManager } from './TranslationManager';
 import { BackupRestore } from './BackupRestore';
 import { RegionalSettings } from './RegionalSettings';
+import { EInvoiceSettings } from './EInvoiceSettings';
 import { SettingsTeamPanel } from './SettingsTeamPanel';
 import { WebhookLeads } from './WebhookLeads';
 import VectorStatusCard from './VectorStatusCard';
@@ -35,6 +36,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Layers,
+  ReceiptText,
   LogOut,
   Trash2,
   ChevronRight,
@@ -1241,7 +1243,7 @@ function DemoLoginAdminRow() {
 
 // ── Tab definitions ──────────────────────────────────────────────────────────
 
-type SettingsTab = 'general' | 'dashboard' | 'team' | 'account' | 'regional' | 'converters' | 'ai' | 'security' | 'integrations' | 'audit' | 'advanced';
+type SettingsTab = 'general' | 'dashboard' | 'team' | 'account' | 'regional' | 'einvoice' | 'converters' | 'ai' | 'security' | 'integrations' | 'audit' | 'advanced';
 
 interface TabDef {
   id: SettingsTab;
@@ -1267,6 +1269,7 @@ const TABS: readonly TabDef[] = [
   { id: 'account',      labelKey: 'settings.tab_account',      defaultLabel: 'Account',      icon: User,     descKey: 'settings.tab_account_desc',      descDefault: 'Password and sign out' },
   { id: 'team',         labelKey: 'settings.tab_team',         defaultLabel: 'Team & Plan',  icon: Users,    descKey: 'settings.tab_team_desc',         descDefault: 'Members, roles, and license' },
   { id: 'regional',     labelKey: 'settings.tab_regional',     defaultLabel: 'Regional',     icon: Globe,    descKey: 'settings.tab_regional_desc',     descDefault: 'Language, timezone, and formats' },
+  { id: 'einvoice',     labelKey: 'settings.tab_einvoice',     defaultLabel: 'E-invoice',    icon: ReceiptText, descKey: 'settings.tab_einvoice_desc',  descDefault: 'Seller identity and bank account for electronic invoices' },
   { id: 'converters',   labelKey: 'settings.tab_converters',   defaultLabel: 'Converters',  icon: Layers,   descKey: 'settings.tab_converters_desc',   descDefault: 'DDC converters - installed versions and GitHub sources' },
   { id: 'ai',           labelKey: 'settings.tab_ai',           defaultLabel: 'AI',           icon: Sparkles, descKey: 'settings.tab_ai_desc',           descDefault: 'AI provider and semantic search' },
   { id: 'security',     labelKey: 'settings.tab_security',     defaultLabel: 'Data & Security', icon: ShieldCheck, descKey: 'settings.tab_security_desc', descDefault: 'Where your data lives and what leaves this instance' },
@@ -1398,9 +1401,18 @@ export function SettingsPage() {
   // permission stays authoritative; this just keeps the strip tidy.
   const userRole = useAuthStore((s) => s.userRole);
   const canViewAudit = userRole === 'admin' || userRole === 'manager';
+  // Seller identity and the bank account are Manager+ for the same reason:
+  // saving them is `finance.einvoice_settings`, so the only action this panel
+  // offers would 403 for anyone else, and a form that cannot be submitted is
+  // the dead end this screen was built to remove.
+  const canEditEInvoice = userRole === 'admin' || userRole === 'manager';
   const visibleTabs = useMemo(
-    () => TABS.filter((tab) => tab.id !== 'audit' || canViewAudit),
-    [canViewAudit],
+    () =>
+      TABS.filter(
+        (tab) =>
+          (tab.id !== 'audit' || canViewAudit) && (tab.id !== 'einvoice' || canEditEInvoice),
+      ),
+    [canViewAudit, canEditEInvoice],
   );
 
   const rawTab = searchParams.get('tab') ?? '';
@@ -1908,6 +1920,13 @@ export function SettingsPage() {
           {activeTab === 'security' && (
             <div className="lg:col-span-2">
               <DataSecurityPanel />
+            </div>
+          )}
+
+          {/* ── E-INVOICE ────────────────────────────────────────── */}
+          {activeTab === 'einvoice' && canEditEInvoice && (
+            <div className="lg:col-span-2">
+              <EInvoiceSettings />
             </div>
           )}
 

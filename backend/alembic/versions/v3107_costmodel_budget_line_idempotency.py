@@ -54,6 +54,7 @@ def _has_index(
 # ── upgrade ─────────────────────────────────────────────────────────────
 
 
+# data-rewrite-ack: table=oe_costmodel_budget_line growth=tenure rows=one row per BOQ position tracked for budget/commitment/actuals, grows in lockstep with oe_boq_position
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)

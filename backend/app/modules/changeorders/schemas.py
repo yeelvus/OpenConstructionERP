@@ -17,6 +17,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.modules.changeorders.intl import REASON_CATEGORY_PATTERN
+
 # Bound ints at PostgreSQL INT4 max - anything above is clearly bad input and
 # would overflow the underlying column.
 _INT32_MAX = 2_147_483_647
@@ -80,7 +82,7 @@ class ChangeOrderCreate(BaseModel):
     description: str = Field(default="", max_length=5000)
     reason_category: str = Field(
         default="client_request",
-        pattern=r"^(client_request|design_change|unforeseen|regulatory|error)$",
+        pattern=REASON_CATEGORY_PATTERN,
     )
     schedule_impact_days: int = Field(default=0, ge=0, le=_INT32_MAX)
     # Empty when the caller does not specify one - the service resolves it
@@ -123,7 +125,7 @@ class ChangeOrderUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=5000)
     reason_category: str | None = Field(
         default=None,
-        pattern=r"^(client_request|design_change|unforeseen|regulatory|error)$",
+        pattern=REASON_CATEGORY_PATTERN,
     )
     schedule_impact_days: int | None = Field(default=None, ge=0, le=_INT32_MAX)
     currency: str | None = Field(default=None, max_length=10)

@@ -38,6 +38,27 @@ interface ChangelogEntry {
 // date, title and meaning intact; trim the prose, not the facts.
 const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '14.8.1',
+    date: '2026-08-12',
+    tag: 'NEW',
+    summary:
+      'The file module is called Documents in all forty languages, and a module can introduce itself in the reader\'s own language. An electronic invoice reads the buyer address from the contact it already names, raises its buyer findings on the screen that now holds the buyer, follows the German profile rules to the letter, and refuses an address that is only a country. Desktop releases answer for their own signatures: a backfill can sign bytes that already shipped, and an unsigned Windows build says so. Lists stop looking complete when they are merely full, totals survive the page envelope, the product serves its own typefaces, and the Spanish and Portuguese locales got their diacritics and their own documented wording back.',
+  },
+  {
+    version: '14.8.0',
+    date: '2026-08-11',
+    tag: 'NEW',
+    summary:
+      'A foreman with no signal records the day on the device and it reaches the office exactly once, because every logical day carries a key minted on the device and a redelivery returns the timesheet the first delivery produced rather than writing a second one. The seller identity, tax registration and bank account an electronic invoice cannot be issued without now have a screen, are held once for the company and merged beneath whatever an individual invoice says, and the account is checked against its own ISO 7064 check digits on the way in. An invoice no longer names Germany for a firm that never chose a country, so an invoice with no buyer country is refused under BR-11 instead of exporting a false statement about where a legal person is established. Overdue deadline notifications reach the managers again after one unresolvable row had been silencing the whole sweep on every tick, and Portuguese now reads as European Portuguese rather than Brazilian.',
+  },
+  {
+    version: '14.7.0',
+    date: '2026-08-11',
+    tag: 'NEW',
+    summary:
+      'A register can be described inside the product and installed into the running server a moment later, into a module directory belonging to the instance so an upgrade cannot carry it away, with every generated file on screen before anything is written. The three statutory modules that shipped over the API with no screens now have them, along with cost matching, currencies, earned value and the inbound email reader, so every mounted module has a way in from the product. An electronic invoice is checked against the rules a receiver will actually cite and can finally be issued from a screen, carries a different VAT rate on every line, and relates its embedded XML as an alternative the way Factur-X and ZUGFeRD require. A tender in Chile, Colombia and Brazil is priced the way each country reads it, a currency with no minor unit stops printing cents on a public tender, a DXF opens without the converter binary it never needed, a worker day is costed once from whichever field surface recorded it, an upgrade started from inside the product stops reporting a failure while it is still running, and the platform reads in 40 languages, up from 29.',
+  },
+  {
     version: '14.6.0',
     date: '2026-08-06',
     tag: 'FIX',

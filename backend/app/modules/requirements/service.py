@@ -27,17 +27,20 @@ from app.modules.requirements.models import (
     GateResult,
     Requirement,
     RequirementDeliverable,
+    RequirementPositionLink,
     RequirementSet,
 )
 from app.modules.requirements.repository import (
     GateResultRepository,
     RequirementDeliverableRepository,
+    RequirementPositionLinkRepository,
     RequirementRepository,
     RequirementSetRepository,
 )
 from app.modules.requirements.schemas import (
     DeliverableCreate,
     DeliverableUpdate,
+    PositionLinkCreate,
     RequirementCreate,
     RequirementSetCreate,
     RequirementUpdate,
@@ -61,6 +64,40 @@ async def _safe_publish(name: str, data: dict[str, Any]) -> None:
         logger.debug("Failed to publish requirements event '%s'", name, exc_info=True)
 
 
+#: Fields the ORM spells differently from the schema, or stores differently.
+#: Everything not named here is copied straight across.
+_CREATE_RENAMES: dict[str, str] = {"metadata": "metadata_"}
+
+
+def _requirement_from_create(
+    set_id: uuid.UUID,
+    data: RequirementCreate,
+    user_id: str = "",
+) -> Requirement:
+    """Build a ``Requirement`` row from a validated create payload.
+
+    Derived from the schema rather than written out field by field. Two callers
+    used to name every column themselves, which meant a field added to
+    ``RequirementCreate`` was accepted by the API, validated, and then dropped
+    on the floor by both of them - silently, because nothing compares the two
+    lists. Anything the schema validates now reaches the row.
+
+    ``confidence`` is the one genuine conversion: the schema takes a float in
+    [0, 1] and the column stores the text of it.
+    """
+    fields = data.model_dump()
+    confidence = fields.pop("confidence", None)
+    for schema_name, orm_name in _CREATE_RENAMES.items():
+        if schema_name in fields:
+            fields[orm_name] = fields.pop(schema_name)
+    return Requirement(
+        requirement_set_id=set_id,
+        created_by=user_id,
+        confidence=str(confidence) if confidence is not None else None,
+        **fields,
+    )
+
+
 # Gate definitions
 GATE_NAMES: dict[int, str] = {
     1: "Completeness",
@@ -79,6 +116,7 @@ class RequirementsService:
         self.req_repo = RequirementRepository(session)
         self.gate_repo = GateResultRepository(session)
         self.deliverable_repo = RequirementDeliverableRepository(session)
+        self.link_repo = RequirementPositionLinkRepository(session)
 
     # ── RequirementSet CRUD ──────────────────────────────────────────────
 
@@ -94,6 +132,7 @@ class RequirementsService:
             description=data.description,
             source_type=data.source_type,
             source_filename=data.source_filename,
+            vocabulary=data.vocabulary,
             created_by=user_id,
             metadata_=data.metadata,
         )
@@ -251,21 +290,7 @@ class RequirementsService:
         """Add a requirement to a set."""
         await self.get_set(set_id)  # Verify set exists
 
-        item = Requirement(
-            requirement_set_id=set_id,
-            entity=data.entity,
-            attribute=data.attribute,
-            constraint_type=data.constraint_type,
-            constraint_value=data.constraint_value,
-            unit=data.unit,
-            category=data.category,
-            priority=data.priority,
-            confidence=str(data.confidence) if data.confidence is not None else None,
-            source_ref=data.source_ref,
-            notes=data.notes,
-            created_by=user_id,
-            metadata_=data.metadata,
-        )
+        item = _requirement_from_create(set_id, data, user_id)
         item = await self.req_repo.create(item)
         logger.info(
             "Requirement added: %s.%s to set %s",
@@ -356,24 +381,7 @@ class RequirementsService:
         """Bulk add requirements to a set."""
         await self.get_set(set_id)  # Verify set exists
 
-        items = [
-            Requirement(
-                requirement_set_id=set_id,
-                entity=data.entity,
-                attribute=data.attribute,
-                constraint_type=data.constraint_type,
-                constraint_value=data.constraint_value,
-                unit=data.unit,
-                category=data.category,
-                priority=data.priority,
-                confidence=(str(data.confidence) if data.confidence is not None else None),
-                source_ref=data.source_ref,
-                notes=data.notes,
-                created_by=user_id,
-                metadata_=data.metadata,
-            )
-            for data in items_data
-        ]
+        items = [_requirement_from_create(set_id, data, user_id) for data in items_data]
         created = await self.req_repo.bulk_create(items)
         logger.info("Bulk added %d requirements to set %s", len(created), set_id)
         # Publish a created event per row so the vector indexer embeds them,
@@ -419,6 +427,21 @@ class RequirementsService:
             linked_position_id=position_id,
             status="linked",
         )
+        # The column holds the most recent position and nothing else, which is
+        # the behaviour this route has always had. The link table is what
+        # remembers the rest, so this route writes there too: linking A and then
+        # B used to drop A on the floor, and a requirement that reports it
+        # governs positions has to keep the ones it was given.
+        if await self.link_repo.get(req_id, position_id) is None:
+            await self.link_repo.create(
+                RequirementPositionLink(
+                    requirement_id=req_id,
+                    position_id=position_id,
+                    link_source="manual",
+                    confirmed_by="",
+                    notes="",
+                )
+            )
         await self.session.refresh(item)
 
         logger.info("Requirement %s linked to position %s", req_id, position_id)
@@ -432,6 +455,149 @@ class RequirementsService:
             },
         )
         return item
+
+    async def attach_position(
+        self,
+        req_id: uuid.UUID,
+        data: PositionLinkCreate,
+        user_id: str = "",
+    ) -> RequirementPositionLink:
+        """Attach a requirement to one more priced position.
+
+        Additive, unlike :meth:`link_to_position`, which can only hold the most
+        recent one. Attaching a position that is already attached returns the
+        existing link rather than raising: pressing the button twice is not an
+        error, and letting the unique constraint decide would surface as a 500.
+        """
+        item = await self.req_repo.get_by_id(req_id)
+        if item is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Requirement not found",
+            )
+
+        from app.modules.boq.models import Position
+
+        position = await self.session.get(Position, data.position_id)
+        if position is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="BOQ position not found",
+            )
+
+        existing = await self.link_repo.get(req_id, data.position_id)
+        if existing is not None:
+            return existing
+
+        link = await self.link_repo.create(
+            RequirementPositionLink(
+                requirement_id=req_id,
+                position_id=data.position_id,
+                link_source=data.link_source,
+                # An AI-proposed link is a suggestion, so it is not credited to
+                # the person who happened to be looking at the screen.
+                confirmed_by="" if data.link_source == "ai" else user_id,
+                notes=data.notes,
+            )
+        )
+        logger.info(
+            "Requirement %s attached to position %s (%s)",
+            req_id,
+            data.position_id,
+            data.link_source,
+        )
+        await _safe_publish(
+            "requirements.requirement.linked_position",
+            {
+                "requirement_id": str(req_id),
+                "requirement_set_id": str(item.requirement_set_id),
+                "position_id": str(data.position_id),
+                "link_source": data.link_source,
+            },
+        )
+        return link
+
+    async def detach_position(
+        self,
+        req_id: uuid.UUID,
+        position_id: uuid.UUID,
+    ) -> None:
+        """Remove one position link.
+
+        Also clears the legacy single column when it names the same position,
+        so detaching does not leave the requirement still pointing at the work
+        through the other field.
+        """
+        item = await self.req_repo.get_by_id(req_id)
+        if item is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Requirement not found",
+            )
+
+        removed = await self.link_repo.delete(req_id, position_id)
+        if item.linked_position_id == position_id:
+            await self.req_repo.update_fields(req_id, linked_position_id=None)
+            removed = True
+        if not removed:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Requirement is not linked to that position",
+            )
+
+        await self.session.refresh(item)
+        await _safe_publish(
+            "requirements.requirement.updated",
+            {
+                "requirement_id": str(req_id),
+                "requirement_set_id": str(item.requirement_set_id),
+            },
+        )
+
+    async def list_position_links(self, req_id: uuid.UUID) -> list[RequirementPositionLink]:
+        """Every position link on one requirement."""
+        if await self.req_repo.get_by_id(req_id) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Requirement not found",
+            )
+        return await self.link_repo.list_for_requirement(req_id)
+
+    async def get_position_project_id(self, position_id: uuid.UUID) -> uuid.UUID:
+        """The project a BOQ position belongs to, for the IDOR guard.
+
+        Needed because the reverse lookup is addressed by position rather than
+        by requirement set, so there is no set to read the project off. Without
+        it the global ``requirements.read`` role, which is not project-scoped,
+        would read any project's requirements through a position id.
+        """
+        from app.modules.boq.models import BOQ, Position
+
+        stmt = select(BOQ.project_id).join(Position, Position.boq_id == BOQ.id).where(Position.id == position_id)
+        project_id = (await self.session.execute(stmt)).scalar_one_or_none()
+        if project_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="BOQ position not found",
+            )
+        return project_id
+
+    async def requirements_for_position(self, position_id: uuid.UUID) -> list[Requirement]:
+        """Every requirement governing one priced position.
+
+        The direction a quantity surveyor reads: open a bill item, see what it
+        has to satisfy. Reads both the link table and the legacy column, so a
+        requirement linked before the table existed is not invisible here.
+        """
+        links = await self.link_repo.list_for_position(position_id)
+        ids = {link.requirement_id for link in links}
+        legacy = await self.req_repo.list_by_linked_position(position_id)
+        found = {item.id: item for item in legacy}
+        for req_id in ids - set(found):
+            item = await self.req_repo.get_by_id(req_id)
+            if item is not None:
+                found[req_id] = item
+        return sorted(found.values(), key=lambda r: (r.created_at, str(r.id)))
 
     # ── Link to BIM elements (cross-module spatial linkage) ──────────────
 

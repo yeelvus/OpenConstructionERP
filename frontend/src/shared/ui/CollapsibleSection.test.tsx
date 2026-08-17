@@ -34,14 +34,14 @@ function renderSection(storageKey = KEY) {
   );
 }
 
-/** The registry the re-open pill reads. */
+/** The registry the top-bar re-open icon reads. */
 function storeEntries() {
   return useModuleInfoStore.getState().entries;
 }
 
 beforeEach(() => {
   window.localStorage.clear();
-  useModuleInfoStore.setState({ entries: [], guideKeys: [] });
+  useModuleInfoStore.setState({ entries: [] });
 });
 
 describe('CollapsibleSection', () => {

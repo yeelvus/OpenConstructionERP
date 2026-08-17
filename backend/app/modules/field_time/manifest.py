@@ -19,7 +19,18 @@ manifest = ModuleManifest(
     # (plant) and variations (daywork order). Declaring them as hard
     # dependencies keeps the load order correct and stops any of those tables
     # from being disabled while a timesheet still references them.
-    depends=["oe_projects", "oe_resources", "oe_equipment", "oe_variations"],
+    #
+    # Field diary owns the shared field sync ledger, the table that remembers
+    # which offline entry keys have already been applied. Without it a day
+    # recorded on a phone would be booked again on every replay, so it is a hard
+    # dependency and not a best-effort read.
+    depends=[
+        "oe_projects",
+        "oe_resources",
+        "oe_equipment",
+        "oe_variations",
+        "oe_field_diary",
+    ],
     auto_install=True,
     enabled=True,
 )

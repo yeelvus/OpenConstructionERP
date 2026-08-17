@@ -61,6 +61,7 @@ const playbook: Playbook = {
       whyDefault:
         "Repetitive work only flows when the zones are even and the sequence is the same everywhere. This is the groundwork for a takt plan.",
       moduleLabel: "Schedule",
+      moduleLabelKey: "nav.schedule",
       to: "/schedule",
     },
     {
@@ -102,6 +103,7 @@ const playbook: Playbook = {
       whyDefault:
         "A steady takt beat stops trades tripping over each other, and it makes a slip obvious the day it happens, not a month later.",
       moduleLabel: "Takt",
+      moduleLabelKey: "nav.takt",
       to: "/takt",
     },
     {
@@ -143,6 +145,7 @@ const playbook: Playbook = {
       whyDefault:
         "If one crew cannot hold the beat, the whole train stalls behind it. Levelling early is cheaper than chasing labour on site.",
       moduleLabel: "Resources",
+      moduleLabelKey: "nav.resources",
       to: "/projects/:projectId/resources",
     },
     {
@@ -184,6 +187,7 @@ const playbook: Playbook = {
       whyDefault:
         "A takt plan only works when every foreman knows their beat. Publishing it sets the shared rhythm the whole job runs to.",
       moduleLabel: "Reports",
+      moduleLabelKey: "nav.reports",
       to: "/reports",
     },
   ],

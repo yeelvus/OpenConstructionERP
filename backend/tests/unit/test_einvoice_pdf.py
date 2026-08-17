@@ -1,6 +1,7 @@
 """Unit tests for the Factur-X / ZUGFeRD hybrid PDF builder."""
 
 import io
+import xml.etree.ElementTree as ET
 from decimal import Decimal
 
 import pytest
@@ -79,6 +80,50 @@ def test_hybrid_pdf_embeds_the_cii_xml():
     meta = root["/Metadata"].get_data()
     assert b"ConformanceLevel" in meta
     assert b"factur-x.xml" in meta
+
+
+def test_the_attachment_is_related_as_an_alternative_rendering():
+    """The one property a lenient reader will not notice is missing.
+
+    Factur-X 1.0 and ZUGFeRD 2.1 require /AFRelationship /Alternative, because
+    the XML is the same invoice in another form. Under /Data a receiver that
+    picks its attachment by relationship finds no invoice at all, while the
+    file still opens, still holds a correctly named factur-x.xml and still
+    passes every check that looks only at the name or the bytes.
+    """
+    ei = build_einvoice(invoice=_invoice(), line_items=_lines(), profile="zugferd")
+    reader = PdfReader(io.BytesIO(build_facturx_pdf(ei)))
+
+    associated = reader.trailer["/Root"]["/AF"]
+    assert len(associated) == 1
+    spec = associated[0].get_object()
+    assert spec["/AFRelationship"] == "/Alternative"
+    assert spec["/F"] == "factur-x.xml"
+    assert spec["/UF"] == "factur-x.xml"
+
+
+def test_the_embedded_invoice_reads_back_as_the_invoice_that_was_sent():
+    """Read the hybrid the way a receiver does: open the PDF, parse the XML.
+
+    Comparing the attachment against ``build_cii_xml`` only proves the same
+    function ran twice. Parsing it and reading the business terms out proves
+    the document a receiver opens carries the figures the sender approved.
+    """
+    ei = build_einvoice(invoice=_invoice(), line_items=_lines(), profile="zugferd")
+    reader = PdfReader(io.BytesIO(build_facturx_pdf(ei)))
+    root = ET.fromstring(reader.attachments["factur-x.xml"][0])
+
+    ram = "{urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100}"
+    rsm = "{urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100}"
+
+    # Anchored on ExchangedDocument, because ExchangedDocumentContext carries a
+    # ram:ID of its own holding the specification URN, and a loose .//ram:ID
+    # would read that one and still look like it found the invoice number.
+    number = root.find(f"{rsm}ExchangedDocument/{ram}ID")
+    payable = root.find(f".//{ram}SpecifiedTradeSettlementHeaderMonetarySummation/{ram}GrandTotalAmount")
+
+    assert number is not None and number.text == "RE-2026-0100"
+    assert payable is not None and Decimal(payable.text or "0") == ei.grand_total
 
 
 def test_hybrid_pdf_rejects_ubl_profiles():

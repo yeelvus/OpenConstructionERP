@@ -59,6 +59,7 @@ const playbook: Playbook = {
       whyDefault:
         "Cost-loading a model built on gaps just spreads those gaps across the programme. A complete priced bill is the foundation the whole cash curve stands on.",
       moduleLabel: "BOQ",
+      moduleLabelKey: "nav.boq",
       to: "/boq",
     },
     {
@@ -97,6 +98,7 @@ const playbook: Playbook = {
       whyDefault:
         "Cost tied to geometry and time turns a flat total into a picture of where the money is and when it leaves. It is also how you catch a package that is priced but has no home in the model.",
       moduleLabel: "5D Cost Model",
+      moduleLabelKey: "nav.5d_cost_model",
       to: "/5d",
     },
     {
@@ -135,6 +137,7 @@ const playbook: Playbook = {
       whyDefault:
         "A cash curve driven by the actual programme tells the client and the bank when the money is really needed. When the programme slips, the forecast spend moves with it instead of lying to everyone.",
       moduleLabel: "Schedule",
+      moduleLabelKey: "nav.schedule",
       to: "/schedule",
     },
   ],

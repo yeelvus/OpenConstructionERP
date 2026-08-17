@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 # the business fact ("labour was logged"), matching the cost/payroll vocab.
 LABOUR_LOGGED = "fieldreports.labour.logged"
 
+# Its undo. A separate name rather than a negative payload: the cost calculator
+# skips non-positive hours, so "reversed" has to be said in the name for the
+# subscriber to know which direction the money moves.
+LABOUR_REVERSED = "fieldreports.labour.reversed"
+
 
 def publish_labour_logged(
     *,
@@ -42,6 +47,7 @@ def publish_labour_logged(
     status: str,
     rows: list[dict[str, Any]],
     actor_id: str | None = None,
+    source: str = "fieldreports",
 ) -> None:
     """Publish ``fieldreports.labour.logged`` with the workforce rows inline.
 
@@ -55,6 +61,12 @@ def publish_labour_logged(
             ``cost_rate``, ``currency``, ``overtime_hours``, ``headcount``,
             ``company``, ``wbs_id``, ``cost_category``.
         actor_id: User who triggered the transition, if known.
+        source: Which module the hours were captured in - ``fieldreports``,
+            ``field_diary`` (a phone) or ``field_time`` (the desktop
+            timesheet). Three modules publish this event and the bus-level
+            source names only the one that owns it, so the reader cannot tell
+            them apart without this. It ends up on the worker-day claim, which
+            is what an approver reads when they ask why a day was skipped.
 
     The publish is detached (fire-and-forget) so the submitting request can
     commit and release its writer lock before subscribers open a second
@@ -72,6 +84,7 @@ def publish_labour_logged(
             "status": status,
             "rows": rows,
             "actor_id": actor_id,
+            "source_module": source,
         },
         source_module="oe_fieldreports",
     )
@@ -83,4 +96,64 @@ def publish_labour_logged(
     )
 
 
-__all__ = ["LABOUR_LOGGED", "publish_labour_logged"]
+def publish_labour_reversed(
+    *,
+    report_id: str,
+    reverses_id: str,
+    project_id: str,
+    report_date: str,
+    rows: list[dict[str, Any]],
+    actor_id: str | None = None,
+    source: str = "fieldreports",
+) -> None:
+    """Publish ``fieldreports.labour.reversed`` - take posted labour back off.
+
+    The counterpart of :func:`publish_labour_logged`. A document that posted
+    labour actuals can be undone, and until this existed the money it posted
+    stayed on the budget line forever and its worker-day claims stayed held, so
+    a reversal permanently stranded those days: neither the corrected sheet nor
+    the phone could ever cost them again.
+
+    Args:
+        report_id: The *reversing* document's id, used as its own replay key.
+        reverses_id: The original document whose actuals are being taken back.
+            The claims released are only the ones that document holds - a day
+            costed by somebody else is not this reversal's to give away.
+        project_id: Owning project UUID as a string.
+        report_date: ISO ``YYYY-MM-DD`` of the work being reversed.
+        rows: The reversing document's own rows, hours positive. The sign lives
+            in the event name, not in the numbers: reversal rows mirror the
+            original verbatim, and a negative here would be skipped by the
+            cost calculator rather than subtracted.
+        actor_id: User who reversed it, if known.
+        source: Which module reversed - matched against the claim's own
+            ``source_module`` so one module cannot release another's day.
+
+    Detached like its sibling: the reversing request is still inside its own
+    transaction when this fires.
+    """
+    if not rows:
+        return
+    event_bus.publish_detached(
+        LABOUR_REVERSED,
+        {
+            "report_id": report_id,
+            "reverses_id": reverses_id,
+            "project_id": project_id,
+            "report_date": report_date,
+            "rows": rows,
+            "actor_id": actor_id,
+            "source_module": source,
+        },
+        source_module="oe_fieldreports",
+    )
+    logger.info(
+        "Published %s for reversal=%s of report=%s (%d rows)",
+        LABOUR_REVERSED,
+        report_id,
+        reverses_id,
+        len(rows),
+    )
+
+
+__all__ = ["LABOUR_LOGGED", "LABOUR_REVERSED", "publish_labour_logged", "publish_labour_reversed"]

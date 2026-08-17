@@ -700,7 +700,8 @@ function CrossLinksPanel({
 
   const schedulesQ = useQuery<Schedule[]>({
     queryKey: ['portfolio', 'schedules', activeProjectId],
-    queryFn: () => scheduleApi.listSchedules(activeProjectId as string),
+    queryFn: () =>
+      scheduleApi.listSchedules(activeProjectId as string).then((page) => page.items),
     enabled: !!activeProjectId,
   });
 

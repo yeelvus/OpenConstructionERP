@@ -60,7 +60,7 @@ const playbook: Playbook = {
       whyDefault:
         "Every number downstream traces back to this one drawing. Filing it against the project up front keeps the measurement, the bill and the outputs locked to a single revision rather than scattered copies.",
       moduleLabel: "Documents",
-      moduleLabelKey: "nav.project_files",
+      moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },
     {

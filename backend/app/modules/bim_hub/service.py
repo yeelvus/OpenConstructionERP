@@ -75,6 +75,7 @@ from app.modules.bim_hub.schemas import (
     FederationUpdate,
     QuantityMapApplyRequest,
     QuantityMapApplyResult,
+    RequirementBrief,
 )
 from app.modules.boq.models import BOQ, Position
 
@@ -1706,18 +1707,19 @@ class BIMHubService:
                 matching = element_id_strs & req_ids_as_str
                 if not matching:
                     continue
-                brief = {
-                    "id": req.id,
-                    "requirement_set_id": req.requirement_set_id,
-                    "entity": req.entity or "",
-                    "attribute": req.attribute or "",
-                    "constraint_type": req.constraint_type or "equals",
-                    "constraint_value": req.constraint_value or "",
-                    "unit": req.unit or "",
-                    "category": req.category or "general",
-                    "priority": req.priority or "must",
-                    "status": req.status or "open",
-                }
+                # Built from the brief schema's own field list rather than
+                # written out by hand. A hand-written list cannot notice a
+                # field the schema gained, so the field would validate, ship
+                # in the response model and be empty in every element forever.
+                # An empty value is dropped instead of passed through, which
+                # is what the previous ``or "must"`` spelling did per key:
+                # pydantic then applies the field's own default.
+                brief: dict[str, Any] = {}
+                for name in RequirementBrief.model_fields:
+                    value = getattr(req, name, None)
+                    if value is None or value == "":
+                        continue
+                    brief[name] = value
                 for eid in element_ids:
                     if str(eid) in matching:
                         requirement_briefs_by_element_id.setdefault(eid, []).append(brief)

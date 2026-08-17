@@ -58,8 +58,8 @@ const playbook: Playbook = {
       whyKey: "cases.set_up_the_asset_register_for_fm.step.capture.why",
       whyDefault:
         "The register is only useful if it matches the building. An asset that was swapped during construction but never updated in the list leaves the operator maintaining a machine that was never fitted.",
-      moduleLabel: "Project files",
-      moduleLabelKey: "nav.project_files",
+      moduleLabel: "Documents",
+      moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },
     {

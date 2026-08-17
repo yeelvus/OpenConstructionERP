@@ -63,13 +63,17 @@ You do not normally build all three platforms by hand. The workflow at `.github/
 
 ## Signing the Windows installers
 
-The Windows `.exe` and `.msi` are signed with an Authenticode certificate after they are built. The certificate is a GlobalSign certificate held in an Azure Key Vault HSM, and the private key never leaves the vault. The release workflow signs each Windows installer by calling out to the vault with AzureSignTool, then re-uploads the signed files over the unsigned ones, so the binaries on the published release are the signed binaries.
+The Windows `.exe` and `.msi` are not signed. No code signing certificate exists for this project yet, so every Windows installer published so far is unsigned, and Windows SmartScreen warns each person who runs one. The release workflow states that on the run page rather than passing over it in silence.
 
-For signing to run, set these five repository secrets in GitHub Actions:
+The pipeline that will sign them is already in place and waiting on credentials. It signs through Azure Key Vault with AzureSignTool, so the private key stays inside the vault and never reaches the runner, then re-uploads the signed files over the unsigned ones while the release is still a draft. Turning it on takes five repository secrets and one repository variable, and no code change.
 
-AZURE_KV_URL is the Key Vault URL, for example https://myvault.vault.azure.net. AZURE_KV_CERT_NAME is the certificate name inside the vault. AZURE_KV_CLIENT_ID is the service principal application (client) id. AZURE_KV_CLIENT_SECRET is the Key Vault client secret for that service principal, and it must be a freshly rotated secret. AZURE_KV_TENANT_ID is the Entra (Azure AD) tenant id.
+AZURE_KV_URL is the Key Vault URL, for example https://myvault.vault.azure.net. AZURE_KV_CERT_NAME is the certificate name inside the vault. AZURE_KV_CLIENT_ID is the service principal application (client) id. AZURE_KV_CLIENT_SECRET is the Key Vault client secret for that service principal, and it must be a freshly rotated secret. AZURE_KV_TENANT_ID is the Entra (Azure AD) tenant id. The variable WINDOWS_SIGNING_REQUIRED, set to true, makes a later disappearance of those secrets fail the build instead of quietly going back to shipping unsigned installers.
 
-If these secrets are not set, on forks, on pull requests, or before you add them, the signing step skips cleanly and the build still succeeds with unsigned installers. The Linux installers are not signed. The macOS build is ad-hoc signed by the release workflow rather than fully unsigned, so it carries a valid bundle signature, but it is not yet notarized by Apple, which is why users clear the quarantine flag once with the xattr workaround documented in `docs/desktop/INSTALL.md`. The full Apple notarization path is ready to activate and is written up in `docs/desktop/MACOS_NOTARIZATION.md`, including the exact secrets, config, and workflow diff to turn it on once a Developer ID certificate is available.
+`docs/desktop/WINDOWS_SIGNING.md` is the full walkthrough: which certificate to buy, why a public CA can no longer hand you a `.pfx` file, how the vault and the Entra app registration have to be set up, and how to confirm the first signed release.
+
+With none of the secrets set, which is the state today, the signing job annotates the run, records a SKIPPED block in the job summary, and finishes green with unsigned installers. With some but not all of them set it fails and names the missing ones, because a half configured vault cannot sign anything.
+
+The Linux installers are not signed. The macOS build is ad-hoc signed by the release workflow rather than fully unsigned, so it carries a valid bundle signature, but it is not notarized by Apple, which is why users clear the quarantine flag once with the xattr workaround documented in `docs/desktop/INSTALL.md`. The full Apple notarization path is ready to activate and is written up in `docs/desktop/MACOS_NOTARIZATION.md`, including the exact secrets, config, and workflow diff to turn it on once a Developer ID certificate is available.
 
 ## Layout
 

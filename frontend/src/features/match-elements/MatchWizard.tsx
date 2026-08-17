@@ -1019,9 +1019,7 @@ function SourceStep({
                   <div className="text-[11px] text-content-tertiary">
                     {(m.model_format || '?').toUpperCase()} ·{' '}
                     {m.element_count ?? 0} elements ·{' '}
-                    {isReady
-                      ? t('match_wizard.bim_ready', 'Ready')
-                      : t('match_wizard.bim_not_ready', m.status ?? 'pending')}
+                    {isReady ? t('match_wizard.bim_ready', 'Ready') : (m.status ?? 'pending')}
                   </div>
                 </SelectableTile>
               );

@@ -266,11 +266,13 @@ ROUTER_HANDLERS: dict[str, list[str]] = {
         "delete_set",
         # Route census (test_object_scoped_routes_are_all_pinned)
         "add_requirement",
+        "attach_position",
         "bulk_add_requirements",
         "bulk_delete_requirements",
         "create_requirement_deliverable",
         "delete_requirement",
         "delete_requirement_deliverable",
+        "detach_position",
         "export_requirements",
         "export_requirements_legacy",
         "get_project_eir_matrix",
@@ -279,8 +281,12 @@ ROUTER_HANDLERS: dict[str, list[str]] = {
         "link_requirement_to_bim",
         "link_to_position",
         "list_gates",
+        "list_position_links",
         "list_requirement_deliverables",
         "requirement_similar",
+        # Addressed by position rather than by set, so it resolves the project
+        # through the bill the position sits in.
+        "requirements_for_position",
         "run_gate",
         "update_requirement",
         "update_requirement_deliverable",

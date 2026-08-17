@@ -25,8 +25,15 @@ import { MemoryRouter } from 'react-router-dom';
 
 /* ── api stub ──────────────────────────────────────────────────────── */
 
-vi.mock('@/shared/lib/api', async () => {
+vi.mock('@/shared/lib/api', async (importOriginal) => {
+  /* Spread the real module first: only the network-touching exports need
+     stubbing, and listing them exhaustively meant that the first pure
+     helper a child component reached for (`isTruncated`, via the shared
+     TruncationNotice) blew up inside render with a mocking error rather
+     than a test failure that named the missing behaviour. */
+  const actual = await importOriginal();
   return {
+    ...actual,
     apiGet: vi.fn(),
     apiPost: vi.fn(),
     apiDelete: vi.fn(),

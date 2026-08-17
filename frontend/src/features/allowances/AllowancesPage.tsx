@@ -514,6 +514,7 @@ export function AllowancesPage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       {/* How the remaining allowances roll into the whole estimate total. */}

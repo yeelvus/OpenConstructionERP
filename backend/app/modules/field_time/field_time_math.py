@@ -48,7 +48,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from typing import Any
@@ -933,6 +933,181 @@ def read_hours_config(metadata: Mapping[str, Any] | None) -> HoursConfig:
         rounding_increment=rounding,
         week_starts_on=week_starts_on,
     )
+
+
+# ── Offline capture (a day recorded on a phone with no signal) ───────────────
+#
+# A foreman in a basement, a lift shaft or a rural site records the day on the
+# phone and the entry sits in a local queue until there is signal again. The
+# timesheet that eventually lands carries a record of that journey under the
+# ``offline`` key of its metadata, and the two functions below read it.
+#
+# Nothing here decides whether a timesheet is acceptable - both findings are
+# advisory. Refusing a day because the phone that recorded it had a wrong clock,
+# or because the site had no signal for a fortnight, would destroy exactly the
+# hours this whole path exists to save.
+
+# The metadata key under which the offline journey is recorded.
+OFFLINE_METADATA_KEY = "offline"
+
+# How far ahead of the server a device clock may read before the capture stamp
+# is called wrong. Phones drift by seconds and timezone handling can cost an
+# hour, so the tolerance is generous; it still catches a device set to the wrong
+# day or year, which is the case that makes a capture time meaningless.
+OFFLINE_CLOCK_TOLERANCE_MINUTES: int = 60
+
+# A day that reaches the server later than this after it was worked is flagged
+# for whoever approves it. A fortnight is a phone that missed a whole pay cycle.
+OFFLINE_SYNC_DELAY_WARN_DAYS: int = 14
+
+
+@dataclass(frozen=True)
+class OfflineCapture:
+    """What a timesheet records about having been captured away from the network.
+
+    Attributes:
+        recorded: True when the timesheet carries an offline capture record at
+            all. False for an ordinary desk-entered timesheet, and then every
+            offline finding is skipped rather than guessed.
+        entry_key: The client-generated key that identifies this logical entry
+            across every replay of it. Empty when the record omits it.
+        captured_at: When the device says the foreman wrote the day down.
+        synced_at: When the entry actually reached the server.
+        device: A free-text device label, for tracing one phone's entries.
+    """
+
+    recorded: bool = False
+    entry_key: str = ""
+    captured_at: datetime | None = None
+    synced_at: datetime | None = None
+    device: str = ""
+
+
+def _parse_instant(value: object) -> datetime | None:
+    """Coerce a ``datetime`` or an ISO-8601 string to an aware ``datetime``.
+
+    Metadata arrives as JSON, so a capture time is a string by the time it gets
+    here. A naive value is read as UTC: the alternative is to drop it, and a
+    capture time that is merely missing a zone still orders correctly against
+    another value read the same way.
+
+    Args:
+        value: A ``datetime``, an ISO-8601 string (``Z`` suffix allowed), or
+            anything else.
+
+    Returns:
+        A timezone-aware ``datetime``, or None when the value is not a time.
+    """
+    parsed: datetime | None = None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        # ``fromisoformat`` learned "Z" in 3.11; normalise anyway so the parse
+        # does not depend on the interpreter this runs on.
+        if text.endswith(("Z", "z")):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if parsed is None:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def read_offline_capture(metadata: Mapping[str, Any] | None) -> OfflineCapture:
+    """Parse the offline capture record from a timesheet's metadata.
+
+    Any missing or malformed field degrades to "not recorded" for that field
+    rather than raising, so a phone that writes a half-formed record still gets
+    its hours in - it just yields no finding.
+
+    Args:
+        metadata: The timesheet ``metadata`` mapping, or None.
+
+    Returns:
+        An :class:`OfflineCapture`. ``recorded`` is False when the metadata
+        carries no ``offline`` mapping at all.
+    """
+    meta = metadata if isinstance(metadata, Mapping) else {}
+    raw = meta.get(OFFLINE_METADATA_KEY)
+    if not isinstance(raw, Mapping):
+        return OfflineCapture()
+    return OfflineCapture(
+        recorded=True,
+        entry_key=_clean_str(raw.get("entry_key")),
+        captured_at=_parse_instant(raw.get("captured_at")),
+        synced_at=_parse_instant(raw.get("synced_at")),
+        device=_clean_str(raw.get("device")),
+    )
+
+
+def offline_clock_ahead_minutes(
+    capture: OfflineCapture,
+    *,
+    now: datetime | None = None,
+) -> int | None:
+    """Whole minutes by which the device clock ran ahead of the server.
+
+    A capture stamp later than the moment the entry arrived is impossible: the
+    foreman cannot have written the day down after the server received it. It
+    means the phone's clock is wrong, which matters because a human reading two
+    entries side by side will believe those timestamps.
+
+    Args:
+        capture: The parsed offline record.
+        now: The instant to compare against. Defaults to the record's own
+            ``synced_at``, which is when the entry actually landed.
+
+    Returns:
+        Minutes ahead (always positive), or None when there is nothing to
+        compare - no capture time, or no arrival time to compare it with.
+    """
+    if not capture.recorded or capture.captured_at is None:
+        return None
+    reference = now if now is not None else capture.synced_at
+    if reference is None:
+        return None
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=UTC)
+    ahead = (capture.captured_at - reference).total_seconds()
+    if ahead <= 0:
+        return None
+    return int(ahead // 60)
+
+
+def offline_sync_delay_days(capture: OfflineCapture, work_date: object) -> int | None:
+    """Whole days between the day worked and the day the entry reached the server.
+
+    This is the number an approver needs: hours booked against a fortnight-old
+    day have already missed a valuation and possibly a payroll run, and the
+    approver is the last person who can catch that.
+
+    Args:
+        capture: The parsed offline record.
+        work_date: The timesheet's work date (a ``date``, or an ISO string).
+
+    Returns:
+        Whole days of delay (0 when it arrived the same day or earlier), or None
+        when either end of the span is unknown.
+    """
+    if not capture.recorded or capture.synced_at is None:
+        return None
+    worked: date | None = None
+    if isinstance(work_date, datetime):
+        worked = work_date.date()
+    elif isinstance(work_date, date):
+        worked = work_date
+    elif isinstance(work_date, str) and work_date.strip():
+        try:
+            worked = date.fromisoformat(work_date.strip()[:10])
+        except ValueError:
+            return None
+    if worked is None:
+        return None
+    delay = (capture.synced_at.date() - worked).days
+    return max(delay, 0)
 
 
 # ── Cost-code suggestions (AI-augmented, human-confirmed) ────────────────────

@@ -387,9 +387,14 @@ def test_rate_limit_dependency_present_on_quick_estimate() -> None:
             return name
         return type(call).__name__
 
+    # Asked through ``served_routes`` because current FastAPI does not copy a
+    # router's routes into the application on include: it records the include
+    # and resolves paths per request, so walking ``app.routes`` finds none of
+    # these endpoints and the sweep silently covers nothing.
+    from app.core.module_loader import served_routes
+
     seen: dict[str, list[str]] = {}
-    for route in app.routes:
-        path = getattr(route, "path", "")
+    for path, route in served_routes(app):
         if path not in guarded:
             continue
         dependant = getattr(route, "dependant", None)

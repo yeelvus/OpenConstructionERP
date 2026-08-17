@@ -6,8 +6,8 @@ map of every module that ships in the box.
 OpenConstructionERP is modular by design: every business feature (BOQ, BIM,
 takeoff, schedule, CDE, regional BOQ packs and more) is a self-contained
 module that can be enabled, disabled, installed, or replaced without touching
-the core. The current build (v10.10.0) loads 161 modules. You enable only the
-parts you need.
+the core. The current build loads 180+ modules. You enable only the parts you
+need.
 
 This file is the single entry point. Deeper material lives alongside the code
 it describes, and the links point there.
@@ -16,7 +16,7 @@ it describes, and the links point there.
 
 ## 1. The module catalog
 
-All 161 modules that load in the current build, grouped by what they do for a
+All 185 modules that load in the current build, grouped by what they do for a
 construction team. The bold name is the module's display name; the code label
 is its backend folder under `backend/app/modules/`.
 
@@ -65,6 +65,7 @@ Build and price the bill of quantities.
 - **Labor & Crew Rates** `labor_rates` - all-in labour rate build-up and composite crew rates.
 - **Resource Summary** `resource_summary` - rolls resource splits across the estimate into a procurement-ready statement.
 - **Design Options** `design_options` - compare alternative designs side by side, each with its own priced BOQ.
+- **Post-calculation** `postcalc` - reconciles the estimate against site actuals into productivity factors that feed the next estimate.
 
 ### Cost and resource data
 
@@ -105,6 +106,7 @@ converted through DDC cad2data to the canonical format, never IfcOpenShell.
 - **OpenCDE API** `opencde_api` - OpenCDE Foundation and BCF API compliance layer.
 - **Geo Hub** `geo_hub` - geospatial anchors, a 3D Tiles pipeline, imagery and terrain, plus GeoJSON and KML I/O.
 - **Point Cloud / Reality Capture** `pointcloud` - ingests laser-scan and photogrammetry exports into confirmed quantities and progress.
+- **BIM-LV Container** `bimlv` - reads and writes DIN SPEC 91350 containers linking a GAEB bill of quantities to model elements.
 
 ### Tendering and procurement
 
@@ -126,6 +128,7 @@ Plan the programme and track how it runs.
 - **Resource Planning** `resources` - people, crews, plant and subs with skills, availability and conflict detection.
 - **Progress Tracking** `progress` - percent-complete per BOQ position, period deltas, S-curves and geo-tagged field entries.
 - **Tasks** `tasks` - tasks, topics, decisions and personal items with checklists and assignment.
+- **Portfolio** `portfolio` - programme tree of projects with cross-schedule links and CPM scheduling across a subtree.
 
 ### Cost control, EVM and risk
 
@@ -165,6 +168,9 @@ Capture what happens on site.
 - **Phone Log** `phonelog` - captures calls and verbal instructions as dispute-ready records.
 - **Site Logistics & Delivery** `site_logistics` - access gates, laydown zones and a delivery booking board.
 - **Equipment & Fleet Management** `equipment` - owned and rented plant with telemetry, maintenance and internal rental billing.
+- **Site Mobilisation Readiness** `site_prep` - tracks pre-construction mobilisation items by category and derives the commencement gate status.
+- **Site Inventory** `site_inventory` - records material movements on site and derives stock on hand, waste ratio and cost variance.
+- **Site Supervision** `site_supervision` - plans and records design-team supervision visits, raising observations and feeding instructions into the change route.
 
 ### Quality, safety and compliance
 
@@ -182,6 +188,10 @@ Prove the work meets the standard.
 - **Compliance AI** `compliance_ai` - a natural-language rule builder that compiles into the validation engine.
 - **Compliance Documents** `compliance_docs` - track expiring insurance, permits, bonds and certifications.
 - **Requirements & Quality Gates** `requirements` - extract, validate and track construction requirements.
+- **Temporary Works Register** `temporary_works` - governs the safety-critical lifecycle of temporary works from design check through permit to load and strike.
+- **Credentials Registry** `credentials` - tracks professional licences and certifications with validity windows and reports who may not work today.
+- **Review Authority** `review_authority` - runs the external review cycle with an approving authority, from submission through remarks to decision.
+- **Work-type Route Classifier** `project_route` - classifies a project's work type into a delivery and permit route that gates the project once confirmed.
 
 ### Documents and CDE
 
@@ -205,6 +215,11 @@ The document backbone and file manager.
 - **File Tags** `file_tags` - project-scoped tags for every file kind with discipline and phase defaults.
 - **File Transmittals** `file_transmittals` - send-records with an auto-numbered cover sheet.
 - **Recycle Bin** `file_trash` - soft-delete and restore across the file manager kinds.
+- **Plan Room** `plan_room` - composites defect pins, markups, measurements and photos as read-only overlays on a document page.
+- **E-Signature Registry** `signing` - models who must sign a document and records attestations, hash staleness and certificate expiry.
+- **Record Publishing** `record_publishing` - publishes a project record as one signed PDF and distributes it to recipients who acknowledge receipt.
+- **Source Data Register** `source_data` - registers prerequisite source documents with validity windows, renewal reminders and a schedule-blocking flag.
+- **Authority Submission Factory** `authority_submission` - generates structured authority submissions from jurisdiction profiles for tenders, expertise packages and handover registers.
 
 ### Collaboration and communication
 
@@ -217,6 +232,8 @@ Talk, ask and decide around the work.
 - **Submittals** `submittals` - shop drawings, product data and samples with review and approval.
 - **Notifications** `notifications` - in-app notifications with per-user preferences.
 - **Contacts Directory** `contacts` - unified directory of clients, subcontractors, suppliers and consultants.
+- **Interface Register** `interface_management` - coordinates handshakes between work packages, contractors and disciplines with owners, status and closing actions.
+- **Deadlines** `deadlines` - sweeps overdue items across modules, notifying owners and escalating to managers on repeat.
 
 ### Reporting, dashboards and intelligence
 
@@ -250,6 +267,7 @@ Carbon, ESG and the building after handover.
 - **Property Development** `property_dev` - developments, plots, house types, buyer selections and handover.
 - **Accommodation** `accommodation` - worker camps, rental apartments and hotels with rooms, bookings and charges.
 - **Off-site / Prefab / DfMA** `prefab` - tracks manufactured units through the production lifecycle to installation.
+- **Defects Liability Register** `defects_liability` - tracks post-handover warranties and defect notices per subcontractor and flags entries clear for retention release.
 
 ### CRM and client engagement
 
@@ -274,6 +292,9 @@ you work.
 - **Regional Pack - Asia-Pacific** `asia_pac_pack` - AU, NZ, Japan and Singapore standards with regional currencies.
 - **Regional Pack - South Africa** `sa_pack` - SANS 1200 and ASAQS measurement, CIDB grading and preferential procurement.
 - **Regional Pack - Russia & CIS** `russia_pack` - GESN, FER and TER cost databases, VAT rates and local contract templates.
+- **Payment Clock** `payment_clock` - computes statutory payment notice dates and reports the legal consequence when a deadline passes unanswered.
+- **Withholding Tax** `tax_withholding` - computes statutory construction withholding deductions and reverse-charge VAT determinations on payments and invoices.
+- **E-invoice clearance** `einvoice_clearance` - registers and tracks the government clearance state of electronic invoices on national authority platforms.
 
 ### Platform, admin and framework
 
@@ -297,6 +318,9 @@ The plumbing every other module builds on.
 - **Client Error Sink** `client_errors` - receives anonymised frontend error reports into the logging pipeline.
 - **Admin** `admin` - gated operator endpoints for QA pipelines and fixtures.
 - **Architecture Map** `architecture_map` - an interactive visual map of the system architecture.
+- **Module Builder** `module_builder` - describes a module in a few steps and has the platform build and install it after review.
+- **Onboarding** `onboarding` - runs first-run provisioning such as cost-base import and sample project install in the background.
+- **Cases** `cases` - lets a team author, start and pin its own walkthroughs of how work is done on a project.
 
 ---
 

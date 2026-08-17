@@ -7,9 +7,9 @@
  * The page owns the open/hide state (see useModuleInsights) and passes it in so
  * the header toggle and this panel stay in lock-step.
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { BarChart3, FlaskConical, Plus } from 'lucide-react';
+import { BarChart3, ChevronUp, FlaskConical, Plus } from 'lucide-react';
 import { Button } from '@/shared/ui';
 import { computeKpi, measureFormat } from './aggregate';
 import { KpiTile } from './charts';
@@ -27,6 +27,12 @@ interface InsightsPanelProps {
   onAdd: (def: InsightDef) => void;
   onUpdate: (def: InsightDef) => void;
   onRemove: (id: string) => void;
+  /**
+   * Closes the panel. Required rather than optional so the compiler, not a
+   * reviewer's eye, guarantees every module offers the footer control: a page
+   * that forgets it would look finished and quietly lack the affordance.
+   */
+  onCollapse: () => void;
 }
 
 export function InsightsPanel({
@@ -39,10 +45,12 @@ export function InsightsPanel({
   onAdd,
   onUpdate,
   onRemove,
+  onCollapse,
 }: InsightsPanelProps) {
   const { t } = useTranslation();
   const [building, setBuilding] = useState(false);
   const [editing, setEditing] = useState<InsightDef | null>(null);
+  const sectionRef = useRef<HTMLElement>(null);
 
   const dsMap = useMemo(() => {
     const m: Record<string, InsightDataset> = {};
@@ -79,8 +87,21 @@ export function InsightsPanel({
     else onAdd(def);
   };
 
+  const collapse = () => {
+    // The control that brings the panel back sits in the page header, above
+    // this section. A reader who scrolled down through tall charts would lose
+    // both the panel and every visible way to restore it in the same click, so
+    // pull the top edge back into view first. When the panel is already on
+    // screen this does nothing, which is why it is a condition and not a
+    // scroll: aligning unconditionally would push that same header out of view.
+    const el = sectionRef.current;
+    if (el && el.getBoundingClientRect().top < 0) el.scrollIntoView({ block: 'start' });
+    onCollapse();
+  };
+
   return (
     <section
+      ref={sectionRef}
       className="animate-fade-in overflow-hidden rounded-2xl border border-border-light bg-surface-secondary/30"
       aria-label={title ?? t('insights.toggle', { defaultValue: 'Insights' })}
     >
@@ -198,6 +219,22 @@ export function InsightsPanel({
           </div>
         )}
       </div>
+
+      {/* Footer strip. Full width so it reads as the bottom edge of the block
+          rather than one more control competing with the charts, and it is the
+          same action as the header toggle so the two can never disagree. */}
+      <button
+        type="button"
+        onClick={collapse}
+        aria-expanded
+        className="group flex w-full items-center justify-center gap-2 border-t border-border-light bg-surface-primary/50 px-4 py-2.5 text-xs font-medium text-content-tertiary transition-colors hover:bg-surface-secondary/70 hover:text-content-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-oe-blue/40"
+      >
+        <ChevronUp
+          size={14}
+          className="transition-transform duration-200 group-hover:-translate-y-0.5"
+        />
+        {t('insights.collapse', { defaultValue: 'Collapse insights' })}
+      </button>
 
       {building && datasets.length > 0 && (
         <InsightBuilder

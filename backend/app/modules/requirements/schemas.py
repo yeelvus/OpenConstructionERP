@@ -10,7 +10,40 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.modules.requirements.intl import PRIORITY_ORDER
+from app.modules.requirements.lifecycle import (
+    DEFAULT_VOCABULARY,
+    ORIGINATOR_ROLES,
+    PHASE_SPINE,
+    VERIFICATION_METHODS,
+    VOCABULARIES,
+)
+
+
+def _one_of(values: tuple[str, ...] | list[str]) -> str:
+    """Anchored alternation over a controlled vocabulary.
+
+    Built from the vocabulary itself rather than typed out again. A pattern
+    written by hand drifts from the list it is supposed to mirror, and this
+    module has already paid for that once: the priority pattern accepted ``may``
+    while the label catalog knew ``could`` and ``wont``, so one value rendered
+    as a raw key in all forty languages and two were unreachable through the API.
+    """
+    return "^(?:" + "|".join(values) + ")$"
+
+
+#: MoSCoW, from the label catalog, plus the legacy spelling. ``may`` was what
+#: this API accepted before the catalog existed; it means ``could`` and is kept
+#: so requests and rows written against the old pattern keep working.
+LEGACY_PRIORITY = "may"
+_PRIORITY_PATTERN = _one_of((*PRIORITY_ORDER, LEGACY_PRIORITY))
+_PHASE_PATTERN = _one_of(("", *PHASE_SPINE))
+_VERIFICATION_PATTERN = _one_of(("", *VERIFICATION_METHODS))
+_ORIGINATOR_ROLE_PATTERN = _one_of(("", *ORIGINATOR_ROLES))
+_VOCABULARY_PATTERN = _one_of(tuple(VOCABULARIES))
+_LINK_SOURCE_PATTERN = _one_of(("manual", "import", "ai", "migrated"))
 
 # ── Requirement schemas ─────────────────────────────────────────────────────
 
@@ -29,12 +62,18 @@ class RequirementCreate(BaseModel):
     constraint_value: str = Field(default="", max_length=500)
     unit: str = Field(default="", max_length=50)
     category: str = Field(default="general", max_length=100)
-    priority: str = Field(
-        default="must",
-        pattern=r"^(must|should|may)$",
-    )
+    priority: str = Field(default="must", pattern=_PRIORITY_PATTERN)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     source_ref: str = Field(default="", max_length=500)
+
+    # ── The five questions the EAC triplet does not answer ──────────────────
+    rationale: str = Field(default="", description="Why this is required at all")
+    originator: str = Field(default="", max_length=255, description="Who raised it")
+    originator_role: str = Field(default="", pattern=_ORIGINATOR_ROLE_PATTERN)
+    phase: str = Field(default="", pattern=_PHASE_PATTERN, description="Project phase key, never a display word")
+    verification_method: str = Field(default="", pattern=_VERIFICATION_PATTERN)
+    parent_requirement_id: UUID | None = None
+
     notes: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -53,16 +92,24 @@ class RequirementUpdate(BaseModel):
     constraint_value: str | None = Field(default=None, max_length=500)
     unit: str | None = Field(default=None, max_length=50)
     category: str | None = Field(default=None, max_length=100)
-    priority: str | None = Field(
-        default=None,
-        pattern=r"^(must|should|may)$",
-    )
+    priority: str | None = Field(default=None, pattern=_PRIORITY_PATTERN)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     source_ref: str | None = Field(default=None, max_length=500)
     status: str | None = Field(
         default=None,
         pattern=r"^(open|verified|linked|conflict)$",
     )
+
+    rationale: str | None = None
+    originator: str | None = Field(default=None, max_length=255)
+    originator_role: str | None = Field(default=None, pattern=_ORIGINATOR_ROLE_PATTERN)
+    phase: str | None = Field(default=None, pattern=_PHASE_PATTERN)
+    verification_method: str | None = Field(default=None, pattern=_VERIFICATION_PATTERN)
+    #: Explicitly settable to null, so a decomposed requirement can be detached
+    #: from its parent. ``None`` therefore cannot mean "leave alone" here, and
+    #: the service reads ``model_fields_set`` to tell the two apart.
+    parent_requirement_id: UUID | None = None
+
     notes: str | None = None
     metadata: dict[str, Any] | None = None
 
@@ -71,6 +118,22 @@ class RequirementResponse(BaseModel):
     """Requirement item returned from the API."""
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _confidence_from_text(cls, value: Any) -> Any:
+        """The column stores the text of a float; unreadable text is no answer.
+
+        Returns ``None`` rather than raising. A malformed confidence is a
+        property of one historic row, and refusing to serialise the requirement
+        over it would hide the twenty fields that are fine.
+        """
+        if value is None or isinstance(value, (int, float)):
+            return value
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     id: UUID
     requirement_set_id: UUID
@@ -85,10 +148,96 @@ class RequirementResponse(BaseModel):
     source_ref: str = ""
     status: str = "open"
     linked_position_id: UUID | None = None
+
+    rationale: str = ""
+    originator: str = ""
+    originator_role: str = ""
+    phase: str = ""
+    verification_method: str = ""
+    parent_requirement_id: UUID | None = None
+    #: Every position this requirement governs, the legacy single link folded
+    #: in, so a client never has to read two fields to get one answer.
+    linked_position_ids: list[UUID] = Field(default_factory=list)
+    #: Which of the six questions are still unanswered, and how far along the
+    #: requirement is. Computed, so a screen can show the gap without knowing
+    #: the rule, and an export can be sorted by it.
+    unanswered_questions: list[str] = Field(default_factory=list)
+    cycle_completeness: float = 0.0
+
     notes: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_")
     created_at: datetime
     updated_at: datetime
+
+
+# ── Position link schemas (Womit) ───────────────────────────────────────────
+
+
+class PositionLinkCreate(BaseModel):
+    """Attach one requirement to one priced BOQ position."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    position_id: UUID
+    link_source: str = Field(default="manual", pattern=_LINK_SOURCE_PATTERN)
+    notes: str = ""
+
+
+class PositionLinkResponse(BaseModel):
+    """A requirement-to-position link returned from the API."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    requirement_id: UUID
+    position_id: UUID
+    link_source: str = "manual"
+    confirmed_by: str = ""
+    notes: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+
+# ── Vocabulary schemas ──────────────────────────────────────────────────────
+
+
+class VocabularyTerm(BaseModel):
+    """One term, in the wording and language the caller asked for."""
+
+    key: str
+    label: str
+
+
+class PhaseOption(BaseModel):
+    """A phase on the neutral spine, named in each stage system that has it.
+
+    ``systems`` omits a system that does not name this phase separately rather
+    than carrying an empty string for it, so a caller can tell "RIBA has no
+    permit stage" from "RIBA calls it nothing".
+    """
+
+    key: str
+    label: str
+    rank: int
+    systems: dict[str, str] = Field(default_factory=dict)
+
+
+class CycleVocabularyResponse(BaseModel):
+    """Everything a screen needs to render the cycle in one language.
+
+    Served instead of shipping these words in the frontend bundle: the phase
+    spine, the verification methods and the party roles are domain data that
+    changes with the platform, not with the design.
+    """
+
+    vocabulary: str
+    language: str
+    terms: list[VocabularyTerm] = Field(default_factory=list)
+    phases: list[PhaseOption] = Field(default_factory=list)
+    verification_methods: list[VocabularyTerm] = Field(default_factory=list)
+    originator_roles: list[VocabularyTerm] = Field(default_factory=list)
+    priorities: list[VocabularyTerm] = Field(default_factory=list)
+    questions: list[str] = Field(default_factory=list)
 
 
 # ── RequirementSet schemas ──────────────────────────────────────────────────
@@ -107,6 +256,9 @@ class RequirementSetCreate(BaseModel):
         pattern=r"^(manual|pdf|cad|bim|specification)$",
     )
     source_filename: str = Field(default="", max_length=500)
+    #: Which wording this project reads its requirements in. Renames concepts
+    #: and never changes which ones exist, so it is safe to flip at any time.
+    vocabulary: str = Field(default=DEFAULT_VOCABULARY, pattern=_VOCABULARY_PATTERN)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -132,6 +284,7 @@ class RequirementSetUpdate(BaseModel):
         default=None,
         pattern=r"^(draft|active|locked|archived)$",
     )
+    vocabulary: str | None = Field(default=None, pattern=_VOCABULARY_PATTERN)
     metadata: dict[str, Any] | None = None
 
 
@@ -168,6 +321,7 @@ class RequirementSetResponse(BaseModel):
     source_type: str = "manual"
     source_filename: str = ""
     status: str = "draft"
+    vocabulary: str = DEFAULT_VOCABULARY
     gate_status: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_")
     created_at: datetime
@@ -186,6 +340,7 @@ class RequirementSetDetail(BaseModel):
     source_type: str = "manual"
     source_filename: str = ""
     status: str = "draft"
+    vocabulary: str = DEFAULT_VOCABULARY
     gate_status: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_")
     requirements: list[RequirementResponse] = Field(default_factory=list)

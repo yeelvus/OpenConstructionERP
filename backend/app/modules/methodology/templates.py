@@ -207,6 +207,40 @@ _APU_COMPOSITE: dict[str, list[str]] = {
     "costo_directo": ["mano_de_obra", "materiales", "maquinaria"],
 }
 
+# Chilean APU resource split. Same three buckets as the Mexican one and a
+# separate constant anyway, because the middle bucket is called equipos in
+# Chile and these keys are what an estimator reads on the sheet. Sharing the
+# Mexican constant would put "maquinaria" on a Chilean tender to save three
+# lines, and would also mean a later change for one country silently moved the
+# other.
+_APU_CL_BASE_MAPPING: dict[str, list[str]] = {
+    "mano_de_obra": ["labor"],
+    "materiales": ["material"],
+    "equipos": ["machinery", "equipment"],
+}
+_APU_CO_BASE_MAPPING: dict[str, list[str]] = {
+    "materiales": ["material"],
+    "mano_de_obra": ["labor"],
+    "equipo_y_herramienta": ["machinery", "equipment"],
+    "transporte": ["transport"],
+}
+_APU_CO_COMPOSITE: dict[str, list[str]] = {
+    "costo_directo": ["materiales", "mano_de_obra", "equipo_y_herramienta", "transporte"],
+}
+
+_BDI_BR_BASE_MAPPING: dict[str, list[str]] = {
+    "mao_de_obra": ["labor"],
+    "materiais": ["material"],
+    "equipamentos": ["machinery", "equipment"],
+}
+_BDI_BR_COMPOSITE: dict[str, list[str]] = {
+    "custo_direto": ["mao_de_obra", "materiais", "equipamentos"],
+}
+
+_APU_CL_COMPOSITE: dict[str, list[str]] = {
+    "costo_directo": ["mano_de_obra", "materiales", "equipos"],
+}
+
 
 def _section_type_dimension() -> dict[str, Any]:
     """Flat section-type reference dimension (extensible per the design)."""
@@ -1461,6 +1495,270 @@ _MEXICO_TEMPLATE: dict[str, Any] = {
     "vat_rate": "16",
 }
 
+# Chilean APU. A Chilean public tender is submitted as an analisis de precio
+# unitario, not as one marked-up rate: the itemised costo directo carries gastos
+# generales and then utilidades, and the sum of those three is the precio
+# unitario the bid is compared on. IVA sits outside it. The flat Chile template
+# further up reaches the same total by a different road, which is fine for an
+# internal budget and is not what a public client will accept as the analysis.
+#
+# The rates here are the same starting points the flat Chile template already
+# shipped, deliberately: what a contractor needs from us is the cascade, its
+# order and each step's base, because those are what the client dictates. The
+# percentages are theirs and are meant to be edited on the first project.
+#
+# Imprevistos starts at zero. Tenders that carry a contingency put it on the
+# costo directo before utilidades, and tenders that do not carry one would have
+# to notice a line we invented and remove it, so the line exists and is empty
+# rather than absent or guessed.
+_CHILE_APU_TEMPLATE: dict[str, Any] = {
+    "slug": "chile_apu",
+    "name": "Chile (APU)",
+    "description": (
+        "Chilean analisis de precio unitario. Costo directo (mano de obra, "
+        "materiales, equipos) carries imprevistos, gastos generales and "
+        "utilidades in turn to the precio unitario, then IVA 19 percent per "
+        "Ley sobre Impuesto a las Ventas y Servicios."
+    ),
+    "country_code": "CL",
+    "industry": None,
+    "currency": "CLP",
+    # The peso has no minor unit. A cascade that displays cents on a tendered
+    # rate is reporting precision the currency does not have.
+    "decimals": 0,
+    "hierarchy_levels": _FLAT_HIERARCHY,
+    "dimensions": [_stage_dimension()],
+    "column_preset": None,
+    "base_mapping": _APU_CL_BASE_MAPPING,
+    "composites": _APU_CL_COMPOSITE,
+    "cascade_steps": [
+        {
+            "key": "imprevistos",
+            "label": "Imprevistos",
+            "category": "contingency",
+            "kind": "percentage",
+            "rate": "0",
+            "amount": "0",
+            "base": ["costo_directo"],
+        },
+        {
+            "key": "gastos_generales",
+            "label": "Gastos generales",
+            "category": "overhead",
+            "kind": "percentage",
+            "rate": "13",
+            "amount": "0",
+            "base": ["costo_directo", "imprevistos"],
+        },
+        {
+            "key": "utilidades",
+            "label": "Utilidades",
+            "category": "profit",
+            "kind": "percentage",
+            "rate": "8",
+            "amount": "0",
+            "base": ["costo_directo", "imprevistos", "gastos_generales"],
+        },
+        {
+            "key": "iva",
+            "label": "IVA",
+            "category": "tax",
+            "kind": "percentage",
+            "rate": "19",
+            "amount": "0",
+            "base": [
+                "costo_directo",
+                "imprevistos",
+                "gastos_generales",
+                "utilidades",
+            ],
+        },
+    ],
+    "vat_rate": "19",
+}
+
+# Colombian AIU. Administracion, Imprevistos, Utilidad: the three letters a
+# Colombian contract quotes its markup as, and the reason this cannot reuse the
+# Chilean shape. Each of the three is a share OF THE COSTO DIRECTO, not of the
+# running total, so nothing here compounds. "AIU 27% (A=20, I=2, U=5)" on a
+# tender means exactly that, and a cascade that compounded them would quote a
+# number the client did not ask for.
+#
+# IVA is the other half of the difference. For a construction contract on
+# immovable property the base is the utilidad alone, not the contract value, per
+# Decreto 1372 de 1992. On the figures below that is 19 percent of 5 percent
+# rather than of 127 percent, and getting it wrong is not a rounding matter.
+_COLOMBIA_AIU_TEMPLATE: dict[str, Any] = {
+    "slug": "colombia_aiu",
+    "name": "Colombia (AIU)",
+    "description": (
+        "Colombian analisis de precios unitarios with AIU. Administracion, "
+        "imprevistos and utilidad are each taken on the costo directo, and IVA "
+        "19 percent falls on the utilidad alone, as a construction contract on "
+        "immovable property is taxed."
+    ),
+    "country_code": "CO",
+    "industry": None,
+    "currency": "COP",
+    # Matches the flat Colombia template already shipped: the peso is quoted in
+    # whole units on a bill of quantities.
+    "decimals": 0,
+    "hierarchy_levels": _FLAT_HIERARCHY,
+    "dimensions": [_stage_dimension()],
+    "column_preset": None,
+    "base_mapping": _APU_CO_BASE_MAPPING,
+    "composites": _APU_CO_COMPOSITE,
+    "cascade_steps": [
+        {
+            "key": "administracion",
+            "label": "Administracion",
+            "category": "overhead",
+            "kind": "percentage",
+            "rate": "20",
+            "amount": "0",
+            "base": ["costo_directo"],
+        },
+        {
+            "key": "imprevistos",
+            "label": "Imprevistos",
+            "category": "contingency",
+            "kind": "percentage",
+            "rate": "2",
+            "amount": "0",
+            "base": ["costo_directo"],
+        },
+        {
+            "key": "utilidad",
+            "label": "Utilidad",
+            "category": "profit",
+            "kind": "percentage",
+            "rate": "5",
+            "amount": "0",
+            "base": ["costo_directo"],
+        },
+        {
+            "key": "iva",
+            "label": "IVA sobre la utilidad",
+            "category": "tax",
+            "kind": "percentage",
+            "rate": "19",
+            "amount": "0",
+            "base": ["utilidad"],
+        },
+    ],
+    "vat_rate": "19",
+}
+
+# Brazilian BDI, Beneficios e Despesas Indiretas, composed the way the federal
+# audit court sets it out in Acordao 2622/2013:
+#
+#     BDI = [(1 + AC + S + R + G)(1 + DF)(1 + L) / (1 - I)] - 1
+#
+# Three shapes in one formula, and the steps below are that formula read left to
+# right. Administracao central, seguros, garantias and riscos share a bracket,
+# so each is a share of the custo direto and none of them sees the others.
+# Despesas financeiras and lucro are their own factors, so each applies to
+# everything before it. Tributos divide rather than multiply, which is what the
+# gross_up kind exists for: PIS, COFINS and ISS are levied on the invoiced
+# amount, so the amount they are levied on already contains them.
+#
+# The tax rate is one line and not three because all of them sit in the same
+# denominator; three sequential steps would compound a thing that does not
+# compound. ISS is municipal and runs 2 to 5 percent, so the 8.65 below (PIS
+# 0.65, COFINS 3.00, ISS 5.00) is the common ceiling case and is meant to be
+# set to the city the job is in.
+_BRAZIL_BDI_TEMPLATE: dict[str, Any] = {
+    "slug": "brazil_bdi",
+    "name": "Brasil (BDI)",
+    "description": (
+        "Brazilian BDI composed per TCU Acordao 2622/2013. Administracao "
+        "central, seguros, garantias and riscos on the custo direto, then "
+        "despesas financeiras and lucro in turn, then PIS, COFINS and ISS "
+        "grossed up because they are charged on the invoiced amount."
+    ),
+    "country_code": "BR",
+    "industry": None,
+    "currency": "BRL",
+    "decimals": 2,
+    "hierarchy_levels": _FLAT_HIERARCHY,
+    "dimensions": [_stage_dimension()],
+    "column_preset": None,
+    "base_mapping": _BDI_BR_BASE_MAPPING,
+    "composites": _BDI_BR_COMPOSITE,
+    "cascade_steps": [
+        {
+            "key": "administracao_central",
+            "label": "Administracao central",
+            "category": "overhead",
+            "kind": "percentage",
+            "rate": "4",
+            "amount": "0",
+            "base": ["custo_direto"],
+        },
+        {
+            "key": "seguros_e_garantias",
+            "label": "Seguros e garantias",
+            "category": "insurance",
+            "kind": "percentage",
+            "rate": "0.8",
+            "amount": "0",
+            "base": ["custo_direto"],
+        },
+        {
+            "key": "riscos",
+            "label": "Riscos",
+            "category": "contingency",
+            "kind": "percentage",
+            "rate": "1.27",
+            "amount": "0",
+            "base": ["custo_direto"],
+        },
+        {
+            "key": "despesas_financeiras",
+            "label": "Despesas financeiras",
+            "category": "other",
+            "kind": "percentage",
+            "rate": "1.23",
+            "amount": "0",
+            "base": ["custo_direto", "administracao_central", "seguros_e_garantias", "riscos"],
+        },
+        {
+            "key": "lucro",
+            "label": "Lucro",
+            "category": "profit",
+            "kind": "percentage",
+            "rate": "7.4",
+            "amount": "0",
+            "base": [
+                "custo_direto",
+                "administracao_central",
+                "seguros_e_garantias",
+                "riscos",
+                "despesas_financeiras",
+            ],
+        },
+        {
+            "key": "tributos",
+            "label": "Tributos (PIS, COFINS, ISS)",
+            "category": "tax",
+            "kind": "gross_up",
+            "rate": "8.65",
+            "amount": "0",
+            "base": [
+                "custo_direto",
+                "administracao_central",
+                "seguros_e_garantias",
+                "riscos",
+                "despesas_financeiras",
+                "lucro",
+            ],
+        },
+    ],
+    # Brazil has no VAT. Consumption tax on a construction service is ISS,
+    # municipal, and it is already inside the tributos step above.
+    "vat_rate": "0",
+}
+
 # Railway-infrastructure industry template. Country-neutral (currency blank,
 # VAT a placeholder step) but ships the full railway typed hierarchy plus the
 # CBS / section-type / stage dimensions and the SMR-vs-equipment cascade, so an
@@ -1766,14 +2064,20 @@ _INDUSTRY_TEMPLATES: list[dict[str, Any]] = [
 ]
 
 
-# Ordered catalogue: international first, then countries, then UZ, MX, then the
-# industry packs (railway plus the sector methodologies).
+# Ordered catalogue: international first, then countries, then UZ, MX, CL, then
+# the industry packs (railway plus the sector methodologies). The two Latin
+# American APU templates sit after the flat countries because a country can
+# appear in both traditions: Chile is in the flat list as well, and which one a
+# project wants depends on who is going to read the estimate.
 TEMPLATES: tuple[dict[str, Any], ...] = (
     _INTERNATIONAL_TEMPLATE,
     *_COUNTRY_TEMPLATES,
     *_MORE_COUNTRY_TEMPLATES,
     _UZBEKISTAN_TEMPLATE,
     _MEXICO_TEMPLATE,
+    _CHILE_APU_TEMPLATE,
+    _COLOMBIA_AIU_TEMPLATE,
+    _BRAZIL_BDI_TEMPLATE,
     *_INDUSTRY_TEMPLATES,
 )
 

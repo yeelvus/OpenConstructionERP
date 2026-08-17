@@ -126,6 +126,7 @@ def _backfill(bind: sa.engine.Connection, inspector: sa.engine.reflection.Inspec
         pass
 
 
+# data-rewrite-ack: table=oe_boq_position growth=tenure rows=bill-of-quantities line items, can run to thousands per project across many projects
 def upgrade() -> None:
     """Add ``cad_model_id`` (idempotent) and best-effort back-fill it."""
     bind = op.get_bind()

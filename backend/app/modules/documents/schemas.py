@@ -15,6 +15,22 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.modules.validation.schemas import ValidationResultItem
 
+# The categories a project photo may hold. Uploading validated against this set
+# in the service while editing validated against a pattern written out by hand,
+# and the two had drifted: a photo could be uploaded as "aerial" and shown with
+# its own badge and filter, but changing any photo to that category came back
+# 422. Both sides read this now, so the next value added reaches both.
+PHOTO_CATEGORIES: tuple[str, ...] = (
+    "site",
+    "progress",
+    "defect",
+    "delivery",
+    "safety",
+    "aerial",
+    "other",
+)
+_PHOTO_CATEGORY_PATTERN = f"^({'|'.join(PHOTO_CATEGORIES)})$"
+
 # ── Document schemas ─────────────────────────────────────────────────────
 
 
@@ -138,10 +154,7 @@ class PhotoUpdate(BaseModel):
 
     caption: str | None = None
     tags: list[str] | None = None
-    category: str | None = Field(
-        default=None,
-        pattern=r"^(site|progress|defect|delivery|safety|other)$",
-    )
+    category: str | None = Field(default=None, pattern=_PHOTO_CATEGORY_PATTERN)
 
 
 class PhotoResponse(BaseModel):

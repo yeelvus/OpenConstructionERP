@@ -69,7 +69,7 @@ import {
   ProjectWidgetsRollupProvider,
 } from './components/ProjectWidgets';
 import { useWidgetSettingsStore } from '@/stores/useWidgetSettingsStore';
-import { apiGet, apiPatch, ApiError, extractErrorMessageFromBody } from '@/shared/lib/api';
+import { apiGet, apiPatch, ApiError, extractErrorMessageFromBody, type Page } from '@/shared/lib/api';
 import clsx from 'clsx';
 import { projectsApi, type Project } from './api';
 import { PhotosTab } from './PhotosTab';
@@ -1522,7 +1522,10 @@ export function ProjectDetailPage() {
 
   const { data: schedules, isLoading: schedulesLoading } = useQuery({
     queryKey: ['schedules', projectId],
-    queryFn: () => apiGet<ScheduleItem[]>(`/v1/schedule/schedules/?project_id=${projectId}`),
+    queryFn: () =>
+      apiGet<Page<ScheduleItem>>(`/v1/schedule/schedules/?project_id=${projectId}`).then(
+        (page) => page.items,
+      ),
     enabled: !!projectId && activeTab === 'schedule',
   });
 

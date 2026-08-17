@@ -31,7 +31,24 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
+from app.modules.requirements.intl import PRIORITY_ORDER, priority_label
+from app.modules.requirements.lifecycle import (
+    CYCLE_QUESTIONS,
+    DEFAULT_VOCABULARY,
+    ORIGINATOR_ROLES,
+    PHASE_SPINE,
+    PHASE_SYSTEMS,
+    VERIFICATION_METHODS,
+    VOCABULARIES,
+    VOCABULARY_TERMS,
+    originator_role_label,
+    phase_label,
+    phase_rank,
+    verification_label,
+    vocabulary_term,
+)
 from app.modules.requirements.schemas import (
+    CycleVocabularyResponse,
     DeliverableCoverage,
     DeliverableCreate,
     DeliverableResponse,
@@ -41,6 +58,9 @@ from app.modules.requirements.schemas import (
     MatrixCell,
     MatrixResponse,
     MatrixRow,
+    PhaseOption,
+    PositionLinkCreate,
+    PositionLinkResponse,
     RequirementBulkDeleteRequest,
     RequirementBulkDeleteResult,
     RequirementCreate,
@@ -52,6 +72,7 @@ from app.modules.requirements.schemas import (
     RequirementStats,
     RequirementUpdate,
     TextImportRequest,
+    VocabularyTerm,
 )
 from app.modules.requirements.service import RequirementsService
 
@@ -64,51 +85,27 @@ def _get_service(session: SessionDep) -> RequirementsService:
 
 
 def _set_to_response(item: object) -> RequirementSetResponse:
-    """Build a RequirementSetResponse from a RequirementSet ORM object."""
-    return RequirementSetResponse(
-        id=item.id,  # type: ignore[attr-defined]
-        project_id=item.project_id,  # type: ignore[attr-defined]
-        name=item.name,  # type: ignore[attr-defined]
-        description=item.description,  # type: ignore[attr-defined]
-        source_type=item.source_type,  # type: ignore[attr-defined]
-        source_filename=item.source_filename,  # type: ignore[attr-defined]
-        status=item.status,  # type: ignore[attr-defined]
-        gate_status=item.gate_status,  # type: ignore[attr-defined]
-        metadata=getattr(item, "metadata_", {}),  # type: ignore[attr-defined]
-        created_at=item.created_at,  # type: ignore[attr-defined]
-        updated_at=item.updated_at,  # type: ignore[attr-defined]
-    )
+    """Build a RequirementSetResponse from a RequirementSet ORM object.
+
+    Validated from the object for the same reason as ``_req_to_response``: a
+    hand-written column list silently drops whatever was added after it.
+    """
+    return RequirementSetResponse.model_validate(item, from_attributes=True)
 
 
 def _req_to_response(item: object) -> RequirementResponse:
-    """Build a RequirementResponse from a Requirement ORM object."""
-    confidence_raw = getattr(item, "confidence", None)
-    confidence_val: float | None = None
-    if confidence_raw is not None:
-        try:
-            confidence_val = float(confidence_raw)
-        except (ValueError, TypeError):
-            confidence_val = None
+    """Build a RequirementResponse from a Requirement ORM object.
 
-    return RequirementResponse(
-        id=item.id,  # type: ignore[attr-defined]
-        requirement_set_id=item.requirement_set_id,  # type: ignore[attr-defined]
-        entity=item.entity,  # type: ignore[attr-defined]
-        attribute=item.attribute,  # type: ignore[attr-defined]
-        constraint_type=item.constraint_type,  # type: ignore[attr-defined]
-        constraint_value=item.constraint_value,  # type: ignore[attr-defined]
-        unit=item.unit,  # type: ignore[attr-defined]
-        category=item.category,  # type: ignore[attr-defined]
-        priority=item.priority,  # type: ignore[attr-defined]
-        confidence=confidence_val,
-        source_ref=item.source_ref,  # type: ignore[attr-defined]
-        status=item.status,  # type: ignore[attr-defined]
-        linked_position_id=item.linked_position_id,  # type: ignore[attr-defined]
-        notes=item.notes,  # type: ignore[attr-defined]
-        metadata=getattr(item, "metadata_", {}),  # type: ignore[attr-defined]
-        created_at=item.created_at,  # type: ignore[attr-defined]
-        updated_at=item.updated_at,  # type: ignore[attr-defined]
-    )
+    Validated from the object rather than assembled field by field. The list
+    written out here used to be the third copy of the column set in this module,
+    and the copies had no way of noticing each other: a field added to the
+    schema was accepted, stored, and then dropped on the way back out, so the
+    API answered with a default and nothing failed.
+
+    The one conversion this needed - the confidence column stores the text of a
+    float - now lives on the schema, where every other reader gets it too.
+    """
+    return RequirementResponse.model_validate(item, from_attributes=True)
 
 
 def _gate_to_response(item: object) -> GateResultResponse:
@@ -136,21 +133,13 @@ def _set_to_detail(item: object) -> RequirementSetDetail:
     reqs = getattr(item, "requirements", [])
     gates = getattr(item, "gate_results", [])
 
-    return RequirementSetDetail(
-        id=item.id,  # type: ignore[attr-defined]
-        project_id=item.project_id,  # type: ignore[attr-defined]
-        name=item.name,  # type: ignore[attr-defined]
-        description=item.description,  # type: ignore[attr-defined]
-        source_type=item.source_type,  # type: ignore[attr-defined]
-        source_filename=item.source_filename,  # type: ignore[attr-defined]
-        status=item.status,  # type: ignore[attr-defined]
-        gate_status=item.gate_status,  # type: ignore[attr-defined]
-        metadata=getattr(item, "metadata_", {}),  # type: ignore[attr-defined]
-        requirements=[_req_to_response(r) for r in reqs],
-        gate_results=[_gate_to_response(g) for g in gates],
-        created_at=item.created_at,  # type: ignore[attr-defined]
-        updated_at=item.updated_at,  # type: ignore[attr-defined]
-    )
+    detail = RequirementSetDetail.model_validate(item, from_attributes=True)
+    # The two collections are assigned rather than left to the nested schemas:
+    # both children need the same conversions their own builders apply, and
+    # routing them through those builders keeps one definition of each.
+    detail.requirements = [_req_to_response(r) for r in reqs]
+    detail.gate_results = [_gate_to_response(g) for g in gates]
+    return detail
 
 
 # ── Stats ───────────────────────────────────────────────────────────────────
@@ -173,6 +162,54 @@ async def get_stats(
     return RequirementStats(**data)
 
 
+# ── The cycle vocabulary ────────────────────────────────────────────────────
+
+
+@router.get("/vocabulary/", response_model=CycleVocabularyResponse)
+async def get_cycle_vocabulary(
+    vocabulary: str = Query(default=DEFAULT_VOCABULARY),
+    lang: str = Query(default="en"),
+    _perm: None = Depends(RequirePermission("requirements.read")),
+) -> CycleVocabularyResponse:
+    """Every controlled word the requirements cycle uses, in one language.
+
+    Served rather than shipped in the frontend bundle. The phase spine, the
+    verification methods and the party roles are domain data that moves with
+    the platform, not with the design, and a screen that hard-coded them would
+    have to be rebuilt to learn a new phase.
+
+    ``lang`` accepts a full locale. ``es-CL`` falls back to ``es`` before it
+    falls back to English, so the regional locales the platform ships do not
+    skip a perfectly good Spanish label.
+    """
+    return CycleVocabularyResponse(
+        vocabulary=vocabulary if vocabulary in VOCABULARIES else DEFAULT_VOCABULARY,
+        language=lang,
+        terms=[VocabularyTerm(key=term, label=vocabulary_term(term, vocabulary, lang)) for term in VOCABULARY_TERMS],
+        phases=[
+            PhaseOption(
+                key=phase,
+                label=phase_label(phase, lang),
+                rank=phase_rank(phase),
+                # A system that does not name this phase separately is left
+                # out, so the caller can tell that apart from an empty name.
+                systems={
+                    system: names[phase] for system, names in PHASE_SYSTEMS.items() if names.get(phase) is not None
+                },
+            )
+            for phase in PHASE_SPINE
+        ],
+        verification_methods=[
+            VocabularyTerm(key=method, label=verification_label(method, lang)) for method in VERIFICATION_METHODS
+        ],
+        originator_roles=[
+            VocabularyTerm(key=role, label=originator_role_label(role, lang)) for role in ORIGINATOR_ROLES
+        ],
+        priorities=[VocabularyTerm(key=p, label=priority_label(p, lang)) for p in PRIORITY_ORDER],
+        questions=[question for question, _field in CYCLE_QUESTIONS],
+    )
+
+
 # ── Create set ──────────────────────────────────────────────────────────────
 
 
@@ -190,6 +227,7 @@ class _RequirementSetCreateBody(BaseModel):
     description: str = ""
     source_type: str = "manual"
     source_filename: str = ""
+    vocabulary: str = DEFAULT_VOCABULARY
     metadata: dict[str, Any] = {}
 
 
@@ -225,6 +263,7 @@ async def create_set(
             description=data.description,
             source_type=data.source_type,
             source_filename=data.source_filename,
+            vocabulary=data.vocabulary,
             metadata=data.metadata,
         )
     except ValidationError as exc:
@@ -829,6 +868,95 @@ async def link_to_position(
     await verify_project_access(project_id, str(user_id), session)
     item = await service.link_to_position(req_id, position_id)
     return _req_to_response(item)
+
+
+@router.post(
+    "/{set_id}/requirements/{req_id}/positions/",
+    response_model=PositionLinkResponse,
+    status_code=201,
+)
+async def attach_position(
+    set_id: uuid.UUID,
+    req_id: uuid.UUID,
+    data: PositionLinkCreate,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("requirements.update")),
+    service: RequirementsService = Depends(_get_service),
+) -> PositionLinkResponse:
+    """Attach a requirement to one more priced position.
+
+    Additive, unlike the older ``/link/{position_id}`` route, which can only
+    hold the most recently linked one. Both remain: a caller that genuinely has
+    one position keeps working unchanged.
+    """
+    project_id = await service.get_requirement_project_id(req_id)
+    await verify_project_access(project_id, str(user_id), session)
+    link = await service.attach_position(req_id, data, user_id=str(user_id or ""))
+    return PositionLinkResponse.model_validate(link, from_attributes=True)
+
+
+@router.get(
+    "/{set_id}/requirements/{req_id}/positions/",
+    response_model=list[PositionLinkResponse],
+)
+async def list_position_links(
+    set_id: uuid.UUID,
+    req_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("requirements.read")),
+    service: RequirementsService = Depends(_get_service),
+) -> list[PositionLinkResponse]:
+    """Every priced position this requirement governs."""
+    project_id = await service.get_requirement_project_id(req_id)
+    await verify_project_access(project_id, str(user_id), session)
+    links = await service.list_position_links(req_id)
+    return [PositionLinkResponse.model_validate(link, from_attributes=True) for link in links]
+
+
+@router.delete(
+    "/{set_id}/requirements/{req_id}/positions/{position_id}",
+    status_code=204,
+)
+async def detach_position(
+    set_id: uuid.UUID,
+    req_id: uuid.UUID,
+    position_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("requirements.update")),
+    service: RequirementsService = Depends(_get_service),
+) -> None:
+    """Detach a requirement from one position."""
+    project_id = await service.get_requirement_project_id(req_id)
+    await verify_project_access(project_id, str(user_id), session)
+    await service.detach_position(req_id, position_id)
+
+
+@router.get(
+    "/positions/{position_id}/requirements/",
+    response_model=list[RequirementResponse],
+)
+async def requirements_for_position(
+    position_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("requirements.read")),
+    service: RequirementsService = Depends(_get_service),
+) -> list[RequirementResponse]:
+    """Every requirement governing one priced position.
+
+    The direction a quantity surveyor reads. Opening a bill item and asking
+    what it has to satisfy used to mean scanning every requirement in the
+    project, because the link only pointed one way.
+    """
+    # IDOR guard: this route is addressed by position, so there is no set to
+    # read the project off. Resolve it through the bill the position sits in.
+    project_id = await service.get_position_project_id(position_id)
+    await verify_project_access(project_id, str(user_id), session)
+    items = await service.requirements_for_position(position_id)
+    return [_req_to_response(item) for item in items]
 
 
 # ── Import from text ────────────────────────────────────────────────────────

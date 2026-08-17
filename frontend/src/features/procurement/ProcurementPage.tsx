@@ -396,6 +396,7 @@ export function ProcurementPage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       {/* Canonical info block - where procurement sits in the money flow,

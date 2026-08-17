@@ -65,6 +65,8 @@ def _stable_id() -> str:
     return str(uuid.uuid4())
 
 
+# data-rewrite-ack: table=oe_eac_parameter_aliases growth=bounded rows=fixed taxonomy seed, grows with the alias catalogue, not with usage
+# data-rewrite-ack: table=oe_eac_alias_synonyms growth=bounded rows=fixed taxonomy seed, grows with the alias catalogue, not with usage
 def upgrade() -> None:
     """Insert built-in aliases (skipping rows that already exist)."""
     bind = op.get_bind()

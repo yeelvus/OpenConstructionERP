@@ -67,19 +67,22 @@ def test_csp_header_present_and_has_key_directives(client: TestClient) -> None:
     # must allow those schemes (otherwise it falls back to default-src 'self').
     assert "frame-src 'self' blob: data:" in csp
 
-    # Confirm we still allow the analytics + fonts hosts the SPA uses.
+    # Confirm we still allow the analytics hosts the SPA uses.
     # If anyone tightens CSP they should update this test too.
     assert "https://www.googletagmanager.com" in csp
-    assert "https://fonts.googleapis.com" in csp
 
-    # The service worker precaches Google Fonts via fetch(), which connect-src
-    # governs - both font hosts must be reachable there or the SW install fails.
-    connect_src = next(
-        (part for part in csp.split(";") if part.strip().startswith("connect-src")),
-        "",
-    )
-    assert "https://fonts.gstatic.com" in connect_src
-    assert "https://fonts.googleapis.com" in connect_src
+    # The app serves its own typefaces from /assets/vendor/fonts/, so no font
+    # host belongs in this policy at all. These used to sit on style-src,
+    # font-src and connect-src (the last because the service worker precached
+    # the files with fetch()). A policy that still permits them would let a
+    # stray third-party font URL work again without anyone noticing, which is
+    # what self-hosting was meant to end - so assert their absence everywhere.
+    assert "https://fonts.googleapis.com" not in csp
+    assert "https://fonts.gstatic.com" not in csp
+
+    # 'self' is what now covers the stylesheet and the font files.
+    assert "font-src 'self' data:;" in csp
+    assert "style-src 'self' 'unsafe-inline';" in csp
 
 
 def test_csp_skipped_for_swagger_docs(client: TestClient) -> None:

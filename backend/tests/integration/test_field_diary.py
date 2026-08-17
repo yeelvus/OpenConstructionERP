@@ -4,7 +4,7 @@
 End-to-end exercises:
     * PIN-gated magic-link request → consume → session-bearer flow.
     * Diary FSM (draft → submit; can't edit after submit; idempotent submit).
-    * Attachment size cap (25 MB).
+    * Attachment size cap (read from the enforcing constant, not remembered).
     * PIN header is required on every field endpoint (magic-link alone is not enough).
     * Wrong PIN returns 401.
     * Mocked SMS provider records the payload for assertion.
@@ -22,10 +22,12 @@ import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 from sqlalchemy.ext.asyncio import async_sessionmaker  # noqa: E402
 
 from app.dependencies import get_session  # noqa: E402
 from app.modules.field_diary import models as fd_models  # noqa: E402,F401
+from app.modules.field_diary.models import DiaryEntry  # noqa: E402
 from app.modules.field_diary.router import router as fd_router  # noqa: E402
 from app.modules.field_diary.service import (  # noqa: E402
     FieldDiaryService,
@@ -318,8 +320,8 @@ async def test_diary_entry_lifecycle(app_and_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_diary_attachment_upload_size_limit(app_and_client) -> None:
-    """An attachment > 25 MB is rejected with 413."""
+async def test_diary_attachment_upload_size_limit(app_and_client, monkeypatch) -> None:
+    """An attachment over the cap is rejected with 413, whatever the cap is."""
     _app, client, SessionFactory = app_and_client
     _owner, project_id = await _seed_user_and_project(SessionFactory)
     token, pin, _user_id = await _request_link_and_grant(
@@ -346,8 +348,17 @@ async def test_diary_attachment_upload_size_limit(app_and_client) -> None:
     assert r.status_code == 201
     entry_id = r.json()["id"]
 
-    # Build a 26 MB payload — over the 25 MB cap.
-    oversized = b"\x00" * (26 * 1024 * 1024)
+    # Read the cap rather than remembering it. This test asserted a hard 26 MB
+    # against a remembered 25 MB limit, and the enforced constant had been
+    # raised to 200 MB without it: the upload was accepted, and the failure said
+    # the cap was broken when what had actually broken was the test's memory of
+    # it. A number worth enforcing is worth reading from the thing enforcing it.
+    from app.modules.field_diary import router as diary_router
+
+    cap = diary_router.MAX_ATTACHMENT_BYTES
+    monkeypatch.setattr(diary_router, "MAX_ATTACHMENT_BYTES", 1024 * 1024)
+
+    oversized = b"\x00" * (1024 * 1024 + 1)
     files = {"file": ("big.bin", oversized, "application/octet-stream")}
     r = await client.post(
         f"/v1/field-diary/entries/{entry_id}/attachments/",
@@ -355,6 +366,15 @@ async def test_diary_attachment_upload_size_limit(app_and_client) -> None:
         files=files,
     )
     assert r.status_code == 413
+    # The refusal has to quote the cap it is actually enforcing. A message
+    # naming a different number sends somebody to shrink a file that would
+    # have been accepted, or to give up on one that would not.
+    assert "1 MB" in r.json()["detail"]
+
+    # And the real cap is a sane one. A phone on site uploads photos and short
+    # video over a connection that may be a bar of signal, so this is a number
+    # somebody chose, not a default to drift.
+    assert cap == 200 * 1024 * 1024
 
 
 @pytest.mark.asyncio
@@ -546,3 +566,307 @@ async def test_online_activity_without_op_id_not_deduplicated(app_and_client) ->
     async with SessionFactory() as s:
         act_count = (await s.execute(select(func.count()).select_from(DiaryActivity))).scalar_one()
         assert act_count == 2
+
+
+# ── Approval is what costs the hours ──────────────────────────────────────
+
+
+async def _submitted_entry_with_hours(client, SessionFactory, headers, date: str) -> uuid.UUID:  # noqa: N803
+    """An entry carrying four payable hours, submitted and awaiting approval."""
+    r = await client.post(
+        f"/v1/field-diary/entries/by-date/{date}/activities/",
+        headers=headers,
+        json={"activity_type": "work", "description": "shift", "hours": "4"},
+    )
+    assert r.status_code == 201, r.text
+
+    async with SessionFactory() as s:
+        entry_id = (await s.execute(select(DiaryEntry.id).where(DiaryEntry.entry_date == date))).scalar_one()
+
+    r = await client.post(f"/v1/field-diary/entries/{entry_id}/submit/", headers=headers)
+    assert r.status_code == 200, r.text
+    return entry_id
+
+
+@pytest.mark.asyncio
+async def test_submitting_no_longer_costs_the_hours(app_and_client, monkeypatch) -> None:
+    """Submitting says the worker finished writing, not that anyone checked it.
+
+    These hours land on a budget line's actuals, and the person submitting is
+    the person the hours pay. The desktop timesheet has always needed a
+    manager; the same hours captured on site now need one too.
+    """
+    _app, client, SessionFactory = app_and_client
+    _owner_id, project_id = await _seed_user_and_project(SessionFactory)
+    token, pin, _uid = await _request_link_and_grant(client, SessionFactory, project_id=project_id)
+    session_token = await _open_session(client, token, pin)
+    headers = {"Authorization": f"Bearer {session_token}", "X-Field-PIN": pin}
+
+    published: list[dict] = []
+    monkeypatch.setattr(
+        "app.modules.field_diary.events.publish_diary_labour",
+        lambda **kwargs: published.append(kwargs),
+    )
+
+    await _submitted_entry_with_hours(client, SessionFactory, headers, "2026-06-01")
+
+    assert published == [], "submitting must not reach the cost model"
+
+    async with SessionFactory() as s:
+        stamped = (
+            await s.execute(select(DiaryEntry.labour_published_at).where(DiaryEntry.entry_date == "2026-06-01"))
+        ).scalar_one()
+    assert stamped is None
+
+
+@pytest.mark.asyncio
+async def test_approving_costs_the_hours_exactly_once(app_and_client, monkeypatch) -> None:
+    _app, client, SessionFactory = app_and_client
+    _owner_id, project_id = await _seed_user_and_project(SessionFactory)
+    token, pin, _uid = await _request_link_and_grant(client, SessionFactory, project_id=project_id)
+    session_token = await _open_session(client, token, pin)
+    headers = {"Authorization": f"Bearer {session_token}", "X-Field-PIN": pin}
+
+    published: list[dict] = []
+    monkeypatch.setattr(
+        "app.modules.field_diary.events.publish_diary_labour",
+        lambda **kwargs: published.append(kwargs),
+    )
+
+    entry_id = await _submitted_entry_with_hours(client, SessionFactory, headers, "2026-06-02")
+
+    from app.modules.field_diary.service import FieldDiaryService as _Svc
+
+    async with SessionFactory() as s:
+        service = _Svc(s)
+        await service.approve_diary_entry(entry_id, approver_id=_owner_id)
+        await s.commit()
+
+    assert len(published) == 1, "approval is what costs the hours"
+    assert published[0]["entry_id"] == str(entry_id)
+
+    # Approving again must not cost them a second time. The FSM returns early
+    # on an already-approved entry, and the mark backs that up independently.
+    async with SessionFactory() as s:
+        service = _Svc(s)
+        await service.approve_diary_entry(entry_id, approver_id=_owner_id)
+        await s.commit()
+
+    assert len(published) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_entry_already_costed_on_submit_is_not_costed_again(app_and_client, monkeypatch) -> None:
+    """The upgrade case, which is the one that would break a live project.
+
+    Every entry submitted before this change had its hours costed on submit.
+    The migration marks them, and approving one of them afterwards must not
+    post the same hours a second time.
+    """
+    _app, client, SessionFactory = app_and_client
+    _owner_id, project_id = await _seed_user_and_project(SessionFactory)
+    token, pin, _uid = await _request_link_and_grant(client, SessionFactory, project_id=project_id)
+    session_token = await _open_session(client, token, pin)
+    headers = {"Authorization": f"Bearer {session_token}", "X-Field-PIN": pin}
+
+    published: list[dict] = []
+    monkeypatch.setattr(
+        "app.modules.field_diary.events.publish_diary_labour",
+        lambda **kwargs: published.append(kwargs),
+    )
+
+    entry_id = await _submitted_entry_with_hours(client, SessionFactory, headers, "2026-06-03")
+
+    # Stand in for what the migration writes on an install that was running
+    # the old behaviour.
+    from datetime import UTC, datetime
+
+    from sqlalchemy import update as sa_update
+
+    async with SessionFactory() as s:
+        await s.execute(
+            sa_update(DiaryEntry).where(DiaryEntry.id == entry_id).values(labour_published_at=datetime.now(UTC))
+        )
+        await s.commit()
+
+    from app.modules.field_diary.service import FieldDiaryService as _Svc
+
+    async with SessionFactory() as s:
+        service = _Svc(s)
+        entry = await service.approve_diary_entry(entry_id, approver_id=_owner_id)
+        await s.commit()
+        assert entry.status == "approved", "the approval itself still goes through"
+
+    assert published == []
+
+
+@pytest.mark.asyncio
+async def test_a_field_worker_cannot_approve_their_own_entry(app_and_client) -> None:
+    """The approve route is on standard RBAC, not the field grant.
+
+    Every other route in this module authenticates the worker through the PIN
+    and magic link. That is right for capture and wrong for sign-off: the
+    session belongs to the person the hours pay.
+    """
+    _app, client, SessionFactory = app_and_client
+    _owner_id, project_id = await _seed_user_and_project(SessionFactory)
+    token, pin, _uid = await _request_link_and_grant(client, SessionFactory, project_id=project_id)
+    session_token = await _open_session(client, token, pin)
+    headers = {"Authorization": f"Bearer {session_token}", "X-Field-PIN": pin}
+
+    entry_id = await _submitted_entry_with_hours(client, SessionFactory, headers, "2026-06-04")
+
+    r = await client.post(f"/v1/field-diary/entries/{entry_id}/approve/", headers=headers)
+    assert r.status_code in (401, 403), r.text
+
+    async with SessionFactory() as s:
+        status_now = (await s.execute(select(DiaryEntry.status).where(DiaryEntry.id == entry_id))).scalar_one()
+    assert status_now == "submitted"
+
+
+# ── Project roster ────────────────────────────────────────────────────────
+
+
+async def _add_resource(
+    SessionFactory,  # noqa: N803
+    *,
+    name: str,
+    home_project_id: uuid.UUID | None = None,
+    resource_type: str = "person",
+    status: str = "active",
+) -> uuid.UUID:
+    from app.modules.resources.models import Resource
+
+    async with SessionFactory() as s:
+        row = Resource(
+            code=f"R-{uuid.uuid4().hex[:8]}",
+            name=name,
+            resource_type=resource_type,
+            status=status,
+            home_project_id=home_project_id,
+        )
+        s.add(row)
+        await s.flush()
+        rid = row.id
+        await s.commit()
+    return rid
+
+
+async def _assign(SessionFactory, resource_id: uuid.UUID, project_id: uuid.UUID) -> None:  # noqa: N803
+    import datetime as _dt
+
+    from app.modules.resources.models import Assignment
+
+    async with SessionFactory() as s:
+        s.add(
+            Assignment(
+                resource_id=resource_id,
+                project_id=project_id,
+                start_at=_dt.datetime(2026, 6, 1, tzinfo=_dt.UTC),
+                end_at=_dt.datetime(2026, 6, 30, tzinfo=_dt.UTC),
+            )
+        )
+        await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_roster_offers_the_people_who_work_this_project(app_and_client) -> None:
+    """Both ways a project staffs itself, and no third project's people.
+
+    A resource homed on the project is site labour. A resource from the shared
+    pool with an assignment here is somebody lent for the month. A foreman on
+    site sees no difference between the two and would not accept "not on the
+    list" for either.
+    """
+    _app, client, SessionFactory = app_and_client
+    _owner_id, project_id = await _seed_user_and_project(SessionFactory)
+    _other_owner, other_project = await _seed_user_and_project(SessionFactory)
+
+    await _add_resource(SessionFactory, name="Homed Here", home_project_id=project_id)
+    lent = await _add_resource(SessionFactory, name="Lent From Pool")
+    await _assign(SessionFactory, lent, project_id)
+    await _add_resource(SessionFactory, name="Somebody Else", home_project_id=other_project)
+    await _add_resource(SessionFactory, name="Unassigned Pool Person")
+
+    token, pin, _uid = await _request_link_and_grant(client, SessionFactory, project_id=project_id)
+    session_token = await _open_session(client, token, pin)
+    headers = {"Authorization": f"Bearer {session_token}", "X-Field-PIN": pin}
+
+    r = await client.get("/v1/field-diary/roster/", headers=headers)
+    assert r.status_code == 200, r.text
+    names = {row["name"] for row in r.json()}
+    assert "Homed Here" in names
+    assert "Lent From Pool" in names
+    assert "Somebody Else" not in names
+    assert "Unassigned Pool Person" not in names
+
+
+@pytest.mark.asyncio
+async def test_roster_carries_the_id_the_timesheet_matches_on(app_and_client) -> None:
+    """The whole point of the list: the row has the resource id on it.
+
+    A name is not a key. Hours captured against a typed name cannot be
+    reconciled with the desktop timesheet, so the same person is counted from
+    both sides and neither screen says so.
+    """
+    _app, client, SessionFactory = app_and_client
+    _owner_id, project_id = await _seed_user_and_project(SessionFactory)
+    rid = await _add_resource(SessionFactory, name="Marta Nowak", home_project_id=project_id)
+
+    token, pin, _uid = await _request_link_and_grant(client, SessionFactory, project_id=project_id)
+    session_token = await _open_session(client, token, pin)
+    headers = {"Authorization": f"Bearer {session_token}", "X-Field-PIN": pin}
+
+    r = await client.get("/v1/field-diary/roster/", headers=headers)
+    assert r.status_code == 200, r.text
+    row = next(item for item in r.json() if item["name"] == "Marta Nowak")
+    assert row["id"] == str(rid)
+    assert row["code"]
+    assert row["resource_type"] == "person"
+    # A phone is not a payroll screen. It gets who somebody is, not what they cost.
+    assert "default_cost_rate" not in row
+    assert "currency" not in row
+
+
+@pytest.mark.asyncio
+async def test_roster_leaves_out_what_a_punch_clock_is_not_for(app_and_client) -> None:
+    """An excavator does not punch in, and a leaver is not on site."""
+    _app, client, SessionFactory = app_and_client
+    _owner_id, project_id = await _seed_user_and_project(SessionFactory)
+
+    await _add_resource(SessionFactory, name="Gang One", home_project_id=project_id, resource_type="crew")
+    await _add_resource(SessionFactory, name="CAT 320", home_project_id=project_id, resource_type="equipment")
+    await _add_resource(
+        SessionFactory,
+        name="Left In March",
+        home_project_id=project_id,
+        status="inactive",
+    )
+
+    token, pin, _uid = await _request_link_and_grant(client, SessionFactory, project_id=project_id)
+    session_token = await _open_session(client, token, pin)
+    headers = {"Authorization": f"Bearer {session_token}", "X-Field-PIN": pin}
+
+    r = await client.get("/v1/field-diary/roster/", headers=headers)
+    assert r.status_code == 200, r.text
+    names = {row["name"] for row in r.json()}
+    assert "Gang One" in names
+    assert "CAT 320" not in names
+    assert "Left In March" not in names
+
+
+@pytest.mark.asyncio
+async def test_roster_needs_a_field_session(app_and_client) -> None:
+    """A workforce list is not public. Same gate as every other field route."""
+    _app, client, SessionFactory = app_and_client
+    _owner_id, project_id = await _seed_user_and_project(SessionFactory)
+    await _add_resource(SessionFactory, name="Homed Here", home_project_id=project_id)
+
+    r = await client.get("/v1/field-diary/roster/")
+    assert r.status_code in (401, 403), r.text
+
+    token, pin, _uid = await _request_link_and_grant(client, SessionFactory, project_id=project_id)
+    session_token = await _open_session(client, token, pin)
+    # Session token without the PIN header is not a session.
+    r = await client.get("/v1/field-diary/roster/", headers={"Authorization": f"Bearer {session_token}"})
+    assert r.status_code in (401, 403), r.text

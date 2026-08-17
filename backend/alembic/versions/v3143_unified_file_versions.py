@@ -237,6 +237,7 @@ def _backfill_chain(
     return inserted
 
 
+# data-rewrite-ack: table=oe_file_version growth=tenure rows=one row per saved file version, old versions kept (only one is_current per chain), accumulates with document activity
 def upgrade() -> None:
     bind = op.get_bind()
 

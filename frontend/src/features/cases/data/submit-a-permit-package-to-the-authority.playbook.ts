@@ -57,8 +57,8 @@ const playbook: Playbook = {
       whyKey: "cases.submit_a_permit_package_to_the_authority.step.assemble.why",
       whyDefault:
         "A missing report or an outdated drawing is the single most common reason a package bounces back unread. Sorting the set first means the build step starts from documents that are actually complete.",
-      moduleLabel: "Project files",
-      moduleLabelKey: "nav.project_files",
+      moduleLabel: "Documents",
+      moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },
     {

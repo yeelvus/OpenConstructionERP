@@ -147,9 +147,9 @@ export function DismissibleInfo({
   const [showMore, setShowMore] = useState(false);
 
   // While collapsed the card renders nothing here - it hands itself to the
-  // re-open control instead (the pill next to "How it works", or the Header
-  // fallback icon on pages without a guide button), which calls `expand`.
-  // Unmount (navigation) unregisters automatically.
+  // re-open control instead, the info icon the Header puts beside the module
+  // name, which calls `expand`. Unmount (navigation) unregisters
+  // automatically.
   const register = useModuleInfoStore((s) => s.register);
   const unregister = useModuleInfoStore((s) => s.unregister);
   useEffect(() => {

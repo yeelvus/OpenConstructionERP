@@ -721,6 +721,7 @@ export function DefectsLiabilityPage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       <RequiresProject emptyHint={t('defects_liability.select_project', { defaultValue: 'Open a project first to manage warranties and the defects liability period.' })}>

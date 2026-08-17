@@ -65,7 +65,7 @@ const playbook: Playbook = {
       whyKey: "cases.issue_a_tender_addendum_and_reissue.step.draft.why",
       whyDefault:
         "A numbered addendum with the superseded documents named is what keeps the tender set unambiguous. Loose emails leave firms pricing off different revisions of the same drawing.",
-      moduleLabel: "Files",
+      moduleLabel: "Documents",
       moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },

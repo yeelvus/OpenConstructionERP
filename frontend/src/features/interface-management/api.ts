@@ -12,7 +12,7 @@
  * ``/v1/interface-management/projects/{projectId}/...``.
  */
 
-import { apiGet, apiPost, apiPatch, apiDelete } from '@/shared/lib/api';
+import { apiGet, apiPost, apiPatch, apiDelete, type Page } from '@/shared/lib/api';
 
 /* -- Vocabularies ---------------------------------------------------------- */
 
@@ -372,18 +372,18 @@ export async function fetchRfiOptions(projectId: string): Promise<LinkOption[]> 
  * this in a query that also degrades to an empty list on error.
  */
 export async function fetchScheduleActivityOptions(projectId: string): Promise<LinkOption[]> {
-  const raw = await apiGet<SchedulePickerRow[] | { items: SchedulePickerRow[] }>(
+  const raw = await apiGet<Page<SchedulePickerRow>>(
     `/v1/schedule/schedules/?project_id=${projectId}`,
   );
-  const schedules = Array.isArray(raw) ? raw : (raw?.items ?? []);
+  const schedules = raw?.items ?? [];
   // Cap the fan-out: a project rarely has more than a couple of schedules, and
   // we never want an unbounded burst of activity requests from a picker.
   const capped = schedules.slice(0, 5);
   const perSchedule = await Promise.all(
     capped.map((s) =>
-      apiGet<ActivityPickerRow[]>(`/v1/schedule/schedules/${s.id}/activities/`)
-        .then((acts) =>
-          (acts ?? []).map((a) => ({
+      apiGet<Page<ActivityPickerRow>>(`/v1/schedule/schedules/${s.id}/activities/`)
+        .then((page) =>
+          (page?.items ?? []).map((a) => ({
             id: a.id,
             // Prefix with the schedule name when the project has more than one,
             // so two activities called "Excavation" stay distinguishable.

@@ -151,12 +151,18 @@ function Lightbox({
 }) {
   const { t } = useTranslation();
   const photo = photos[currentIndex];
-  if (!photo) return null;
-
   const hasPrev = currentIndex > 0;
   const hasNext = currentIndex < photos.length - 1;
 
+  // Both effects sit above the `!photo` return, and each no-ops instead when
+  // there is nothing to show. The index can outrun the array while this is
+  // open - a background refetch or another user deleting the last photo is
+  // enough - and returning before the hooks would run two fewer of them than
+  // the previous render did, which React rejects. Guarding inside keeps the
+  // behaviour identical to returning early: no key handler and no scroll lock
+  // for a lightbox that is drawing nothing.
   useEffect(() => {
+    if (!photo) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
       if (e.key === 'ArrowLeft' && hasPrev) onNavigate(currentIndex - 1);
@@ -164,13 +170,16 @@ function Lightbox({
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [onClose, onNavigate, currentIndex, hasPrev, hasNext]);
+  }, [photo, onClose, onNavigate, currentIndex, hasPrev, hasNext]);
 
   // Prevent body scroll
   useEffect(() => {
+    if (!photo) return;
     document.body.style.overflow = 'hidden';
     return () => { document.body.style.overflow = ''; };
-  }, []);
+  }, [photo]);
+
+  if (!photo) return null;
 
   return (
     <div
@@ -1430,7 +1439,7 @@ export function PhotoGalleryPage() {
         })}
         links={[
           {
-            label: t('nav.project_files', { defaultValue: 'Files' }),
+            label: t('nav.documents', { defaultValue: 'Documents' }),
             onClick: () => navigate('/files'),
           },
           {

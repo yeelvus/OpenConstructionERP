@@ -69,7 +69,11 @@ from app.modules.finance.connector_schemas import (
 )
 from app.modules.finance.connector_service import ConnectorService
 from app.modules.finance.connectors.registry import connector_registry
-from app.modules.finance.models import EVMSnapshot, Invoice, Payment, ProjectBudget
+from app.modules.finance.einvoice_settings_schemas import (
+    EInvoiceSettingsRead,
+    EInvoiceSettingsUpdate,
+)
+from app.modules.finance.models import EVMSnapshot, Invoice, InvoiceLineItem, Payment, ProjectBudget
 from app.modules.finance.retention_ledger import RetentionRollup
 from app.modules.finance.schemas import (
     BalanceSheetResponse,
@@ -115,15 +119,49 @@ def _get_service(session: SessionDep) -> FinanceService:
     return FinanceService(session)
 
 
+def _line_item_dicts(line_items: Iterable[InvoiceLineItem] | None) -> list[dict[str, Any]]:
+    """Flatten invoice lines for the ORM-free document renderers.
+
+    Both document routes, the country PDF and the EN 16931 e-invoice, feed the
+    same dict shape to renderers that deliberately take no ORM objects. Built
+    inline at each route, a field added for one document is missing from the
+    other, and the export silently falls back rather than failing.
+
+    Args:
+        line_items: the invoice's persisted lines, in order.
+
+    Returns:
+        One plain dict per line.
+    """
+    return [
+        {
+            "description": li.description,
+            "unit": li.unit,
+            "quantity": li.quantity,
+            "unit_rate": li.unit_rate,
+            "amount": li.amount,
+            # EN 16931 per-line VAT (BT-152 rate, BT-151 category).
+            "vat_rate": li.vat_rate,
+            "vat_category": li.vat_category,
+        }
+        for li in (line_items or [])
+    ]
+
+
 # ── Counterparty enrichment ─────────────────────────────────────────────────
 
 
 def _contact_display_name(c: Contact) -> str:
-    """Return the human-readable contact label (company > "first last" > email)."""
-    if c.company_name:
-        return c.company_name
-    full = f"{c.first_name or ''} {c.last_name or ''}".strip()
-    return full or c.email or ""
+    """Return the human-readable contact label (company > "first last" > email).
+
+    Delegates so that the name shown beside an invoice and the name written into
+    its e-invoice as BT-44 are the same string. They were resolved separately
+    before, and the copy here read ``c.email``, which is not a column on
+    ``Contact`` and raised on any record with neither a company nor a person.
+    """
+    from app.modules.finance.einvoice_parties import contact_display_name
+
+    return contact_display_name(c)
 
 
 async def _fetch_counterparty_names(session: AsyncSession, contact_ids: Iterable[str | None]) -> dict[str, str]:
@@ -600,16 +638,7 @@ async def export_invoice_br_pdf(
         "notes": fresh.notes,
         "metadata": dict(fresh.metadata_ or {}),
     }
-    line_items: list[dict[str, Any]] = [
-        {
-            "description": li.description,
-            "unit": li.unit,
-            "quantity": li.quantity,
-            "unit_rate": li.unit_rate,
-            "amount": li.amount,
-        }
-        for li in (fresh.line_items or [])
-    ]
+    line_items: list[dict[str, Any]] = _line_item_dicts(fresh.line_items)
 
     pdf_bytes = render_br_invoice_pdf(
         invoice=invoice_dict,
@@ -645,6 +674,83 @@ async def export_invoice_br_pdf(
 
 
 @router.get(
+    "/einvoice-profiles",
+    summary="List the EN 16931 country profiles this build can issue",
+    description=(
+        "The profile registry, so a picker never carries its own copy of the "
+        "list. Adding a country is one registry entry in the einvoice module, "
+        "and every caller of this endpoint follows it without a change."
+    ),
+)
+async def list_einvoice_profiles(
+    _perm: None = Depends(RequirePermission("finance.read")),
+) -> dict[str, Any]:
+    """Return the supported e-invoice profiles with their syntax and region."""
+    from app.modules.einvoice import PROFILES
+
+    return {
+        "profiles": [
+            {
+                "key": key,
+                # Standard names (XRechnung 3.0, ZUGFeRD 2.1) are proper nouns
+                # and stay untranslated, so the label ships from the registry.
+                "label": profile.label,
+                "syntax": profile.syntax,
+                "region": profile.region,
+            }
+            for key, profile in PROFILES.items()
+        ]
+    }
+
+
+@router.get(
+    "/einvoice-settings",
+    response_model=EInvoiceSettingsRead,
+    summary="Read the standing e-invoice configuration",
+    description=(
+        "Seller identity, the tax registration behind it and the account a buyer "
+        "pays into. These are the same on every invoice this instance issues, so "
+        "they are held once here and merged beneath whatever an individual "
+        "invoice says for itself."
+    ),
+)
+async def read_einvoice_settings(
+    session: SessionDep,
+    _perm: None = Depends(RequirePermission("finance.read")),
+) -> EInvoiceSettingsRead:
+    """Return the configuration, and which of its required fields are still blank."""
+    from app.modules.finance.einvoice_settings_service import get_settings
+
+    return EInvoiceSettingsRead.from_row(await get_settings(session))
+
+
+@router.put(
+    "/einvoice-settings",
+    response_model=EInvoiceSettingsRead,
+    summary="Write the standing e-invoice configuration",
+    description=(
+        "Replaces the whole configuration, so a field left blank is a field the "
+        "user means to clear. The IBAN is checked against its own check digits "
+        "here, which is the last point at which a mistyped account can be "
+        "caught: a document carrying one is perfectly valid and simply cannot be "
+        "paid."
+    ),
+)
+async def write_einvoice_settings(
+    payload: EInvoiceSettingsUpdate,
+    session: SessionDep,
+    user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("finance.einvoice_settings")),
+) -> EInvoiceSettingsRead:
+    """Store the seller identity and payment details for every future e-invoice."""
+    from app.modules.finance.einvoice_settings_service import update_settings
+
+    row = await update_settings(session, payload, user_id=user_id)
+    await session.commit()
+    return EInvoiceSettingsRead.from_row(row)
+
+
+@router.get(
     "/invoices/{invoice_id}/einvoice",
     summary="Export invoice as an EN 16931 e-invoice (international: CII and UBL/Peppol)",
     description=(
@@ -675,10 +781,11 @@ async def export_invoice_einvoice(
 ) -> StreamingResponse | dict[str, Any]:
     """Stream an EN 16931 e-invoice (CII/UBL XML, or a hybrid PDF) from the invoice."""
     from app.modules.einvoice import (
+        FATAL,
         SUPPORTED_PROFILES,
-        problems_for,
         render_einvoice,
         render_einvoice_pdf,
+        violations_for,
     )
     from app.modules.einvoice.cii import EInvoiceError
 
@@ -691,18 +798,6 @@ async def export_invoice_einvoice(
 
     await _require_invoice_access(session, invoice_id, user_id)
     fresh = await service.get_invoice(invoice_id)
-
-    # Best-effort buyer name fallback from the linked contact (never block on it).
-    buyer_fallback = ""
-    if fresh.contact_id:
-        try:
-            from app.modules.contacts.repository import ContactRepository
-
-            contact = await ContactRepository(session).get_by_id(fresh.contact_id)
-            if contact is not None:
-                buyer_fallback = str(getattr(contact, "name", "") or "").strip()
-        except Exception:  # noqa: BLE001 - fallback only
-            logger.debug("e-invoice: contact lookup failed", exc_info=True)
 
     invoice_dict: dict[str, Any] = {
         "invoice_number": fresh.invoice_number,
@@ -717,25 +812,39 @@ async def export_invoice_einvoice(
         "notes": fresh.notes,
         "metadata": dict(fresh.metadata_ or {}),
     }
-    line_items: list[dict[str, Any]] = [
-        {
-            "description": li.description,
-            "unit": li.unit,
-            "quantity": li.quantity,
-            "unit_rate": li.unit_rate,
-            "amount": li.amount,
-        }
-        for li in (fresh.line_items or [])
-    ]
+    line_items: list[dict[str, Any]] = _line_item_dicts(fresh.line_items)
+    # Resolved once and handed to whichever of the two paths runs below, so the
+    # check and the file are judging the same document. Carries the buyer read
+    # off the linked contact, so the address EN 16931 demands does not have to be
+    # retyped onto every invoice sent to a customer we already know.
+    from app.modules.finance.einvoice_parties import einvoice_defaults_for_invoice
+
+    defaults = await einvoice_defaults_for_invoice(
+        session,
+        contact_id=fresh.contact_id,
+        invoice_direction=fresh.invoice_direction,
+    )
 
     if dry_run:
-        problems = problems_for(
+        found = violations_for(
             invoice=invoice_dict,
             line_items=line_items,
             profile=profile,
-            buyer_fallback_name=buyer_fallback,
+            defaults=defaults,
         )
-        return {"format": profile, "valid": not problems, "problems": problems}
+        # ``problems`` stays the fatal messages, which is what blocks a render.
+        # ``violations`` carries the advisories too, each with the rule id a
+        # receiver would quote back, so a screen can show "this exports, and it
+        # still ought to name a bank account" instead of one undifferentiated list.
+        problems = [v.message for v in found if v.severity == FATAL]
+        return {
+            "format": profile,
+            "valid": not problems,
+            "problems": problems,
+            "violations": [
+                {"rule_id": v.rule_id, "severity": v.severity, "message": v.message, "term": v.term} for v in found
+            ],
+        }
 
     render = render_einvoice_pdf if embed else render_einvoice
     try:
@@ -743,15 +852,17 @@ async def export_invoice_einvoice(
             invoice=invoice_dict,
             line_items=line_items,
             profile=profile,
-            buyer_fallback_name=buyer_fallback,
+            defaults=defaults,
         )
     except EInvoiceError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
                 f"invoice is not EN 16931 complete for {profile}: {exc}. "
-                "Fill seller/buyer master data and the buyer reference under the "
-                "invoice metadata 'einvoice' key, or call with ?dry_run=true."
+                "Seller identity and the bank account are set once under the "
+                "e-invoice settings; the buyer address is read from the linked "
+                "contact and the buyer reference belongs to this invoice. Call "
+                "with ?dry_run=true for the full list."
             ),
         ) from exc
 

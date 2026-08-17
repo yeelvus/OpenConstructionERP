@@ -267,10 +267,10 @@ def _analyse_column(
 
     inferred_type = _infer_type(series, non_null)
 
-    # Dtype mismatch: pandas inferred object but the values look numeric
-    # / datetime / boolean. Flag it so the user can fix the upstream
+    # Dtype mismatch: pandas gave the column no real type but the values look
+    # numeric / datetime / boolean. Flag it so the user can fix the upstream
     # CSV / parquet dtype before slicing.
-    if pd.api.types.is_object_dtype(series) and inferred_type != "string":
+    if _dtype_says_nothing_about_the_values(series) and inferred_type != "string":
         issues.append("dtype_mismatch")
 
     # UUID-ish columns aren't a hard error, but the user probably
@@ -330,6 +330,25 @@ def _analyse_column(
 # ── Type inference ─────────────────────────────────────────────────────────
 
 
+def _dtype_says_nothing_about_the_values(series: pd.Series) -> bool:
+    """True when the column's dtype leaves its real type still to be sniffed.
+
+    This used to ask ``is_object_dtype`` alone, which was the same question
+    until pandas 3. A frame built from text now comes back as the dedicated
+    ``str`` dtype rather than ``object``, and ``is_object_dtype`` answers False
+    for it. Every text column therefore skipped the value sniffing below and
+    was reported as a plain string, which is to say the one failure this module
+    was written to catch, a CSV whose numbers arrived as text, stopped being
+    caught at all. Nothing went red: the report still rendered, still counted
+    nulls, and simply never raised dtype_mismatch again.
+
+    Both dtypes are accepted so the answer does not depend on which pandas is
+    installed. A column that genuinely holds strings still infers as string,
+    because that is decided by the values and not by this predicate.
+    """
+    return pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series)
+
+
 def _infer_type(series: pd.Series, non_null: pd.Series) -> InferredType:
     """Best-guess "real" type for a column.
 
@@ -345,8 +364,8 @@ def _infer_type(series: pd.Series, non_null: pd.Series) -> InferredType:
         return "numeric"
     if pd.api.types.is_datetime64_any_dtype(series):
         return "datetime"
-    # Object dtype - sniff values.
-    if pd.api.types.is_object_dtype(series):
+    # Untyped column - sniff values.
+    if _dtype_says_nothing_about_the_values(series):
         # Bool-like first: {"true", "false"} or {True, False}.
         if _ratio_passes(non_null, _is_bool_like) >= _DTYPE_MISMATCH_RATIO:
             return "boolean"

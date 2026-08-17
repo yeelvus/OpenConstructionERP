@@ -170,6 +170,113 @@ async def _recalc_assemblies(session, assembly_ids: set[uuid.UUID]) -> None:
     await session.flush()
 
 
+def _rate_or_none(raw: object) -> Decimal | None:
+    """The rate as a number, or ``None`` when it cannot be read as one.
+
+    Deliberately not ``_safe_decimal``, which answers 0 for anything it cannot
+    parse. That is the right answer for a missing optional factor and the wrong
+    one for a price: an item whose rate arrives as ``""`` or ``"12,50"`` would
+    silently rewrite every component built on it to zero and collapse the parent
+    assembly's total. A price we cannot read is a row to leave alone and count,
+    not a row to zero.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+async def refresh_region(session, region: str) -> tuple[int, int, int]:
+    """Re-read every component priced from ``region`` and re-total its parents.
+
+    Returns ``(components refreshed, assemblies re-totalled, rates unreadable)``.
+
+    Takes the session rather than opening one so it can be exercised directly.
+    The subscriber below is the production caller and does open one; a test lane
+    that never binds ``async_session_factory`` can still reach this.
+
+    Idempotent by construction: it writes the rate that is in the table, so a
+    replayed or duplicated event lands on the same values.
+    """
+    from app.modules.costs.models import CostItem
+
+    stmt = (
+        select(Component, CostItem.rate)
+        .join(CostItem, Component.cost_item_id == CostItem.id)
+        .where(CostItem.region == region)
+    )
+    rows = list((await session.execute(stmt)).all())
+    if not rows:
+        return (0, 0, 0)
+
+    affected_assembly_ids: set[uuid.UUID] = set()
+    refreshed = 0
+    unreadable = 0
+    for comp, raw_rate in rows:
+        new_rate = _rate_or_none(raw_rate)
+        if new_rate is None:
+            unreadable += 1
+            continue
+        factor = _safe_decimal(comp.factor, "1.0")
+        qty = _safe_decimal(comp.quantity, "1.0")
+        comp.unit_cost = str(new_rate)
+        comp.total = str(factor * qty * new_rate)
+        affected_assembly_ids.add(comp.assembly_id)
+        refreshed += 1
+
+    if not refreshed:
+        return (0, 0, unreadable)
+    await session.flush()
+    await _recalc_assemblies(session, affected_assembly_ids)
+    return (refreshed, len(affected_assembly_ids), unreadable)
+
+
+async def _on_region_repriced(event: Event) -> None:
+    """Pull a whole repriced region through into every assembly built on it.
+
+    ``reprice_region`` rewrites the rate of every work item in a region from the
+    resource price sheet. Before this subscriber existed it announced nothing,
+    so the rates moved and the assemblies that quote them kept their own copy -
+    the case a user hits when they reprice and their budget does not move.
+
+    One event carries the region rather than the item ids. A single run may
+    rewrite up to 250 000 items and a per-item event would mean that many
+    detached tasks each opening a session. Joining Component to CostItem on the
+    region instead makes the work proportional to how many components exist,
+    which is the small number here, and it is the same work whether one price
+    moved or a hundred thousand did.
+    """
+    data = event.data or {}
+    region = str(data.get("region") or "").strip()
+    if not region:
+        return
+    try:
+        async with async_session_factory() as session:
+            refreshed, assemblies, unreadable = await refresh_region(session, region)
+            if not refreshed:
+                return
+            await session.commit()
+            logger.info(
+                "Assemblies region-reprice: refreshed %d component(s) across %d assembly(s) "
+                "after region %s was repriced%s",
+                refreshed,
+                assemblies,
+                region,
+                f" ({unreadable} rate(s) unreadable, left alone)" if unreadable else "",
+            )
+    except Exception:
+        logger.warning(
+            "Assemblies region-reprice subscriber failed for region %s",
+            region,
+            exc_info=True,
+        )
+
+
 def _parse_uuids(values: object) -> list[uuid.UUID]:
     """Best-effort parse of an iterable of id strings into UUIDs."""
     out: list[uuid.UUID] = []
@@ -297,4 +404,13 @@ def register_assemblies_subscribers() -> None:
     event_bus.subscribe("catalog.resources.updated", _on_catalog_resource_updated)
     event_bus.subscribe("catalog.resource.updated", _on_catalog_resource_updated)
     event_bus.subscribe("catalog.resource.price_adjusted", _on_catalog_resource_updated)
-    logger.info("Assemblies: subscribed to costs.item.updated + catalog.resources.updated (+ legacy singular names)")
+    # The third writer of CostItem.rate. costs.item.updated covers the single
+    # PATCH and catalog.resources.updated covers the catalog's bulk adjust, but
+    # reprice_region - the one that rewrites a whole region from the resource
+    # price sheet, and the one a user reaches for when prices move - announced
+    # nothing at all until now.
+    event_bus.subscribe("costs.region.repriced", _on_region_repriced)
+    logger.info(
+        "Assemblies: subscribed to costs.item.updated + costs.region.repriced "
+        "+ catalog.resources.updated (+ legacy singular names)"
+    )

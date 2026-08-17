@@ -61,6 +61,7 @@ const playbook: Playbook = {
       whyDefault:
         "A meeting with no written record gets re-argued next week, and a verbal decision does not hold up in a dispute.",
       moduleLabel: "Meetings",
+      moduleLabelKey: "nav.meetings",
       to: "/projects/:projectId/meetings",
     },
     {
@@ -102,6 +103,7 @@ const playbook: Playbook = {
       whyDefault:
         "An action with no owner and no date never gets done. Naming both is what makes progress trackable and someone accountable.",
       moduleLabel: "Tasks",
+      moduleLabelKey: "tasks.title",
       to: "/projects/:projectId/tasks",
     },
     {
@@ -142,6 +144,7 @@ const playbook: Playbook = {
       whyDefault:
         "A question left in the notes stalls the works and gets forgotten. A formal RFI forces a dated answer on the record.",
       moduleLabel: "RFI",
+      moduleLabelKey: "nav.rfi",
       to: "/projects/:projectId/rfi",
     },
     {
@@ -183,6 +186,7 @@ const playbook: Playbook = {
       whyDefault:
         "Minutes only bind people once they are issued. Circulating the actions closes the loop and starts the clock on every due date.",
       moduleLabel: "Reports",
+      moduleLabelKey: "nav.reports",
       to: "/reports",
     },
   ],

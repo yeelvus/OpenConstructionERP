@@ -641,6 +641,7 @@ export function ServicePage() {
               onAdd={insights.addCustom}
               onUpdate={insights.updateCustom}
               onRemove={insights.removeCustom}
+              onCollapse={() => insights.setOpen(false)}
             />
             <TicketTable
               rows={filteredTickets}

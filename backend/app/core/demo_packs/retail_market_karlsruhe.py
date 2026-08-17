@@ -62,18 +62,18 @@ _VE_SECTIONS: list[_VeSection] = [
         "390",
         175_000.00,
     ),
-    ("02", "VE-02", "LV 02 - Erdbau und Erschliessung (Earthworks and site servicing)", "210", 430_000.00),
+    ("02", "VE-02", "LV 02 - Erdbau und Erschließung (Earthworks and site servicing)", "210", 430_000.00),
     (
         "04",
         "VE-04",
-        "LV 04 - Rohbau: Gruendung, Bodenplatte, Industrieboden, Massivbau (Shell works)",
+        "LV 04 - Rohbau: Gründung, Bodenplatte, Industrieboden, Massivbau (Shell works)",
         "320",
         1_000_000.00,
     ),
     (
         "05",
         "VE-05",
-        "LV 05 - Dach: Trapezblech, Daemmung, Abdichtung, RWA (Roof works incl. smoke vents)",
+        "LV 05 - Dach: Trapezblech, Dämmung, Abdichtung, RWA (Roof works incl. smoke vents)",
         "360",
         700_000.00,
     ),
@@ -84,32 +84,32 @@ _VE_SECTIONS: list[_VeSection] = [
         "330",
         660_000.00,
     ),
-    ("07", "VE-07", "LV 07 - Fassade: Sandwichpaneele, Laerchen-Lattung, Sockel (Facade works)", "330", 500_000.00),
+    ("07", "VE-07", "LV 07 - Fassade: Sandwichpaneele, Lärchen-Lattung, Sockel (Facade works)", "330", 500_000.00),
     (
         "08",
         "VE-08",
-        "LV 08 - Fenster, Tueren, Tore, Pfosten-Riegel-Fassade (Windows, doors, gates, curtain wall)",
+        "LV 08 - Fenster, Türen, Tore, Pfosten-Riegel-Fassade (Windows, doors, gates, curtain wall)",
         "330",
         310_000.00,
     ),
     (
         "09",
         "VE-09",
-        "LV 09 - Innenausbau: Trockenbau, Fliesen, Maler, Innentueren, Decken (Interior fit-out)",
+        "LV 09 - Innenausbau: Trockenbau, Fliesen, Maler, Innentüren, Decken (Interior fit-out)",
         "340",
         340_000.00,
     ),
     (
         "14",
         "VE-14",
-        "LV 14 - HLS: Sanitaer, Waermepumpe, Fussbodenheizung, RLT (Mechanical services)",
+        "LV 14 - HLS: Sanitär, Wärmepumpe, Fußbodenheizung, RLT (Mechanical services)",
         "410",
         760_000.00,
     ),
     (
         "15",
         "VE-15",
-        "LV 15 - Kaeltetechnik CO2-Verbund und Kuehlmoebel (CO2 refrigeration and cabinets)",
+        "LV 15 - Kältetechnik CO2-Verbund und Kühlmöbel (CO2 refrigeration and cabinets)",
         "470",
         980_000.00,
     ),
@@ -130,7 +130,7 @@ _VE_SECTIONS: list[_VeSection] = [
     (
         "18",
         "VE-18",
-        "LV 18 - Aussenanlagen, Stellplaetze, Entwaesserung (External works, parking, drainage)",
+        "LV 18 - Außenanlagen, Stellplätze, Entwässerung (External works, parking, drainage)",
         "510",
         1_250_000.00,
     ),
@@ -168,7 +168,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
     "VE-01": [
         (
             "01.01.0010",
-            "Baustelle einrichten und raeumen, An- und Abtransport Geraete (Site establishment and clearance incl. plant transport)",
+            "Baustelle einrichten und räumen, An- und Abtransport Geräte (Site establishment and clearance incl. plant transport)",
             "lsum",
             1,
             32500.00,
@@ -185,7 +185,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "01.01.0030",
-            "Bauzufahrt und Baustrasse Schotter, herstellen und rueckbauen (Gravel site access road, build and remove)",
+            "Bauzufahrt und Baustraße Schotter, herstellen und rückbauen (Gravel site access road, build and remove)",
             "m2",
             1050,
             18.90,
@@ -193,7 +193,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "01.01.0040",
-            "Buero- und Sozialcontainer, Vorhaltung 10 Monate (Office and welfare containers, 10 months provision)",
+            "Büro- und Sozialcontainer, Vorhaltung 10 Monate (Office and welfare containers, 10 months provision)",
             "pcs",
             8,
             2950.00,
@@ -217,7 +217,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "01.01.0070",
-            "Mobilkran- und Hebezeugvorhaltung fuer Fremdgewerke (Mobile crane and hoisting provision for other trades)",
+            "Mobilkran- und Hebezeugvorhaltung für Fremdgewerke (Mobile crane and hoisting provision for other trades)",
             "lsum",
             1,
             14800.00,
@@ -255,7 +255,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
             4400.00,
             "390",
         ),
-        ("01.01.0120", "Endreinigung und Uebergabe (Final cleaning and handover)", "m2", 3290, 2.90, "390"),
+        ("01.01.0120", "Endreinigung und Übergabe (Final cleaning and handover)", "m2", 3290, 2.90, "390"),
         (
             "01.01.0130",
             "Allgemeine Baustellengemeinkosten, Versicherungen, Bautagesberichte (General site overheads, insurances, daily reports)",
@@ -287,7 +287,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "02.01.0030",
-            "Schnurgeruest, Absteckung und Feinabsteckung Gebaeude (Batter boards, setting-out and fine staking)",
+            "Schnurgerüst, Absteckung und Feinabsteckung Gebäude (Batter boards, setting-out and fine staking)",
             "lsum",
             1,
             4800.00,
@@ -311,7 +311,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "02.02.0020",
-            "Hausanschluss Abwasser DN 250 bis Uebergabeschacht (Sewer service connection DN 250 to transfer chamber)",
+            "Hausanschluss Abwasser DN 250 bis Übergabeschacht (Sewer service connection DN 250 to transfer chamber)",
             "m",
             58,
             228.00,
@@ -327,7 +327,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "02.02.0040",
-            "Uebergabeschaechte DN 1000 inkl. Abdeckung Kl. D (Transfer chambers DN 1000 incl. class D covers)",
+            "Übergabeschächte DN 1000 inkl. Abdeckung Kl. D (Transfer chambers DN 1000 incl. class D covers)",
             "pcs",
             3,
             3600.00,
@@ -335,7 +335,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "02.02.0050",
-            "Loeschwasser- und Hydrantenleitung DN 150 auf dem Grundstueck (Fire-water and hydrant main DN 150 on the plot)",
+            "Löschwasser- und Hydrantenleitung DN 150 auf dem Grundstück (Fire-water and hydrant main DN 150 on the plot)",
             "m",
             105,
             268.00,
@@ -343,7 +343,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "02.02.0060",
-            "Pruefung, Spuelung, Desinfektion und Dokumentation Anschluesse (Testing, flushing, disinfection and records)",
+            "Prüfung, Spülung, Desinfektion und Dokumentation Anschlüsse (Testing, flushing, disinfection and records)",
             "lsum",
             1,
             7200.00,
@@ -359,7 +359,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "02.03.0020",
-            "Liefern und Einbau gepruefte Auffuellung, lagenweise verdichtet (Supply and place certified fill, compacted in layers)",
+            "Liefern und Einbau geprüfte Auffüllung, lagenweise verdichtet (Supply and place certified fill, compacted in layers)",
             "m3",
             1920,
             27.20,
@@ -368,7 +368,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: surplus = pits 3,900 (VE-04) + grading 2,480 - 700 re-used on site = 5,680 m3
         (
             "02.03.0030",
-            "Abfuhr und Entsorgung Ueberschussmassen Z1.1 (Haul-off and disposal of surplus soil, class Z1.1)",
+            "Abfuhr und Entsorgung Überschussmassen Z1.1 (Haul-off and disposal of surplus soil, class Z1.1)",
             "m3",
             5680,
             19.40,
@@ -384,7 +384,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "02.03.0050",
-            "Boeschungen sichern, Folienabdeckung (Slope protection, sheeting cover)",
+            "Böschungen sichern, Folienabdeckung (Slope protection, sheeting cover)",
             "m2",
             1180,
             6.80,
@@ -401,7 +401,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "02.03.0070",
-            "Baustrassen-Unterhaltung waehrend Erdbau (Maintenance of site roads during earthworks)",
+            "Baustraßen-Unterhaltung während Erdbau (Maintenance of site roads during earthworks)",
             "lsum",
             1,
             1400.00,
@@ -445,7 +445,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ("04.01.0030", "Sauberkeitsschicht C12/15, d = 5 cm (Blinding layer C12/15, 5 cm)", "m2", 3213, 9.80, "320"),
         (
             "04.01.0040",
-            "Koecherfundamente 1,90 x 1,90 x 1,05 m, C25/30, inkl. Schalung und Aussparung (Pocket foundations 1.9 x 1.9 x 1.05 m C25/30)",
+            "Köcherfundamente 1,90 x 1,90 x 1,05 m, C25/30, inkl. Schalung und Aussparung (Pocket foundations 1.9 x 1.9 x 1.05 m C25/30)",
             "pcs",
             39,
             1560.00,
@@ -453,7 +453,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "04.01.0050",
-            "Frostschuerze umlaufend, h = 80 cm, C25/30 (Perimeter frost skirt 80 cm C25/30)",
+            "Frostschürze umlaufend, h = 80 cm, C25/30 (Perimeter frost skirt 80 cm C25/30)",
             "m",
             234,
             98.00,
@@ -461,7 +461,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "04.01.0060",
-            "Betonstahl B500B Fundamente und Frostschuerze, liefern und verlegen (Rebar B500B foundations and skirt)",
+            "Betonstahl B500B Fundamente und Frostschürze, liefern und verlegen (Rebar B500B foundations and skirt)",
             "t",
             44,
             1390.00,
@@ -477,7 +477,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "04.01.0080",
-            "XPS-Daemmung 120 mm unter Bodenplatte, Heizzone, druckfest (XPS insulation 120 mm under slab, heated zone)",
+            "XPS-Dämmung 120 mm unter Bodenplatte, Heizzone, druckfest (XPS insulation 120 mm under slab, heated zone)",
             "m2",
             2050,
             29.50,
@@ -501,7 +501,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "04.01.0110",
-            "Industrieboden: Hartstoffeinstreuung, monolithisch geglaettet, Fugenschnitt und Verguss (Industrial floor: dry-shake topping, power-floated, joints)",
+            "Industrieboden: Hartstoffeinstreuung, monolithisch geglättet, Fugenschnitt und Verguss (Industrial floor: dry-shake topping, power-floated, joints)",
             "m2",
             2820,
             25.50,
@@ -509,7 +509,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "04.01.0120",
-            "Grundleitungen DN 100 - DN 150 unter Bodenplatte inkl. Dichtheitspruefung DIN EN 1610 (Below-slab drainage DN100-150 incl. tightness test)",
+            "Grundleitungen DN 100 - DN 150 unter Bodenplatte inkl. Dichtheitsprüfung DIN EN 1610 (Below-slab drainage DN100-150 incl. tightness test)",
             "m",
             450,
             92.00,
@@ -517,7 +517,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "04.01.0130",
-            "Bodeneinlaeufe, Pumpensumpf, Revisionsschaechte komplett (Floor drains, sump, inspection chambers)",
+            "Bodeneinläufe, Pumpensumpf, Revisionsschächte komplett (Floor drains, sump, inspection chambers)",
             "lsum",
             1,
             21600.00,
@@ -533,7 +533,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "04.01.0150",
-            "Massivbau Sozialtrakt und Technikraeume, komplett (Masonry/RC staff and plant rooms, complete)",
+            "Massivbau Sozialtrakt und Technikräume, komplett (Masonry/RC staff and plant rooms, complete)",
             "lsum",
             1,
             92800.00,
@@ -542,7 +542,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # 04.02 Rampen, Sockel und Ergaenzungen Bodenplatte (KG 320).
         (
             "04.02.0010",
-            "WU-Beton Rampenwaende Anlieferung C25/30 inkl. Schalung (Watertight RC dock ramp walls C25/30 incl. formwork)",
+            "WU-Beton Rampenwände Anlieferung C25/30 inkl. Schalung (Watertight RC dock ramp walls C25/30 incl. formwork)",
             "m3",
             64,
             660.00,
@@ -550,7 +550,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "04.02.0020",
-            "Betonstahl B500B Rampenwaende und Aufkantungen (Rebar B500B ramp walls and upstands)",
+            "Betonstahl B500B Rampenwände und Aufkantungen (Rebar B500B ramp walls and upstands)",
             "t",
             8,
             1430.00,
@@ -558,7 +558,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "04.02.0030",
-            "Gruben Ueberladebruecken inkl. Randwinkel und Entwaesserung (Dock leveller pits incl. edge angles and drainage)",
+            "Gruben Überladebrücken inkl. Randwinkel und Entwässerung (Dock leveller pits incl. edge angles and drainage)",
             "pcs",
             2,
             8800.00,
@@ -567,7 +567,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: perimeter 234 m
         (
             "04.02.0040",
-            "Randschalung Bodenplatte inkl. Hoehenjustierung (Slab edge formwork incl. level adjustment)",
+            "Randschalung Bodenplatte inkl. Höhenjustierung (Slab edge formwork incl. level adjustment)",
             "m",
             234,
             25.50,
@@ -600,7 +600,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "04.02.0080",
-            "Aussparungen, Einbauteile, Leerrohre und Huelsen Bodenplatte (Recesses, cast-in items, conduits and sleeves in slab)",
+            "Aussparungen, Einbauteile, Leerrohre und Hülsen Bodenplatte (Recesses, cast-in items, conduits and sleeves in slab)",
             "lsum",
             1,
             11800.00,
@@ -608,7 +608,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "04.02.0090",
-            "Industrieboden Oberflaechenhaertung und Versiegelung, Zulage (Industrial floor surface hardening and sealing, extra-over)",
+            "Industrieboden Oberflächenhärtung und Versiegelung, Zulage (Industrial floor surface hardening and sealing, extra-over)",
             "m2",
             2820,
             3.40,
@@ -618,7 +618,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ("04.02.0100", "Betonnachbehandlung Bodenplatte (Concrete curing of ground slab)", "m2", 3150, 1.30, "320"),
         (
             "04.02.0110",
-            "Gefaelle- und Ausgleichsestrich Technik- und Nassbereiche (Sloped and levelling screed, plant and wet areas)",
+            "Gefälle- und Ausgleichsestrich Technik- und Nassbereiche (Sloped and levelling screed, plant and wet areas)",
             "m2",
             180,
             39.50,
@@ -635,7 +635,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "04.03.0020",
-            "Stuerze, Ringanker und Aussparungen Massivbau (Lintels, ring beams and openings in masonry works)",
+            "Stürze, Ringanker und Aussparungen Massivbau (Lintels, ring beams and openings in masonry works)",
             "lsum",
             1,
             6400.00,
@@ -659,10 +659,10 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
             32.50,
             "360",
         ),
-        ("05.01.0020", "Dampfsperre bituminoes, vollflaechig (Bituminous vapour barrier)", "m2", 3213, 7.20, "360"),
+        ("05.01.0020", "Dampfsperre bituminös, vollflächig (Bituminous vapour barrier)", "m2", 3213, 7.20, "360"),
         (
             "05.01.0030",
-            "PIR-Gefaelledaemmung 200-280 mm, WLG 023 (PIR tapered insulation 200-280 mm)",
+            "PIR-Gefälledämmung 200-280 mm, WLG 023 (PIR tapered insulation 200-280 mm)",
             "m2",
             3213,
             54.00,
@@ -670,7 +670,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "05.01.0040",
-            "FPO-Dachbahn, mechanisch befestigt, inkl. An- und Abschluesse (FPO membrane, mechanically fixed)",
+            "FPO-Dachbahn, mechanisch befestigt, inkl. An- und Abschlüsse (FPO membrane, mechanically fixed)",
             "m2",
             3213,
             29.40,
@@ -694,7 +694,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "05.01.0070",
-            "Dachgullys DN 100 beheizt und Notueberlaeufe (Heated roof drains DN100 and emergency overflows)",
+            "Dachgullys DN 100 beheizt und Notüberläufe (Heated roof drains DN100 and emergency overflows)",
             "pcs",
             26,
             780.00,
@@ -702,7 +702,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "05.01.0080",
-            "Durchdringungen und Einfassungen fuer RLT, Kaelte, PV (Penetrations and flashings for HVAC, refrigeration, PV)",
+            "Durchdringungen und Einfassungen für RLT, Kälte, PV (Penetrations and flashings for HVAC, refrigeration, PV)",
             "lsum",
             1,
             15400.00,
@@ -728,7 +728,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: portal width 26 m x 3 m canopy depth = 78 m2
         (
             "05.02.0010",
-            "Vordach Eingang Stahlkonstruktion auskragend 26 x 3 m inkl. Abdichtung und Entwaesserung (Entrance canopy, cantilevered steel 26 x 3 m incl. waterproofing and drainage)",
+            "Vordach Eingang Stahlkonstruktion auskragend 26 x 3 m inkl. Abdichtung und Entwässerung (Entrance canopy, cantilevered steel 26 x 3 m incl. waterproofing and drainage)",
             "m2",
             78,
             600.00,
@@ -737,7 +737,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: perimeter 234 m
         (
             "05.02.0020",
-            "Attika-Aufkantung Daemmung und Holzwerkstoff inkl. Befestigung (Parapet upstand insulation and timber-based board incl. fixing)",
+            "Attika-Aufkantung Dämmung und Holzwerkstoff inkl. Befestigung (Parapet upstand insulation and timber-based board incl. fixing)",
             "m",
             234,
             86.00,
@@ -754,7 +754,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: wind edge and corner zones ~ 25 % of 3,213 m2 = 800 m2
         (
             "05.02.0040",
-            "Windsogsicherung Verstaerkung Rand- und Eckzonen, Zulage (Wind uplift reinforcement edge and corner zones, extra-over)",
+            "Windsogsicherung Verstärkung Rand- und Eckzonen, Zulage (Wind uplift reinforcement edge and corner zones, extra-over)",
             "m2",
             800,
             7.20,
@@ -762,7 +762,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "05.02.0050",
-            "Gefaellekeile Kehlen und Grate, Zulage (Tapered crickets at valleys and ridges, extra-over)",
+            "Gefällekeile Kehlen und Grate, Zulage (Tapered crickets at valleys and ridges, extra-over)",
             "m",
             110,
             29.50,
@@ -787,7 +787,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "05.02.0090",
-            "Anschluss Aufsetzkraenze Abdichtung und Durchsturzsicherung Lichtkuppeln (Waterproofing connection to upstand kerbs and fall-through grids)",
+            "Anschluss Aufsetzkränze Abdichtung und Durchsturzsicherung Lichtkuppeln (Waterproofing connection to upstand kerbs and fall-through grids)",
             "pcs",
             10,
             640.00,
@@ -795,7 +795,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "05.02.0110",
-            "Notabdichtungen Bauphase, Reinigung, Dichtheitspruefung und Dokumentation (Temporary seals during works, cleaning, leak test and records)",
+            "Notabdichtungen Bauphase, Reinigung, Dichtheitsprüfung und Dokumentation (Temporary seals during works, cleaning, leak test and records)",
             "lsum",
             1,
             34707.70,
@@ -808,7 +808,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: perimeter 234 m; precast socket panels between columns carry the facade base
         (
             "06.01.0010",
-            "Stahlbeton-Sockelelemente FT h = 80 cm, tragend fuer Fassade, liefern und montieren (Precast RC socket panels 80 cm, load-bearing for facade, supply and erect)",
+            "Stahlbeton-Sockelelemente FT h = 80 cm, tragend für Fassade, liefern und montieren (Precast RC socket panels 80 cm, load-bearing for facade, supply and erect)",
             "m",
             234,
             780.00,
@@ -817,7 +817,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: 39 pocket foundations, one grout joint per column
         (
             "06.01.0020",
-            "Vergussmoertel Stuetzenfuesse Koecher C60/75 (Grouting of column feet in pockets, C60/75)",
+            "Vergussmörtel Stützenfüße Köcher C60/75 (Grouting of column feet in pockets, C60/75)",
             "pcs",
             39,
             250.00,
@@ -825,7 +825,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "06.01.0030",
-            "Perimeterdaemmung XPS d = 100 mm Sockelelemente (Perimeter insulation XPS 100 mm at socket panels)",
+            "Perimeterdämmung XPS d = 100 mm Sockelelemente (Perimeter insulation XPS 100 mm at socket panels)",
             "m",
             234,
             66.00,
@@ -833,7 +833,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "06.01.0040",
-            "Fugenabdichtung FT-Stoesse dauerelastisch (Flexible joint sealing of precast element joints)",
+            "Fugenabdichtung FT-Stöße dauerelastisch (Flexible joint sealing of precast element joints)",
             "m",
             460,
             13.00,
@@ -841,7 +841,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "06.01.0050",
-            "Anschlussbewehrung, Einbauteile und Daemmstreifen Sockelelemente (Starter bars, cast-in items and insulation strips, socket panels)",
+            "Anschlussbewehrung, Einbauteile und Dämmstreifen Sockelelemente (Starter bars, cast-in items and insulation strips, socket panels)",
             "lsum",
             1,
             21400.00,
@@ -850,7 +850,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: structural grid = 13 axes x 3 bearing rows = 39 columns
         (
             "06.02.0010",
-            "FT-Stuetzen C40/50, 40/40 cm, h = 6,6 m, in Koecher versetzt (Precast columns C40/50, 40/40 cm, h = 6.6 m, set in pockets)",
+            "FT-Stützen C40/50, 40/40 cm, h = 6,6 m, in Köcher versetzt (Precast columns C40/50, 40/40 cm, h = 6.6 m, set in pockets)",
             "pcs",
             39,
             2780.00,
@@ -867,7 +867,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "06.02.0030",
-            "Bemusterung Sichtoberflaechen FT, Musterflaeche (Sampling of fair-faced precast surfaces, mock-up panel)",
+            "Bemusterung Sichtoberflächen FT, Musterfläche (Sampling of fair-faced precast surfaces, mock-up panel)",
             "lsum",
             1,
             2200.00,
@@ -875,7 +875,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "06.02.0040",
-            "Fugenverguss, Anschlussbewehrung und Montagematerial FT-Stuetzen (Joint grouting, starter bars and erection material for columns)",
+            "Fugenverguss, Anschlussbewehrung und Montagematerial FT-Stützen (Joint grouting, starter bars and erection material for columns)",
             "lsum",
             1,
             12400.00,
@@ -899,10 +899,10 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
             "360",
         ),
         # qty: (13 axes - 1) x 2 rows = 24 edge beams
-        ("06.03.0030", "BSH-Randtraeger und Wechsel (Glulam edge beams and trimmers)", "pcs", 24, 1180.00, "360"),
+        ("06.03.0030", "BSH-Randträger und Wechsel (Glulam edge beams and trimmers)", "pcs", 24, 1180.00, "360"),
         (
             "06.03.0040",
-            "Dachverband Zugstaebe Stahl inkl. Anschlussbleche (Steel rod roof bracing incl. connection plates)",
+            "Dachverband Zugstäbe Stahl inkl. Anschlussbleche (Steel rod roof bracing incl. connection plates)",
             "lsum",
             1,
             9400.00,
@@ -938,7 +938,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "07.01.0020",
-            "Laerchenholz-Lattung vorgehaengt auf Alu-UK, Eingangsfassade (Larch battens, hung on aluminium subframe, entrance facade)",
+            "Lärchenholz-Lattung vorgehängt auf Alu-UK, Eingangsfassade (Larch battens, hung on aluminium subframe, entrance facade)",
             "m2",
             220,
             272.00,
@@ -946,7 +946,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "07.01.0030",
-            "Zulage Farbton nach Bemusterung, mikroprofilierte Oberflaeche (Extra-over for sampled colour, micro-profiled surface)",
+            "Zulage Farbton nach Bemusterung, mikroprofilierte Oberfläche (Extra-over for sampled colour, micro-profiled surface)",
             "m2",
             1560,
             13.00,
@@ -964,7 +964,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: 3 gates + 7 steel doors + 1 window band = 11 framed openings
         (
             "07.01.0050",
-            "Oeffnungen herstellen, Wechselrahmen fuer Tore, Tueren und Fensterband (Forming openings, trimmer frames for gates, doors and window band)",
+            "Öffnungen herstellen, Wechselrahmen für Tore, Türen und Fensterband (Forming openings, trimmer frames for gates, doors and window band)",
             "pcs",
             11,
             1180.00,
@@ -980,17 +980,17 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "07.01.0070",
-            "Brandriegel und REI90-Anschluesse an Brandwaende (Fire barriers and REI90 connections to fire walls)",
+            "Brandriegel und REI90-Anschlüsse an Brandwände (Fire barriers and REI90 connections to fire walls)",
             "lsum",
             1,
             8200.00,
             "330",
         ),
         # qty: envelope total ~ 234 m x 7.1 m = 1,660 m2
-        ("07.01.0080", "Geruestvorhaltung Fassade (Facade scaffolding provision)", "m2", 1660, 10.20, "330"),
+        ("07.01.0080", "Gerüstvorhaltung Fassade (Facade scaffolding provision)", "m2", 1660, 10.20, "330"),
         (
             "07.01.0090",
-            "Mock-up- und Bemusterungsflaeche Fassade 3 x 3 m (Facade mock-up and sampling area 3 x 3 m)",
+            "Mock-up- und Bemusterungsfläche Fassade 3 x 3 m (Facade mock-up and sampling area 3 x 3 m)",
             "lsum",
             1,
             3200.00,
@@ -1006,7 +1006,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "07.01.0110",
-            "Montagezugaben, Dichtbaender, Kleinstahl und Befestigungsmittel (Erection allowances, sealing tapes, minor steel and fixings)",
+            "Montagezugaben, Dichtbänder, Kleinstahl und Befestigungsmittel (Erection allowances, sealing tapes, minor steel and fixings)",
             "lsum",
             1,
             13126.00,
@@ -1027,7 +1027,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "08.01.0020",
-            "Automatik-Schiebetueranlagen 2-fluegelig im Windfang (Automatic bi-parting sliding doors in the entrance lobby)",
+            "Automatik-Schiebetüranlagen 2-flügelig im Windfang (Automatic bi-parting sliding doors in the entrance lobby)",
             "pcs",
             2,
             12800.00,
@@ -1060,7 +1060,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "08.01.0060",
-            "Stahltueren T30/RC2 einfluegelig inkl. Beschlaege (Steel doors T30/RC2 single-leaf incl. hardware)",
+            "Stahltüren T30/RC2 einflügelig inkl. Beschläge (Steel doors T30/RC2 single-leaf incl. hardware)",
             "pcs",
             7,
             3050.00,
@@ -1068,7 +1068,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "08.01.0070",
-            "Fluchttuersteuerung, Panikschloesser und E-Oeffner (Escape door control, panic locks and electric strikes)",
+            "Fluchttürsteuerung, Panikschlösser und E-Öffner (Escape door control, panic locks and electric strikes)",
             "lsum",
             1,
             6200.00,
@@ -1076,7 +1076,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "08.01.0080",
-            "Beschlaege-Komplettierung, mechanische Schliessanlage (Hardware completion, mechanical master-key system)",
+            "Beschläge-Komplettierung, mechanische Schließanlage (Hardware completion, mechanical master-key system)",
             "lsum",
             1,
             4800.00,
@@ -1100,7 +1100,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "08.02.0010",
-            "Ueberladebruecken hydraulisch 2,00 x 2,75 m, Tragkraft 60 kN (Hydraulic dock levellers 2.00 x 2.75 m, 60 kN capacity)",
+            "Überladebrücken hydraulisch 2,00 x 2,75 m, Tragkraft 60 kN (Hydraulic dock levellers 2.00 x 2.75 m, 60 kN capacity)",
             "pcs",
             2,
             15400.00,
@@ -1108,7 +1108,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "08.02.0020",
-            "Torabdichtungen aufblasbar inkl. Anfahrpuffer und Radfuehrungen (Inflatable dock shelters incl. bumpers and wheel guides)",
+            "Torabdichtungen aufblasbar inkl. Anfahrpuffer und Radführungen (Inflatable dock shelters incl. bumpers and wheel guides)",
             "pcs",
             2,
             7200.00,
@@ -1117,7 +1117,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: warehouse-zone columns plus guards per gate frame ~ 28 guards
         (
             "08.02.0030",
-            "Rammschutz innen Anlieferung und Lager, Stahlbuegel verzinkt (Interior impact protection delivery and warehouse, galvanised steel hoops)",
+            "Rammschutz innen Anlieferung und Lager, Stahlbügel verzinkt (Interior impact protection delivery and warehouse, galvanised steel hoops)",
             "pcs",
             28,
             310.00,
@@ -1125,7 +1125,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "08.02.0040",
-            "Stahltreppe Technik-Mezzanin inkl. Gelaender (Steel stair to plant mezzanine incl. railing)",
+            "Stahltreppe Technik-Mezzanin inkl. Geländer (Steel stair to plant mezzanine incl. railing)",
             "pcs",
             1,
             10200.00,
@@ -1133,7 +1133,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "08.02.0050",
-            "Wartungsstege und Leiteranlagen Technikflaechen (Maintenance walkways and ladder systems, plant areas)",
+            "Wartungsstege und Leiteranlagen Technikflächen (Maintenance walkways and ladder systems, plant areas)",
             "lsum",
             1,
             25490.00,
@@ -1145,7 +1145,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
     "VE-09": [
         (
             "09.01.0010",
-            "Trockenbauwaende Sozialtrakt und Bueros, doppelt beplankt, MW-Daemmung (Drywall partitions staff wing and offices, double-boarded, mineral wool)",
+            "Trockenbauwände Sozialtrakt und Büros, doppelt beplankt, MW-Dämmung (Drywall partitions staff wing and offices, double-boarded, mineral wool)",
             "m2",
             780,
             94.00,
@@ -1162,7 +1162,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: room schedule staff wing = 22 doors
         (
             "09.01.0030",
-            "Innentueren Holz mit Stahl-Umfassungszarge, teils Feuchtraum (Interior timber doors with steel frames, partly wet-room rated)",
+            "Innentüren Holz mit Stahl-Umfassungszarge, teils Feuchtraum (Interior timber doors with steel frames, partly wet-room rated)",
             "pcs",
             22,
             1000.00,
@@ -1170,7 +1170,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "09.01.0040",
-            "T30-RS-Tueren Technik- und LV-Raum (T30 smoke-control doors, plant and main LV room)",
+            "T30-RS-Türen Technik- und LV-Raum (T30 smoke-control doors, plant and main LV room)",
             "pcs",
             5,
             2400.00,
@@ -1194,7 +1194,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "09.01.0070",
-            "Vorsatzschalen und Installationswaende Nassbereiche (Furring and installation walls in wet areas)",
+            "Vorsatzschalen und Installationswände Nassbereiche (Furring and installation walls in wet areas)",
             "m2",
             150,
             80.00,
@@ -1210,7 +1210,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "09.01.0090",
-            "Malerarbeiten Waende Innenbereich, Dispersion (Painting of interior walls, emulsion)",
+            "Malerarbeiten Wände Innenbereich, Dispersion (Painting of interior walls, emulsion)",
             "m2",
             2250,
             10.20,
@@ -1218,7 +1218,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "09.01.0100",
-            "Beschlaege, Tuerstopper, Revisionsklappen und Kleinleistungen (Hardware, door stops, access panels and minor works)",
+            "Beschläge, Türstopper, Revisionsklappen und Kleinleistungen (Hardware, door stops, access panels and minor works)",
             "lsum",
             1,
             12400.00,
@@ -1235,7 +1235,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: room schedule break + changing + WCs + offices = 120 m2
         (
             "09.02.0020",
-            "Bodenfliesen R10 Sozialraeume und WC inkl. Abdichtung (Floor tiling R10 staff rooms and WCs incl. waterproofing)",
+            "Bodenfliesen R10 Sozialräume und WC inkl. Abdichtung (Floor tiling R10 staff rooms and WCs incl. waterproofing)",
             "m2",
             120,
             98.00,
@@ -1251,7 +1251,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "09.02.0040",
-            "Abgehaengte Rasterdecke Sozialtrakt und Bueros (Suspended grid ceiling, staff wing and offices)",
+            "Abgehängte Rasterdecke Sozialtrakt und Büros (Suspended grid ceiling, staff wing and offices)",
             "m2",
             270,
             60.00,
@@ -1265,10 +1265,10 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
             86.00,
             "350",
         ),
-        ("09.02.0060", "Revisionsoeffnungen Decke (Ceiling access openings)", "pcs", 14, 190.00, "350"),
+        ("09.02.0060", "Revisionsöffnungen Decke (Ceiling access openings)", "pcs", 14, 190.00, "350"),
         (
             "09.02.0070",
-            "Sockelleisten, Uebergangsprofile und Restarbeiten Bodenbelaege (Skirtings, transition profiles and finishing works, floor coverings)",
+            "Sockelleisten, Übergangsprofile und Restarbeiten Bodenbeläge (Skirtings, transition profiles and finishing works, floor coverings)",
             "lsum",
             1,
             18235.00,
@@ -1278,7 +1278,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
     "VE-14": [
         (
             "14.01.0010",
-            "Luft/Wasser-Waermepumpe R290, 75 kW heizen / 92 kW kuehlen, inkl. hydraulischer Einbindung (Air/water heat pump R290 75/92 kW incl. hydraulics)",
+            "Luft/Wasser-Wärmepumpe R290, 75 kW heizen / 92 kW kühlen, inkl. hydraulischer Einbindung (Air/water heat pump R290 75/92 kW incl. hydraulics)",
             "pcs",
             1,
             68500.00,
@@ -1286,7 +1286,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.01.0020",
-            "Fussbodenheizung Vorlauf 35/28 Grad C inkl. Verteiler, gespeist aus Kaelte-Abwaerme (Underfloor heating 35/28 C incl. manifolds)",
+            "Fußbodenheizung Vorlauf 35/28 Grad C inkl. Verteiler, gespeist aus Kälte-Abwärme (Underfloor heating 35/28 C incl. manifolds)",
             "m2",
             2050,
             32.00,
@@ -1294,7 +1294,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.01.0030",
-            "RLT-Geraet 14.000 m3/h, Rotations-WRG eta = 78 %, adiabate Kuehlung, auf Technik-Mezzanin (AHU 14,000 m3/h rotary heat recovery, adiabatic cooling)",
+            "RLT-Gerät 14.000 m3/h, Rotations-WRG eta = 78 %, adiabate Kühlung, auf Technik-Mezzanin (AHU 14,000 m3/h rotary heat recovery, adiabatic cooling)",
             "pcs",
             1,
             74800.00,
@@ -1302,7 +1302,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.01.0040",
-            "Lueftungskanaele verzinkt inkl. Daemmung und Brandschotts (Galvanised ductwork incl. insulation and firestopping)",
+            "Lüftungskanäle verzinkt inkl. Dämmung und Brandschotts (Galvanised ductwork incl. insulation and firestopping)",
             "m2",
             1180,
             39.50,
@@ -1310,7 +1310,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.01.0050",
-            "Tuerluftschleier Eingang 11 kW, WRG-gespeist (Entrance air curtain 11 kW, heat-recovery fed)",
+            "Türluftschleier Eingang 11 kW, WRG-gespeist (Entrance air curtain 11 kW, heat-recovery fed)",
             "pcs",
             2,
             7200.00,
@@ -1318,7 +1318,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.01.0060",
-            "Sanitaerinstallation komplett: WC-Anlagen, Sozialraeume, TWW-Speicher 400 l (Plumbing complete: WCs, staff rooms, 400 l DHW tank)",
+            "Sanitärinstallation komplett: WC-Anlagen, Sozialräume, TWW-Speicher 400 l (Plumbing complete: WCs, staff rooms, 400 l DHW tank)",
             "lsum",
             1,
             56400.00,
@@ -1335,7 +1335,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # 14.02 Sanitaer Ergaenzungen (KG 410).
         (
             "14.02.0010",
-            "Schmutz- und Regenwasserleitungen im Gebaeude, SML/PE, inkl. Daemmung (Foul and rainwater pipework inside the building, cast iron/PE, insulated)",
+            "Schmutz- und Regenwasserleitungen im Gebäude, SML/PE, inkl. Dämmung (Foul and rainwater pipework inside the building, cast iron/PE, insulated)",
             "m",
             430,
             66.00,
@@ -1343,7 +1343,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.02.0020",
-            "Trinkwasser-Installation Edelstahl press inkl. Daemmung und Spuelung (Potable water installation, pressed stainless, insulated and flushed)",
+            "Trinkwasser-Installation Edelstahl press inkl. Dämmung und Spülung (Potable water installation, pressed stainless, insulated and flushed)",
             "m",
             500,
             60.00,
@@ -1377,7 +1377,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.02.0060",
-            "Wasserzaehleranlage, Feinfilter und Druckminderer (Water metering assembly, fine filter and pressure reducer)",
+            "Wasserzähleranlage, Feinfilter und Druckminderer (Water metering assembly, fine filter and pressure reducer)",
             "lsum",
             1,
             7400.00,
@@ -1385,7 +1385,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.02.0070",
-            "Brandschotts, Restdaemmung und Einweisung Sanitaer (Fire stopping, remaining insulation and instruction, plumbing)",
+            "Brandschotts, Restdämmung und Einweisung Sanitär (Fire stopping, remaining insulation and instruction, plumbing)",
             "lsum",
             1,
             21800.00,
@@ -1410,7 +1410,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.03.0030",
-            "Daemmung Heizleitungen inkl. Armaturen (Insulation of heating pipework incl. valves)",
+            "Dämmung Heizleitungen inkl. Armaturen (Insulation of heating pipework incl. valves)",
             "m",
             450,
             22.50,
@@ -1418,7 +1418,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.03.0040",
-            "Einbindung WRG Kaelteanlage, Waermetauscher und Regelventile (Integration of refrigeration heat recovery, exchangers and control valves)",
+            "Einbindung WRG Kälteanlage, Wärmetauscher und Regelventile (Integration of refrigeration heat recovery, exchangers and control valves)",
             "lsum",
             1,
             18800.00,
@@ -1426,7 +1426,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.03.0050",
-            "Nahwaermeleitung erdverlegt WP zu Technikzentrale, PEX DN 65 (Buried heat main, heat pump to plant room, PEX DN 65)",
+            "Nahwärmeleitung erdverlegt WP zu Technikzentrale, PEX DN 65 (Buried heat main, heat pump to plant room, PEX DN 65)",
             "m",
             55,
             340.00,
@@ -1434,7 +1434,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.03.0060",
-            "Aufstellung WP: Fundament, Schwingungsdaempfer, Schallschutzhaube (Heat pump installation: base, vibration dampers, acoustic hood)",
+            "Aufstellung WP: Fundament, Schwingungsdämpfer, Schallschutzhaube (Heat pump installation: base, vibration dampers, acoustic hood)",
             "lsum",
             1,
             11400.00,
@@ -1442,7 +1442,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.03.0070",
-            "Heizkoerper und Konvektoren Nebenraeume (Radiators and convectors, ancillary rooms)",
+            "Heizkörper und Konvektoren Nebenräume (Radiators and convectors, ancillary rooms)",
             "pcs",
             18,
             660.00,
@@ -1475,7 +1475,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.04.0020",
-            "Wickelfalzrohr-Netz Nebenraeume inkl. Formteile (Spiral duct network ancillary rooms incl. fittings)",
+            "Wickelfalzrohr-Netz Nebenräume inkl. Formteile (Spiral duct network ancillary rooms incl. fittings)",
             "m",
             290,
             54.00,
@@ -1483,7 +1483,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.04.0030",
-            "Luftdurchlaesse und Weitwurfduesen Verkaufsraum (Air diffusers and long-throw nozzles, sales area)",
+            "Luftdurchlässe und Weitwurfdüsen Verkaufsraum (Air diffusers and long-throw nozzles, sales area)",
             "pcs",
             52,
             295.00,
@@ -1491,7 +1491,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.04.0040",
-            "Abluftanlagen WC, Sozialraeume und Backstation (Extract systems WCs, staff rooms and bake-off)",
+            "Abluftanlagen WC, Sozialräume und Backstation (Extract systems WCs, staff rooms and bake-off)",
             "lsum",
             1,
             16400.00,
@@ -1499,7 +1499,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.04.0050",
-            "Aussenluft- und Fortluftgitter, Schalldaempfer (Outdoor and exhaust air louvres, attenuators)",
+            "Außenluft- und Fortluftgitter, Schalldämpfer (Outdoor and exhaust air louvres, attenuators)",
             "lsum",
             1,
             11200.00,
@@ -1507,7 +1507,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "14.04.0060",
-            "Splitgeraet Kuehlung LV- und Serverraum (Split cooling unit, main LV and server room)",
+            "Splitgerät Kühlung LV- und Serverraum (Split cooling unit, main LV and server room)",
             "pcs",
             1,
             7400.00,
@@ -1533,7 +1533,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "15.01.0020",
-            "Gaskuehler Dachaufstellung inkl. Stahlrahmen und Schwingungsdaempfung (Gas cooler roof-mounted incl. steel frame)",
+            "Gaskühler Dachaufstellung inkl. Stahlrahmen und Schwingungsdämpfung (Gas cooler roof-mounted incl. steel frame)",
             "pcs",
             1,
             21400.00,
@@ -1541,7 +1541,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "15.01.0030",
-            "Waermerueckgewinnung 2-stufig (Enthitzer + Kondensator) bis 150 kW thermisch (Two-stage heat recovery, desuperheater plus condenser, up to 150 kW)",
+            "Wärmerückgewinnung 2-stufig (Enthitzer + Kondensator) bis 150 kW thermisch (Two-stage heat recovery, desuperheater plus condenser, up to 150 kW)",
             "lsum",
             1,
             29800.00,
@@ -1549,7 +1549,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "15.01.0040",
-            "CO2-Rohrleitungsnetz K65/Edelstahl inkl. Daemmung und Halterung (CO2 piping network K65/stainless incl. insulation)",
+            "CO2-Rohrleitungsnetz K65/Edelstahl inkl. Dämmung und Halterung (CO2 piping network K65/stainless incl. insulation)",
             "m",
             520,
             98.00,
@@ -1557,7 +1557,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "15.01.0050",
-            "NK-Kuehlzelle +2 Grad C, ca. 60 m2, PU 100 mm, inkl. Tuer (Chiller cell +2 C, ~60 m2, PU 100 mm incl. door)",
+            "NK-Kühlzelle +2 Grad C, ca. 60 m2, PU 100 mm, inkl. Tür (Chiller cell +2 C, ~60 m2, PU 100 mm incl. door)",
             "pcs",
             1,
             16400.00,
@@ -1565,7 +1565,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "15.01.0060",
-            "Obst/Gemuese-Kuehlraum +8 Grad C, ca. 32 m2, PU 80 mm (Produce cool room +8 C, ~32 m2, PU 80 mm)",
+            "Obst/Gemüse-Kühlraum +8 Grad C, ca. 32 m2, PU 80 mm (Produce cool room +8 C, ~32 m2, PU 80 mm)",
             "pcs",
             1,
             9400.00,
@@ -1581,7 +1581,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "15.01.0080",
-            "Luftkuehler/Verdampfer CO2-geeignet, Zellen (CO2 unit coolers for cold rooms)",
+            "Luftkühler/Verdampfer CO2-geeignet, Zellen (CO2 unit coolers for cold rooms)",
             "pcs",
             6,
             3100.00,
@@ -1589,7 +1589,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "15.01.0090",
-            "Anbindung Verbund-Kuehlmoebel (bauseits gestellt), Verrohrung und IBN (Connection of operator-supplied remote cabinets)",
+            "Anbindung Verbund-Kühlmöbel (bauseits gestellt), Verrohrung und IBN (Connection of operator-supplied remote cabinets)",
             "pcs",
             18,
             1200.00,
@@ -1605,7 +1605,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "15.01.0110",
-            "MSR/Anlagenregelung Kaelte, inkl. Fernueberwachung (Refrigeration controls incl. remote monitoring)",
+            "MSR/Anlagenregelung Kälte, inkl. Fernüberwachung (Refrigeration controls incl. remote monitoring)",
             "lsum",
             1,
             15400.00,
@@ -1613,7 +1613,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "15.01.0120",
-            "Dichtheitspruefung, Inbetriebnahme, Abnahme EN 378, Einweisung (Pressure test, commissioning, EN 378 acceptance)",
+            "Dichtheitsprüfung, Inbetriebnahme, Abnahme EN 378, Einweisung (Pressure test, commissioning, EN 378 acceptance)",
             "lsum",
             1,
             10200.00,
@@ -1623,7 +1623,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: cabinet layout = 60 lfm chilled (glass doors)
         (
             "15.02.0010",
-            "NK-Kuehlregale steckerlos, Glastueren, H = 2,0 m, anschlussfertig an Verbund (Remote chilled multidecks, glass doors, H = 2.0 m, rack-ready)",
+            "NK-Kühlregale steckerlos, Glastüren, H = 2,0 m, anschlussfertig an Verbund (Remote chilled multidecks, glass doors, H = 2.0 m, rack-ready)",
             "m",
             60,
             5050.00,
@@ -1632,7 +1632,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: cabinet layout = 28 lfm frozen
         (
             "15.02.0020",
-            "TK-Schrankmoebel Glastueren, Verbundanschluss (Remote glass-door freezer cabinets, rack-connected)",
+            "TK-Schrankmöbel Glastüren, Verbundanschluss (Remote glass-door freezer cabinets, rack-connected)",
             "m",
             28,
             6500.00,
@@ -1650,7 +1650,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: cabinet sections + cold rooms + serve-over + spares ~ 32 control points
         (
             "15.02.0040",
-            "Kuehlstellenregler, Fuehler und Busverkabelung (Case controllers, sensors and bus wiring)",
+            "Kühlstellenregler, Fühler und Busverkabelung (Case controllers, sensors and bus wiring)",
             "pcs",
             32,
             495.00,
@@ -1682,7 +1682,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "15.02.0080",
-            "CO2-Erstbefuellung, Dichtheitsnachweis und Probebetrieb 72 h (Initial CO2 charge, leak verification and 72 h trial run)",
+            "CO2-Erstbefüllung, Dichtheitsnachweis und Probebetrieb 72 h (Initial CO2 charge, leak verification and 72 h trial run)",
             "lsum",
             1,
             140.00,
@@ -1692,7 +1692,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
     "VE-16": [
         (
             "16.01.0010",
-            "NSHV 1.600 A inkl. Messung und Zaehlerplatz (Main LV board 1,600 A incl. metering)",
+            "NSHV 1.600 A inkl. Messung und Zählerplatz (Main LV board 1,600 A incl. metering)",
             "pcs",
             1,
             44400.00,
@@ -1708,7 +1708,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "16.01.0030",
-            "LED-Lichtbandsystem Verkaufsraum 800 lx, DALI mit Tageslicht-/Praesenzregelung (LED light-band system sales area 800 lx, DALI daylight/presence control)",
+            "LED-Lichtbandsystem Verkaufsraum 800 lx, DALI mit Tageslicht-/Präsenzregelung (LED light-band system sales area 800 lx, DALI daylight/presence control)",
             "m",
             640,
             145.00,
@@ -1716,7 +1716,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "16.01.0040",
-            "Beleuchtung Lager/Nebenraeume 300 lx und Sicherheitsbeleuchtung (Warehouse/ancillary lighting 300 lx and emergency lighting)",
+            "Beleuchtung Lager/Nebenräume 300 lx und Sicherheitsbeleuchtung (Warehouse/ancillary lighting 300 lx and emergency lighting)",
             "lsum",
             1,
             33800.00,
@@ -1724,7 +1724,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "16.01.0050",
-            "Elektroinstallation Sozialtrakt, Unterverteilungen, Endgeraete (Electrical installation staff wing, sub-distribution boards)",
+            "Elektroinstallation Sozialtrakt, Unterverteilungen, Endgeräte (Electrical installation staff wing, sub-distribution boards)",
             "lsum",
             1,
             30400.00,
@@ -1748,7 +1748,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "16.01.0080",
-            "GLT/Gebaeudeautomation: Feldgeraete, Aufschaltung, Energiemonitoring ISO 50001-faehig (BMS field devices, integration, ISO 50001-ready energy monitoring)",
+            "GLT/Gebäudeautomation: Feldgeräte, Aufschaltung, Energiemonitoring ISO 50001-fähig (BMS field devices, integration, ISO 50001-ready energy monitoring)",
             "lsum",
             1,
             22400.00,
@@ -1773,7 +1773,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "16.02.0030",
-            "Installationsgeraete, Schalter, Steckdosen und CEE-Anschluesse (Wiring accessories, switches, sockets and CEE outlets)",
+            "Installationsgeräte, Schalter, Steckdosen und CEE-Anschlüsse (Wiring accessories, switches, sockets and CEE outlets)",
             "lsum",
             1,
             21400.00,
@@ -1781,7 +1781,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "16.02.0040",
-            "LED-Panels Nebenraeume und Sozialtrakt inkl. Praesenzmelder (LED panels ancillary rooms and staff wing incl. presence detectors)",
+            "LED-Panels Nebenräume und Sozialtrakt inkl. Präsenzmelder (LED panels ancillary rooms and staff wing incl. presence detectors)",
             "pcs",
             78,
             295.00,
@@ -1789,7 +1789,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "16.02.0050",
-            "Anschluss Maschinen und Anlagen: RLT, WP, Kaelte, Backoefen, Tore (Connection of plant: AHU, heat pump, refrigeration, ovens, gates)",
+            "Anschluss Maschinen und Anlagen: RLT, WP, Kälte, Backöfen, Tore (Connection of plant: AHU, heat pump, refrigeration, ovens, gates)",
             "lsum",
             1,
             36800.00,
@@ -1813,7 +1813,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "16.02.0080",
-            "Potentialausgleich, Erdung und Ueberspannungsschutz Typ 1+2 (Equipotential bonding, earthing and surge protection type 1+2)",
+            "Potentialausgleich, Erdung und Überspannungsschutz Typ 1+2 (Equipotential bonding, earthing and surge protection type 1+2)",
             "lsum",
             1,
             11400.00,
@@ -1838,7 +1838,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "16.02.0110",
-            "Torsteuerungen und Tuerkommunikation Anlieferung anschliessen (Connection of gate controls and door intercom, delivery area)",
+            "Torsteuerungen und Türkommunikation Anlieferung anschließen (Connection of gate controls and door intercom, delivery area)",
             "lsum",
             1,
             4200.00,
@@ -1847,7 +1847,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # 16.03 Sicherheits- und Kommunikationstechnik (KG 450).
         (
             "16.03.0010",
-            "Videoueberwachung 20 IP-Kameras inkl. Aufzeichnung (Video surveillance, 20 IP cameras incl. recording)",
+            "Videoüberwachung 20 IP-Kameras inkl. Aufzeichnung (Video surveillance, 20 IP cameras incl. recording)",
             "pcs",
             20,
             1480.00,
@@ -1855,7 +1855,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "16.03.0020",
-            "Einbruchmeldeanlage Aussenhaut und Bueros (Intruder alarm, building envelope and offices)",
+            "Einbruchmeldeanlage Außenhaut und Büros (Intruder alarm, building envelope and offices)",
             "lsum",
             1,
             16400.00,
@@ -1871,7 +1871,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "16.03.0040",
-            "Elektronische Schliessanlage und Zutrittskontrolle Personal (Electronic locking and staff access control)",
+            "Elektronische Schließanlage und Zutrittskontrolle Personal (Electronic locking and staff access control)",
             "lsum",
             1,
             15600.00,
@@ -1880,7 +1880,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # 16.04 Gebaeudeautomation (KG 480).
         (
             "16.04.0010",
-            "Energiezaehler M-Bus, 18 Messstellen, Aufschaltung (M-Bus energy meters, 18 metering points, integration)",
+            "Energiezähler M-Bus, 18 Messstellen, Aufschaltung (M-Bus energy meters, 18 metering points, integration)",
             "pcs",
             18,
             695.00,
@@ -1901,7 +1901,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: 864 modules a 440 Wp = 380.2 kWp
         (
             "17.01.0010",
-            "PV-Module 440 Wp, Ost-West-Aufstaenderung aerodynamisch (PV modules 440 Wp, aerodynamic east-west racking)",
+            "PV-Module 440 Wp, Ost-West-Aufständerung aerodynamisch (PV modules 440 Wp, aerodynamic east-west racking)",
             "pcs",
             864,
             270.00,
@@ -1918,7 +1918,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "17.01.0030",
-            "Wechselrichter 30 kW inkl. DC-Ueberspannungsschutz (Inverters 30 kW incl. DC surge protection)",
+            "Wechselrichter 30 kW inkl. DC-Überspannungsschutz (Inverters 30 kW incl. DC surge protection)",
             "pcs",
             12,
             4200.00,
@@ -1934,7 +1934,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "17.01.0050",
-            "Dachdurchfuehrungen DC-Leitungen inkl. Abdichtungskoordination (Roof penetrations for DC cabling incl. waterproofing coordination)",
+            "Dachdurchführungen DC-Leitungen inkl. Abdichtungskoordination (Roof penetrations for DC cabling incl. waterproofing coordination)",
             "pcs",
             8,
             440.00,
@@ -1958,7 +1958,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "17.02.0020",
-            "NA-Schutz, Zaehlerwesen und Direktvermarktungs-Gateway (Grid protection, metering and direct-marketing gateway)",
+            "NA-Schutz, Zählerwesen und Direktvermarktungs-Gateway (Grid protection, metering and direct-marketing gateway)",
             "lsum",
             1,
             16400.00,
@@ -1966,7 +1966,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "17.02.0030",
-            "Dynamisches Lastmanagement fuer Ladeinfrastruktur (Dynamic load management for EV charging)",
+            "Dynamisches Lastmanagement für Ladeinfrastruktur (Dynamic load management for EV charging)",
             "lsum",
             1,
             11400.00,
@@ -1984,7 +1984,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ("17.03.0020", "AC-Wallboxen 22 kW (AC wallboxes 22 kW)", "pcs", 6, 2950.00, "440"),
         (
             "17.03.0030",
-            "Tiefbau und Fundamente Ladestationen inkl. Schutzbuegel (Civils and foundations for chargers incl. protection hoops)",
+            "Tiefbau und Fundamente Ladestationen inkl. Schutzbügel (Civils and foundations for chargers incl. protection hoops)",
             "lsum",
             1,
             19400.00,
@@ -1993,7 +1993,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: GEIG pre-equipment for 50 stalls, conduit route 360 m
         (
             "17.03.0040",
-            "Leerrohr- und Kabeltrasse GEIG, 50 Stellplaetze vorgeruestet (Conduit and cable route per GEIG, 50 stalls pre-equipped)",
+            "Leerrohr- und Kabeltrasse GEIG, 50 Stellplätze vorgerüstet (Conduit and cable route per GEIG, 50 stalls pre-equipped)",
             "m",
             360,
             38.00,
@@ -2011,7 +2011,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
     "VE-18": [
         (
             "18.01.0010",
-            "Oberbodenabtrag und Erdarbeiten Aussenanlagen (Topsoil strip and earthworks external areas)",
+            "Oberbodenabtrag und Erdarbeiten Außenanlagen (Topsoil strip and earthworks external areas)",
             "m3",
             2560,
             10.20,
@@ -2019,7 +2019,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.01.0020",
-            "Frostschutzschicht 0/45, d = 40 cm, fuer befestigte Flaechen (Frost protection layer 0/45, 40 cm)",
+            "Frostschutzschicht 0/45, d = 40 cm, für befestigte Flächen (Frost protection layer 0/45, 40 cm)",
             "m2",
             5950,
             13.90,
@@ -2035,7 +2035,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.01.0040",
-            "Draen-Betonpflaster Stellplaetze, d = 10 cm, sickerfaehig (Permeable concrete pavers parking stalls, 10 cm)",
+            "Drän-Betonpflaster Stellplätze, d = 10 cm, sickerfähig (Permeable concrete pavers parking stalls, 10 cm)",
             "m2",
             1870,
             49.00,
@@ -2044,7 +2044,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ("18.01.0050", "Bordsteine und Einfassungen (Kerbs and edgings)", "m", 1180, 29.50, "520"),
         (
             "18.01.0060",
-            "Entwaesserungsrinnen und Hofablaeufe inkl. Anschluss (Drainage channels and yard gullies incl. connection)",
+            "Entwässerungsrinnen und Hofabläufe inkl. Anschluss (Drainage channels and yard gullies incl. connection)",
             "lsum",
             1,
             29800.00,
@@ -2060,7 +2060,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.01.0080",
-            "Zisterne 15 m3 inkl. Pumpentechnik fuer Bewaesserung (Cistern 15 m3 incl. pump for irrigation)",
+            "Zisterne 15 m3 inkl. Pumpentechnik für Bewässerung (Cistern 15 m3 incl. pump for irrigation)",
             "pcs",
             1,
             11400.00,
@@ -2068,7 +2068,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.01.0090",
-            "Fahrbahn- und Stellplatzmarkierung inkl. Sonderflaechen (Lane and stall marking incl. special stalls)",
+            "Fahrbahn- und Stellplatzmarkierung inkl. Sonderflächen (Lane and stall marking incl. special stalls)",
             "m",
             1280,
             4.40,
@@ -2076,7 +2076,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.01.0100",
-            "Aussenbeleuchtung 18 LED-Mastleuchten h = 6 m, 3000 K insektenfreundlich, inkl. Kabel und Fundamente (External lighting 18 LED masts 6 m incl. cabling and foundations)",
+            "Außenbeleuchtung 18 LED-Mastleuchten h = 6 m, 3000 K insektenfreundlich, inkl. Kabel und Fundamente (External lighting 18 LED masts 6 m incl. cabling and foundations)",
             "pcs",
             18,
             2450.00,
@@ -2084,7 +2084,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.01.0110",
-            "Hochstamm-Baeume pflanzen inkl. Substrat und Verankerung (Standard trees incl. substrate and anchoring)",
+            "Hochstamm-Bäume pflanzen inkl. Substrat und Verankerung (Standard trees incl. substrate and anchoring)",
             "pcs",
             25,
             1020.00,
@@ -2092,7 +2092,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.01.0120",
-            "Strauch-/Rasenflaechen und Fassadenbegruenung (Shrub/lawn areas and green facade)",
+            "Strauch-/Rasenflächen und Fassadenbegrünung (Shrub/lawn areas and green facade)",
             "m2",
             2150,
             13.00,
@@ -2102,7 +2102,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: paved area 5,950 m2 x 0.6 m formation depth = 3,570 m3
         (
             "18.02.0010",
-            "Kofferaushub befestigte Flaechen, d = 60 cm (Box excavation for paved areas, 60 cm)",
+            "Kofferaushub befestigte Flächen, d = 60 cm (Box excavation for paved areas, 60 cm)",
             "m3",
             3570,
             14.60,
@@ -2110,7 +2110,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.02.0020",
-            "Erdbau Profilierung Aussenanlagen, Auf- und Abtrag, Feinplanum (Earthworks profiling external areas, cut and fill, fine grading)",
+            "Erdbau Profilierung Außenanlagen, Auf- und Abtrag, Feinplanum (Earthworks profiling external areas, cut and fill, fine grading)",
             "m3",
             3900,
             12.80,
@@ -2118,7 +2118,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.02.0030",
-            "Entsorgung Ueberschussmassen Aussenanlagen Z1.1 (Disposal of surplus soil external works, class Z1.1)",
+            "Entsorgung Überschussmassen Außenanlagen Z1.1 (Disposal of surplus soil external works, class Z1.1)",
             "m3",
             2950,
             17.40,
@@ -2126,7 +2126,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.02.0040",
-            "Liefern und Einbau Fuellboden und Frostschutzmaterial (Supply and place fill and frost-protection material)",
+            "Liefern und Einbau Füllboden und Frostschutzmaterial (Supply and place fill and frost-protection material)",
             "m3",
             2300,
             25.20,
@@ -2134,7 +2134,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.02.0050",
-            "Leitungsgraeben Entwaesserung und Beleuchtung inkl. Verfuellung (Service trenches drainage and lighting incl. backfill)",
+            "Leitungsgräben Entwässerung und Beleuchtung inkl. Verfüllung (Service trenches drainage and lighting incl. backfill)",
             "m",
             850,
             29.40,
@@ -2151,7 +2151,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.02.0070",
-            "Baugruben Rigole und Zisterne ausheben und verfuellen (Excavation and backfill for retention trench and cistern)",
+            "Baugruben Rigole und Zisterne ausheben und verfüllen (Excavation and backfill for retention trench and cistern)",
             "m3",
             820,
             19.20,
@@ -2161,7 +2161,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: asphalt 4,080 + pavers 1,870 = 5,950 m2
         (
             "18.03.0010",
-            "Geogitter-Bewehrung Unterbau befestigte Flaechen (Geogrid reinforcement of paved-area sub-base)",
+            "Geogitter-Bewehrung Unterbau befestigte Flächen (Geogrid reinforcement of paved-area sub-base)",
             "m2",
             5950,
             10.20,
@@ -2195,7 +2195,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.03.0050",
-            "Tiefbord-Randeinfassung Pflasterflaechen (Flush kerb edging of paved areas)",
+            "Tiefbord-Randeinfassung Pflasterflächen (Flush kerb edging of paved areas)",
             "m",
             460,
             25.50,
@@ -2219,7 +2219,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.03.0080",
-            "Zulage Einkornbeton-Bettung und Splittfugen Draen-Pflaster (Extra-over no-fines concrete bedding and grit joints, permeable pavers)",
+            "Zulage Einkornbeton-Bettung und Splittfugen Drän-Pflaster (Extra-over no-fines concrete bedding and grit joints, permeable pavers)",
             "m2",
             1870,
             10.20,
@@ -2228,7 +2228,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: 8 accessible + 8 parent-child + 20 EV stalls = 36 special stalls
         (
             "18.03.0090",
-            "Markierung Sonderstellplaetze: barrierefrei, Eltern-Kind, E-Laden (Marking of special stalls: accessible, parent-child, EV)",
+            "Markierung Sonderstellplätze: barrierefrei, Eltern-Kind, E-Laden (Marking of special stalls: accessible, parent-child, EV)",
             "pcs",
             36,
             98.00,
@@ -2244,7 +2244,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.03.0110",
-            "Anschluss oeffentliche Strasse inkl. Bordabsenkung (Connection to the public road incl. dropped kerb)",
+            "Anschluss öffentliche Straße inkl. Bordabsenkung (Connection to the public road incl. dropped kerb)",
             "lsum",
             1,
             16400.00,
@@ -2252,7 +2252,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.03.0120",
-            "Anrampungen und Anpassung Bestandsgehweg Pfinzstrasse (Ramping and adaptation of the existing footway, Pfinzstrasse)",
+            "Anrampungen und Anpassung Bestandsgehweg Pfinzstraße (Ramping and adaptation of the existing footway, Pfinzstraße)",
             "lsum",
             1,
             14600.00,
@@ -2260,7 +2260,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.03.0130",
-            "Fugenverguss Asphaltanschluesse und Abnahmebefahrung (Joint sealing of asphalt connections and acceptance drive-over)",
+            "Fugenverguss Asphaltanschlüsse und Abnahmebefahrung (Joint sealing of asphalt connections and acceptance drive-over)",
             "m",
             500,
             8.80,
@@ -2269,7 +2269,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # 18.04 Entwaesserung Ergaenzungen (KG 540).
         (
             "18.04.0010",
-            "Kontrollschaechte DN 600 Rigolenanbindung (Inspection chambers DN 600 at retention trench connection)",
+            "Kontrollschächte DN 600 Rigolenanbindung (Inspection chambers DN 600 at retention trench connection)",
             "pcs",
             3,
             1500.00,
@@ -2277,7 +2277,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.04.0020",
-            "Anschlussleitung Dachentwaesserung an Rigole DN 200 (Connection pipe, roof drainage to retention trench, DN 200)",
+            "Anschlussleitung Dachentwässerung an Rigole DN 200 (Connection pipe, roof drainage to retention trench, DN 200)",
             "lsum",
             1,
             8400.00,
@@ -2286,7 +2286,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # 18.05 Begruenung Ergaenzungen (KG 550).
         (
             "18.05.0010",
-            "Baumscheiben, Unterpflanzung und Tropfbewaesserung (Tree pits, underplanting and drip irrigation)",
+            "Baumscheiben, Unterpflanzung und Tropfbewässerung (Tree pits, underplanting and drip irrigation)",
             "pcs",
             25,
             440.00,
@@ -2294,7 +2294,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.05.0020",
-            "Rankhilfen Fassadenbegruenung, Edelstahlseile (Climbing aids for facade greening, stainless cables)",
+            "Rankhilfen Fassadenbegrünung, Edelstahlseile (Climbing aids for facade greening, stainless cables)",
             "m2",
             160,
             148.00,
@@ -2318,7 +2318,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "18.03.0140",
-            "Stundenlohnarbeiten und Kleinleistungen Belagsflaechen (Daywork and minor works, paved surfaces)",
+            "Stundenlohnarbeiten und Kleinleistungen Belagsflächen (Daywork and minor works, paved surfaces)",
             "lsum",
             1,
             449.00,
@@ -2338,7 +2338,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: 4 cart shelters a 30 m2 with green roofs per the site plan
         (
             "19.01.0020",
-            "Einkaufswagen-Ueberdachungen 30 m2 mit Gruendach (Cart shelters 30 m2 with green roofs)",
+            "Einkaufswagen-Überdachungen 30 m2 mit Gründach (Cart shelters 30 m2 with green roofs)",
             "pcs",
             4,
             18200.00,
@@ -2346,7 +2346,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "19.01.0030",
-            "Fahrradueberdachung 28 Plaetze und 4 Lastenrad-Plaetze (Bike shelter 28 spaces plus 4 cargo-bike spaces)",
+            "Fahrradüberdachung 28 Plätze und 4 Lastenrad-Plätze (Bike shelter 28 spaces plus 4 cargo-bike spaces)",
             "lsum",
             1,
             16400.00,
@@ -2355,7 +2355,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: uncovered bike hoops
         (
             "19.01.0040",
-            "Fahrradanlehnbuegel Edelstahl, nicht ueberdacht (Stainless bike hoops, uncovered)",
+            "Fahrradanlehnbügel Edelstahl, nicht überdacht (Stainless bike hoops, uncovered)",
             "pcs",
             10,
             395.00,
@@ -2363,7 +2363,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "19.01.0050",
-            "Anfahrschutz Poller und Schutzbuegel: Ladesaeulen, Pylon, Gebaeudeecken (Impact protection bollards and hoops: chargers, pylon, building corners)",
+            "Anfahrschutz Poller und Schutzbügel: Ladesäulen, Pylon, Gebäudeecken (Impact protection bollards and hoops: chargers, pylon, building corners)",
             "pcs",
             30,
             480.00,
@@ -2371,7 +2371,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "19.01.0060",
-            "Fahnenmasten h = 8 m inkl. Huelsenfundament (Flag poles 8 m incl. sleeve foundations)",
+            "Fahnenmasten h = 8 m inkl. Hülsenfundament (Flag poles 8 m incl. sleeve foundations)",
             "pcs",
             4,
             1980.00,
@@ -2387,7 +2387,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "19.01.0080",
-            "Fundamente, Montage und Nebenleistungen Aussenbauwerke (Foundations, erection and ancillary works, external structures)",
+            "Fundamente, Montage und Nebenleistungen Außenbauwerke (Foundations, erection and ancillary works, external structures)",
             "lsum",
             1,
             1630.00,
@@ -2400,13 +2400,13 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: 10 aisles a 2 runs a 32 m = 640 lfm shelving in the 1,950 m2 sales hall
         (
             "20.01.0010",
-            "Regalanlage Verkaufsraum 10 Gaenge, Grund- und Anbaufelder, H = 2,2 m (Sales-area shelving 10 aisles, starter and add-on bays, H = 2.2 m)",
+            "Regalanlage Verkaufsraum 10 Gänge, Grund- und Anbaufelder, H = 2,2 m (Sales-area shelving 10 aisles, starter and add-on bays, H = 2.2 m)",
             "m",
             640,
             500.00,
             "610",
         ),
-        ("20.01.0020", "Bandkassen-Arbeitsplaetze (Belt checkout workstations)", "pcs", 3, 16800.00, "610"),
+        ("20.01.0020", "Bandkassen-Arbeitsplätze (Belt checkout workstations)", "pcs", 3, 16800.00, "610"),
         (
             "20.01.0030",
             "Self-Checkout-Systeme inkl. Software-Inbetriebnahme (Self-checkout systems incl. software commissioning)",
@@ -2417,7 +2417,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "20.01.0040",
-            "Kassenzonen-Leitsystem, Warentrenner und Gondelkoepfe (Checkout guidance system, dividers and gondola ends)",
+            "Kassenzonen-Leitsystem, Warentrenner und Gondelköpfe (Checkout guidance system, dividers and gondola ends)",
             "lsum",
             1,
             14400.00,
@@ -2450,7 +2450,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: drive-in bake-off, 4 ovens a 18 kW per the space program
         (
             "20.02.0010",
-            "Drive-in-Backstation 4 Oefen a 18 kW inkl. Beschickungs-, Abluft- und Ausgabetechnik (Drive-through bake-off, 4 ovens a 18 kW incl. loading, extract and handout equipment)",
+            "Drive-in-Backstation 4 Öfen a 18 kW inkl. Beschickungs-, Abluft- und Ausgabetechnik (Drive-through bake-off, 4 ovens a 18 kW incl. loading, extract and handout equipment)",
             "pcs",
             4,
             16900.00,
@@ -2458,7 +2458,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "20.02.0020",
-            "Brotregale und Praesentationsmoebel Backstation (Bread racks and display furniture, bake-off)",
+            "Brotregale und Präsentationsmöbel Backstation (Bread racks and display furniture, bake-off)",
             "lsum",
             1,
             14600.00,
@@ -2466,7 +2466,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "20.02.0030",
-            "Obst- und Gemuese-Praesentation, Kistenregale (Fruit and vegetable displays, crate racks)",
+            "Obst- und Gemüse-Präsentation, Kistenregale (Fruit and vegetable displays, crate racks)",
             "m",
             30,
             700.00,
@@ -2474,7 +2474,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "20.02.0040",
-            "Aktionsmoebel Gondelkopf und mobile Verkostungstheke (Promotional gondola-end units and mobile tasting counter)",
+            "Aktionsmöbel Gondelkopf und mobile Verkostungstheke (Promotional gondola-end units and mobile tasting counter)",
             "pcs",
             8,
             1480.00,
@@ -2483,7 +2483,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: ~26 staff per the operating concept
         (
             "20.02.0050",
-            "Buero- und Sozialraummoebel, Spinde 26 Personal (Office and staff-room furniture, lockers for 26 staff)",
+            "Büro- und Sozialraummöbel, Spinde 26 Personal (Office and staff-room furniture, lockers for 26 staff)",
             "pcs",
             26,
             495.00,
@@ -2491,7 +2491,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "20.02.0060",
-            "Innenbeschilderung, Deckenhaenger und Regalstirn-Beschilderung (Interior signage, ceiling hangers and shelf-end signage)",
+            "Innenbeschilderung, Deckenhänger und Regalstirn-Beschilderung (Interior signage, ceiling hangers and shelf-end signage)",
             "lsum",
             1,
             11400.00,
@@ -2499,7 +2499,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "20.02.0070",
-            "Montage, Ausrichtung, Erstbestueckungs-Logistik und Einweisung (Erection, alignment, initial-stocking logistics and instruction)",
+            "Montage, Ausrichtung, Erstbestückungs-Logistik und Einweisung (Erection, alignment, initial-stocking logistics and instruction)",
             "lsum",
             1,
             440.00,
@@ -2511,7 +2511,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         # qty: 3 reverse-vending machines per the space program (larger Pfandraum)
         (
             "21.01.0010",
-            "Leergut-Ruecknahmeautomaten Doppelgeraet mit Durchreiche (Reverse-vending machines, twin unit with pass-through)",
+            "Leergut-Rücknahmeautomaten Doppelgerät mit Durchreiche (Reverse-vending machines, twin unit with pass-through)",
             "pcs",
             3,
             28500.00,
@@ -2519,7 +2519,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "21.01.0020",
-            "Leergut-Foerder- und Sortieranlage Pfandraum (Empties conveying and sorting system, deposit room)",
+            "Leergut-Förder- und Sortieranlage Pfandraum (Empties conveying and sorting system, deposit room)",
             "lsum",
             1,
             25800.00,
@@ -2529,7 +2529,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ("21.01.0040", "Scheuersaugmaschine Reinigung (Scrubber-dryer cleaning machine)", "pcs", 1, 9400.00, "690"),
         (
             "21.01.0050",
-            "Behaeltersystem Wertstoffe und Muellpress-Stellplatz (Recyclables container system and waste-press bay)",
+            "Behältersystem Wertstoffe und Müllpress-Stellplatz (Recyclables container system and waste-press bay)",
             "lsum",
             1,
             7400.00,
@@ -2537,7 +2537,7 @@ _POSITIONS: dict[str, list[_PositionRow]] = {
         ),
         (
             "21.01.0060",
-            "Kleinausstattung: Feuerloescher, Erste-Hilfe, Arbeitsschutz-Beschilderung (Minor equipment: extinguishers, first aid, safety signage)",
+            "Kleinausstattung: Feuerlöscher, Erste-Hilfe, Arbeitsschutz-Beschilderung (Minor equipment: extinguishers, first aid, safety signage)",
             "lsum",
             1,
             4800.00,
@@ -2604,22 +2604,22 @@ TEMPLATE = DemoTemplate(
     demo_id="retail-market-karlsruhe",
     project_name="Lebensmittelmarkt Karlsruhe",
     project_description=(
-        "Neubau eines eingeschossigen Lebensmittelmarktes mit grosser "
+        "Neubau eines eingeschossigen Lebensmittelmarktes mit großer "
         "Stellplatzanlage im Gewerbegebiet Karlsruhe-Durlach (New-build "
         "food retail market with a large surface car park). Greenfield-"
-        "Grossformat: Verkaufsflaeche 2.050 m2, BGF 3.310 m2 (EG 3.150 + "
-        "Technik-Mezzanin 160), BRI 23.600 m3, Grundstueck 12.400 m2. "
-        "Tragwerk: 39 Stahlbeton-Fertigteilstuetzen 40/40 cm auf "
-        "Koecherfundamenten, 26 BSH-Binder GL24h (Spannweiten 25,0 m + "
+        "Großformat: Verkaufsfläche 2.050 m2, BGF 3.310 m2 (EG 3.150 + "
+        "Technik-Mezzanin 160), BRI 23.600 m3, Grundstück 12.400 m2. "
+        "Tragwerk: 39 Stahlbeton-Fertigteilstützen 40/40 cm auf "
+        "Köcherfundamenten, 26 BSH-Binder GL24h (Spannweiten 25,0 m + "
         "17,0 m) auf 13 Achsen a 6,25 m, Bodenplatte d = 20 cm (630 m3 "
         "RC-Beton), Stahltrapezblech-Dach mit 10 RWA-Lichtkuppeln. "
-        "Fassade: Sandwichpaneele 1.560 m2 mit Laerchen-Akzent, "
+        "Fassade: Sandwichpaneele 1.560 m2 mit Lärchen-Akzent, "
         "Pfosten-Riegel-Verglasung 130 m2. 100 % fossilfrei: "
-        "transkritische CO2-Kaelteanlage (NK 120 kW / TK 34 kW) mit "
-        "2-stufiger Waermerueckgewinnung und Fussbodenheizung, PV-Anlage "
+        "transkritische CO2-Kälteanlage (NK 120 kW / TK 34 kW) mit "
+        "2-stufiger Wärmerückgewinnung und Fußbodenheizung, PV-Anlage "
         "380 kWp mit Batteriespeicher 240 kWh, 20 E-Ladepunkte. "
-        "Drive-in-Backstation mit 4 Oefen und erweiterte Kassenzone. "
-        "150 Pkw-Stellplaetze, 42 Fahrradplaetze, Rigole 260 m3 "
+        "Drive-in-Backstation mit 4 Öfen und erweiterte Kassenzone. "
+        "150 Pkw-Stellplätze, 42 Fahrradplätze, Rigole 260 m3 "
         "(DWA-A 138). KfW 299 (EG 40 + QNG-PLUS), DGNB Gold angestrebt. "
         "Genehmigtes Projektbudget 11,40 Mio EUR netto (KG 200-700 zzgl. "
         "Reserve)."
@@ -2629,7 +2629,7 @@ TEMPLATE = DemoTemplate(
     currency="EUR",
     locale="de",
     address={
-        "street": "Pfinzstrasse 88",
+        "street": "Pfinzstraße 88",
         "city": "Karlsruhe",
         "postcode": "76227",
         "country": "Germany",
@@ -2642,7 +2642,7 @@ TEMPLATE = DemoTemplate(
         "Kostenberechnung gem. DIN 276:2018-12 auf Basis der "
         "Vergabeeinheiten: 16 bepreiste LV-Abschnitte im OZ-Schema "
         "VE.Abschnitt.Position, Summe exakt 9.600.000 EUR netto. "
-        "Vollstaendiges LV; jeder Abschnitt schliesst centgenau auf sein "
+        "Vollständiges LV; jeder Abschnitt schließt centgenau auf sein "
         "VE-Budget (full bill of quantities, every section closing exactly "
         "on its procurement-unit budget)."
     ),
@@ -2664,11 +2664,11 @@ TEMPLATE = DemoTemplate(
     # overridden by ``tender_packages`` below, but kept as the VP-07 award so
     # the descriptor still reads correctly if the multi-package path is ever
     # disabled.
-    tender_name="VP-07 Kaeltetechnik CO2-Verbund und Kuehlmoebel (CO2 refrigeration, owner direct award)",
+    tender_name="VP-07 Kältetechnik CO2-Verbund und Kühlmöbel (CO2 refrigeration, owner direct award)",
     tender_companies=[
-        ("Badische Kaeltetechnik GmbH", "vergabe@badische-kaeltetechnik.de", 958_400 / _LV_GRAND_TOTAL),
-        ("PfinzKlima Kaelte- und Klimatechnik GmbH", "angebote@pfinzklima-kaelte.de", 1_012_600 / _LV_GRAND_TOTAL),
-        ("Kuehlanlagenbau Rheintal GmbH", "ausschreibung@kaeltebau-rheintal.de", 1_058_900 / _LV_GRAND_TOTAL),
+        ("Badische Kältetechnik GmbH", "vergabe@badische-kältetechnik.de", 958_400 / _LV_GRAND_TOTAL),
+        ("PfinzKlima Kälte- und Klimatechnik GmbH", "angebote@pfinzklima-kälte.de", 1_012_600 / _LV_GRAND_TOTAL),
+        ("Kühlanlagenbau Rheintal GmbH", "ausschreibung@kältebau-rheintal.de", 1_058_900 / _LV_GRAND_TOTAL),
     ],
     # Four procurement packages (VP-07/09/10/11 of the design dossier), each
     # mapping to a procurement unit budget. Status reflects the week-21
@@ -2679,25 +2679,25 @@ TEMPLATE = DemoTemplate(
     # every bid on its exact net figure.
     tender_packages=[
         (
-            "VP-07 Kaeltetechnik CO2-Verbund und Kuehlmoebel (CO2 refrigeration and cabinets, KG 470)",
-            "Bauherren-Direktvergabe, vergeben am 2026-05-12 an Badische Kaeltetechnik GmbH; 3 Angebote, Spread 10,5 %. Budget 980.000 EUR netto (VE-15).",
+            "VP-07 Kältetechnik CO2-Verbund und Kühlmöbel (CO2 refrigeration and cabinets, KG 470)",
+            "Bauherren-Direktvergabe, vergeben am 2026-05-12 an Badische Kältetechnik GmbH; 3 Angebote, Spread 10,5 %. Budget 980.000 EUR netto (VE-15).",
             "awarded",
             [
                 # bids 958,400 / 1,012,600 / 1,058,900 EUR, spread 10.5 %
-                ("Badische Kaeltetechnik GmbH", "vergabe@badische-kaeltetechnik.de", 958_400 / _PKG_SHARE),
-                ("PfinzKlima Kaelte- und Klimatechnik GmbH", "angebote@pfinzklima-kaelte.de", 1_012_600 / _PKG_SHARE),
-                ("Kuehlanlagenbau Rheintal GmbH", "ausschreibung@kaeltebau-rheintal.de", 1_058_900 / _PKG_SHARE),
+                ("Badische Kältetechnik GmbH", "vergabe@badische-kältetechnik.de", 958_400 / _PKG_SHARE),
+                ("PfinzKlima Kälte- und Klimatechnik GmbH", "angebote@pfinzklima-kälte.de", 1_012_600 / _PKG_SHARE),
+                ("Kühlanlagenbau Rheintal GmbH", "ausschreibung@kältebau-rheintal.de", 1_058_900 / _PKG_SHARE),
             ],
         ),
         (
-            "VP-09 Aussenanlagen, Stellplaetze, Entwaesserung (External works, parking, drainage, KG 510+520+540+550)",
+            "VP-09 Außenanlagen, Stellplätze, Entwässerung (External works, parking, drainage, KG 510+520+540+550)",
             "Ausgeschrieben, Submission 2026-07-16; 3 indikative Angebote, Spread 13,2 %. Budget 1.250.000 EUR netto (VE-18).",
             "collecting",
             [
                 # indicative bids 1,205,000 / 1,278,400 / 1,364,200 EUR, spread 13.2 %
                 ("Galabau Hardtwald GmbH", "angebot@galabau-hardtwald.de", 1_205_000 / _PKG_SHARE),
                 ("Tiefbau Albtal GmbH", "vergabe@tiefbau-albtal.de", 1_278_400 / _PKG_SHARE),
-                ("Gruenbau Kraichgau GmbH", "ausschreibung@gruenbau-kraichgau.de", 1_364_200 / _PKG_SHARE),
+                ("Grünbau Kraichgau GmbH", "ausschreibung@grünbau-kraichgau.de", 1_364_200 / _PKG_SHARE),
             ],
         ),
         (
@@ -2718,7 +2718,7 @@ TEMPLATE = DemoTemplate(
                 # bids 631,800 / 678,400 / 710,200 EUR, spread 12.4 %
                 ("Sonnkraft Solartechnik GmbH", "angebot@sonnkraft-solar.de", 631_800 / _PKG_SHARE),
                 ("EnergieWerk Oberrhein GmbH", "vergabe@energiewerk-oberrhein.de", 678_400 / _PKG_SHARE),
-                ("Elektro Wuermtal GmbH", "k.wuermtal@elektro-wuermtal.de", 710_200 / _PKG_SHARE),
+                ("Elektro Würmtal GmbH", "k.würmtal@elektro-würmtal.de", 710_200 / _PKG_SHARE),
             ],
         ),
     ],
@@ -2735,7 +2735,7 @@ TEMPLATE = DemoTemplate(
             "2026-02-20",
         ),
         (
-            "T03 Erschliessung Kanal, Wasser, Strom bis Grundstuecksgrenze (utility connections to plot)",
+            "T03 Erschließung Kanal, Wasser, Strom bis Grundstücksgrenze (utility connections to plot)",
             "2026-02-23",
             "2026-03-13",
         ),
@@ -2746,52 +2746,52 @@ TEMPLATE = DemoTemplate(
             "2026-03-23",
             "2026-03-27",
         ),
-        ("T07 Koecher- und Streifenfundamente (pocket and strip foundations)", "2026-03-30", "2026-04-10"),
+        ("T07 Köcher- und Streifenfundamente (pocket and strip foundations)", "2026-03-30", "2026-04-10"),
         ("T08 Grundleitungen unter Bodenplatte (below-slab drainage)", "2026-04-06", "2026-04-17"),
         (
-            "T09 Bodenplatte: Daemmung, Bewehrung, Betonage (ground slab: insulation, rebar, pour)",
+            "T09 Bodenplatte: Dämmung, Bewehrung, Betonage (ground slab: insulation, rebar, pour)",
             "2026-04-13",
             "2026-05-01",
         ),
         ("T10 Fertigteilproduktion im Werk (precast production at plant)", "2026-03-16", "2026-05-01"),
-        ("T11 Montage Stuetzen und BSH-Binder (erection of columns and glulam beams)", "2026-05-04", "2026-05-15"),
+        ("T11 Montage Stützen und BSH-Binder (erection of columns and glulam beams)", "2026-05-04", "2026-05-15"),
         ("T12 Montage Wand- und Sandwichelemente (erection of wall and sandwich panels)", "2026-05-11", "2026-05-22"),
         ("T13 Dachtragschale Trapezblech (roof deck trapezoidal sheeting)", "2026-05-18", "2026-05-29"),
         (
-            "T14 Dachabdichtung, Daemmung, RWA und Lichtkuppeln (roof waterproofing, smoke vents, rooflights)",
+            "T14 Dachabdichtung, Dämmung, RWA und Lichtkuppeln (roof waterproofing, smoke vents, rooflights)",
             "2026-06-01",
             "2026-06-26",
         ),
-        ("T15 Fassadenarbeiten: Sandwichpaneele, Laerchen-Lattung, Sockel (facade works)", "2026-06-01", "2026-07-03"),
+        ("T15 Fassadenarbeiten: Sandwichpaneele, Lärchen-Lattung, Sockel (facade works)", "2026-06-01", "2026-07-03"),
         (
-            "T16 Fenster, Pfosten-Riegel-Glasfront, Tueren, Sektionaltore (windows, curtain wall, doors, gates)",
+            "T16 Fenster, Pfosten-Riegel-Glasfront, Türen, Sektionaltore (windows, curtain wall, doors, gates)",
             "2026-06-22",
             "2026-07-10",
         ),
-        ("T17 Heizung/Sanitaer Rohinstallation (heating/plumbing rough-in)", "2026-06-08", "2026-07-17"),
-        ("T18 Lueftungskanaele Montage (ventilation ductwork installation)", "2026-06-15", "2026-07-17"),
+        ("T17 Heizung/Sanitär Rohinstallation (heating/plumbing rough-in)", "2026-06-08", "2026-07-17"),
+        ("T18 Lüftungskanäle Montage (ventilation ductwork installation)", "2026-06-15", "2026-07-17"),
         (
             "T19 Elektro-Rohinstallation und Kabeltrassen (electrical rough-in and cable trays)",
             "2026-06-08",
             "2026-07-24",
         ),
-        ("T20 CO2-Kaelteleitungen Rohmontage (CO2 refrigerant piping rough-in)", "2026-07-06", "2026-07-31"),
+        ("T20 CO2-Kälteleitungen Rohmontage (CO2 refrigerant piping rough-in)", "2026-07-06", "2026-07-31"),
         (
             "T21 Netzanschluss, Trafostation, NSHV (grid connection, transformer, main LV board)",
             "2026-06-22",
             "2026-07-31",
         ),
-        ("T22 Trockenbau Sozial- und Nebenraeume (drywall for staff and ancillary rooms)", "2026-07-13", "2026-08-14"),
+        ("T22 Trockenbau Sozial- und Nebenräume (drywall for staff and ancillary rooms)", "2026-07-13", "2026-08-14"),
         ("T23 Industrieboden Verkaufsraum (industrial flooring sales area)", "2026-07-20", "2026-07-31"),
-        ("T24 Fliesen, Maler, Innentueren (tiling, painting, internal doors)", "2026-08-10", "2026-09-04"),
+        ("T24 Fliesen, Maler, Innentüren (tiling, painting, internal doors)", "2026-08-10", "2026-09-04"),
         ("T25 Akustikdecken und Beleuchtungsmontage (acoustic ceilings and lighting)", "2026-08-17", "2026-09-04"),
         (
-            "T26 TGA-Endmontage: Waermepumpe, RLT, Verteilungen, GLT (MEP completion incl. BMS)",
+            "T26 TGA-Endmontage: Wärmepumpe, RLT, Verteilungen, GLT (MEP completion incl. BMS)",
             "2026-08-17",
             "2026-09-18",
         ),
         (
-            "T27 Aussenanlagen: Unterbau, Entwaesserung, Belaege, Pylon, Begruenung (external works)",
+            "T27 Außenanlagen: Unterbau, Entwässerung, Beläge, Pylon, Begrünung (external works)",
             "2026-08-17",
             "2026-10-23",
         ),
@@ -2800,9 +2800,9 @@ TEMPLATE = DemoTemplate(
             "2026-08-31",
             "2026-09-25",
         ),
-        ("T29 Kuehlmoebel stellen und anbinden (set and connect refrigerated cabinets)", "2026-09-07", "2026-09-25"),
+        ("T29 Kühlmöbel stellen und anbinden (set and connect refrigerated cabinets)", "2026-09-07", "2026-09-25"),
         (
-            "T30 Kaelteanlage: Druckprobe, Inbetriebnahme, Kuehlstellen kalt (refrigeration commissioning)",
+            "T30 Kälteanlage: Druckprobe, Inbetriebnahme, Kühlstellen kalt (refrigeration commissioning)",
             "2026-09-28",
             "2026-10-09",
         ),
@@ -2812,22 +2812,22 @@ TEMPLATE = DemoTemplate(
             "2026-10-30",
         ),
         (
-            "T32 Sachverstaendigen- und behoerdliche Abnahmen (expert and authority acceptance tests)",
+            "T32 Sachverständigen- und behördliche Abnahmen (expert and authority acceptance tests)",
             "2026-11-02",
             "2026-11-13",
         ),
         (
-            "T33 VOB-Abnahme GU und Maengelbeseitigung (VOB acceptance of GC works and snagging)",
+            "T33 VOB-Abnahme GU und Mängelbeseitigung (VOB acceptance of GC works and snagging)",
             "2026-11-16",
             "2026-11-27",
         ),
         (
-            "T34 Revisionsunterlagen, Einweisungen, Wartungsvertraege (as-builts, briefings, maintenance)",
+            "T34 Revisionsunterlagen, Einweisungen, Wartungsverträge (as-builts, briefings, maintenance)",
             "2026-11-16",
             "2026-12-04",
         ),
         (
-            "T35 Warenerstbestueckung, Personaleinarbeitung, Pre-Opening (initial stocking, training)",
+            "T35 Warenerstbestückung, Personaleinarbeitung, Pre-Opening (initial stocking, training)",
             "2026-12-07",
             "2027-01-14",
         ),
@@ -2836,10 +2836,10 @@ TEMPLATE = DemoTemplate(
         "name_en": "Retail Market Karlsruhe",
         "long_name_de": "Neubau Lebensmittelmarkt mit Stellplatzanlage, Karlsruhe-Durlach",
         "long_name_en": "New-build food retail market with parking facilities, Karlsruhe-Durlach",
-        "address": "Pfinzstrasse 88, 76227 Karlsruhe",
+        "address": "Pfinzstraße 88, 76227 Karlsruhe",
         "client": "Oberrhein Handelsimmobilien GmbH",
-        "operator": "Oberrhein Lebensmittelmaerkte GmbH",
-        "architect": "Architekturbuero Fechtig + Partner Architekten PartG mbB",
+        "operator": "Oberrhein Lebensmittelmärkte GmbH",
+        "architect": "Architekturbüro Fechtig + Partner Architekten PartG mbB",
         "structural_engineer": "Wehrle Ingenieure Tragwerksplanung GmbH",
         "mep_engineer": "Brenner & Partner TGA-Planung GmbH",
         "main_contractor": "Hardtwald Bau GmbH & Co. KG",
@@ -2860,7 +2860,7 @@ TEMPLATE = DemoTemplate(
         "energy_standard": "GEG 2024 / KfW 299 (EG 40 + QNG-PLUS)",
         "sustainability_target": "DGNB Gold (Neubau 2023)",
         "zoning": "Vorhabenbezogener B-Plan 76/14 Durlach-Ost - Nahversorgung (SO Nahversorgung)",
-        "permit_authority": "Stadt Karlsruhe, Bauordnungsamt (LBO BW, Sonderbau Verkaufsstaette)",
+        "permit_authority": "Stadt Karlsruhe, Bauordnungsamt (LBO BW, Sonderbau Verkaufsstätte)",
         "design_phase": "LP 3 Kostenberechnung, fortgeschrieben mit Vergabestand",
         "applicable_standards": [
             "DIN 276:2018-12",
@@ -2869,7 +2869,7 @@ TEMPLATE = DemoTemplate(
             "GEG 2024",
             "GEIG",
             "KlimaG BW (PV-Pflicht)",
-            "EN 378 (CO2-Kaelteanlage)",
+            "EN 378 (CO2-Kälteanlage)",
             "DWA-A 138 (Versickerung)",
         ],
         "cost_basis": "Net, price level Karlsruhe 2026, reconciled DIN 276 cost frame",

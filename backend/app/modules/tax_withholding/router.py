@@ -2,7 +2,10 @@
 # Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 """Tax withholding API routes.
 
-Mounted at ``/api/v1/tax_withholding/``.
+Mounted at ``/api/v1/tax-withholding/``. The loader kebab-cases the directory
+name for the canonical prefix and keeps the underscore form only as a hidden
+alias, so documenting the underscore here pointed every reader at the path that
+is deliberately absent from the schema.
 
     GET    /regimes/                  - the withholding schemes on file
     POST   /regimes/                  - register a scheme
@@ -393,6 +396,7 @@ async def preview_deduction(payload: DeductionPreviewRequest, session: SessionDe
     figures = service.compute_deduction(
         regime,
         gross_amount=payload.gross_amount,
+        currency_code=payload.currency_code,
         qualifying_materials=payload.qualifying_materials,
         vat_amount=payload.vat_amount,
         requested_band=payload.band_code,
@@ -553,6 +557,7 @@ async def _save_deduction(
     figures = service.compute_deduction(
         regime,
         gross_amount=payload.gross_amount,
+        currency_code=payload.currency_code,
         qualifying_materials=payload.qualifying_materials,
         vat_amount=payload.vat_amount,
         requested_band=payload.band_code,

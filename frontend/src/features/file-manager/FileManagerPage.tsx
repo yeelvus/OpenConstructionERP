@@ -780,7 +780,7 @@ export function FileManagerPage() {
   if (!projectId) {
     return (
       <div className="flex items-center justify-center h-full">
-        <h1 className="sr-only">{t('nav.project_files', { defaultValue: 'Project Files' })}</h1>
+        <h1 className="sr-only">{t('nav.documents', { defaultValue: 'Documents' })}</h1>
         <EmptyState
           icon={<HardDrive size={28} />}
           title={t('files.no_project_title', { defaultValue: 'No active project' })}
@@ -814,7 +814,7 @@ export function FileManagerPage() {
       {/* Accessible page heading. The visible module title lives in the
           global top bar (shown lg+), so this sr-only h1 gives the page the
           single semantic heading screen readers and a11y checks expect. */}
-      <h1 className="sr-only">{t('nav.project_files', { defaultValue: 'Project Files' })}</h1>
+      <h1 className="sr-only">{t('nav.documents', { defaultValue: 'Documents' })}</h1>
       {isFirstLoad && (
         <InitialLoadProgress
           storageDone={!!locations}
@@ -828,7 +828,7 @@ export function FileManagerPage() {
             ...(ctxProjectName
               ? [{ label: ctxProjectName, to: `/projects/${projectId}` }]
               : []),
-            { label: t('nav.project_files') },
+            { label: t('nav.documents') },
           ]}
         />
       </div>

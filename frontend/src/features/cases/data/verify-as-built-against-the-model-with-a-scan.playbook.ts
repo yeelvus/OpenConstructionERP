@@ -61,6 +61,7 @@ const playbook: Playbook = {
       whyDefault:
         "A scan referenced to the wrong origin lines up with nothing and every deviation reads as false. Getting the survey onto the project grid first is what makes the whole comparison trustworthy.",
       moduleLabel: "Point Cloud",
+      moduleLabelKey: "nav.point_cloud",
       to: "/pointcloud",
     },
     {
@@ -102,6 +103,7 @@ const playbook: Playbook = {
       whyDefault:
         "The scan is the ground truth of what was actually built. Laying the model over it turns a vague feeling that something is off into a measured deviation you can point at.",
       moduleLabel: "BIM Viewer",
+      moduleLabelKey: "bim.title",
       to: "/projects/:projectId/bim",
     },
     {
@@ -143,6 +145,7 @@ const playbook: Playbook = {
       whyDefault:
         "A deviation nobody records gets buried the moment the next trade covers it. An inspection puts the out-of-tolerance work on a list that has to be answered before it is closed over.",
       moduleLabel: "Inspections",
+      moduleLabelKey: "nav.inspections",
       to: "/projects/:projectId/inspections",
     },
   ],

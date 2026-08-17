@@ -9,6 +9,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
+from app.modules.einvoice.rules import VAT_CATEGORY_CODES
+
 
 # ── v3 §10 money serialisation helper ─────────────────────────────────────
 # Mirrors backend/app/modules/boq/schemas.py - money fields are stored /
@@ -91,11 +93,31 @@ class InvoiceLineItemCreate(BaseModel):
     # posts onto the matching cost-spine budget row.
     cost_line_id: UUID | None = Field(default=None)
     sort_order: int = Field(default=0, ge=0)
+    # EN 16931 per-line VAT. Left unset the exporter falls back to the
+    # invoice-level rate, which is only right when every line shares one rate.
+    vat_rate: str | None = Field(default=None, max_length=10)
+    vat_category: str | None = Field(default=None, max_length=4)
 
     @field_validator("quantity", "unit_rate", "amount")
     @classmethod
     def _check_non_negative_decimal(cls, v: str) -> str:
         return _validate_non_negative_decimal(v)
+
+    @field_validator("vat_rate")
+    @classmethod
+    def _check_vat_rate(cls, v: str | None) -> str | None:
+        return None if v is None else _validate_non_negative_decimal(v)
+
+    @field_validator("vat_category")
+    @classmethod
+    def _check_vat_category(cls, v: str | None) -> str | None:
+        """Reject a category code no receiver's validator would accept (BR-CL-18)."""
+        if v is None:
+            return None
+        code = v.strip().upper()
+        if code not in VAT_CATEGORY_CODES:
+            raise ValueError(f"vat_category must be one of {', '.join(sorted(VAT_CATEGORY_CODES))}, got {v!r}")
+        return code
 
 
 class InvoiceCreate(BaseModel):
@@ -202,11 +224,16 @@ class InvoiceLineItemResponse(BaseModel):
     cost_category: str | None = None
     cost_line_id: UUID | None = None
     sort_order: int = 0
+    vat_rate: str | None = None
+    vat_category: str | None = None
     created_at: datetime
     updated_at: datetime
 
     _coerce_decimal = field_validator("quantity", "unit_rate", "amount", mode="before")(
         lambda cls, v: _decimal_to_str(v)
+    )
+    _coerce_vat_rate = field_validator("vat_rate", mode="before")(
+        lambda cls, v: None if v is None else _decimal_to_str(v)
     )
 
 

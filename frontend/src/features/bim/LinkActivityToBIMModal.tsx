@@ -14,8 +14,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { X, Search, Calendar, Link2, Loader2 } from 'lucide-react';
-import { apiGet, apiPatch } from '@/shared/lib/api';
+import { apiGet, apiPatch, type Page } from '@/shared/lib/api';
 import type { BIMElementData } from '@/shared/ui/BIMViewer';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useToastStore } from '@/stores/useToastStore';
 
 interface ScheduleHeader {
@@ -74,40 +75,49 @@ export default function LinkActivityToBIMModal({
     setVisibleCount(PAGE_SIZE);
   }, [search]);
 
-  // 1. Load all schedules in the project
+  // 1. Load the project's schedules. The response carries the project's
+  // total, so a project with more schedules than one page holds can say so
+  // instead of quietly offering a subset of the programme.
   const schedulesQuery = useQuery({
     queryKey: ['schedules-for-bim-link', projectId],
     queryFn: () =>
-      apiGet<ScheduleHeader[]>(
+      apiGet<Page<ScheduleHeader>>(
         `/v1/schedule/schedules/?project_id=${encodeURIComponent(projectId)}`,
       ),
     enabled: !!projectId,
   });
-  const schedules = schedulesQuery.data ?? [];
+  const schedulePage = schedulesQuery.data;
+  const schedules = schedulePage?.items ?? [];
 
-  // 2. For each schedule, load its activities (parallel via React Query)
-  // We use a single derived query that flattens all activities into one
-  // list — typical projects have <5 schedules with <500 activities each,
-  // so the dataset is bounded.
+  // 2. For each schedule, load its activities (parallel via React Query).
+  // The previous comment here asserted the dataset was bounded because
+  // "typical projects have <5 schedules with <500 activities each". That
+  // was an assumption about the data, not a property of the read: both
+  // calls were capped server-side and neither reported a total, so an
+  // atypical project silently lost rows. Sum the totals instead and let
+  // the surface state what it is missing.
   const activitiesQuery = useQuery({
     queryKey: ['activities-for-bim-link', projectId, schedules.map((s) => s.id).join(',')],
     queryFn: async () => {
       const all: Activity[] = [];
+      let total = 0;
       for (const s of schedules) {
         try {
-          const acts = await apiGet<Activity[]>(
+          const page = await apiGet<Page<Activity>>(
             `/v1/schedule/schedules/${encodeURIComponent(s.id)}/activities/`,
           );
-          all.push(...acts);
+          all.push(...page.items);
+          total += page.total;
         } catch {
           // ignore individual schedule failures
         }
       }
-      return all;
+      return { items: all, total };
     },
     enabled: schedules.length > 0,
   });
-  const activities = activitiesQuery.data ?? [];
+  const activities = activitiesQuery.data?.items ?? [];
+  const activityTotal = activitiesQuery.data?.total ?? 0;
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -230,6 +240,15 @@ export default function LinkActivityToBIMModal({
             </div>
           ) : (
             <ul className="space-y-1">
+              {/* The list is progressively revealed, so "showing N of M"
+                  covers both what the cap withheld and what is still
+                  behind the Show more button. */}
+              <li>
+                <TruncationNotice
+                  page={{ items: activities, total: activityTotal }}
+                  className="px-2.5 pb-1"
+                />
+              </li>
               {filtered.slice(0, visibleCount).map((act) => {
                 const linkedCount = act.bim_element_ids?.length ?? 0;
                 return (

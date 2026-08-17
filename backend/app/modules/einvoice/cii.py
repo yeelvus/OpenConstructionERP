@@ -31,6 +31,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from xml.etree import ElementTree as ET  # noqa: N817 - trusted, we build not parse
 
 from app.modules.einvoice.profiles import PROFILES, Profile, get_profile
+from app.modules.einvoice.rules import FATAL, RuleViolation, check, check_profile, money_decimals
 
 # --- namespaces -----------------------------------------------------------
 
@@ -107,14 +108,25 @@ class Party:
     """A seller or buyer trade party (EN 16931 BG-4 / BG-7)."""
 
     name: str
-    country_code: str = "DE"
+    # BT-40 / BT-55, mandatory under EN 16931 and the term a receiver reads to
+    # decide which national rules apply. Empty when nobody configured it, never
+    # a guess: an invoice that names a country its seller is not established in
+    # is a false statement in a legal document, and a document refused for
+    # naming none is the cheaper failure. BR-9 / BR-11 catch it.
+    country_code: str = ""
     vat_id: str | None = None  # BT-31 / BT-48 (USt-IdNr., e.g. DE123456789)
     tax_number: str | None = None  # BT-32 (Steuernummer) when no VAT id
     legal_id: str | None = None  # BT-30 / BT-47 registration id
     line1: str | None = None  # BT-35 / BT-50
     postcode: str | None = None  # BT-38 / BT-53
     city: str | None = None  # BT-37 / BT-52
-    email: str | None = None
+    # BG-6 CONTACT and its three fields. EN 16931 asks for none of them;
+    # XRechnung makes the group and all three mandatory on the seller (BR-DE-2,
+    # BR-DE-5, BR-DE-6, BR-DE-7), which is why a German invoice needs a person
+    # to call and not only a company to address.
+    contact_name: str | None = None  # BT-41 / BT-56
+    contact_phone: str | None = None  # BT-42 / BT-57
+    contact_email: str | None = None  # BT-43 / BT-58
     contact_id_scheme: str | None = None  # e.g. Leitweg endpoint scheme
     electronic_address: str | None = None  # BT-34 / BT-49 (Peppol endpoint)
 
@@ -167,8 +179,16 @@ class EInvoice:
     payment_terms: str | None = None  # BT-20
     prepaid_amount: Decimal = Decimal("0")  # BT-113
     note: str | None = None  # BT-22
-    tax_currency: str | None = None
-    payment_means_code: str = "30"  # BT-81 (30 credit transfer)
+    tax_currency: str | None = None  # BT-6 (VAT accounting currency)
+    tax_total_in_tax_currency: Decimal | None = None  # BT-111 (required by BR-53 with BT-6)
+    # BT-81. Defaults to 1 ("instrument not defined") rather than 30 ("credit
+    # transfer"): claiming a transfer obliges the document to name the account
+    # to pay into (BR-61), and an invoice assembled without an IBAN cannot. The
+    # mapper raises this to 30 as soon as an account is known.
+    payment_means_code: str = "1"
+    payee_iban: str | None = None  # BT-84 (payment account identifier)
+    payee_account_name: str | None = None  # BT-85
+    payee_bic: str | None = None  # BT-86 (payment service provider identifier)
 
 
 # --- formatting helpers ---------------------------------------------------
@@ -177,8 +197,15 @@ _2P = Decimal("0.01")
 _4P = Decimal("0.0001")
 
 
-def _money(value: Decimal) -> str:
-    return str(value.quantize(_2P, rounding=ROUND_HALF_UP))
+def _money(value: Decimal, currency: str) -> str:
+    """Format a document amount in ``currency``.
+
+    The currency argument carries no default on purpose: an amount and the
+    currency it is denominated in have to travel together, and a default is
+    how a yen amount ends up printed with cents.
+    """
+    places = money_decimals(currency)
+    return str(value.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP))
 
 
 def _price(value: Decimal) -> str:
@@ -221,75 +248,39 @@ def _date_el(parent: ET.Element, prefix: str, local: str, iso: str) -> None:
 # --- validation -----------------------------------------------------------
 
 
-def validate_semantics(inv: EInvoice) -> list[str]:
-    """Country-agnostic EN 16931 checks (syntax and profile independent).
+def validate_rules(inv: EInvoice) -> list[RuleViolation]:
+    """Every rule finding, fatal and advisory alike, each with its identifier.
 
-    A pragmatic subset of the business rules - enough to catch the fields a
-    receiver's validator will reject on, without a full Schematron engine.
-    These rules hold for every country/profile.
+    This is the structured API: a finding carries the rule id a receiver's
+    validator would report (``BR-61``), so a caller can act on the rule rather
+    than on the wording of a sentence. See :mod:`app.modules.einvoice.rules`.
     """
-    problems: list[str] = []
-    if not inv.invoice_number:
-        problems.append("Add an invoice number in the invoice header (BT-1).")
-    if not inv.issue_date:
-        problems.append("Add the invoice date in the invoice header (BT-2).")
-    if not inv.currency:
-        problems.append("Set the invoice currency, for example EUR or USD (BT-5).")
-    if not inv.lines:
-        problems.append("Add at least one invoice line before sending (BR-16).")
-    for who, p in (("seller", inv.seller), ("buyer", inv.buyer)):
-        if not p.name:
-            problems.append(f"Add the {who} name in the e-invoice settings.")
-        if not p.country_code:
-            problems.append(
-                f"Add the {who} country code, two letters such as DE or FR, in the e-invoice settings (BR-08/BR-11)."
-            )
-    if not (inv.seller.vat_id or inv.seller.tax_number):
-        problems.append(
-            "Add the seller VAT id (BT-31) or, if there is none, a tax number (BT-32) in the e-invoice settings."
-        )
-    # Totals must reconcile (BR-CO-*).
-    if inv.line_total != sum((line.line_net_amount for line in inv.lines), Decimal("0")):
-        problems.append("The line net amounts do not add up to the document net total (BR-CO-10).")
-    expected_grand = inv.tax_basis_total + inv.tax_total
-    if inv.grand_total != expected_grand:
-        problems.append("The grand total must equal the net total plus the VAT total (BR-CO-15).")
-    if inv.due_payable != inv.grand_total - inv.prepaid_amount:
-        problems.append("The amount due must equal the grand total minus any prepaid or retained amount (BR-CO-16).")
-    return problems
+    return check(inv)
+
+
+def validate_semantics(inv: EInvoice) -> list[str]:
+    """Country-agnostic EN 16931 problems as plain guidance, profile rules aside.
+
+    Kept for callers that want the shared rules only. Prefer
+    :func:`validate_rules` when the rule identifier matters.
+    """
+    profile = get_profile(inv.profile)
+    profile_ids = {v.rule_id for v in check_profile(inv, profile)} if profile else set()
+    return [v.message for v in check(inv) if v.severity == FATAL and v.rule_id not in profile_ids]
 
 
 def profile_problems(inv: EInvoice, profile: Profile) -> list[str]:
-    """Rules specific to one profile (e.g. XRechnung / Peppol Buyer reference)."""
-    problems: list[str] = []
-    if profile.buyer_ref_required:
-        has_buyer_ref = bool(inv.buyer_reference)
-        has_order_ref = bool(inv.order_reference)
-        if not has_buyer_ref and not (profile.order_ref_alternative and has_order_ref):
-            label = profile.label or profile.name
-            if profile.name == "xrechnung":
-                problems.append(
-                    "Add the Buyer reference / Leitweg-ID (BT-10) in the e-invoice settings; XRechnung requires it."
-                )
-            elif profile.order_ref_alternative:
-                problems.append(
-                    f"Add a Buyer reference (BT-10) or an Order reference (BT-13) in the e-invoice settings; "
-                    f"{label} requires one of them."
-                )
-            else:
-                problems.append(f"Add a Buyer reference (BT-10) in the e-invoice settings; {label} requires it.")
-    return problems
+    """Problems specific to one profile (e.g. XRechnung / Peppol Buyer reference)."""
+    return [v.message for v in check_profile(inv, profile) if v.severity == FATAL]
 
 
 def validate(inv: EInvoice) -> list[str]:
-    """Full validation: shared semantics plus the invoice's own profile rules."""
-    problems = validate_semantics(inv)
-    profile = get_profile(inv.profile)
-    if profile is None:
-        problems.append(f"unknown profile {inv.profile!r} (BT-24)")
-    else:
-        problems += profile_problems(inv, profile)
-    return problems
+    """Blocking problems as plain guidance: everything that would be rejected.
+
+    Advisory findings are deliberately excluded, so a missing IBAN warns
+    without blocking the export. Use :func:`validate_rules` for the full list.
+    """
+    return [v.message for v in check(inv) if v.severity == FATAL]
 
 
 # --- party rendering ------------------------------------------------------
@@ -303,11 +294,19 @@ def _party(parent: ET.Element, tag_local: str, p: Party) -> None:
     if p.legal_id:
         org = _sub(tp, "ram", "SpecifiedLegalOrganization")
         _sub(org, "ram", "ID", p.legal_id)
-    if p.electronic_address:
-        comm = _sub(tp, "ram", "URIUniversalCommunication")
-        uri = _sub(comm, "ram", "URIID", p.electronic_address)
-        if p.contact_id_scheme:
-            uri.set("schemeID", p.contact_id_scheme)
+    # BG-6, written exactly when one of its three fields carries a value, which
+    # is the condition the BR-DE-2 check in ``rules`` reads. An empty group would
+    # turn one honest finding into three misleading ones at the receiver.
+    if p.contact_name or p.contact_phone or p.contact_email:
+        contact = _sub(tp, "ram", "DefinedTradeContact")
+        if p.contact_name:
+            _sub(contact, "ram", "PersonName", p.contact_name)
+        if p.contact_phone:
+            phone = _sub(contact, "ram", "TelephoneUniversalCommunication")
+            _sub(phone, "ram", "CompleteNumber", p.contact_phone)
+        if p.contact_email:
+            mail = _sub(contact, "ram", "EmailURIUniversalCommunication")
+            _sub(mail, "ram", "URIID", p.contact_email)
     addr = _sub(tp, "ram", "PostalTradeAddress")
     if p.postcode:
         _sub(addr, "ram", "PostcodeCode", p.postcode)
@@ -315,11 +314,18 @@ def _party(parent: ET.Element, tag_local: str, p: Party) -> None:
         _sub(addr, "ram", "LineOne", p.line1)
     if p.city:
         _sub(addr, "ram", "CityName", p.city)
-    _sub(addr, "ram", "CountryID", (p.country_code or "DE").upper())
-    if p.email:
+    # BT-40 / BT-55. Written only when there is one: an absent element states
+    # nothing, whereas a substituted country states something untrue. A strict
+    # render never gets here without one, because BR-9 / BR-11 refuse first.
+    if p.country_code:
+        _sub(addr, "ram", "CountryID", p.country_code.upper())
+    # BT-34 / BT-49, and only once. The contact email is BT-43 and now lives in
+    # the group above; writing it here as well produced a second
+    # URIUniversalCommunication on a party where the term is 0..1.
+    if p.electronic_address:
         comm = _sub(tp, "ram", "URIUniversalCommunication")
-        em = _sub(comm, "ram", "URIID", p.email)
-        em.set("schemeID", "EM")
+        uri = _sub(comm, "ram", "URIID", p.electronic_address)
+        uri.set("schemeID", p.contact_id_scheme or "EM")
     if p.vat_id:
         reg = _sub(tp, "ram", "SpecifiedTaxRegistration")
         _sub(reg, "ram", "ID", p.vat_id).set("schemeID", "VA")
@@ -388,7 +394,7 @@ def build_cii_xml(inv: EInvoice, *, strict: bool = True) -> bytes:
         _sub(tax, "ram", "CategoryCode", line.vat_category)
         _sub(tax, "ram", "RateApplicablePercent", _pct(line.vat_rate))
         summ = _sub(stl, "ram", "SpecifiedTradeSettlementLineMonetarySummation")
-        _sub(summ, "ram", "LineTotalAmount", _money(line.line_net_amount))
+        _sub(summ, "ram", "LineTotalAmount", _money(line.line_net_amount, inv.currency))
 
     # 3b. Header agreement (buyer ref, seller, buyer, order ref)
     agr = _sub(tx, "ram", "ApplicableHeaderTradeAgreement")
@@ -412,12 +418,22 @@ def build_cii_xml(inv: EInvoice, *, strict: bool = True) -> bytes:
     if inv.payment_means_code:
         pm = _sub(stl, "ram", "SpecifiedTradeSettlementPaymentMeans")
         _sub(pm, "ram", "TypeCode", inv.payment_means_code)
+        # BG-17 credit transfer: the account the buyer pays into (BT-84/BT-85),
+        # without which a credit transfer instruction fails BR-61.
+        if inv.payee_iban:
+            acct = _sub(pm, "ram", "PayeePartyCreditAccountID")
+            _sub(acct, "ram", "IBANID", inv.payee_iban)
+            if inv.payee_account_name:
+                _sub(acct, "ram", "AccountName", inv.payee_account_name)
+        if inv.payee_bic:
+            inst = _sub(pm, "ram", "PayeeSpecifiedCreditorFinancialInstitution")
+            _sub(inst, "ram", "BICID", inv.payee_bic)
 
     for grp in inv.tax_subtotals:
         tax = _sub(stl, "ram", "ApplicableTradeTax")
-        _sub(tax, "ram", "CalculatedAmount", _money(grp.tax_amount))
+        _sub(tax, "ram", "CalculatedAmount", _money(grp.tax_amount, inv.currency))
         _sub(tax, "ram", "TypeCode", "VAT")
-        _sub(tax, "ram", "BasisAmount", _money(grp.basis))
+        _sub(tax, "ram", "BasisAmount", _money(grp.basis, inv.currency))
         _sub(tax, "ram", "CategoryCode", grp.category)
         _sub(tax, "ram", "RateApplicablePercent", _pct(grp.rate))
 
@@ -429,13 +445,20 @@ def build_cii_xml(inv: EInvoice, *, strict: bool = True) -> bytes:
             _date_el(terms, "ram", "DueDateDateTime", inv.due_date)
 
     summ = _sub(stl, "ram", "SpecifiedTradeSettlementHeaderMonetarySummation")
-    _sub(summ, "ram", "LineTotalAmount", _money(inv.line_total))
-    _sub(summ, "ram", "TaxBasisTotalAmount", _money(inv.tax_basis_total))
-    _sub(summ, "ram", "TaxTotalAmount", _money(inv.tax_total)).set("currencyID", inv.currency)
-    _sub(summ, "ram", "GrandTotalAmount", _money(inv.grand_total))
+    _sub(summ, "ram", "LineTotalAmount", _money(inv.line_total, inv.currency))
+    _sub(summ, "ram", "TaxBasisTotalAmount", _money(inv.tax_basis_total, inv.currency))
+    _sub(summ, "ram", "TaxTotalAmount", _money(inv.tax_total, inv.currency)).set("currencyID", inv.currency)
+    # BT-111: when VAT is accounted for in another currency (BT-6), the VAT
+    # total has to be stated in that currency too, each amount carrying its own
+    # currencyID. BR-53 makes this mandatory, never inferred from a rate.
+    if inv.tax_currency and inv.tax_total_in_tax_currency is not None:
+        _sub(summ, "ram", "TaxTotalAmount", _money(inv.tax_total_in_tax_currency, inv.tax_currency)).set(
+            "currencyID", inv.tax_currency
+        )
+    _sub(summ, "ram", "GrandTotalAmount", _money(inv.grand_total, inv.currency))
     if inv.prepaid_amount:
-        _sub(summ, "ram", "TotalPrepaidAmount", _money(inv.prepaid_amount))
-    _sub(summ, "ram", "DuePayableAmount", _money(inv.due_payable))
+        _sub(summ, "ram", "TotalPrepaidAmount", _money(inv.prepaid_amount, inv.currency))
+    _sub(summ, "ram", "DuePayableAmount", _money(inv.due_payable, inv.currency))
 
     ET.indent(root, space="  ")
     return b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="utf-8")

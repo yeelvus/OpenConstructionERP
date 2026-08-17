@@ -42,10 +42,12 @@ import {
 } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { integrationsGuide } from './integrationsGuide';
+import { calendarFeedUrl } from './calendarFeed';
 import { DismissibleInfo, IntroRichText } from '@/shared/ui/DismissibleInfo';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { copyToClipboard } from '@/shared/lib/browser';
 import { apiGet, apiPost, apiDelete } from '@/shared/lib/api';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 import { useToastStore } from '@/stores/useToastStore';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
@@ -635,7 +637,8 @@ function CalendarFeedSection() {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const [copied, setCopied] = useState(false);
-  const feedUrl = `${window.location.origin}/api/v1/integrations/calendar/feed.ics`;
+  const projectId = useActiveProjectId();
+  const feedUrl = calendarFeedUrl(window.location.origin, projectId);
 
   const handleCopy = useCallback(() => {
     copyToClipboard(feedUrl).then(() => {
@@ -647,6 +650,14 @@ function CalendarFeedSection() {
       setTimeout(() => setCopied(false), 2000);
     });
   }, [feedUrl, addToast, t]);
+
+  if (!projectId) {
+    return (
+      <p className="mt-2 text-2xs text-content-tertiary">
+        {t('integrations.calendar_needs_project', 'Pick a project in the header switcher to get its feed address.')}
+      </p>
+    );
+  }
 
   return (
     <div className="mt-2">
@@ -662,6 +673,9 @@ function CalendarFeedSection() {
           {copied ? t('common.copied', 'Copied') : t('common.copy', 'Copy')}
         </Button>
       </div>
+      <p className="mt-1.5 text-2xs text-content-tertiary">
+        {t('integrations.calendar_token_hint', 'Replace API_KEY with one of your API keys before subscribing.')}
+      </p>
     </div>
   );
 }

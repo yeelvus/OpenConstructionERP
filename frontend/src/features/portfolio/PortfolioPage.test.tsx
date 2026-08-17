@@ -128,7 +128,7 @@ describe('PortfolioPage', () => {
     mockNodeCpm.mockResolvedValue(sampleCpm);
     // No active project in the store by default, so the cross-links panel shows
     // its "pick a project" empty state and never calls the schedule API.
-    mockListSchedules.mockResolvedValue([]);
+    mockListSchedules.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 50 });
     mockGetGantt.mockResolvedValue({ activities: [] });
   });
 

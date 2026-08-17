@@ -397,15 +397,23 @@ class ElementValidationSummary(BaseModel):
 class RequirementBrief(BaseModel):
     """Lightweight requirement summary embedded in a BIM element response.
 
-    Mirrors the relevant subset of
+    Mirrors a subset of
     ``app.modules.requirements.schemas.RequirementResponse`` but is
     defined locally to avoid a circular import between ``bim_hub`` and
-    ``requirements``.  The two shapes MUST stay in sync - add fields in
-    both files together.
+    ``requirements``.  Deliberately a subset, not a copy: this is
+    embedded in every element of a model response, so prose fields stay
+    out of it.  What it does carry has to keep meaning the same thing as
+    the field it was named after, and
+    ``tests/unit/requirements/test_a_duplicated_shape_needs_a_gate_not_a_comment.py``
+    fails if a name here stops existing over there.
 
     Surfaces the EAC triplet (entity / attribute / constraint) so the
     BIM viewer's "Linked requirements" section can render a meaningful
-    one-line summary without an extra Postgres roundtrip.
+    one-line summary without an extra Postgres roundtrip, plus the two
+    cycle answers that decide whether a requirement is actionable at the
+    element in front of you: ``phase`` is when it applies and
+    ``verification_method`` is how it would be proven.  Both are neutral
+    keys the viewer renders through its own locale.
     """
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -420,6 +428,8 @@ class RequirementBrief(BaseModel):
     category: str = "general"
     priority: str = "must"
     status: str = "open"
+    phase: str = ""
+    verification_method: str = ""
 
 
 class BIMElementResponse(BaseModel):

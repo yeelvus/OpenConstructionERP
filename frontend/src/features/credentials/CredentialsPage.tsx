@@ -1032,6 +1032,7 @@ export function CredentialsPage() {
               onAdd={insights.addCustom}
               onUpdate={insights.updateCustom}
               onRemove={insights.removeCustom}
+              onCollapse={() => insights.setOpen(false)}
             />
 
             {(validationQuery.data?.findings.length ?? 0) > 0 && (

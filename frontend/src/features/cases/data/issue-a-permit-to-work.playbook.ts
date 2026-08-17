@@ -54,6 +54,7 @@ const playbook: Playbook = {
       whyDefault:
         "High-risk work without a live permit and clear controls is how people get hurt and how the job gets shut down. The window keeps it valid only while the controls hold.",
       moduleLabel: "HSE Advanced",
+      moduleLabelKey: "nav.hse_advanced",
       to: "/projects/:projectId/hse-advanced",
     },
     {
@@ -92,6 +93,7 @@ const playbook: Playbook = {
       whyDefault:
         "A permit with no method statement or risk assessment behind it will not stand up after an incident or an audit. It proves the controls were planned, not invented on the day.",
       moduleLabel: "Safety",
+      moduleLabelKey: "nav.safety",
       to: "/projects/:projectId/safety",
     },
     {
@@ -126,6 +128,7 @@ const playbook: Playbook = {
       whyDefault:
         "If a fire or a near miss follows hot works, you need to show who was there and when the area was made safe. A closed permit with no diary entry leaves that gap open.",
       moduleLabel: "Daily Diary",
+      moduleLabelKey: "nav.daily_diary",
       to: "/projects/:projectId/daily-diary",
     },
   ],

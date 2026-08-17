@@ -68,6 +68,7 @@ def _has_index(table: str, index_name: str) -> bool:
     return any(ix["name"] == index_name for ix in insp.get_indexes(table))
 
 
+# data-rewrite-ack: table=oe_contacts_contact growth=bounded rows=real business contacts added by hand, not a per-event log
 def upgrade() -> None:
     if not _table_exists(TABLE_NAME):
         return

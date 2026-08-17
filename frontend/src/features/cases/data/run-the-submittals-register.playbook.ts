@@ -53,6 +53,7 @@ const playbook: Playbook = {
       whyDefault:
         "A submittal approved late holds up the order, and a late order holds up the trade on site. The register is where you see that coming.",
       moduleLabel: "Submittals",
+      moduleLabelKey: "submittals.title",
       to: "/projects/:projectId/submittals",
     },
     {
@@ -91,6 +92,7 @@ const playbook: Playbook = {
       whyDefault:
         "A reviewer needs the spec next to the submittal, or the approval is just an opinion. It also settles later arguments about what was actually specified.",
       moduleLabel: "QMS",
+      moduleLabelKey: "nav.qms",
       to: "/projects/:projectId/qms",
     },
     {
@@ -129,6 +131,7 @@ const playbook: Playbook = {
       whyDefault:
         "The returned status is the trigger to order or to resubmit, so it has to be recorded against the item. A spoken yes does not release the procurement.",
       moduleLabel: "Correspondence",
+      moduleLabelKey: "nav.correspondence",
       to: "/projects/:projectId/correspondence",
     },
     {
@@ -163,6 +166,7 @@ const playbook: Playbook = {
       whyDefault:
         "The people ordering materials need one clear list of what is stuck and why. Overdue submittals are the quiet reason a programme slips.",
       moduleLabel: "Reports",
+      moduleLabelKey: "nav.reports",
       to: "/reports",
     },
   ],

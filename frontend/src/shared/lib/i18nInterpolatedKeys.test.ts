@@ -132,10 +132,32 @@ const localeFiles = readdirSync(LOCALES)
   .filter((name) => name.endsWith('.ts') && name !== 'index.ts')
   .map((name) => [name.slice(0, -3), readFileSync(resolve(LOCALES, name), 'utf8')] as const);
 
+/**
+ * The registry the app actually ships, read out of the source. Importing
+ * `app/i18n` boots i18next with the whole English resource and the worker never
+ * returns, so only the literal is parsed - the same approach CountryFlag.test
+ * takes, and for the same reason.
+ */
+const declaredCodes = [
+  ...readFileSync(resolve(SRC, 'app', 'i18n.ts'), 'utf8').matchAll(/\{\s*code:\s*'([^']+)'/g),
+].map(([, code]) => code);
+
 describe('#200 counted keys carry every plural form their own language uses', () => {
-  it('reads all 29 locale files', () => {
-    // A glob that quietly matches nothing would make every assertion below pass.
-    expect(localeFiles.length).toBe(29);
+  it('reads every locale file the app declares', () => {
+    // A glob that quietly matches nothing would make every assertion below pass,
+    // so the count has to be asserted - but against the registry rather than
+    // against a number typed here. A literal goes stale the day a locale is
+    // added: this read 29 while the app shipped 37, and the eight new files
+    // were being checked by every assertion below while this one line called
+    // them absent.
+    expect(declaredCodes.length).toBeGreaterThan(25);
+    // Mongolian is on disk but deliberately not in SUPPORTED_LANGUAGES: five
+    // invented roots passed every gate, so the language is withheld until the
+    // file is retranslated. The file stays covered by every assertion below;
+    // only the registry comparison must expect its absence.
+    const undeclaredOnPurpose = ['mn'];
+    expect([...localeFiles.map(([code]) => code)].filter((code) => !undeclaredOnPurpose.includes(code)).sort())
+      .toEqual([...declaredCodes].sort());
   });
 
   it('gets the plural categories it expects out of this runtime', () => {

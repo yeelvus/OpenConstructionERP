@@ -65,6 +65,7 @@ const playbook: Playbook = {
       whyDefault:
         "One clean resource list is what every rate and every programme leans on. Change a base rate once and everything built from it updates.",
       moduleLabel: "Resources",
+      moduleLabelKey: "nav.resources",
       to: "/resources",
     },
     {
@@ -111,6 +112,7 @@ const playbook: Playbook = {
       whyDefault:
         "A rate you cannot break down is a rate you cannot defend in a negotiation or a claim. Recipes show exactly what is inside the number.",
       moduleLabel: "Assemblies",
+      moduleLabelKey: "nav.assemblies",
       to: "/assemblies",
     },
     {
@@ -152,6 +154,7 @@ const playbook: Playbook = {
       whyDefault:
         "When the estimate and the programme share resources, the labour histogram and the cost match reality. Separate lists drift, and the plan stops agreeing with the price.",
       moduleLabel: "Schedule Advanced",
+      moduleLabelKey: "nav.schedule_advanced",
       to: "/schedule-advanced",
     },
   ],

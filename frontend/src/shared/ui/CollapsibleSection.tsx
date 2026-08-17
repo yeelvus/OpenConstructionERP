@@ -7,14 +7,14 @@
  * remembered per `storageKey`, so it stays the way each user left it across
  * reloads.
  *
- * Collapsing (founder 2026-07-26: "нужно чтобы подобные блоки сворачивались в
- * кнопку рядом с кнопкой кейсы"): a collapsed block renders NOTHING in the page
- * and hands itself to the re-open pill that sits next to the module's Cases
- * button. It registers in `useModuleInfoStore` while collapsed, exactly the way
- * `DismissibleInfo` does, so `ModuleInfoButton` (hosted by `ModuleGuideButton`,
- * rendered immediately after `ModuleCasesButton`) shows up and brings the block
- * back. On the rare page with no guide button the Header's top-bar info icon is
- * the fallback, so a collapsed explainer is never stranded.
+ * Collapsing: a collapsed block renders NOTHING in the page and folds into an
+ * information icon in the top app bar, immediately to the right of the module
+ * name (founder 2026-08-07). It registers in `useModuleInfoStore` while
+ * collapsed, exactly the way `DismissibleInfo` does, so `ModuleInfoButton`
+ * appears there and one click brings the block back. That icon is the only
+ * re-open control in the product: it was previously a pill next to the
+ * module's Cases and "How it works" buttons, which moved with each page's
+ * action row instead of staying put.
  *
  * The registration key is namespaced `section:<storageKey>` because the store is
  * shared with `DismissibleInfo`: a page carrying both an info card and an

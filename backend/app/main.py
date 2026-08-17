@@ -30,6 +30,7 @@ _os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 _os.environ.setdefault("OMP_NUM_THREADS", "1")
 _os.environ.setdefault("MKL_NUM_THREADS", "1")
 
+import asyncio
 import hashlib as _hashlib
 import logging
 import os
@@ -59,7 +60,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import Settings, build_provenance_tag, desktop_mode, get_settings
 from app.core.deployment_posture import build_data_security_posture
 from app.core.module_loader import module_loader
-from app.core.self_upgrade import FROZEN_REFUSAL, is_frozen_build
+from app.core.self_upgrade import (
+    FROZEN_REFUSAL,
+    claim_upgrade,
+    current_upgrade,
+    is_frozen_build,
+    run_upgrade,
+)
 from app.dependencies import RequireRole, get_current_user_id, rls_request_context
 
 logger = logging.getLogger(__name__)
@@ -1908,23 +1915,34 @@ def create_app() -> FastAPI:
         "/api/system/upgrade",
         tags=["System"],
         dependencies=[Depends(RequireRole("admin"))],
+        response_model=None,
+        status_code=status.HTTP_202_ACCEPTED,
     )
     async def trigger_upgrade(
         version: str | None = None,
         force: bool = False,
-    ) -> dict[str, Any]:
-        """Run ``pip install --upgrade openconstructionerp`` in this venv.
+    ) -> JSONResponse:
+        """Start ``pip install --upgrade openconstructionerp`` in this venv.
 
-        Best-effort one-click upgrade. We shell out to the **same**
-        interpreter that's serving the API so the upgrade lands in the
-        right venv (Issue #96 - Windows launcher uses
-        ``%LOCALAPPDATA%/OpenConstructionERP/venv``, not the user's
-        global Python). Captures stdout+stderr so the UI can show the
-        installer log.
+        Returns ``202`` with a job id as soon as the work is scheduled;
+        poll ``GET /api/system/upgrade/status`` for the outcome and the
+        pip log. It used to run inline and answer only when pip was
+        finished, which no browser waits for: the client gave up at 45
+        seconds and reported a failure over an upgrade still in progress
+        (issue #430). Worse, with a single worker the whole server was
+        unreachable while it ran.
+
+        Asking again while one is running answers ``409`` with that job
+        rather than starting a second pip against the same site-packages.
+
+        We shell out to the **same** interpreter that's serving the API so
+        the upgrade lands in the right venv (Issue #96 - Windows launcher
+        uses ``%LOCALAPPDATA%/OpenConstructionERP/venv``, not the user's
+        global Python).
 
         **Important - the running process keeps the OLD wheel in memory.**
         Python caches imports; pip can replace files on disk but cannot
-        swap modules already loaded. The response includes
+        swap modules already loaded. The finished job carries
         ``restart_required=true`` and the new version pulled from
         ``importlib.metadata`` so the UI can prompt the user to restart
         their launcher (``openconstructionerp serve``) or, on managed
@@ -1944,10 +1962,7 @@ def create_app() -> FastAPI:
         on so the Settings panel works out of the box.
         """
         import os
-        import subprocess
         import sys
-        import sysconfig
-        from pathlib import Path
 
         if os.environ.get("ALLOW_RUNTIME_UPGRADE", "true").lower() not in (
             "true",
@@ -1977,79 +1992,53 @@ def create_app() -> FastAPI:
         if force:
             cmd.insert(-1, "--force-reinstall")
 
-        # On Windows the running launcher keeps an open handle on its own
-        # console-script .exe, so pip cannot overwrite it and the whole
-        # install aborts with WinError 32 ("file in use by another process").
-        # Windows *does* allow renaming a running .exe, so move the locked
-        # launchers aside first; pip then writes fresh ones in their place.
-        # The renamed stubs stay locked until this process exits and are
-        # swept on the next upgrade. If pip ends up not regenerating a
-        # launcher (e.g. the target was already satisfied), we restore it.
-        renamed: list[tuple[Path, Path]] = []
-        if sys.platform == "win32":
-            scripts_dir = Path(sysconfig.get_path("scripts"))
-            for stale in scripts_dir.glob("*.oce-old-*"):
-                try:
-                    stale.unlink()
-                except OSError:
-                    pass  # a leftover still locked by an older process - skip
-            for exe_name in (
-                "openconstructionerp.exe",
-                "openconstructionerp-server.exe",
-                "openestimate.exe",
-                "openestimate-server.exe",
-            ):
-                exe = scripts_dir / exe_name
-                if not exe.exists():
-                    continue
-                aside = exe.with_name(f"{exe.name}.oce-old-{os.getpid()}")
-                try:
-                    exe.rename(aside)
-                    renamed.append((exe, aside))
-                except OSError:
-                    pass  # best effort - let pip surface the real error
+        job, started = claim_upgrade(cmd, settings.app_version)
+        if not started:
+            # Already running. Hand back the one in flight rather than a second
+            # pip against the same site-packages, and say so in the status code
+            # so a client can tell "attached to yours" from "started mine".
+            return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=job.as_dict())
 
-        proc = subprocess.run(  # noqa: S603 - args are sanitised above
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
+        def _finished(_task: asyncio.Task[Any]) -> None:
+            # The installed version has moved, so the cached answer to "is an
+            # upgrade available" is about a version that is no longer running.
+            if hasattr(app.state, "_version_check_cache"):
+                del app.state._version_check_cache
 
-        # Never leave the user without a launcher: if pip did not recreate
-        # one we moved aside, put the original back.
-        for original, aside in renamed:
-            if not original.exists() and aside.exists():
-                try:
-                    aside.rename(original)
-                except OSError:
-                    pass
+        task = asyncio.create_task(asyncio.to_thread(run_upgrade, job))
+        # Held on app.state because the event loop keeps only a weak reference
+        # to a running task, and a collected one would abandon the upgrade.
+        app.state._upgrade_task = task
+        task.add_done_callback(_finished)
 
-        new_version = settings.app_version
-        try:
-            from importlib.metadata import version as _v
+        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=job.as_dict())
 
-            new_version = _v("openconstructionerp")
-        except Exception:  # noqa: BLE001
-            pass
+    @app.get(
+        "/api/system/upgrade/status",
+        tags=["System"],
+        dependencies=[Depends(RequireRole("admin"))],
+    )
+    async def upgrade_status() -> dict[str, Any]:
+        """How the upgrade this process started is going, or how it went.
 
-        if hasattr(app.state, "_version_check_cache"):
-            del app.state._version_check_cache
+        Poll this after ``POST /api/system/upgrade``. ``status`` is ``running``,
+        ``succeeded`` or ``failed``, and the pip log is carried along the whole
+        way so a failure can be read rather than guessed at.
 
-        return {
-            "ok": proc.returncode == 0,
-            "exit_code": proc.returncode,
-            "command": " ".join(cmd),
-            "stdout": proc.stdout[-4000:],
-            "stderr": proc.stderr[-2000:],
-            "installed_version": new_version,
-            "running_version": settings.app_version,
-            "restart_required": new_version != settings.app_version,
-            "restart_hint": (
-                "Restart your launcher (start.bat / `openconstructionerp serve`) "
-                "or the host's systemd unit to load the new version."
-            ),
-        }
+        Answers ``status: "idle"`` when this process has not run one. That is
+        also the honest answer straight after a restart, including the restart
+        the upgrade itself asked for: the record lived in the memory of the
+        process that was replaced. By then ``running_version`` is the thing
+        worth reading anyway.
+        """
+        job = current_upgrade()
+        if job is None:
+            return {
+                "status": "idle",
+                "job_id": None,
+                "running_version": settings.app_version,
+            }
+        return job.as_dict()
 
     @app.get("/api/system/converters/version-check", tags=["System"])
     async def check_converter_versions() -> dict[str, Any]:
@@ -2734,6 +2723,16 @@ def create_app() -> FastAPI:
 
         # Load all modules (triggers module on_startup hooks)
         _section("Modules")
+        # Modules installed at runtime live in the instance's data directory,
+        # not in the source tree, so the import system has to be told about
+        # that directory before anything discovers or imports a module. A
+        # failure here is not fatal: the platform runs on its shipped modules.
+        try:
+            from app.core.module_runtime_root import attach_runtime_root
+
+            attach_runtime_root()
+        except Exception:
+            logger.warning("Runtime module root not attached", exc_info=True)
         await module_loader.load_all(app)
 
         # Mount OpenCDE API at the spec-compliant prefix /api/v1/opencde

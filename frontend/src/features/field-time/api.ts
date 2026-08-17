@@ -141,6 +141,54 @@ export interface ReverseTimesheetPayload {
   note?: string | null;
 }
 
+/* -- Offline capture ------------------------------------------------------ */
+
+/**
+ * What the server did with an offline op. A stable machine token: the UI
+ * renders its own translated sentence from it and never parses `detail`,
+ * which is English and meant for a log.
+ */
+export type OfflineOutcome = 'created' | 'replayed' | 'updated' | 'withdrawn';
+
+/**
+ * One day recorded away from the network, as a complete replacement of that
+ * entry rather than a diff.
+ *
+ * `entry_key` names the logical entry - the foreman's record of one
+ * project-day - and stays the same across every replay and every later edit of
+ * that day. It is what lets the server return the original timesheet instead of
+ * booking the hours twice. It is NOT the queue's per-op id: the queue mints a
+ * fresh `clientOpId` for each queued op so a second edit of the same day is a
+ * second op, and only this key ties them to one entry.
+ */
+export interface OfflineEntryPayload {
+  entry_key: string;
+  project_id: string;
+  date: string;
+  note?: string | null;
+  metadata?: Record<string, unknown>;
+  lines: LineCreatePayload[];
+  /** Device clock at capture. Advisory: the server stamps its own arrival. */
+  captured_at?: string | null;
+  device?: string | null;
+  /** Send the day on for approval in the same op. */
+  submit?: boolean;
+}
+
+export interface OfflineWithdrawPayload {
+  entry_key: string;
+  project_id: string;
+}
+
+export interface OfflineEntryResult {
+  entry_key: string;
+  outcome: OfflineOutcome;
+  timesheet: FieldTimesheet | null;
+  /** True once the entry has moved past draft, so the office can see it. */
+  submitted: boolean;
+  detail: string | null;
+}
+
 /* -- Formatting ----------------------------------------------------------- */
 
 /**
@@ -230,6 +278,24 @@ export async function reverseTimesheet(
   data: ReverseTimesheetPayload,
 ): Promise<FieldTimesheet> {
   return apiPost<FieldTimesheet>(`${BASE}/${id}/reverse/`, data);
+}
+
+/* -- Offline capture ------------------------------------------------------ */
+
+/**
+ * Record a day captured with no signal. Idempotent on `entry_key`, so calling
+ * it again with the same key returns what the first call produced instead of
+ * writing a second timesheet.
+ */
+export async function recordOfflineEntry(data: OfflineEntryPayload): Promise<OfflineEntryResult> {
+  return apiPost<OfflineEntryResult>(`${BASE}/offline/`, data);
+}
+
+/** Withdraw a day recorded offline. Remembered even if the day never arrived. */
+export async function withdrawOfflineEntry(
+  data: OfflineWithdrawPayload,
+): Promise<OfflineEntryResult> {
+  return apiPost<OfflineEntryResult>(`${BASE}/offline/withdraw/`, data);
 }
 
 /* -- Validation ----------------------------------------------------------- */

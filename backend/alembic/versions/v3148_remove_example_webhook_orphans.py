@@ -29,6 +29,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+# data-rewrite-ack: table=oe_integrations_config growth=bounded rows=configured integrations, bounded by how many a tenant sets up
 def upgrade() -> None:
     """Drop the gapfill-seeded Example webhook rows."""
     bind = op.get_bind()

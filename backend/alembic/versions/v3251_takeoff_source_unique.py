@@ -117,6 +117,9 @@ def _collapse_duplicates() -> None:
                 Path(row.file_path).unlink()
 
 
+# data-rewrite-ack: table=oe_takeoff_measurement growth=tenure rows=one row per measurement taken off a drawing, accumulates with takeoff activity
+# data-rewrite-ack: table=oe_ai_takeoff_run growth=tenure rows=one row per AI takeoff run, accumulates with usage
+# data-rewrite-ack: table=oe_takeoff_document growth=tenure rows=one row per drawing processed for takeoff, accumulates over project life
 def upgrade() -> None:
     """Collapse duplicate from-source documents, then add the unique index."""
     if not _has_table(_DOC):

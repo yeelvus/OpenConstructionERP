@@ -43,7 +43,7 @@ const playbook: Playbook = {
       whyKey: "cases.import_a_gaeb_tender_into_a_priced_boq.step.receive.why",
       whyDefault:
         "Tenders get reissued. Filing the exact file you worked from means a later query about which revision you priced has a one-click answer instead of an argument.",
-      moduleLabel: "Files",
+      moduleLabel: "Documents",
       moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },

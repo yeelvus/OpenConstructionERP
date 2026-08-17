@@ -1,13 +1,8 @@
 {
-  "progress.record_period": {
-    "en_value": "Period",
-    "note": "sv.ts genuinely uses \"Period\" unchanged, matching sv's own progress.col_period and 15 other Period-labeled sibling keys across the app; a Germanic cognate, not leftover English (module 13 of #182)",
-    "reason_category": "cognate_loanword"
-  },
-  "progress.record_position": {
-    "en_value": "Position",
-    "note": "de.ts genuinely uses \"Position\" unchanged, matching de's own boq.position (the value this key was grounded on) and its wider BOQ vocabulary; a Germanic/Latinate cognate, not leftover English (module 13 of #182)",
-    "reason_category": "cognate_loanword"
+  "about.book_title": {
+    "en_value": "Data-Driven Construction",
+    "note": "book/product title, identical in en/ru/kk (kk locale addition)",
+    "reason_category": "product_name"
   },
   "accommodation.bim_link.label": {
     "en_value": "BIM",
@@ -42,6 +37,36 @@
   "approvalRoutes.unit_days": {
     "en_value": "{{n}} d",
     "note": "unit abbreviation for \"day\"; coincides in several locales whose own word for day also abbreviates to d/similar (confirmed de/ja/ru hold real distinct translations)",
+    "reason_category": "abbreviation"
+  },
+  "assemblies.std_din276": {
+    "en_value": "DIN 276",
+    "note": "cost classification standard, cited by its published designation in all 29 locales including ru (CLAUDE.md: standards are not translated)",
+    "reason_category": "standard_code"
+  },
+  "assemblies.std_masterformat": {
+    "en_value": "MasterFormat",
+    "note": "cost classification standard, cited by its published designation in all 29 locales including ru",
+    "reason_category": "standard_code"
+  },
+  "assemblies.std_nrm": {
+    "en_value": "NRM",
+    "note": "cost classification standard (New Rules of Measurement), cited by its published designation in all 29 locales including ru",
+    "reason_category": "standard_code"
+  },
+  "assemblies.std_uniclass": {
+    "en_value": "Uniclass",
+    "note": "cost classification standard, cited by its published designation in all 29 locales including ru",
+    "reason_category": "standard_code"
+  },
+  "assemblies.std_uniformat": {
+    "en_value": "UniFormat",
+    "note": "cost classification standard, cited by its published designation in all 29 locales including ru",
+    "reason_category": "standard_code"
+  },
+  "assets.field.serial_short": {
+    "en_value": "S/N",
+    "note": "abbreviation, identical in every locale including ru (bn locale addition)",
     "reason_category": "abbreviation"
   },
   "auth.how_found_github": {
@@ -124,6 +149,11 @@
     "note": "named open data / interchange standard or format code (CLAUDE.md: not translated)",
     "reason_category": "standard_code"
   },
+  "boq.shortcut_ctrl_enter": {
+    "en_value": "Ctrl+Enter",
+    "note": "keyboard shortcut, identical in en/ru/kk (kk locale addition)",
+    "reason_category": "keyboard_shortcut"
+  },
   "boq.shortcut_f1": {
     "en_value": "F1",
     "note": "keyboard shortcut key label",
@@ -133,6 +163,26 @@
     "en_value": "= {{total}}",
     "note": "entirely template variables/punctuation, no literal word to translate",
     "reason_category": "template_placeholder"
+  },
+  "capacity.legend_low": {
+    "en_value": "≤ 50%",
+    "note": "symbol/number only, no words to translate, identical in en/ru/kk (kk locale addition)",
+    "reason_category": "template_only"
+  },
+  "carbon.boq": {
+    "en_value": "BOQ",
+    "note": "named open data / interchange standard or format code (CLAUDE.md: not translated); identical in every locale including ru (bn locale addition)",
+    "reason_category": "standard_code"
+  },
+  "carbon.framework_gri": {
+    "en_value": "GRI",
+    "note": "acronym of the Global Reporting Initiative, the standards body itself; identical in all 28 locales including ru, ja, zh and ar",
+    "reason_category": "standard_code"
+  },
+  "carbon.framework_issb": {
+    "en_value": "ISSB",
+    "note": "acronym of the International Sustainability Standards Board, the standards body itself; identical in all 28 locales including ru, ja, zh and ar",
+    "reason_category": "standard_code"
   },
   "catalog.source_cwicr": {
     "en_value": "CWICR",
@@ -148,6 +198,11 @@
     "en_value": "{{code}} - {{title}}",
     "note": "entirely template variables/punctuation, no literal word to translate",
     "reason_category": "template_placeholder"
+  },
+  "changeorders.boq_picker_boq": {
+    "en_value": "BOQ",
+    "note": "named open data / interchange standard or format code (CLAUDE.md: not translated); identical in every locale including ru (bn locale addition)",
+    "reason_category": "standard_code"
   },
   "changeorders.impact_days_suffix": {
     "en_value": "d",
@@ -274,6 +329,31 @@
     "note": "bare symbol/punctuation glyph, not a word",
     "reason_category": "symbol"
   },
+  "coordination_hub.trade_mep": {
+    "en_value": "MEP",
+    "note": "acronym, identical in every locale including ru (fa locale addition)",
+    "reason_category": "acronym"
+  },
+  "costExplorer.addToBoq.boq": {
+    "en_value": "BOQ",
+    "note": "named open data / interchange standard or format code (CLAUDE.md: not translated); identical in every locale including ru (bn locale addition)",
+    "reason_category": "standard_code"
+  },
+  "costExplorer.mod_boq": {
+    "en_value": "BOQ",
+    "note": "named open data / interchange standard or format code (CLAUDE.md: not translated); identical in every locale including ru (bn locale addition)",
+    "reason_category": "standard_code"
+  },
+  "cost_match.confidence_percent": {
+    "en_value": "{{percent}}%",
+    "note": "pure interpolation shell with a bare percent sign, no literal text to translate (bn locale addition)",
+    "reason_category": "template_placeholder"
+  },
+  "costmodel.mod_boq": {
+    "en_value": "BOQ",
+    "note": "named open data / interchange standard or format code (CLAUDE.md: not translated); identical in every locale including ru (bn locale addition)",
+    "reason_category": "standard_code"
+  },
   "costmodel.snapshot_cpi": {
     "en_value": "CPI",
     "note": "bare technical/business acronym or initialism",
@@ -288,6 +368,11 @@
     "en_value": "kg/{{unit}}",
     "note": "SI unit symbol kg kept literal in every remaining locale after bg/mn were repaired to кг/{{unit}} (both have an attested Cyrillic кг unit convention elsewhere in the same file). Verified per-locale via costs.mass_basis_kg (\"per kg\"), which every one of ar/cs/da/de/es/es-MX/fi/fr/hi/hr/id/it/ja/ko/nl/no/pl/pt/ro/sv/th/tr/vi/zh keeps as Latin kg.",
     "reason_category": "abbreviation"
+  },
+  "costs.variants_range": {
+    "en_value": "{{min}} - {{max}}",
+    "note": "placeholder-only template, identical in en/ru/kk (kk locale addition)",
+    "reason_category": "template_only"
   },
   "daily_diary.badge_360": {
     "en_value": "360",
@@ -334,6 +419,11 @@
     "note": "named open data / interchange standard or format code (CLAUDE.md: not translated)",
     "reason_category": "standard_code"
   },
+  "duration.pair": {
+    "en_value": "{{major}} {{minor}}",
+    "note": "two placeholders and one space, no translatable word; the units themselves come from the interpolated values",
+    "reason_category": "template_placeholder"
+  },
   "dwg_compare.col_delta": {
     "en_value": "Δ",
     "note": "bare symbol/punctuation glyph, not a word",
@@ -368,6 +458,11 @@
     "en_value": "WBS",
     "note": "bare technical/business acronym or initialism",
     "reason_category": "abbreviation"
+  },
+  "fieldreports.file_types": {
+    "en_value": ".xlsx, .csv",
+    "note": "File extension list, not linguistic content. ru adds «max 10MB» content not present in en - ru content drift, not a translation of the English source. Same finding independently made by loc-he for he.ts on this identical key.",
+    "reason_category": "file_path_example"
   },
   "files.approvals.col_kind": {
     "en_value": "Type",
@@ -404,6 +499,16 @@
     "note": "entirely template variables/punctuation, no literal word to translate",
     "reason_category": "template_placeholder"
   },
+  "finance.einvoice.downloadXml": {
+    "en_value": "XML",
+    "note": "bare file-format name on a download button, identical in all 39 including ru; the rest of the family is genuinely translated, and the sibling button beside it reads Hybrid PDF / Гибридный PDF / Hybrides PDF, so this is the format name standing alone rather than an untranslated label",
+    "reason_category": "acronym"
+  },
+  "fx.rate_line": {
+    "en_value": "1 {{from}} = {{rate}} {{to}}",
+    "note": "pure interpolation template, no literal text to translate (bn locale addition)",
+    "reason_category": "template_only"
+  },
   "geoHub.scene2D": {
     "en_value": "2D",
     "note": "bare technical/business acronym or initialism",
@@ -427,6 +532,11 @@
   "hse_advanced.method_swot": {
     "en_value": "SWOT",
     "note": "bare technical/business acronym or initialism",
+    "reason_category": "abbreviation"
+  },
+  "inbound_email.field_cc": {
+    "en_value": "Cc",
+    "note": "email carbon-copy header abbreviation, kept in Latin form by 35 locales; the sibling labels field_to and field_from are translated in all 39, and field_cc is translated in exactly the four locales whose script makes a Latin pair look foreign (ar, el, fa, he), so the family was translated deliberately and this one was kept on purpose",
     "reason_category": "abbreviation"
   },
   "integrations.discord": {
@@ -459,10 +569,20 @@
     "note": "REST API is a standard technical initialism",
     "reason_category": "abbreviation"
   },
+  "integrations.teams": {
+    "en_value": "Microsoft Teams",
+    "note": "third-party product name, not translated in any locale (et joins 24 siblings; module 14 et locale addition)",
+    "reason_category": "product_name"
+  },
   "integrations.zapier": {
     "en_value": "Zapier",
     "note": "brand/service name, functional interop reference",
     "reason_category": "product_name"
+  },
+  "issues.source_bcf": {
+    "en_value": "BCF",
+    "note": "open interchange format code, identical in all 29 locales including ru",
+    "reason_category": "standard_code"
   },
   "login.github": {
     "en_value": "GitHub",
@@ -483,6 +603,16 @@
     "en_value": "-",
     "note": "bare symbol/punctuation glyph, not a word",
     "reason_category": "symbol"
+  },
+  "match_elements.advisor_install_size": {
+    "en_value": "~{{mb}} MB · {{lang}}",
+    "note": "MB is a bare technical unit kept in Latin throughout he.ts (16+ established precedents e.g. costs.import_max_size, match_elements.embedder_loaded_caption), rest is template variables and punctuation (he locale addition)",
+    "reason_category": "abbreviation"
+  },
+  "match_elements.new_text.lines_placeholder": {
+    "en_value": "Stahlbetonwand C30/37, d=240mm\\nленточный фундамент 800x600\\nconcrete slab 200mm",
+    "note": "deliberately multilingual worked example (German/Russian/English lines) demonstrating the smart-paste parser handles mixed-language input; majority convention across locales (23/34, including de/fr/es/it/ar/hi/pt) keeps it byte-identical to en.ts, only a minority (ja/zh/ru/pl/mn/fil) translate it (he locale addition, confirmed via full 34-locale comparison)",
+    "reason_category": "regex_or_placeholder_pattern"
   },
   "match_elements.pipeline.llm_badge": {
     "en_value": "LLM",
@@ -523,6 +653,11 @@
     "en_value": "BIM",
     "note": "named open data / interchange standard or format code (CLAUDE.md: not translated)",
     "reason_category": "standard_code"
+  },
+  "nav.crm": {
+    "en_value": "CRM",
+    "note": "bare technical/business acronym or initialism, identical in every locale including ru (he locale addition)",
+    "reason_category": "abbreviation"
   },
   "normExpansion.mod_boq": {
     "en_value": "BOQ",
@@ -574,6 +709,21 @@
     "note": "code/title join punctuation is a locale convention (comma vs dash), not leaked text; confirmed cs/ja deliberately use \" - \" instead of \", \"",
     "reason_category": "template_placeholder"
   },
+  "notifications.transmittal.responded.body": {
+    "en_value": "{{code}} ({{title}}). {{response_summary}}",
+    "note": "template-only string, no natural-language content outside placeholders and punctuation (et locale addition)",
+    "reason_category": "template_only"
+  },
+  "pipeline.dock.progress": {
+    "en_value": "{{pct}}%",
+    "note": "placeholder-only template, identical in en/ru/kk (kk locale addition)",
+    "reason_category": "template_only"
+  },
+  "planning.link_schedule_advanced": {
+    "en_value": "Last Planner",
+    "note": "named scheduling methodology (Last Planner System), kept as its proper name like FIDIC/NEC/JCT, same as sibling schedule.intro_link_advanced (he locale addition)",
+    "reason_category": "proper_noun"
+  },
   "pointcloud.field_rgb": {
     "en_value": "RGB",
     "note": "bare technical/business acronym or initialism",
@@ -588,6 +738,41 @@
     "en_value": "ES",
     "note": "bare short acronym/initialism",
     "reason_category": "abbreviation"
+  },
+  "prefab.insights.f_ref": {
+    "en_value": "Unit",
+    "note": "id keeps 'Unit' as an established Indonesian construction loanword - corroborated in-module by prefab.new_unit[id]='Unit Baru' and prefab.field_ref[id]='Referensi unit', both already-shipped, non-baseline keys using the same bare word.",
+    "reason_category": "cognate_loanword"
+  },
+  "prefab.type_module": {
+    "en_value": "Module",
+    "note": "fr/nl 'Module' is the identical spelling in French and Dutch for a prefabricated building module - an established international modular-construction term, same pattern as the 8-locale 'Status' cognate documented in closeout/commissioning/files.approvals/review_authority/transmittals.",
+    "reason_category": "cognate_loanword"
+  },
+  "prefab.type_panel": {
+    "en_value": "Panel",
+    "note": "cs/da/es/es-MX/hr/id/no/pl/sv/tr all spell 'Panel' identically for a prefabricated wall/floor panel - corroborated by prefab.intro_body's own untranslated use of 'Panel(s)' in the same locales (non-baseline, already shipped).",
+    "reason_category": "cognate_loanword"
+  },
+  "prefab.type_pod": {
+    "en_value": "Pod",
+    "note": "da/de/id/it/nl/no/pt keep 'Pod' as an established prefab-industry loanword for a fully-finished room-sized capsule - corroborated by prefab.intro_body's own untranslated use of 'Pod(s)' in the same locales (non-baseline, already shipped).",
+    "reason_category": "cognate_loanword"
+  },
+  "prefab.type_skid": {
+    "en_value": "Skid",
+    "note": "da/id/it/no/pt/vi keep 'Skid' as an established prefab-industry loanword for a skid-mounted equipment frame - corroborated by prefab.intro_body's own untranslated use of 'skid(s)' in the same locales (non-baseline, already shipped).",
+    "reason_category": "cognate_loanword"
+  },
+  "progress.record_period": {
+    "en_value": "Period",
+    "note": "sv.ts genuinely uses \"Period\" unchanged, matching sv's own progress.col_period and 15 other Period-labeled sibling keys across the app; a Germanic cognate, not leftover English (module 13 of #182)",
+    "reason_category": "cognate_loanword"
+  },
+  "progress.record_position": {
+    "en_value": "Position",
+    "note": "de.ts genuinely uses \"Position\" unchanged, matching de's own boq.position (the value this key was grounded on) and its wider BOQ vocabulary; a Germanic/Latinate cognate, not leftover English (module 13 of #182)",
+    "reason_category": "cognate_loanword"
   },
   "project.settings.fx.no_label": {
     "en_value": "-",
@@ -654,6 +839,16 @@
     "note": "bare technical/business acronym or initialism",
     "reason_category": "abbreviation"
   },
+  "propdev.dashboards.funnel.drop_pct": {
+    "en_value": "↓ {{pct}}%",
+    "note": "template-only string, a direction glyph and a placeholder, no natural-language content (et locale addition)",
+    "reason_category": "template_only"
+  },
+  "propdev.dashboards.journey.event_label": {
+    "en_value": "{{label}} ({{state}}), {{ts}}",
+    "note": "entirely template variables and punctuation, no literal word to translate (he locale addition)",
+    "reason_category": "template_placeholder"
+  },
   "propdev.dashboards.lsa.col_cpa": {
     "en_value": "CPA",
     "note": "bare technical/business acronym or initialism",
@@ -689,10 +884,25 @@
     "note": "bare technical/business acronym or initialism",
     "reason_category": "abbreviation"
   },
+  "punch.insights.f_status": {
+    "en_value": "Status",
+    "note": "da/de/hr/id/nl/no/pl/sv - the same 8-locale Status cognate documented across closeout/commissioning/files.approvals/review_authority/transmittals/prefab/service.",
+    "reason_category": "cognate_loanword"
+  },
+  "punch.insights.f_title": {
+    "en_value": "Item",
+    "note": "id/nl/pt keep 'Item' as an identical loanword (Indonesian, Dutch and Portuguese all use the same spelling for a single list/line entry) - corroborated by the 14-sibling app-wide pool this key was grounded from.",
+    "reason_category": "cognate_loanword"
+  },
   "quantities.badge_cad": {
     "en_value": "CAD",
     "note": "named open data / interchange standard or format code (CLAUDE.md: not translated)",
     "reason_category": "standard_code"
+  },
+  "quantities.flow_ai": {
+    "en_value": "AI",
+    "note": "acronym, identical in every locale including ru (bn locale addition)",
+    "reason_category": "acronym"
   },
   "quantities.flow_cad": {
     "en_value": "CAD / BIM",
@@ -769,10 +979,25 @@
     "note": "Same established loanword and identical 8-locale set (da/de/hr/id/nl/no/pl/sv) already recorded for closeout.insights.f_status, commissioning.insights.f_status and files.approvals.insights.f_status (#182 modules 2, 3 and 4). Corroborated by 143-145 other Status-labeled keys per locale.",
     "reason_category": "cognate_loanword"
   },
+  "rfi.insights.f_subject": {
+    "en_value": "RFI",
+    "note": "universal acronym, identical in en/ru/kk (kk locale addition)",
+    "reason_category": "acronym"
+  },
   "risk.dist_pert": {
     "en_value": "PERT",
     "note": "bare technical/business acronym or initialism",
     "reason_category": "abbreviation"
+  },
+  "rulePacks.format_ifc": {
+    "en_value": "IFC",
+    "note": "open interchange format code, identical in all 29 locales including ru; sibling of rulePacks.format_hint_ifc, which is translated prose",
+    "reason_category": "standard_code"
+  },
+  "rulePacks.format_revit": {
+    "en_value": "Revit",
+    "note": "proper noun naming the third-party authoring tool whose parameter model the rule pack targets; untranslated in all 29 locales including ru. The label exists because a rule pack selects by that tool's own category and parameter names and cannot be described generically without becoming unusable. Open for a ruling on whether the screen should name a file extension instead",
+    "reason_category": "product_name"
   },
   "safety.mod_ncr": {
     "en_value": "NCR",
@@ -789,6 +1014,11 @@
     "note": "bare technical/business acronym or initialism",
     "reason_category": "abbreviation"
   },
+  "schedule.intro_link_advanced": {
+    "en_value": "Last Planner",
+    "note": "named scheduling methodology (Last Planner System), kept as its proper name like FIDIC/NEC/JCT (et joins 24 siblings; et locale addition)",
+    "reason_category": "proper_noun"
+  },
   "schedule.risk.days_short": {
     "en_value": "d",
     "note": "unit abbreviation for \"day\"; coincides in several locales whose own word for day also abbreviates to d/similar (confirmed de/ja/ru hold real distinct translations)",
@@ -803,6 +1033,21 @@
     "en_value": "Δ",
     "note": "bare symbol/punctuation glyph, not a word",
     "reason_category": "symbol"
+  },
+  "service.insights.f_status": {
+    "en_value": "Status",
+    "note": "da/de/hr/id/nl/no/pl/sv - the same 8-locale Status cognate documented across closeout/commissioning/files.approvals/review_authority/transmittals/prefab.",
+    "reason_category": "cognate_loanword"
+  },
+  "service.insights.f_ticket": {
+    "en_value": "Ticket",
+    "note": "da/de/es/es-MX/fr/it/nl/no/ro/vi keep 'Ticket' as an established IT-support-ticket loanword - deliberately kept distinct from the wrong-sense travel/event-ticket words found in service.ticket for ar/bg/cs/fi/hr/ky/mn/pl/sv/th/tr/zh (a pre-existing, non-baseline bug, flagged to team-lead separately, not fixed here) - this key's own 13 non-cognate locales were overridden away from that grounding source during this repair.",
+    "reason_category": "cognate_loanword"
+  },
+  "service.insights.k_open": {
+    "en_value": "Open tickets",
+    "note": "nl 'Open tickets' is genuine Dutch, not leaked English - both 'open' (identical Dutch/English adjective) and 'tickets' (established Dutch IT loanword, confirmed by service.tickets[nl]='Tickets') happen to be spelled identically in Dutch.",
+    "reason_category": "cognate_loanword"
   },
   "service.recurring.col_rrule": {
     "en_value": "RRULE",
@@ -823,6 +1068,16 @@
     "en_value": "GitHub",
     "note": "brand/service name, functional interop reference",
     "reason_category": "product_name"
+  },
+  "settings.einvoice.field.payee_bic": {
+    "en_value": "BIC",
+    "note": "ISO 9362 business identifier code, used as the bare acronym in all 39 including ru; sits beside the IBAN field for the same reason and the same evidence",
+    "reason_category": "acronym"
+  },
+  "settings.einvoice.field.payee_iban": {
+    "en_value": "IBAN",
+    "note": "ISO 13616 account-number standard, used as the bare acronym in all 39 including ru; the rest of the field family on the same form is genuinely translated (Account holder, Payment terms, Company name), so this is the standard's own name standing alone rather than an untranslated label",
+    "reason_category": "acronym"
   },
   "site_inventory.col_sku": {
     "en_value": "SKU",
@@ -864,10 +1119,25 @@
     "note": "named open data / interchange standard or format code (CLAUDE.md: not translated)",
     "reason_category": "standard_code"
   },
+  "takeoff_viewer.col_ordinal": {
+    "en_value": "#",
+    "note": "row-number column header, a single symbol with no word to translate",
+    "reason_category": "symbol"
+  },
+  "takeoff_viewer.suggested": {
+    "en_value": "AI",
+    "note": "acronym, not translated in any locale (et joins 24 siblings; et locale addition)",
+    "reason_category": "acronym"
+  },
   "takeoff_viewer.width_unit_px": {
     "en_value": "px",
     "note": "CSS/screen pixel unit, kept literal in every locale left in the leaked set including bg (checked: bg has no attested abbreviated Cyrillic form for pixels, only the full word пиксел elsewhere). ru's пкс is a locale-specific choice not shared by any other Cyrillic locale in this set.",
     "reason_category": "abbreviation"
+  },
+  "takt.intro_link_advanced": {
+    "en_value": "Last Planner",
+    "note": "named scheduling methodology (Last Planner System), kept as its proper name like FIDIC/NEC/JCT (et joins 24 siblings; et locale addition)",
+    "reason_category": "proper_noun"
   },
   "tasks.insights.f_status": {
     "en_value": "Status",
@@ -919,6 +1189,11 @@
     "note": "named open data / interchange standard or format code (CLAUDE.md: not translated)",
     "reason_category": "standard_code"
   },
+  "webhook_leads.slug": {
+    "en_value": "Slug (a-z0-9-_)",
+    "note": "regex-shape field hint (a-z0-9-_ character class), identical in ru.ts too - technical pattern notation, not prose",
+    "reason_category": "regex_or_placeholder_pattern"
+  },
   "webhook_targets.url": {
     "en_value": "URL",
     "note": "bare technical/business acronym or initialism",
@@ -929,114 +1204,9 @@
     "note": "named open data / interchange standard or format code (CLAUDE.md: not translated)",
     "reason_category": "standard_code"
   },
-  "prefab.insights.f_ref": {
-    "en_value": "Unit",
-    "note": "id keeps 'Unit' as an established Indonesian construction loanword - corroborated in-module by prefab.new_unit[id]='Unit Baru' and prefab.field_ref[id]='Referensi unit', both already-shipped, non-baseline keys using the same bare word.",
-    "reason_category": "cognate_loanword"
-  },
-  "prefab.type_module": {
-    "en_value": "Module",
-    "note": "fr/nl 'Module' is the identical spelling in French and Dutch for a prefabricated building module - an established international modular-construction term, same pattern as the 8-locale 'Status' cognate documented in closeout/commissioning/files.approvals/review_authority/transmittals.",
-    "reason_category": "cognate_loanword"
-  },
-  "prefab.type_panel": {
-    "en_value": "Panel",
-    "note": "cs/da/es/es-MX/hr/id/no/pl/sv/tr all spell 'Panel' identically for a prefabricated wall/floor panel - corroborated by prefab.intro_body's own untranslated use of 'Panel(s)' in the same locales (non-baseline, already shipped).",
-    "reason_category": "cognate_loanword"
-  },
-  "prefab.type_pod": {
-    "en_value": "Pod",
-    "note": "da/de/id/it/nl/no/pt keep 'Pod' as an established prefab-industry loanword for a fully-finished room-sized capsule - corroborated by prefab.intro_body's own untranslated use of 'Pod(s)' in the same locales (non-baseline, already shipped).",
-    "reason_category": "cognate_loanword"
-  },
-  "prefab.type_skid": {
-    "en_value": "Skid",
-    "note": "da/id/it/no/pt/vi keep 'Skid' as an established prefab-industry loanword for a skid-mounted equipment frame - corroborated by prefab.intro_body's own untranslated use of 'skid(s)' in the same locales (non-baseline, already shipped).",
-    "reason_category": "cognate_loanword"
-  },
-  "service.insights.f_status": {
-    "en_value": "Status",
-    "note": "da/de/hr/id/nl/no/pl/sv - the same 8-locale Status cognate documented across closeout/commissioning/files.approvals/review_authority/transmittals/prefab.",
-    "reason_category": "cognate_loanword"
-  },
-  "service.insights.f_ticket": {
-    "en_value": "Ticket",
-    "note": "da/de/es/es-MX/fr/it/nl/no/ro/vi keep 'Ticket' as an established IT-support-ticket loanword - deliberately kept distinct from the wrong-sense travel/event-ticket words found in service.ticket for ar/bg/cs/fi/hr/ky/mn/pl/sv/th/tr/zh (a pre-existing, non-baseline bug, flagged to team-lead separately, not fixed here) - this key's own 13 non-cognate locales were overridden away from that grounding source during this repair.",
-    "reason_category": "cognate_loanword"
-  },
-  "service.insights.k_open": {
-    "en_value": "Open tickets",
-    "note": "nl 'Open tickets' is genuine Dutch, not leaked English - both 'open' (identical Dutch/English adjective) and 'tickets' (established Dutch IT loanword, confirmed by service.tickets[nl]='Tickets') happen to be spelled identically in Dutch.",
-    "reason_category": "cognate_loanword"
-  },
-  "punch.insights.f_status": {
-    "en_value": "Status",
-    "note": "da/de/hr/id/nl/no/pl/sv - the same 8-locale Status cognate documented across closeout/commissioning/files.approvals/review_authority/transmittals/prefab/service.",
-    "reason_category": "cognate_loanword"
-  },
-  "punch.insights.f_title": {
-    "en_value": "Item",
-    "note": "id/nl/pt keep 'Item' as an identical loanword (Indonesian, Dutch and Portuguese all use the same spelling for a single list/line entry) - corroborated by the 14-sibling app-wide pool this key was grounded from.",
-    "reason_category": "cognate_loanword"
-  },
-  "assemblies.std_din276": {
-    "en_value": "DIN 276",
-    "note": "cost classification standard, cited by its published designation in all 29 locales including ru (CLAUDE.md: standards are not translated)",
-    "reason_category": "standard_code"
-  },
-  "assemblies.std_masterformat": {
-    "en_value": "MasterFormat",
-    "note": "cost classification standard, cited by its published designation in all 29 locales including ru",
-    "reason_category": "standard_code"
-  },
-  "assemblies.std_nrm": {
-    "en_value": "NRM",
-    "note": "cost classification standard (New Rules of Measurement), cited by its published designation in all 29 locales including ru",
-    "reason_category": "standard_code"
-  },
-  "assemblies.std_uniclass": {
-    "en_value": "Uniclass",
-    "note": "cost classification standard, cited by its published designation in all 29 locales including ru",
-    "reason_category": "standard_code"
-  },
-  "assemblies.std_uniformat": {
-    "en_value": "UniFormat",
-    "note": "cost classification standard, cited by its published designation in all 29 locales including ru",
-    "reason_category": "standard_code"
-  },
-  "issues.source_bcf": {
-    "en_value": "BCF",
-    "note": "open interchange format code, identical in all 29 locales including ru",
-    "reason_category": "standard_code"
-  },
-  "rulePacks.format_ifc": {
-    "en_value": "IFC",
-    "note": "open interchange format code, identical in all 29 locales including ru; sibling of rulePacks.format_hint_ifc, which is translated prose",
-    "reason_category": "standard_code"
-  },
-  "rulePacks.format_revit": {
-    "en_value": "Revit",
-    "note": "proper noun naming the third-party authoring tool whose parameter model the rule pack targets; untranslated in all 29 locales including ru. The label exists because a rule pack selects by that tool's own category and parameter names and cannot be described generically without becoming unusable. Open for a ruling on whether the screen should name a file extension instead",
-    "reason_category": "product_name"
-  },
-  "duration.pair": {
-    "en_value": "{{major}} {{minor}}",
-    "note": "two placeholders and one space, no translatable word; the units themselves come from the interpolated values",
-    "reason_category": "template_placeholder"
-  },
-  "takeoff_viewer.col_ordinal": {
-    "en_value": "#",
-    "note": "row-number column header, a single symbol with no word to translate",
+  "costmodel.benchmark_area_value": {
+    "en_value": "{{area}} m²",
+    "note": "m² is a universal Latin SI symbol; fa keeps it in Latin form consistently (daily_diary.area_m2, boq.area_m2, etc.). ru only differs by using Cyrillic м², not a real translation need.",
     "reason_category": "symbol"
-  },
-  "carbon.framework_gri": {
-    "en_value": "GRI",
-    "note": "acronym of the Global Reporting Initiative, the standards body itself; identical in all 28 locales including ru, ja, zh and ar",
-    "reason_category": "standard_code"
-  },
-  "carbon.framework_issb": {
-    "en_value": "ISSB",
-    "note": "acronym of the International Sustainability Standards Board, the standards body itself; identical in all 28 locales including ru, ja, zh and ar",
-    "reason_category": "standard_code"
   }
 }

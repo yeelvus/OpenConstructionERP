@@ -63,8 +63,8 @@ const playbook: Playbook = {
       whyKey: "cases.assemble_the_om_handover_manual.step.collect.why",
       whyDefault:
         "The operator will run the building from these documents for years. An as-built that still shows the design intent, not what the trades actually fitted, sends a maintenance team to the wrong valve on the wrong floor.",
-      moduleLabel: "Project files",
-      moduleLabelKey: "nav.project_files",
+      moduleLabel: "Documents",
+      moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },
     {

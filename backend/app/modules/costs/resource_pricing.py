@@ -34,9 +34,24 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
+from app.core.events import event_bus
 from app.modules.costs.models import CostItem, ResourcePrice
 
 logger = logging.getLogger(__name__)
+
+
+async def _safe_publish(name: str, data: dict[str, Any], source_module: str = "") -> None:
+    """Publish without letting a bus failure fail the reprice that succeeded.
+
+    Same shape as the one in ``costs.service``, kept local rather than imported
+    so this module keeps its one-way dependency on the models and does not start
+    importing the service that sits above it.
+    """
+    try:
+        event_bus.publish_detached(name, data, source_module=source_module)
+    except Exception:
+        logger.debug("Event publish skipped: %s", name)
+
 
 # A resource line seeded from a base is treated as "priced" only above this
 # threshold, so a stray 0.00 on one variant row never masks a real price seen
@@ -563,6 +578,28 @@ class ResourcePriceService:
 
         if not dry_run:
             await self.session.commit()
+            # Announce the reprice so the assemblies subscriber can pull the new
+            # rates through. Without this the rates moved and every assembly
+            # built on them kept its own copy, so a repriced region never
+            # reached a budget - the one path of the three that write
+            # CostItem.rate which published nothing.
+            #
+            # One event for the region, not one per item: the cap on a single
+            # run is 250 000 items, and that many detached tasks each opening
+            # its own session is a different outage. The subscriber joins
+            # Component to CostItem on region instead, which is bounded by how
+            # many components exist rather than by how many prices moved.
+            #
+            # Published after the commit, deliberately. The subscriber reads the
+            # rate back through its own session, so publishing before the commit
+            # is a race it can lose, and losing it means writing the old rate
+            # back over the new one.
+            if result.items_changed:
+                await _safe_publish(
+                    "costs.region.repriced",
+                    {"region": region, "items_changed": result.items_changed},
+                    source_module="oe_costs",
+                )
         logger.info(
             "Repriced %s: %d/%d items (%d changed, %d fully, %d partial, %d unpriced)%s",
             region,

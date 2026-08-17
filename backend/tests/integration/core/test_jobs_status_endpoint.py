@@ -27,7 +27,7 @@ pytest.importorskip("celery")
 
 from app.core.job_runner import register_handler, submit_job, unregister_handler  # noqa: E402
 from app.core.jobs import get_celery_app  # noqa: E402
-from app.dependencies import get_current_user_id  # noqa: E402
+from app.dependencies import get_current_user_id, get_current_user_payload  # noqa: E402
 from app.modules.jobs.router import router as jobs_router  # noqa: E402
 
 
@@ -58,9 +58,19 @@ async def client(session_factory):
     app = FastAPI()
     app.include_router(jobs_router, prefix="/api/v1/jobs", tags=["Background Jobs"])
 
-    # POST /cancel now requires authentication — override the dep so the
-    # tests don't need to mint real JWTs against the test app.
+    # Every route on this router requires authentication, and all four are
+    # role-gated (RequireRole("admin") in app/modules/jobs/router.py). That
+    # check resolves the caller via get_current_user_payload, not
+    # get_current_user_id — overriding only the latter leaves the role check
+    # hitting the real dependency and failing auth (401) before a test ever
+    # reaches the handler body. Override both so tests don't need to mint
+    # real JWTs or satisfy the role check separately.
     app.dependency_overrides[get_current_user_id] = lambda: "00000000-0000-0000-0000-000000000001"
+    app.dependency_overrides[get_current_user_payload] = lambda: {
+        "sub": "00000000-0000-0000-0000-000000000001",
+        "role": "admin",
+        "permissions": ["admin"],
+    }
 
     with patch("app.modules.jobs.router._get_session_factory", return_value=session_factory):
         transport = ASGITransport(app=app)

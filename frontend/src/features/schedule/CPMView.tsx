@@ -10,7 +10,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, Layers, AlertTriangle, X } from 'lucide-react';
 import { Button, Card, Badge, Breadcrumb, DismissibleInfo, IntroRichText } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
-import { apiGet, apiPost, getErrorMessage } from '@/shared/lib/api';
+import { apiGet, apiPost, getErrorMessage, type Page } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
@@ -80,7 +80,9 @@ export function CPMView({ scheduleId }: CPMViewProps) {
   const activitiesQuery = useQuery<ActivityRow[]>({
     queryKey: ['schedule', scheduleId, 'activities'],
     queryFn: () =>
-      apiGet<ActivityRow[]>(`/v1/schedule/schedules/${scheduleId}/activities/`),
+      apiGet<Page<ActivityRow>>(`/v1/schedule/schedules/${scheduleId}/activities/`).then(
+        (page) => page.items,
+      ),
     enabled: Boolean(scheduleId),
   });
 

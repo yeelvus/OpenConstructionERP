@@ -141,6 +141,53 @@ COUNTRY_REGIMES: dict[str, CountryRegime] = {
         correction_mechanism="cancellation inside the SEFAZ window, otherwise a carta de correcao",
         notes="Authorisation is per state. The chave de acesso encodes the state, the issuer and the document.",
     ),
+    "CL": CountryRegime(
+        country="CL",
+        regime=REGIME_CLEARANCE,
+        platform="DTE via SII",
+        label="Chile - DTE with a folio authorised by the SII",
+        identifier_label="folio (from the CAF range)",
+        document_format="dte_sii",
+        profile_fields=("tax_registration_id", "certificate_reference"),
+        document_fields=("rut_issuer", "rut_receiver", "tipo_dte", "caf_reference"),
+        # The SII accepts no cancellation of an issued DTE. The correction is a
+        # nota de credito, which is a document of its own with its own folio and
+        # its own accounting, so it must not be recorded as a late cancellation.
+        cancellation_window_days=None,
+        correction_mechanism="nota de credito, itself a DTE with its own folio",
+        notes=(
+            "Folios are drawn in advance: the issuer requests a range from the SII as a CAF file "
+            "and stamps each document from it, so a submission can fail for having no folios left "
+            "rather than for anything wrong with the invoice. The buyer's window to reject runs "
+            "from receipt, and an invoice that passes it becomes enforceable in its own right, "
+            "which is why the acknowledgement date matters as much as the clearance."
+        ),
+    ),
+    "CO": CountryRegime(
+        country="CO",
+        regime=REGIME_CLEARANCE,
+        platform="Facturacion electronica via DIAN",
+        label="Colombia - invoice validated by the DIAN before it is delivered",
+        identifier_label="CUFE",
+        document_format="ubl_dian",
+        profile_fields=("tax_registration_id", "certificate_reference"),
+        document_fields=("nit_issuer", "nit_receiver", "resolucion_number", "prefix"),
+        # An issued electronic invoice is not cancelled in Colombia. The
+        # correction is a nota credito, itself an electronic document with its
+        # own CUFE, so recording it as a late cancellation would lose the link
+        # between the two documents that the DIAN expects to see.
+        cancellation_window_days=None,
+        correction_mechanism="nota credito, itself an electronic document with its own CUFE",
+        notes=(
+            "Validacion previa: the invoice goes to the DIAN and comes back validated before it "
+            "reaches the buyer, so the CUFE is what makes it an invoice at all rather than a "
+            "receipt for one. Numbering is not the issuer's own - a resolucion de facturacion "
+            "grants a prefix and a range with an expiry date, and a submission fails for an "
+            "exhausted or expired range without anything being wrong with the invoice itself. "
+            "Worth pairing with the colombia_aiu methodology, where IVA falls on the utilidad "
+            "alone and the invoice has to show that split rather than one taxed total."
+        ),
+    ),
     "IT": CountryRegime(
         country="IT",
         regime=REGIME_CLEARANCE,

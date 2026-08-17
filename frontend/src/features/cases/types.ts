@@ -45,6 +45,25 @@ export interface StepFlowItem {
  * sidebar/nav key (e.g. `boq.title`) so the chip is localized for free;
  * when omitted the plain `moduleLabel` renders.
  *
+ * The two are a pair and must name the same module. Only the key is
+ * translated, so `moduleLabel` decides what an English reader sees and
+ * `moduleLabelKey` decides what everyone else sees. A step carrying
+ * `moduleLabel: "Files"` next to `moduleLabelKey: "nav.documents"` reads as
+ * Files in English and as the word for Documents in the other 27 languages,
+ * and no locale gate can see it, because nothing is untranslated.
+ *
+ * Correcting one side alone is worse than leaving both wrong. The marketing
+ * case pages copy this chip into the module honeycomb by matching the label
+ * text, so a fixed label next to a stale key starts matching and carries the
+ * wrong translation to more cells than before, while reading in review as the
+ * fix working.
+ *
+ * A short label is not a local choice either. `moduleLabel: "BOQ"` with
+ * `moduleLabelKey: "boq.title"` renders BOQ in English and "Bill of
+ * Quantities" in every other language, because the key decides and the label
+ * is only the English fallback. Choose the key whose value you want read
+ * aloud, not the one whose name looks closest to the label.
+ *
  * `spotlightSelector` is an optional CSS selector reserved for a future
  * in-module highlight (it mirrors ModuleGuide's spotlight contract). It is
  * carried on the model now so data files can declare it without a later

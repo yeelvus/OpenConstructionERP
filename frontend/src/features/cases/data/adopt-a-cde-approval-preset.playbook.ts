@@ -105,6 +105,7 @@ const playbook: Playbook = {
       whyDefault:
         "A preset is a starting point, not a straitjacket. The dry run proves your tailored route still terminates at approved before it gates a real container.",
       moduleLabel: "Approval routes",
+      moduleLabelKey: "approvalRoutes.title",
       to: "/approval-routes",
     },
     {

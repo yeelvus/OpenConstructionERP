@@ -33,6 +33,14 @@
     "approved_immutable": {
       "fail": "Dieser Stundenzettel ist {status} und kann nicht bearbeitet werden",
       "suggestion": "Einen stornierenden Stundenzettel buchen, um genehmigte Stunden zu korrigieren"
+    },
+    "offline_clock_plausible": {
+      "fail": "Das Gerät, das diesen Tag erfasst hat, ging {minutes} Minuten gegenüber der Serverzeit vor",
+      "suggestion": "Die Uhr des Geräts stellen, damit erfasste Zeiten in der richtigen Reihenfolge lesbar sind"
+    },
+    "offline_sync_delay": {
+      "fail": "Dieser Tag wurde am {date} gearbeitet und erreichte das Büro erst {days} Tage später",
+      "suggestion": "Die Stunden vor der Genehmigung gegen den Tag selbst prüfen, die Abrechnung kann bereits geschlossen sein"
     }
   },
   "ai_takeoff": {

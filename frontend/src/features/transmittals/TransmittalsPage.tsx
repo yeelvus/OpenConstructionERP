@@ -39,6 +39,7 @@ import {
   CollapsibleSection,
 } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { apiGet } from '@/shared/lib/api';
@@ -1086,7 +1087,7 @@ export function TransmittalsPage() {
     projects.find((p) => p.id === selectedProjectId)?.name || '';
 
   const {
-    data: transmittals = [],
+    data: transmittalPage,
     isLoading,
     isError,
     error,
@@ -1100,6 +1101,7 @@ export function TransmittalsPage() {
       }),
     enabled: !!projectId,
   });
+  const transmittals = transmittalPage?.items ?? [];
 
   // Client-side search
   const filtered = useMemo(() => {
@@ -1494,6 +1496,7 @@ export function TransmittalsPage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       {/* Toolbar */}
@@ -1642,6 +1645,14 @@ export function TransmittalsPage() {
               ))}
             </Card>
           </>
+        )}
+
+        {/* Outside the branch above on purpose. The count inside it reports
+            what the search left on screen; this reports whether the read
+            reached the end of the register, and a search that matched nothing
+            here is exactly when the reader needs to be told it did not. */}
+        {!isLoading && !isError && transmittalPage && (
+          <TruncationNotice page={transmittalPage} className="mt-3" />
         )}
       </div>
 

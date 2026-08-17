@@ -317,6 +317,27 @@ class FieldTodayResponse(BaseModel):
     server_time: str
 
 
+class FieldCrewMemberResponse(BaseModel):
+    """One person the phone can name instead of typing.
+
+    A punch captured against a typed name cannot be reconciled with the
+    desktop timesheet, because the reconciliation matches on ``resource_id``
+    and a name is not one. The same person then counts twice for the same day,
+    once from each side, and nothing on either screen says so. Picking from
+    this list carries the id, and the existing reconciliation does the rest.
+
+    Deliberately thin. It is served to a PIN-authenticated phone, so it says
+    who somebody is and nothing about what they cost.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    code: str = ""
+    resource_type: str = "person"
+
+
 __all__ = [
     "ACTIVITY_TYPES",
     "DIARY_STATUSES",
@@ -342,4 +363,5 @@ __all__ = [
     "FieldSyncBatch",
     "FieldSyncOpResponse",
     "FieldTodayResponse",
+    "FieldCrewMemberResponse",
 ]

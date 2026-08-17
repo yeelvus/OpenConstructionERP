@@ -115,8 +115,8 @@ def _readable_pdf(inv: EInvoice) -> bytes:
         c.drawString(left, ry, (ln.name or "-")[:60])
         c.drawRightString(left + 95 * mm, ry, _num(ln.quantity))
         c.drawString(left + 100 * mm, ry, (ln.unit or "")[:8])
-        c.drawRightString(left + 140 * mm, ry, _money(ln.net_unit_price))
-        c.drawRightString(width - 20 * mm, ry, _money(ln.line_net_amount))
+        c.drawRightString(left + 140 * mm, ry, _money(ln.net_unit_price, inv.currency))
+        c.drawRightString(width - 20 * mm, ry, _money(ln.line_net_amount, inv.currency))
         ry -= 5 * mm
         if ry < 40 * mm:  # keep it one page for the v1 layout
             break
@@ -130,7 +130,7 @@ def _readable_pdf(inv: EInvoice) -> bytes:
         nonlocal ry
         c.setFont("Helvetica-Bold" if bold else "Helvetica", 9)
         c.drawRightString(left + 140 * mm, ry, label)
-        c.drawRightString(width - 20 * mm, ry, f"{_money(amount)} {inv.currency}")
+        c.drawRightString(width - 20 * mm, ry, f"{_money(amount, inv.currency)} {inv.currency}")
         ry -= 5 * mm
 
     total_row("Net total", inv.tax_basis_total)
@@ -139,6 +139,21 @@ def _readable_pdf(inv: EInvoice) -> bytes:
     if inv.prepaid_amount:
         total_row("Retention / prepaid", inv.prepaid_amount)
     total_row("Amount due", inv.due_payable, bold=True)
+
+    # Where to pay. The embedded XML carries BT-84 for the buyer's software;
+    # a person reading the page needs to see the same account.
+    if inv.payee_iban:
+        ry -= 4 * mm
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(left, ry, "Payment")
+        c.setFont("Helvetica", 8)
+        ry -= 5 * mm
+        c.drawString(left, ry, f"IBAN: {inv.payee_iban}")
+        if inv.payee_bic:
+            c.drawString(left + 70 * mm, ry, f"BIC: {inv.payee_bic}")
+        if inv.payee_account_name:
+            ry -= 5 * mm
+            c.drawString(left, ry, f"Account holder: {inv.payee_account_name}")
 
     c.setFont("Helvetica-Oblique", 7)
     c.setFillColor(colors.grey)
@@ -203,7 +218,12 @@ def _embed_cii(pdf_bytes: bytes, xml_bytes: bytes, profile_name: str) -> bytes:
     filespec[NameObject("/Type")] = NameObject("/Filespec")
     filespec[NameObject("/F")] = create_string_object(_ATTACHMENT_NAME)
     filespec[NameObject("/UF")] = create_string_object(_ATTACHMENT_NAME)
-    filespec[NameObject("/AFRelationship")] = NameObject("/Data")
+    # /Alternative, not /Data: Factur-X 1.0 and ZUGFeRD 2.1 both require it,
+    # because the XML is another rendering of the same invoice rather than a
+    # supplement to it. A receiver that selects associated files by
+    # relationship finds nothing under /Data, and the failure is silent: the
+    # attachment is still present, still named correctly, and still parses.
+    filespec[NameObject("/AFRelationship")] = NameObject("/Alternative")
     filespec[NameObject("/Desc")] = create_string_object("Factur-X/ZUGFeRD invoice")
     ef_dict = DictionaryObject()
     ef_dict[NameObject("/F")] = ef_ref

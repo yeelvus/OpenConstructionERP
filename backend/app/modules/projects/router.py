@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import CurrentUserId, CurrentUserPayload, RequireRole, SessionDep, SettingsDep
@@ -1787,11 +1787,23 @@ async def project_dashboard(
                     select(func.count(Requirement.id)).where(Requirement.requirement_set_id.in_(req_set_ids))
                 )
             ).scalar_one()
+            # Linked through either representation. A requirement governs work,
+            # plural, so the link table is the general answer and the single
+            # column is the one a caller wrote before that table existed.
+            # Counting only the column would make this figure fall as people
+            # move to the newer attachment, which is the opposite of the truth.
+            from app.modules.requirements.models import RequirementPositionLink
+
             linked_count = (
                 await session.execute(
                     select(func.count(Requirement.id)).where(
                         Requirement.requirement_set_id.in_(req_set_ids),
-                        Requirement.linked_position_id.isnot(None),
+                        or_(
+                            Requirement.linked_position_id.isnot(None),
+                            select(RequirementPositionLink.id)
+                            .where(RequirementPositionLink.requirement_id == Requirement.id)
+                            .exists(),
+                        ),
                     )
                 )
             ).scalar_one()

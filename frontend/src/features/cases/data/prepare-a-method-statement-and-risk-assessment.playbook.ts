@@ -230,8 +230,8 @@ const playbook: Playbook = {
         "cases.prepare_a_method_statement_and_risk_assessment.step.available.why",
       whyDefault:
         "A RAMS locked in an office does not protect anyone. Having the current version on site, briefed to the crew, is what makes it a working document and proves the work was planned safely.",
-      moduleLabel: "Project files",
-      moduleLabelKey: "nav.project_files",
+      moduleLabel: "Documents",
+      moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },
   ],

@@ -62,6 +62,7 @@ import {
   FileSearch,
   HardDrive,
   Mailbox,
+  Inbox,
   Link2,
   Timer,
   Truck,
@@ -71,6 +72,8 @@ import {
   FileSignature,
   Briefcase,
   Scale,
+  Percent,
+  Stamp,
   GitBranch,
   Building2,
   ShoppingCart,
@@ -166,8 +169,13 @@ export interface NavGroup {
 // the active route auto-expands; per-group open/closed state persists
 // to localStorage (see COLLAPSED_KEY).
 //
-// Source-of-truth audit: every `to` here is cross-checked against
-// `App.tsx` <Route path="…"/> entries — no broken links. Two routes the
+// Source-of-truth audit: every `to` here is cross-checked against both places
+// a route can come from, the `App.tsx` <Route path="…"/> list and the manifests
+// under `src/modules`, which `ModuleRoutes` mounts only while their module is
+// enabled. Checking App.tsx alone reports the module-owned screens as broken
+// links when they are not, so `navCatalog.test.ts` reads both and also asserts
+// that a row whose screen only a module provides names that module in
+// `moduleKey` — without it the row outlives its own route. Two routes the
 // old flat menu had dropped (`/benchmarks` Cost Benchmarks, and
 // `/collaboration`) are re-surfaced here, along with the module-registry
 // surface that never had a sidebar home because its manifest declared a
@@ -200,11 +208,19 @@ export const navGroups: NavGroup[] = [
       // Overview so the "learn by example" entry is discoverable from the top,
       // and above Project files so the "learn by example" entry is seen first.
       { labelKey: 'nav.cases', to: '/cases', icon: Route },
-      // Project files is back in Overview by founder request. It carries no
+      // Documents is back in Overview by founder request. It carries no
       // hideInSimple and no advancedOnly, which is what keeps it reachable in
       // Simple mode; the sheet register and the drawing surfaces stay behind
       // in Drawings & Files, which now sits below Estimating.
-      { labelKey: 'nav.project_files', to: '/files', icon: HardDrive },
+      //
+      // This module is named Documents everywhere, by founder ruling. Three
+      // keys that used to name it are now unreferenced and are kept on
+      // purpose: 'nav.project_files', 'files.title' and
+      // 'files.approvals.mod_files'. Each carries a real translated value in
+      // all 40 locales, so deleting them to satisfy an orphan sweep trades a
+      // harmless unused key for a wide blast radius. Retire them only
+      // together with a decision about the name itself.
+      { labelKey: 'nav.documents', to: '/files', icon: HardDrive },
     ],
   },
   // ── 2. TAKEOFF ─────────────────────────────────────────────────────
@@ -241,6 +257,8 @@ export const navGroups: NavGroup[] = [
       { labelKey: 'catalog.title', to: '/catalog', icon: Boxes },
       { labelKey: 'nav.cost_explorer', to: '/cost-explorer', icon: Compass },
       { labelKey: 'nav.assemblies', to: '/assemblies', icon: Layers },
+      { labelKey: 'nav.cost_match', to: '/cost-match', icon: Link2 },
+      { labelKey: 'nav.fx', to: '/fx', icon: Wallet },
       { labelKey: 'nav.benchmarks', to: '/benchmarks', icon: BarChart3, moduleKey: 'cost-benchmark', advancedOnly: true },
     ],
   },
@@ -257,7 +275,7 @@ export const navGroups: NavGroup[] = [
       { labelKey: 'nav.match_elements', to: '/match-elements', icon: Link2, badge: 'BETA' },
       { labelKey: 'nav.estimation_dashboard', to: '/project-intelligence', icon: BrainCircuit },
       { labelKey: 'nav.rom_estimate', to: '/rom-estimate', icon: Gauge },
-      { labelKey: 'nav.methodologies', to: '/methodologies', icon: SlidersHorizontal },
+      { labelKey: 'nav.methodologies', to: '/methodologies', icon: SlidersHorizontal, moduleKey: 'methodology' },
     ],
   },
   // ── 4b. DRAWINGS & FILES ───────────────────────────────────────────
@@ -365,6 +383,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { labelKey: 'nav.5d_cost_model', to: '/5d', icon: TrendingUp, moduleKey: '5d', advancedOnly: true },
       { labelKey: 'nav.progress', to: '/progress', icon: Activity, advancedOnly: true },
+      { labelKey: 'nav.full_evm', to: '/full-evm', icon: LineChart, advancedOnly: true },
       { labelKey: 'nav.capacity_planning', to: '/portfolio/capacity', icon: CalendarRange, advancedOnly: true },
       { labelKey: 'nav.resource_leveling', to: '/portfolio/leveling', icon: Scale, advancedOnly: true },
       { labelKey: 'nav.risk_register', to: '/risks', icon: ShieldAlert, advancedOnly: true },
@@ -395,6 +414,9 @@ export const navGroups: NavGroup[] = [
     items: [
       { labelKey: 'nav.crm', to: '/crm', icon: Briefcase, advancedOnly: true },
       { labelKey: 'nav.contracts', to: '/contracts', icon: FileSignature },
+      { labelKey: 'nav.payment_clock', to: '/payment-clock', icon: Scale },
+      { labelKey: 'nav.tax_withholding', to: '/tax-withholding', icon: Percent },
+      { labelKey: 'nav.einvoice_clearance', to: '/einvoice-clearance', icon: Stamp },
       { labelKey: 'nav.subcontractors', to: '/subcontractors', icon: HardHat, advancedOnly: true },
     ],
   },
@@ -511,6 +533,7 @@ export const navGroups: NavGroup[] = [
         advancedOnly: true,
         adminOnly: true,
       },
+      { labelKey: 'nav.inbound_email', to: '/inbound-email', icon: Inbox, advancedOnly: true },
       { labelKey: 'nav.find_records', to: '/find', icon: FileSearch, advancedOnly: true },
       { labelKey: 'project_route.title', to: '/project-route', icon: SlidersHorizontal, advancedOnly: true },
     ],
@@ -812,6 +835,10 @@ export const navGroups: NavGroup[] = [
       { labelKey: 'nav.ai_advisor', to: '/advisor', icon: MessageSquare },
       { labelKey: 'nav.erp_chat', to: '/chat', icon: MessageSquare },
       { labelKey: 'nav.pipelines', to: '/pipelines', icon: GitBranch, moduleKey: 'pipelines', advancedOnly: true, badge: 'BETA' },
+      // The register of modules built on this instance. Readable by anyone, so
+      // no role gate here: the build and remove controls on the page are what
+      // an administrator sees and what the server enforces.
+      { labelKey: 'nav.module_builder', to: '/module-builder', icon: Wand2, advancedOnly: true },
     ],
   },
   // ── REGIONAL EXCHANGE (setup-only, dynamic) ────────────────────────

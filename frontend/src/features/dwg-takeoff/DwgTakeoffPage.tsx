@@ -3493,262 +3493,277 @@ export function DwgTakeoffPage() {
                 onCancel={handleCalibrationCancel}
               />
 
-              {/* Floating ToolPalette - top-left corner, above the canvas.
-                  Lives here (not in a fixed header bar) so the drawing gets
-                  the full viewport height and tools stay visually attached
-                  to the thing they act on. */}
-              {/* pointer-events-none on the strip, auto on each group: with
-                  three groups the row wraps on a narrow viewer, and an empty
-                  transparent box beside the second row would swallow clicks
-                  meant for the drawing under it. */}
-              <div className="absolute top-3 left-3 z-10 flex flex-wrap items-start gap-2 max-w-[calc(100%-1.5rem)] pointer-events-none">
-                <div className="pointer-events-auto rounded-lg border border-white/60 bg-white/85 dark:bg-white/90 backdrop-blur-md shadow-xl shadow-black/30 ring-1 ring-black/5">
-                  <ToolPalette
-                    activeTool={activeTool}
-                    onToolChange={setActiveTool}
-                    activeColor={activeColor}
-                    onColorChange={setActiveColor}
-                  />
-                </div>
+              {/* One row across the top of the viewer: the drawing tools at the
+                  left end, the page-level actions at the right end.
+                  These were two independent absolutely-positioned strips, and
+                  the left one was allowed to grow to the full width. On a viewer
+                  narrower than the two of them together, that put the text-size
+                  control straight under the "How it works" and "Cases" pills,
+                  which is what a tester hit on a real sheet. Sharing one flex row
+                  makes the collision impossible rather than unlikely: the left
+                  group can only grow into space the right group is not using, and
+                  wraps within its own share instead of crossing over.
+                  pointer-events-none on the row, auto on each group. The row now
+                  spans the full width, so its empty middle would otherwise
+                  swallow clicks meant for the drawing underneath - and the right
+                  group needs the opt-in explicitly, because it did not sit under
+                  a pointer-events-none parent before. */}
+              <div className="pointer-events-none absolute inset-x-3 top-3 z-10 flex items-start justify-between gap-3">
+                {/* Floating ToolPalette. Lives here rather than in a fixed header
+                    bar so the drawing gets the full viewport height and the tools
+                    stay visually attached to the thing they act on. Each group
+                    inside re-enables pointer events for itself: with three groups
+                    the row wraps on a narrow viewer, and an empty transparent box
+                    beside the second row would swallow clicks. */}
+                <div className="pointer-events-none flex min-w-0 flex-wrap items-start gap-2">
+                  <div className="pointer-events-auto rounded-lg border border-white/60 bg-white/85 dark:bg-white/90 backdrop-blur-md shadow-xl shadow-black/30 ring-1 ring-black/5">
+                    <ToolPalette
+                      activeTool={activeTool}
+                      onToolChange={setActiveTool}
+                      activeColor={activeColor}
+                      onColorChange={setActiveColor}
+                    />
+                  </div>
 
-                {/* Q1 UX #2 + #4: Undo / redo + snap-mode menu. Sit next
-                    to the tool palette so tool + history + snap controls
-                    are all reachable without leaving the top-left. */}
-                <div
-                  className="pointer-events-auto flex items-center gap-1 rounded-lg border border-white/60 bg-white/85 dark:bg-white/90 backdrop-blur-md px-1.5 py-1 shadow-xl shadow-black/30 ring-1 ring-black/5"
-                  data-testid="dwg-history-bar"
-                >
-                  <button
-                    type="button"
-                    onClick={handleUndo}
-                    disabled={!canUndoFn(undoState)}
-                    data-testid="dwg-undo"
-                    title={t('dwg_takeoff.undo', { defaultValue: 'Undo (Ctrl+Z)' })}
-                    aria-label={t('dwg_takeoff.undo_aria', { defaultValue: 'Undo' })}
-                    className={clsx(
-                      'flex h-7 w-7 items-center justify-center rounded-md transition-colors',
-                      canUndoFn(undoState)
-                        ? 'text-slate-800 hover:bg-slate-100'
-                        : 'text-slate-300 cursor-not-allowed',
-                    )}
+                  {/* Q1 UX #2 + #4: Undo / redo + snap-mode menu. Sit next
+                      to the tool palette so tool + history + snap controls
+                      are all reachable without leaving the top-left. */}
+                  <div
+                    className="pointer-events-auto flex items-center gap-1 rounded-lg border border-white/60 bg-white/85 dark:bg-white/90 backdrop-blur-md px-1.5 py-1 shadow-xl shadow-black/30 ring-1 ring-black/5"
+                    data-testid="dwg-history-bar"
                   >
-                    <Undo2 size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleRedo}
-                    disabled={!canRedoFn(undoState)}
-                    data-testid="dwg-redo"
-                    title={t('dwg_takeoff.redo', {
-                      defaultValue: 'Redo (Ctrl+Y / Ctrl+Shift+Z)',
-                    })}
-                    aria-label={t('dwg_takeoff.redo_aria', { defaultValue: 'Redo' })}
-                    className={clsx(
-                      'flex h-7 w-7 items-center justify-center rounded-md transition-colors',
-                      canRedoFn(undoState)
-                        ? 'text-slate-800 hover:bg-slate-100'
-                        : 'text-slate-300 cursor-not-allowed',
-                    )}
-                  >
-                    <Redo2 size={14} />
-                  </button>
-
-                  <div className="mx-1 h-5 w-px bg-slate-300" />
-
-                  <div className="relative">
                     <button
                       type="button"
-                      onClick={() => setSnapMenuOpen((o) => !o)}
-                      data-testid="dwg-snap-menu-toggle"
-                      title={t('dwg_takeoff.snap_menu', {
-                        defaultValue: 'Snap modes',
-                      })}
-                      aria-label={t('dwg_takeoff.snap_menu', {
-                        defaultValue: 'Snap modes',
-                      })}
+                      onClick={handleUndo}
+                      disabled={!canUndoFn(undoState)}
+                      data-testid="dwg-undo"
+                      title={t('dwg_takeoff.undo', { defaultValue: 'Undo (Ctrl+Z)' })}
+                      aria-label={t('dwg_takeoff.undo_aria', { defaultValue: 'Undo' })}
                       className={clsx(
-                        'flex h-7 items-center gap-1 rounded-md px-2 text-xs transition-colors',
-                        snapModes.endpoint || snapModes.midpoint || snapModes.intersection
-                          ? 'bg-emerald-500/20 text-emerald-700'
-                          : 'text-slate-700 hover:bg-slate-100',
+                        'flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+                        canUndoFn(undoState)
+                          ? 'text-slate-800 hover:bg-slate-100'
+                          : 'text-slate-300 cursor-not-allowed',
                       )}
                     >
-                      <Target size={13} />
-                      <span className="font-semibold">
-                        {t('dwg_takeoff.snap_label', { defaultValue: 'Snap' })}
-                      </span>
+                      <Undo2 size={14} />
                     </button>
-                    {snapMenuOpen && (
-                      <div
-                        data-testid="dwg-snap-menu"
-                        className="absolute left-0 top-full mt-1 w-48 rounded-lg border border-slate-200 bg-white p-2 shadow-xl"
-                        onMouseLeave={() => setSnapMenuOpen(false)}
+                    <button
+                      type="button"
+                      onClick={handleRedo}
+                      disabled={!canRedoFn(undoState)}
+                      data-testid="dwg-redo"
+                      title={t('dwg_takeoff.redo', {
+                        defaultValue: 'Redo (Ctrl+Y / Ctrl+Shift+Z)',
+                      })}
+                      aria-label={t('dwg_takeoff.redo_aria', { defaultValue: 'Redo' })}
+                      className={clsx(
+                        'flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+                        canRedoFn(undoState)
+                          ? 'text-slate-800 hover:bg-slate-100'
+                          : 'text-slate-300 cursor-not-allowed',
+                      )}
+                    >
+                      <Redo2 size={14} />
+                    </button>
+
+                    <div className="mx-1 h-5 w-px bg-slate-300" />
+
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setSnapMenuOpen((o) => !o)}
+                        data-testid="dwg-snap-menu-toggle"
+                        title={t('dwg_takeoff.snap_menu', {
+                          defaultValue: 'Snap modes',
+                        })}
+                        aria-label={t('dwg_takeoff.snap_menu', {
+                          defaultValue: 'Snap modes',
+                        })}
+                        className={clsx(
+                          'flex h-7 items-center gap-1 rounded-md px-2 text-xs transition-colors',
+                          snapModes.endpoint || snapModes.midpoint || snapModes.intersection
+                            ? 'bg-emerald-500/20 text-emerald-700'
+                            : 'text-slate-700 hover:bg-slate-100',
+                        )}
                       >
-                        <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-100">
-                          <input
-                            type="checkbox"
-                            data-testid="dwg-snap-endpoint"
-                            checked={!!snapModes.endpoint}
-                            onChange={(e) =>
-                              setSnapModes((m) => ({ ...m, endpoint: e.target.checked }))
-                            }
-                          />
-                          {t('dwg_takeoff.snap_endpoint', {
-                            defaultValue: 'Endpoint snap',
-                          })}
-                        </label>
-                        <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-100">
-                          <input
-                            type="checkbox"
-                            data-testid="dwg-snap-midpoint"
-                            checked={!!snapModes.midpoint}
-                            onChange={(e) =>
-                              setSnapModes((m) => ({ ...m, midpoint: e.target.checked }))
-                            }
-                          />
-                          {t('dwg_takeoff.snap_midpoint', {
-                            defaultValue: 'Midpoint snap',
-                          })}
-                        </label>
-                        <label className="flex cursor-not-allowed items-center gap-2 rounded-md px-2 py-1.5 text-xs text-slate-400">
-                          <input
-                            type="checkbox"
-                            data-testid="dwg-snap-intersection"
-                            checked={!!snapModes.intersection}
-                            disabled
-                          />
-                          {t('dwg_takeoff.snap_intersection', {
-                            defaultValue: 'Intersection snap (soon)',
-                          })}
-                        </label>
-                      </div>
-                    )}
+                        <Target size={13} />
+                        <span className="font-semibold">
+                          {t('dwg_takeoff.snap_label', { defaultValue: 'Snap' })}
+                        </span>
+                      </button>
+                      {snapMenuOpen && (
+                        <div
+                          data-testid="dwg-snap-menu"
+                          className="absolute left-0 top-full mt-1 w-48 rounded-lg border border-slate-200 bg-white p-2 shadow-xl"
+                          onMouseLeave={() => setSnapMenuOpen(false)}
+                        >
+                          <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-100">
+                            <input
+                              type="checkbox"
+                              data-testid="dwg-snap-endpoint"
+                              checked={!!snapModes.endpoint}
+                              onChange={(e) =>
+                                setSnapModes((m) => ({ ...m, endpoint: e.target.checked }))
+                              }
+                            />
+                            {t('dwg_takeoff.snap_endpoint', {
+                              defaultValue: 'Endpoint snap',
+                            })}
+                          </label>
+                          <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-100">
+                            <input
+                              type="checkbox"
+                              data-testid="dwg-snap-midpoint"
+                              checked={!!snapModes.midpoint}
+                              onChange={(e) =>
+                                setSnapModes((m) => ({ ...m, midpoint: e.target.checked }))
+                              }
+                            />
+                            {t('dwg_takeoff.snap_midpoint', {
+                              defaultValue: 'Midpoint snap',
+                            })}
+                          </label>
+                          <label className="flex cursor-not-allowed items-center gap-2 rounded-md px-2 py-1.5 text-xs text-slate-400">
+                            <input
+                              type="checkbox"
+                              data-testid="dwg-snap-intersection"
+                              checked={!!snapModes.intersection}
+                              disabled
+                            />
+                            {t('dwg_takeoff.snap_intersection', {
+                              defaultValue: 'Intersection snap (soon)',
+                            })}
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Text display. Sits with the tools rather than in the
+                      layer panel because it is reached mid-measurement, with
+                      a drawing tool still selected, and a trip to a side tab
+                      to unbury the wall you are tracing is a trip too far. */}
+                  <div className="pointer-events-auto">
+                    <TextDisplayControl value={textDisplay} onChange={setTextDisplay} />
                   </div>
                 </div>
 
-                {/* Text display. Sits with the tools rather than in the
-                    layer panel because it is reached mid-measurement, with
-                    a drawing tool still selected, and a trip to a side tab
-                    to unbury the wall you are tracing is a trip too far. */}
-                <div className="pointer-events-auto">
-                  <TextDisplayControl value={textDisplay} onChange={setTextDisplay} />
+                {/* Floating Offline Ready badge + PDF export - top-right corner
+                    of the viewer (opposite the ToolPalette). Download PDF is
+                    paired with the badge so estimators discover it while
+                    glancing at converter status without stealing real estate
+                    from the drawing. */}
+                  <div className="pointer-events-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+                  <ModuleGuideButton content={dwgTakeoffGuide} />
+                  <button
+                    type="button"
+                    onClick={() => setFindOpen((o) => !o)}
+                    disabled={!selectedDrawingId}
+                    className={clsx(
+                      'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold',
+                      'border border-white/60 backdrop-blur-md',
+                      'shadow-xl shadow-black/30 ring-1 ring-black/5 transition-colors',
+                      !selectedDrawingId
+                        ? 'bg-white/85 dark:bg-white/90 text-slate-400 cursor-not-allowed'
+                        : findOpen
+                          ? 'bg-oe-blue text-white hover:bg-oe-blue-dark'
+                          : 'bg-white/85 dark:bg-white/90 text-slate-800 hover:bg-white',
+                    )}
+                    title={t('dwg_takeoff.find_text_title', {
+                      defaultValue: 'Find text on the drawing (Ctrl+F)',
+                    })}
+                    data-testid="dwg-find-toggle"
+                  >
+                    <Search size={14} />
+                    <span>{t('dwg_takeoff.find_text', { defaultValue: 'Find' })}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCompare(true)}
+                    disabled={!selectedDrawingId}
+                    className={clsx(
+                      'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold',
+                      'border border-white/60 bg-white/85 dark:bg-white/90 backdrop-blur-md',
+                      'shadow-xl shadow-black/30 ring-1 ring-black/5 transition-colors',
+                      selectedDrawingId
+                        ? 'text-slate-800 hover:bg-white'
+                        : 'text-slate-400 cursor-not-allowed',
+                    )}
+                    title={t('dwg_compare.compare_revisions', {
+                      defaultValue: 'Compare revisions with cost delta',
+                    })}
+                    data-testid="dwg-compare-button"
+                  >
+                    <GitCompare size={14} />
+                    <span>{t('dwg_compare.compare_short', { defaultValue: 'Compare' })}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => revisionInputRef.current?.click()}
+                    disabled={!selectedDrawingId || revisionUploadMutation.isPending}
+                    className={clsx(
+                      'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold',
+                      'border border-white/60 bg-white/85 dark:bg-white/90 backdrop-blur-md',
+                      'shadow-xl shadow-black/30 ring-1 ring-black/5 transition-colors',
+                      selectedDrawingId
+                        ? 'text-slate-800 hover:bg-white'
+                        : 'text-slate-400 cursor-not-allowed',
+                    )}
+                    title={t('dwg_takeoff.upload_revision_title', {
+                      defaultValue: 'Upload a new revision of this drawing (adds a version)',
+                    })}
+                    data-testid="dwg-upload-revision"
+                  >
+                    {revisionUploadMutation.isPending ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <FileStack size={14} />
+                    )}
+                    <span>
+                      {t('dwg_takeoff.upload_revision_short', { defaultValue: 'New revision' })}
+                    </span>
+                  </button>
+                  <input
+                    ref={revisionInputRef}
+                    type="file"
+                    accept=".dwg,.dxf"
+                    className="hidden"
+                    data-testid="dwg-upload-revision-input"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file && selectedDrawingId) {
+                        revisionUploadMutation.mutate({ drawingId: selectedDrawingId, file });
+                      }
+                      e.target.value = '';
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleDownloadCanvasPdf}
+                    disabled={!selectedDrawingId}
+                    className={clsx(
+                      'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold',
+                      'border border-white/60 bg-white/85 dark:bg-white/90 backdrop-blur-md',
+                      'shadow-xl shadow-black/30 ring-1 ring-black/5 transition-colors',
+                      selectedDrawingId
+                        ? 'text-slate-800 hover:bg-white'
+                        : 'text-slate-400 cursor-not-allowed',
+                    )}
+                    title={t('dwg_takeoff.download_pdf', {
+                      defaultValue: 'Download current viewport as PDF',
+                    })}
+                    data-testid="dwg-download-pdf"
+                  >
+                    <FileDown size={14} />
+                    <span>{t('dwg_takeoff.download_pdf_short', { defaultValue: 'PDF' })}</span>
+                  </button>
+                  <OfflineReadyBadge
+                    readiness={offlineReadiness}
+                    isLoading={loadingOfflineReadiness}
+                    data-testid="dwg-offline-badge"
+                  />
                 </div>
-              </div>
-
-              {/* Floating Offline Ready badge + PDF export - top-right corner
-                  of the viewer (opposite the ToolPalette). Download PDF is
-                  paired with the badge so estimators discover it while
-                  glancing at converter status without stealing real estate
-                  from the drawing. */}
-              <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
-                <ModuleGuideButton content={dwgTakeoffGuide} />
-                <button
-                  type="button"
-                  onClick={() => setFindOpen((o) => !o)}
-                  disabled={!selectedDrawingId}
-                  className={clsx(
-                    'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold',
-                    'border border-white/60 backdrop-blur-md',
-                    'shadow-xl shadow-black/30 ring-1 ring-black/5 transition-colors',
-                    !selectedDrawingId
-                      ? 'bg-white/85 dark:bg-white/90 text-slate-400 cursor-not-allowed'
-                      : findOpen
-                        ? 'bg-oe-blue text-white hover:bg-oe-blue-dark'
-                        : 'bg-white/85 dark:bg-white/90 text-slate-800 hover:bg-white',
-                  )}
-                  title={t('dwg_takeoff.find_text_title', {
-                    defaultValue: 'Find text on the drawing (Ctrl+F)',
-                  })}
-                  data-testid="dwg-find-toggle"
-                >
-                  <Search size={14} />
-                  <span>{t('dwg_takeoff.find_text', { defaultValue: 'Find' })}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowCompare(true)}
-                  disabled={!selectedDrawingId}
-                  className={clsx(
-                    'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold',
-                    'border border-white/60 bg-white/85 dark:bg-white/90 backdrop-blur-md',
-                    'shadow-xl shadow-black/30 ring-1 ring-black/5 transition-colors',
-                    selectedDrawingId
-                      ? 'text-slate-800 hover:bg-white'
-                      : 'text-slate-400 cursor-not-allowed',
-                  )}
-                  title={t('dwg_compare.compare_revisions', {
-                    defaultValue: 'Compare revisions with cost delta',
-                  })}
-                  data-testid="dwg-compare-button"
-                >
-                  <GitCompare size={14} />
-                  <span>{t('dwg_compare.compare_short', { defaultValue: 'Compare' })}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => revisionInputRef.current?.click()}
-                  disabled={!selectedDrawingId || revisionUploadMutation.isPending}
-                  className={clsx(
-                    'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold',
-                    'border border-white/60 bg-white/85 dark:bg-white/90 backdrop-blur-md',
-                    'shadow-xl shadow-black/30 ring-1 ring-black/5 transition-colors',
-                    selectedDrawingId
-                      ? 'text-slate-800 hover:bg-white'
-                      : 'text-slate-400 cursor-not-allowed',
-                  )}
-                  title={t('dwg_takeoff.upload_revision_title', {
-                    defaultValue: 'Upload a new revision of this drawing (adds a version)',
-                  })}
-                  data-testid="dwg-upload-revision"
-                >
-                  {revisionUploadMutation.isPending ? (
-                    <Loader2 size={14} className="animate-spin" />
-                  ) : (
-                    <FileStack size={14} />
-                  )}
-                  <span>
-                    {t('dwg_takeoff.upload_revision_short', { defaultValue: 'New revision' })}
-                  </span>
-                </button>
-                <input
-                  ref={revisionInputRef}
-                  type="file"
-                  accept=".dwg,.dxf"
-                  className="hidden"
-                  data-testid="dwg-upload-revision-input"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file && selectedDrawingId) {
-                      revisionUploadMutation.mutate({ drawingId: selectedDrawingId, file });
-                    }
-                    e.target.value = '';
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={handleDownloadCanvasPdf}
-                  disabled={!selectedDrawingId}
-                  className={clsx(
-                    'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold',
-                    'border border-white/60 bg-white/85 dark:bg-white/90 backdrop-blur-md',
-                    'shadow-xl shadow-black/30 ring-1 ring-black/5 transition-colors',
-                    selectedDrawingId
-                      ? 'text-slate-800 hover:bg-white'
-                      : 'text-slate-400 cursor-not-allowed',
-                  )}
-                  title={t('dwg_takeoff.download_pdf', {
-                    defaultValue: 'Download current viewport as PDF',
-                  })}
-                  data-testid="dwg-download-pdf"
-                >
-                  <FileDown size={14} />
-                  <span>{t('dwg_takeoff.download_pdf_short', { defaultValue: 'PDF' })}</span>
-                </button>
-                <OfflineReadyBadge
-                  readiness={offlineReadiness}
-                  isLoading={loadingOfflineReadiness}
-                  data-testid="dwg-offline-badge"
-                />
               </div>
 
               {/* Find-text bar - top-center overlay, parity with the PDF

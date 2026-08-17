@@ -123,7 +123,7 @@ const playbook: Playbook = {
       whyKey: "cases.answer_an_rfi.step.file.why",
       whyDefault:
         "An answer buried in a single inbox helps nobody at the trowel. A filed, closed RFI is what stops the same question being asked again next month by the next trade.",
-      moduleLabel: "Files",
+      moduleLabel: "Documents",
       moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },

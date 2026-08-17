@@ -398,6 +398,19 @@ export function LaborRatesPage() {
               </Button>
             </div>
 
+            {/* What the block is for, in one line. The three columns used to
+                carry their meaning only in aria-label and a placeholder reading
+                "Label", so a sighted estimator faced an empty row and no way to
+                know that the left cell wants the name of a payroll cost
+                (founder report). The heading, the hint and the visible column
+                titles all answer the same question in different places. */}
+            <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+              {t('laborRates.oncosts_hint', {
+                defaultValue:
+                  'Everything the employer pays on top of the bare wage: social insurance, holiday pay, site allowances.',
+              })}
+            </p>
+
             <div className="space-y-2">
               {onCosts.length === 0 && (
                 <p className="py-2 text-sm text-gray-400 dark:text-gray-500">
@@ -406,14 +419,33 @@ export function LaborRatesPage() {
                   })}
                 </p>
               )}
+              {onCosts.length > 0 && (
+                // Widths mirror the row below exactly (flex-1 / w-32 / w-28 plus
+                // the delete button's footprint), so the titles stay over their
+                // own cells at every viewport.
+                <div className="flex items-center gap-2 px-1 text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                  <span className="flex-1">
+                    {t('laborRates.oncost_col_what', { defaultValue: 'What it covers' })}
+                  </span>
+                  <span className="w-32">
+                    {t('laborRates.oncost_col_how', { defaultValue: 'How it is charged' })}
+                  </span>
+                  <span className="w-28 text-right">
+                    {t('laborRates.oncost_col_amount', { defaultValue: 'Amount' })}
+                  </span>
+                  <span className="w-7" aria-hidden />
+                </div>
+              )}
               {onCosts.map((row) => (
                 <div key={row.key} className="flex items-center gap-2">
                   <input
                     className={`${inputClass} flex-1`}
                     value={row.label}
                     onChange={(e) => updateOnCost(row.key, { label: e.target.value })}
-                    placeholder={t('laborRates.oncost_label', { defaultValue: 'Label' })}
-                    aria-label={t('laborRates.oncost_label', { defaultValue: 'Label' })}
+                    placeholder={t('laborRates.oncost_label_placeholder', {
+                      defaultValue: 'e.g. social insurance',
+                    })}
+                    aria-label={t('laborRates.oncost_col_what', { defaultValue: 'What it covers' })}
                   />
                   <select
                     className={`${inputClass} w-32`}

@@ -443,9 +443,9 @@ async function downloadScheduleReport(
   projectName: string,
   t: TFunc,
 ): Promise<void> {
-  let schedules: Awaited<ReturnType<typeof scheduleApi.listSchedules>>;
+  let schedules: Awaited<ReturnType<typeof scheduleApi.listSchedules>>['items'];
   try {
-    schedules = await scheduleApi.listSchedules(projectId);
+    schedules = (await scheduleApi.listSchedules(projectId)).items;
   } catch {
     throw new Error(
       t('reports.err_no_schedule', {
@@ -917,7 +917,7 @@ async function downloadProgressReport(
 
   // Schedule section
   try {
-    const schedules = await scheduleApi.listSchedules(projectId);
+    const { items: schedules } = await scheduleApi.listSchedules(projectId);
     htmlParts.push(`<h2>${esc(t('reports.html_schedule_status', { defaultValue: 'Schedule Status' }))}</h2>`);
     for (const sched of schedules) {
       try {
@@ -1446,7 +1446,8 @@ export function ReportsPage() {
               if (sections.includes('schedule')) {
                 htmlParts.push(`<h2>${esc(t('reports.section_schedule', { defaultValue: 'Schedule Summary' }))}</h2>`);
                 try {
-                  const schedules = await scheduleApi.listSchedules(selectedProjectId);
+                  const { items: schedules } =
+                    await scheduleApi.listSchedules(selectedProjectId);
                   if (schedules.length === 0) {
                     htmlParts.push(`<p>${esc(t('reports.html_no_schedules', { defaultValue: 'No schedules found.' }))}</p>`);
                   }

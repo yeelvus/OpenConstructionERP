@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import event_bus
 from app.core.json_merge import merge_metadata
+from app.modules.changeorders.intl import REASON_CATEGORIES
 from app.modules.changeorders.models import (
     ChangeOrder,
     ChangeOrderApproval,
@@ -377,8 +378,8 @@ def _draft_prompt(source_kind: str, source_text: str, currency: str) -> str:
     return (
         f"Draft a construction change order from {label}. Express money in "
         f"{ccy}. Return ONLY a JSON object with keys: title (short string), "
-        "description (string), reason_category (one of client_request, "
-        "design_change, unforeseen, regulatory, error), cost_impact (decimal "
+        "description (string), reason_category (one of "
+        f"{', '.join(REASON_CATEGORIES)}), cost_impact (decimal "
         "string, signed), schedule_impact_days (integer), confidence (0-100), "
         "lines (array of objects with description, unit, quantity, rate, "
         "cost_delta, confidence 0-100). Do not invent figures the text does "
@@ -395,7 +396,7 @@ def _normalise_ai_draft(
 ) -> dict:
     """Coerce a model's JSON into the AIDraftResponse shape, defensively."""
     reason = str(data.get("reason_category") or "client_request")
-    if reason not in {"client_request", "design_change", "unforeseen", "regulatory", "error"}:
+    if reason not in REASON_CATEGORIES:
         reason = "client_request"
 
     def _conf(v: object, default: int = 70) -> int:

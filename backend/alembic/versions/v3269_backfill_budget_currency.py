@@ -95,6 +95,7 @@ def _has_column(inspector: sa.engine.reflection.Inspector, table: str, column: s
     return any(col["name"] == column for col in inspector.get_columns(table))
 
 
+# data-rewrite-ack: table=oe_finance_budget growth=bounded rows=budget lines scoped by a project's own WBS x cost-category breakdown, bounded by that structure, not by elapsed time
 def upgrade() -> None:
     """Fill blank budget currencies from the owning project. Never overwrite."""
     bind = op.get_bind()

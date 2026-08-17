@@ -3399,7 +3399,16 @@ export function BOQEditorPage() {
           base_price: res.unit_rate,
           min_price: res.unit_rate,
           max_price: res.unit_rate,
-          currency: currencySymbol === '€' ? 'EUR' : currencySymbol === '£' ? 'GBP' : currencySymbol === '$' ? 'USD' : 'EUR',
+          // The project's own code, not a code reconstructed from its symbol.
+          // The reconstruction recognised three symbols and answered EUR for
+          // everything else, so a project in CLP, BRL, PLN or INR wrote its
+          // catalogue rows in euros. It could also be confidently wrong rather
+          // than merely wrong: the Chilean peso's symbol is a dollar sign.
+          // When the project never set a currency the field is omitted rather
+          // than sent blank, so the catalogue applies its own declared default.
+          // Nothing on that path backfills from the region, and an empty string
+          // passes validation and lands in the column as a currencyless row.
+          currency: currencyCode || undefined,
           source: 'boq_import',
           region: 'CUSTOM',
           specifications: {
@@ -3421,7 +3430,7 @@ export function BOQEditorPage() {
         });
       }
     },
-    [boq?.positions, boqId, currencySymbol, addToast, t],
+    [boq?.positions, boqId, currencyCode, addToast, t],
   );
 
   /** Save the variant-header row to the user's catalog under a custom name.
@@ -3448,14 +3457,18 @@ export function BOQEditorPage() {
       if (!trimmed) return;
       // Currency resolution chain: per-variant override (rare) → position
       // metadata.currency (set when the CWICR row was applied to the
-      // position) → BOQ symbol fallback. The catalog should keep the
-      // article in its native currency, not the project base — that
+      // position) → the project's own currency code. The catalog should keep
+      // the article in its native currency, not the project base — that
       // matches the rest of the variant pipeline.
+      //
+      // The last link used to rebuild a code out of the display symbol and
+      // answer EUR for every symbol it did not recognise, which is most of
+      // them. It reads as a fallback and behaves as an assertion. Undefined
+      // when the project set no currency either, so the field is left out of
+      // the payload and the catalogue applies its own default.
       const posMetaCurrency = (meta.currency as string | undefined) || undefined;
       const catalogCurrency =
-        (chosen.currency as string | undefined) ||
-        posMetaCurrency ||
-        (currencySymbol === '€' ? 'EUR' : currencySymbol === '£' ? 'GBP' : currencySymbol === '$' ? 'USD' : 'EUR');
+        (chosen.currency as string | undefined) || posMetaCurrency || currencyCode || undefined;
       const code = `MY-VAR-${Date.now().toString(36).toUpperCase()}`;
       try {
         await apiPost('/v1/catalog/', {
@@ -3490,7 +3503,7 @@ export function BOQEditorPage() {
         });
       }
     },
-    [boq?.positions, boqId, currencySymbol, addToast, t],
+    [boq?.positions, boqId, currencyCode, addToast, t],
   );
 
   /** Re-pick the variant on an already-added resource entry (v2.6.26+).

@@ -389,6 +389,13 @@ _CONVERTER_INSTALL_ROOT: Path = Path.home() / ".openestimator" / "converters"
 # the RVT (RvtExporter) converter, .dxf by the DWG (DwgExporter)
 # converter. ``ensure_converter`` resolves through this so an upload of an
 # alias provisions and runs the binary that actually reads it.
+#
+# The .dxf entry is now only about WHICH BINARY reads a DXF if one is being
+# used at all. It is no longer the route a DXF upload takes: ``dxf_native``
+# reads the drawing in-process, and ``convert_cad_to_excel`` sends it there
+# before any of this is consulted. Deleting the entry outright would still be
+# wrong, because it is what lets an explicitly installed DWG converter be
+# found for a .dxf on the health and capability paths.
 _CONVERTER_FORMAT_ALIASES: dict[str, str] = {
     "rfa": "rvt",
     "dxf": "dwg",
@@ -1682,6 +1689,18 @@ async def convert_cad_to_excel(
     Returns:
         Path to the generated Excel file, or ``None`` on failure.
     """
+    # Formats the platform reads in-process never touch a converter binary.
+    #
+    # Decided on the file's OWN suffix rather than on ``extension``, because
+    # callers pre-resolve the alias: ``takeoff.router`` passes
+    # ``_CONVERTER_FORMAT_ALIASES.get(ext, ext)``, so a .dxf upload arrives
+    # here labelled "dwg" and a check on the label would never fire. The file
+    # on disk is the thing being read, so the file decides.
+    from app.modules.boq.dxf_native import convert_dxf_to_excel, is_natively_readable
+
+    if is_natively_readable(input_path.suffix):
+        return await asyncio.to_thread(convert_dxf_to_excel, input_path, output_dir)
+
     # Resolve the converter, auto-downloading it on first use if missing.
     # ``ensure_converter`` is idempotent and concurrency-safe; on an
     # unsupported platform (or a failed download) it raises

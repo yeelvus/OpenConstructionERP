@@ -880,27 +880,47 @@ async def _resolve_project_names(session: AsyncSession, items: list[DeadlineItem
 
 
 async def _resolve_owner_names(session: AsyncSession, items: list[DeadlineItem]) -> None:
-    """Fill ``owner_name`` on each item from a single User id->name map.
+    """Fill ``owner_name`` on each item from one batched party lookup.
 
-    Owners are stored as ids (String36 / GUID); a non-UUID owner (correspondence
-    ``created_by`` may be free text) simply stays unresolved. Fail-soft.
+    The columns these owners come from are bare id strings with no foreign key,
+    and three writers put three different things in them: a contact id when the
+    party is external (the demo seeder writes the main contractor onto every
+    punch item), a user id when a picker names a teammate, and free text when
+    somebody types a name or a role label. Resolving against ``User`` alone left
+    ``owner_name`` empty for every row naming a contact, and the register then
+    printed "Unassigned" over a row that does name somebody - a false statement
+    about the row rather than a merely missing one. The lookup therefore runs
+    through :func:`app.core.party_names.resolve_party_names`, which tries
+    contacts first and users for whatever is left, still in one pass over the
+    whole register rather than per row.
+
+    Two misses are deliberately not treated alike. A value that is not
+    id-shaped is echoed, because what was typed is already the name. An
+    id-shaped value that resolves to nothing stays empty: this client has no
+    fallback to ``owner_user_id`` (unlike the inspections list, which ships and
+    renders the stored value), so echoing it here would print a raw UUID under
+    a column headed by a person's name. Fail-soft, like every other step: a
+    cosmetic lookup must not be able to blank the register.
     """
     if not items:
         return
-    ids: set[uuid.UUID] = set()
+    # ``_owner_id`` normalises to the canonical lowercase form the resolver
+    # keys its result on. Punch items and correspondence hand their column
+    # straight through, so an id stored in another case would match inside the
+    # WHERE clause and then miss the lookup against the returned map.
+    keyed: list[tuple[DeadlineItem, str, bool]] = []
     for it in items:
-        if not it.owner_user_id:
+        raw = (it.owner_user_id or "").strip()
+        if not raw:
             continue
-        try:
-            ids.add(uuid.UUID(it.owner_user_id))
-        except (ValueError, TypeError):
-            pass
-    if not ids:
+        canonical = _owner_id(raw)
+        keyed.append((it, canonical or raw, canonical is not None))
+    if not keyed:
         return
     try:
-        from app.modules.users.models import User  # noqa: PLC0415
+        from app.core.party_names import resolve_party_names  # noqa: PLC0415
 
-        rows = (await session.execute(select(User.id, User.full_name, User.email).where(User.id.in_(ids)))).all()
+        names = await resolve_party_names(session, [key for _, key, _ in keyed])
     except Exception as exc:  # noqa: BLE001
         logger.warning("Deadline owner-name resolve failed: %s", exc, exc_info=True)
         try:
@@ -908,14 +928,12 @@ async def _resolve_owner_names(session: AsyncSession, items: list[DeadlineItem])
         except Exception:  # noqa: BLE001
             pass
         return
-    name_by_id = {uid: (full_name or email or None) for uid, full_name, email in rows}
-    for it in items:
-        if not it.owner_user_id:
-            continue
-        try:
-            it.owner_name = name_by_id.get(uuid.UUID(it.owner_user_id))
-        except (ValueError, TypeError):
-            pass
+    for it, key, is_id in keyed:
+        resolved = names.get(key)
+        if resolved:
+            it.owner_name = resolved
+        elif not is_id:
+            it.owner_name = key
 
 
 async def compute_deadlines(

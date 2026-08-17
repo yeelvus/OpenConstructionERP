@@ -51,8 +51,9 @@ import {
 } from '@/shared/ui';
 import { ContactSearchInput } from '@/shared/ui/ContactSearchInput';
 import { PageHeader } from '@/shared/ui/PageHeader';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useConfirm } from '@/shared/hooks/useConfirm';
-import { apiGet } from '@/shared/lib/api';
+import { apiGet, type Page } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import {
@@ -460,7 +461,7 @@ function CreateCorrespondenceModal({
   const transmittalsQuery = useQuery({
     queryKey: ['correspondence-link-transmittals', projectId],
     queryFn: () =>
-      apiGet<PickerTransmittal[] | { items: PickerTransmittal[] }>(
+      apiGet<Page<PickerTransmittal>>(
         `/v1/transmittals/?project_id=${projectId}`,
       ),
     enabled: !!projectId,
@@ -474,9 +475,8 @@ function CreateCorrespondenceModal({
   });
 
   const documents = docsQuery.data ?? [];
-  const transmittals = Array.isArray(transmittalsQuery.data)
-    ? transmittalsQuery.data
-    : (transmittalsQuery.data?.items ?? []);
+  const transmittalPage = transmittalsQuery.data;
+  const transmittals = transmittalPage?.items ?? [];
   const rfis = rfisQuery.data ?? [];
 
   const toggleDocument = (id: string) =>
@@ -867,6 +867,11 @@ function CreateCorrespondenceModal({
               </option>
             ))}
           </select>
+          {/* A dropdown cannot scroll past what the read returned, so an
+              absent transmittal has to be explained rather than looked for. */}
+          {transmittalPage && (
+            <TruncationNotice page={transmittalPage} className="mt-1.5" />
+          )}
         </WideModalField>
 
         <WideModalField
@@ -1778,6 +1783,7 @@ export function CorrespondencePage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       {/* Canonical module info card \u2014 pain-named title + workflow body. */}

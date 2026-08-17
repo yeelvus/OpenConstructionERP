@@ -135,6 +135,33 @@ class PermissionRegistry:
             module_name,
         )
 
+    def unregister_module_permissions(self, module_name: str) -> list[str]:
+        """Forget a module's permissions. Returns the names it was asked to remove.
+
+        Needed because a module can now leave while the server runs. Left
+        behind, its permissions would still be offered by the admin matrix and
+        still be granted to roles, with nothing on the other end enforcing
+        them; and a module reinstalled from a different spec would inherit
+        whatever its previous shape happened to register.
+
+        A permission another module also registered is kept: the registry is a
+        flat dictionary, so removing the shared entry would leave that module's
+        endpoints checking a key the registry no longer knows, and an unknown
+        permission is denied to everyone below admin.
+
+        Args:
+            module_name: Module identifier as passed to
+                :meth:`register_module_permissions`.
+        """
+        names = self._module_permissions.pop(module_name, [])
+        still_owned = {perm for perms in self._module_permissions.values() for perm in perms}
+        for perm in names:
+            if perm not in still_owned:
+                self._permissions.pop(perm, None)
+        if names:
+            logger.info("Unregistered %d permissions for module '%s'", len(names), module_name)
+        return names
+
     def role_has_permission(self, role: Role | str, permission: str) -> bool:
         """Check if a role has a specific permission.
 

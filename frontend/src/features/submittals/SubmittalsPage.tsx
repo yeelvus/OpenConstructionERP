@@ -1230,6 +1230,7 @@ export function SubmittalsPage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       {/* Canonical module info card \u2014 pain-named title + workflow body. */}

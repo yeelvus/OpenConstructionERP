@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '@/shared/lib/api';
+import { apiGet, type Page } from '@/shared/lib/api';
 import {
   computeScheduleBounds,
   pickActiveActivityName,
@@ -116,19 +116,19 @@ const MS_PER_DAY = 86_400_000;
  *  Kept inside the hook file so module boundaries stay tidy — this is
  *  not a reusable fetch layer, it's specific to the 4D scrubber. */
 async function fetchAllActivities(projectId: string): Promise<ScheduleActivity[]> {
-  const schedules = await apiGet<ScheduleSummary[] | { items: ScheduleSummary[] }>(
+  const schedules = await apiGet<Page<ScheduleSummary>>(
     `/v1/schedule/schedules/?project_id=${encodeURIComponent(projectId)}`,
   );
-  const schedList = Array.isArray(schedules) ? schedules : schedules.items ?? [];
+  const schedList = schedules.items ?? [];
   if (schedList.length === 0) return [];
 
   const results = await Promise.all(
     schedList.map(async (sched) => {
       try {
-        const acts = await apiGet<
-          ScheduleActivity[] | { items: ScheduleActivity[] }
-        >(`/v1/schedule/schedules/${encodeURIComponent(sched.id)}/activities/`);
-        return Array.isArray(acts) ? acts : acts.items ?? [];
+        const acts = await apiGet<Page<ScheduleActivity>>(
+          `/v1/schedule/schedules/${encodeURIComponent(sched.id)}/activities/`,
+        );
+        return acts.items ?? [];
       } catch {
         // Individual schedule failure is non-fatal — we may still have
         // actionable data in the other schedules.  Log at debug only to

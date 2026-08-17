@@ -722,27 +722,11 @@ export function RiskRegisterPage() {
   // useModuleInsights. Declared before the detail-view early return below so
   // the hook order stays stable.
   const insights = useModuleInsights('risk', { defaultOpen: true });
-  const { datasets: insightDatasets, builtins: insightBuiltins } = useMemo(
-    () => buildRiskInsights(risks, project?.currency || summary?.currency || 'EUR', t),
-    [risks, project, summary, t],
-  );
-
-  // Client-side filtering
-  const filteredRisks = useMemo(() => {
-    let result = risks;
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter((r) => r.title.toLowerCase().includes(q) || r.code.toLowerCase().includes(q) || r.description.toLowerCase().includes(q));
-    }
-    if (filterCategory) result = result.filter((r) => r.category === filterCategory);
-    if (filterStatus) result = result.filter((r) => r.status === filterStatus);
-    return result;
-  }, [risks, searchQuery, filterCategory, filterStatus]);
-
-  if (selectedRiskId) return <div className="w-full"><DetailView riskId={selectedRiskId} onBack={() => setSelectedRiskId(null)} /></div>;
-
   const currency = project?.currency || summary?.currency || 'EUR';
-  const hasRisks = (summary?.total_risks ?? 0) > 0;
+  const { datasets: insightDatasets, builtins: insightBuiltins } = useMemo(
+    () => buildRiskInsights(risks, currency, t),
+    [risks, currency, t],
+  );
 
   // Total Exposure must never render a misleading "0". The backend returns
   // total_exposure = 0 when risks span more than one currency (it refuses
@@ -750,6 +734,11 @@ export function RiskRegisterPage() {
   // exposure_by_currency. When the breakdown holds more than one non-empty
   // currency we show an honest per-currency total via <MultiCurrencyTotal>;
   // otherwise the single-currency total_exposure is correct as-is.
+  //
+  // Declared up here with the other hooks, above the detail-view early
+  // return, for the reason the comment on `insights` gives: opening a risk
+  // takes the early return and would otherwise run one hook fewer than the
+  // list render just did, which React rejects outright.
   const exposureNode = useMemo(() => {
     const byCurrency = summary?.exposure_by_currency ?? {};
     const named = Object.entries(byCurrency).filter(([c, v]) => c && v > 0);
@@ -765,6 +754,22 @@ export function RiskRegisterPage() {
     }
     return fmtCur(summary?.total_exposure ?? 0, currency);
   }, [summary, currency]);
+
+  // Client-side filtering
+  const filteredRisks = useMemo(() => {
+    let result = risks;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter((r) => r.title.toLowerCase().includes(q) || r.code.toLowerCase().includes(q) || r.description.toLowerCase().includes(q));
+    }
+    if (filterCategory) result = result.filter((r) => r.category === filterCategory);
+    if (filterStatus) result = result.filter((r) => r.status === filterStatus);
+    return result;
+  }, [risks, searchQuery, filterCategory, filterStatus]);
+
+  if (selectedRiskId) return <div className="w-full"><DetailView riskId={selectedRiskId} onBack={() => setSelectedRiskId(null)} /></div>;
+
+  const hasRisks = (summary?.total_risks ?? 0) > 0;
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -802,6 +807,7 @@ export function RiskRegisterPage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       <HowRiskWork />

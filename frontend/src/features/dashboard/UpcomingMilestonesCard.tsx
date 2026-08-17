@@ -65,7 +65,7 @@ export function UpcomingMilestonesCard() {
 
   const schedulesQuery = useQuery({
     queryKey: ['schedule', 'schedules', projectId],
-    queryFn: () => scheduleApi.listSchedules(projectId),
+    queryFn: () => scheduleApi.listSchedules(projectId).then((page) => page.items),
     enabled: Boolean(projectId),
     staleTime: 60 * 1000,
   });

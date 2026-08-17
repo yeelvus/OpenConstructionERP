@@ -43,6 +43,7 @@ from app.modules.deadlines.schemas import DeadlineItem
 from app.modules.notifications.models import Notification
 from app.modules.notifications.service import NotificationService
 from app.modules.projects.models import Project
+from app.modules.users.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -118,10 +119,27 @@ async def _project_manager_ids(session: AsyncSession, project_id: uuid.UUID) -> 
     return ids
 
 
+async def _is_real_user(session: AsyncSession, user_id: uuid.UUID) -> bool:
+    """True when the id names a row that exists in the users table.
+
+    Parsing as a UUID says the value is well formed, not that anybody is behind
+    it. ``owner_user_id`` is normalised from columns that carry no foreign key,
+    so it can hold the id of a user who was never created or has since been
+    removed. Notifying such an id violates the notification foreign key, and the
+    failed flush poisons the session for the rest of the sweep.
+    """
+    found = await session.execute(select(User.id).where(User.id == user_id).limit(1))
+    return found.scalar_one_or_none() is not None
+
+
 async def _overdue_recipients(session: AsyncSession, item: DeadlineItem) -> list[uuid.UUID]:
-    """Who to nudge for an overdue item: the owner if a real user, else managers."""
+    """Who to nudge for an overdue item: the owner if a real user, else managers.
+
+    "A real user" has to mean present in the table. An id that merely parses is
+    exactly the case the managers fallback exists to cover.
+    """
     owner = _as_uuid(item.owner_user_id)
-    if owner is not None:
+    if owner is not None and await _is_real_user(session, owner):
         return [owner]
     project_id = _as_uuid(item.project_id)
     if project_id is None:
@@ -271,35 +289,47 @@ async def sweep_overdue(session: AsyncSession, *, now: datetime | None = None) -
     Operates on the supplied session and flushes its writes (via
     :class:`NotificationService`) but does not commit - the caller owns the
     transaction. Returns the number of fresh overdue nudges actioned this pass.
-    A per-item failure is logged and skipped so one bad row never stalls the
-    sweep.
+
+    Each item runs inside its own SAVEPOINT, so a row that cannot be written
+    rolls back alone and the session stays usable for the rest of the pass.
+    Catching the exception is not enough on its own: a failed flush leaves the
+    session in a rollback-only state, and every later item would then raise
+    ``PendingRollbackError`` instead of doing its work. That is how one
+    unresolvable row silences deadline notifications for every project.
     """
     now = now or _utc_now()
     overdue = await deadlines_service.collect_overdue_for_sweep(session, now=now)
     actioned = 0
     for item in overdue:
+        notified = False
         try:
-            recipients = await _overdue_recipients(session, item)
-            if recipients and not await _already_notified(session, item, now):
-                await _notify_overdue(session, item, recipients)
-                event_bus.publish_detached(
-                    f"deadlines.{item.module}.overdue",
-                    {
-                        "entity_type": item.entity_type,
-                        "entity_id": item.entity_id,
-                        "project_id": item.project_id,
-                        "module": item.module,
-                        "days_overdue": item.days_overdue,
-                        "due_date": item.due_date,
-                    },
-                    source_module="deadlines",
-                )
-                actioned += 1
-            # Escalation is independently deduped (once per entity), so it runs
-            # every tick but fires at most once past the grace window.
-            await _maybe_escalate(session, item, now)
+            async with session.begin_nested():
+                recipients = await _overdue_recipients(session, item)
+                if recipients and not await _already_notified(session, item, now):
+                    await _notify_overdue(session, item, recipients)
+                    notified = True
+                # Escalation is independently deduped (once per entity), so it
+                # runs every tick but fires at most once past the grace window.
+                await _maybe_escalate(session, item, now)
         except Exception:
             logger.exception("Deadline sweep failed for item %s", item.id)
+            continue
+        if notified:
+            # Published only after the savepoint released, so the timeline never
+            # announces a nudge whose write was rolled back.
+            event_bus.publish_detached(
+                f"deadlines.{item.module}.overdue",
+                {
+                    "entity_type": item.entity_type,
+                    "entity_id": item.entity_id,
+                    "project_id": item.project_id,
+                    "module": item.module,
+                    "days_overdue": item.days_overdue,
+                    "due_date": item.due_date,
+                },
+                source_module="deadlines",
+            )
+            actioned += 1
     return actioned
 
 

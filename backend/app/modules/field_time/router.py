@@ -7,6 +7,8 @@ Endpoints (mounted at ``/api/v1/field-time``):
     GET    /timesheets/?project_id=X             - List with filters
     GET    /timesheets/summary/?project_id=X     - Project rollup
     POST   /timesheets/suggest-cost-codes/       - Ranked cost-code suggestions
+    POST   /timesheets/offline/                  - Record a day captured offline
+    POST   /timesheets/offline/withdraw/         - Withdraw a day captured offline
     GET    /timesheets/{id}/                      - Get one
     PATCH  /timesheets/{id}/                      - Update draft header
     DELETE /timesheets/{id}/                      - Delete draft
@@ -40,12 +42,15 @@ from app.modules.field_time.schemas import (
     FieldTimesheetResponse,
     FieldTimesheetUpdate,
     FieldTimeSummary,
+    OfflineEntryResult,
+    OfflineEntrySubmission,
+    OfflineEntryWithdraw,
     ReverseTimesheetRequest,
     SuggestCostCodeRequest,
     SuggestCostCodeResponse,
     ValidationReportOut,
 )
-from app.modules.field_time.service import FieldTimeService
+from app.modules.field_time.service import FieldTimeService, OfflineOpOutcome
 
 router = APIRouter(tags=["field_time"])
 
@@ -198,6 +203,62 @@ async def create_timesheet(
     await verify_project_access(payload.project_id, user_id, session)
     timesheet = await service.create_timesheet(payload, user_id)
     return _timesheet_to_response(timesheet)
+
+
+# ── Offline capture and replay ───────────────────────────────────────────────
+
+
+def _offline_result(outcome: OfflineOpOutcome, entry_key: str) -> OfflineEntryResult:
+    """Render a service outcome as the offline API response."""
+    return OfflineEntryResult(
+        entry_key=entry_key,
+        outcome=outcome.outcome,
+        timesheet=(_timesheet_to_response(outcome.timesheet) if outcome.timesheet is not None else None),
+        submitted=outcome.submitted,
+        detail=outcome.detail,
+    )
+
+
+@router.post("/timesheets/offline/", response_model=OfflineEntryResult)
+async def record_offline_entry(
+    payload: OfflineEntrySubmission,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("field_time.create")),
+    service: FieldTimeService = Depends(_get_service),
+) -> OfflineEntryResult:
+    """Record a day captured with no signal, exactly once however often it arrives.
+
+    The body is the entry's full state and ``entry_key`` names the logical entry,
+    so a replay returns the original timesheet instead of booking the hours a
+    second time. Always HTTP 200: whether the day was written now or on an
+    earlier delivery is in ``outcome``, not in the status code, because a device
+    draining a queue has to treat both as success and stop resending.
+    """
+    await verify_project_access(payload.project_id, user_id, session)
+    outcome = await service.record_offline_entry(payload, user_id)
+    return _offline_result(outcome, payload.entry_key)
+
+
+@router.post("/timesheets/offline/withdraw/", response_model=OfflineEntryResult)
+async def withdraw_offline_entry(
+    payload: OfflineEntryWithdraw,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("field_time.delete")),
+    service: FieldTimeService = Depends(_get_service),
+) -> OfflineEntryResult:
+    """Withdraw a day recorded offline, by the key the device gave it.
+
+    Remembered even when the entry is unknown here, so a withdrawal that
+    overtook its own creation still stops it. Refused with HTTP 409 once the day
+    has been sent on for approval - an approved timesheet is corrected by
+    reversing it, never by deleting it, because deleting it would strand the
+    worker-day claim its approval took.
+    """
+    await verify_project_access(payload.project_id, user_id, session)
+    outcome = await service.withdraw_offline_entry(payload, user_id)
+    return _offline_result(outcome, payload.entry_key)
 
 
 # ── Item routes ──────────────────────────────────────────────────────────────

@@ -4,7 +4,6 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { normalizeListResponse } from '@/shared/lib/apiHelpers';
 import {
   Wallet,
   FileText,
@@ -32,6 +31,7 @@ import {
   Inbox,
   Scale,
   Landmark,
+  FileCode2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import {
@@ -60,7 +60,8 @@ import { useConfirm } from '@/shared/hooks/useConfirm';
 import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
 import { MultiCurrencyTotal } from '@/shared/ui/MultiCurrencyTotal';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
-import { apiGet, apiPost, apiPatch, triggerDownload, extractErrorMessageFromBody } from '@/shared/lib/api';
+import { apiGet, apiPost, apiPatch, downloadWithAuth, extractErrorMessageFromBody, type Page } from '@/shared/lib/api';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { ContactSearchInput } from '@/shared/ui/ContactSearchInput';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
@@ -72,6 +73,7 @@ import { ConnectorsTab } from './ConnectorsTab';
 import { InvoiceInboxTab } from './InvoiceInboxTab';
 import { StatementsTab } from './StatementsTab';
 import { RetentionLedgerTab } from './RetentionLedgerTab';
+import { EInvoiceModal } from './EInvoiceModal';
 import { financeGuide } from './financeGuide';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
@@ -290,27 +292,14 @@ export function invoiceStatusOptions(current: string): string[] {
 
 /* ── Export / Import helpers ──────────────────────────────────────────── */
 
+/**
+ * Kept as the name this page already calls; the body now lives in
+ * shared/lib/api so the e-invoice modal downloads through the same code
+ * rather than a second copy of it that would have to learn the same
+ * lessons about non-2xx responses independently.
+ */
 async function fetchBlobWithAuth(url: string, fallbackFilename: string): Promise<void> {
-  const token = useAuthStore.getState().accessToken;
-  const headers: Record<string, string> = { Accept: 'application/octet-stream' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-
-  const response = await fetch(url, { method: 'GET', headers });
-  if (!response.ok) {
-    let detail = `Export failed (HTTP ${response.status})`;
-    try {
-      const body = await response.json();
-      detail = extractErrorMessageFromBody(body) ?? detail;
-    } catch {
-      // ignore parse error
-    }
-    throw new Error(detail);
-  }
-
-  const blob = await response.blob();
-  const disposition = response.headers.get('Content-Disposition');
-  const filename = disposition?.match(/filename="?(.+)"?/)?.[1] || fallbackFilename;
-  triggerDownload(blob, filename);
+  return downloadWithAuth(url, fallbackFilename);
 }
 
 interface BudgetImportResult {
@@ -705,12 +694,13 @@ export function FinancePage() {
   // dashboard query the summary cards already load, so it is a cache hit.
   // These hooks sit with the other top-level hooks, above any conditional
   // render, so the hook order stays stable.
-  const { data: insightInvoices = [] } = useQuery({
+  const { data: insightPage } = useQuery({
     queryKey: ['finance-invoices', projectId, 'all'],
-    queryFn: () => apiGet<InvoiceWire[]>(`/v1/finance/?project_id=${projectId}`),
-    select: (d): Invoice[] => normalizeListResponse<InvoiceWire>(d).map(normaliseInvoice),
+    queryFn: () => apiGet<Page<InvoiceWire>>(`/v1/finance/?project_id=${projectId}`),
+    select: (p): Page<Invoice> => ({ ...p, items: p.items.map(normaliseInvoice) }),
     enabled: !!projectId,
   });
+  const insightInvoices = insightPage?.items ?? [];
   const { data: insightDashboard } = useQuery({
     queryKey: ['finance', 'dashboard', projectId],
     queryFn: () =>
@@ -804,7 +794,14 @@ export function FinancePage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
+      {/* The charts are built from the invoices this page read, and that read
+          is one page of the register. Say so, or the aggregate reads as the
+          whole project. */}
+      {insights.open && insightPage && (
+        <TruncationNotice page={insightPage} className="-mt-3" />
+      )}
 
       {/* Canonical module intro — pain-named, copy from MODULE_INTRO_COPY.
           Replaces the bespoke gradient "How it works" workflow guide. */}
@@ -1360,13 +1357,16 @@ function BudgetsTab({ projectId }: { projectId: string }) {
 
   const budgetsQuery = useQuery({
     queryKey: ['finance-budgets', projectId],
+    // The budgets route answers with the envelope but without `offset` /
+    // `limit` - it takes no paging arguments at all - so the type names only
+    // the two fields that are really on the wire.
     queryFn: () =>
-      apiGet<BudgetLine[]>(
+      apiGet<Pick<Page<BudgetLine>, 'items' | 'total'>>(
         `/v1/finance/budgets/?project_id=${projectId}`,
       ),
-    select: (d): BudgetLine[] => normalizeListResponse(d),
   });
-  const { data: budgets, isLoading, isError, error, refetch } = budgetsQuery;
+  const { data: budgetPage, isLoading, isError, error, refetch } = budgetsQuery;
+  const budgets = budgetPage?.items;
 
   const filtered = useMemo(() => {
     if (!budgets) return [];
@@ -1764,6 +1764,10 @@ function BudgetsTab({ projectId }: { projectId: string }) {
           );
         })}
       </div>
+
+      {budgetPage && (
+        <TruncationNotice page={budgetPage} className="px-4 py-3 border-t border-border-light" />
+      )}
     </Card>
 
     {/* New / Edit Budget Line Modal */}
@@ -1937,6 +1941,9 @@ function InvoicesTab({ projectId }: { projectId: string }) {
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
   const isEditingInvoice = editingInvoice !== null;
   const invoiceModalOpen = showCreate || isEditingInvoice;
+
+  // The invoice currently being issued as an EN 16931 e-invoice, if any.
+  const [einvoiceFor, setEinvoiceFor] = useState<Invoice | null>(null);
 
   // Prefill the form when entering edit mode — mirrors every field the
   // create form exposes (direction, counterparty, dates, amounts, notes).
@@ -2122,7 +2129,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
   });
 
   const {
-    data: invoices,
+    data: invoicePage,
     isLoading,
     isError,
     error,
@@ -2130,12 +2137,12 @@ function InvoicesTab({ projectId }: { projectId: string }) {
   } = useQuery({
     queryKey: ['finance-invoices', projectId, subTab],
     queryFn: () =>
-      apiGet<InvoiceWire[]>(
+      apiGet<Page<InvoiceWire>>(
         `/v1/finance/?project_id=${projectId}&direction=${subTab}`,
       ),
-    select: (d): Invoice[] =>
-      normalizeListResponse<InvoiceWire>(d).map(normaliseInvoice),
+    select: (p): Page<Invoice> => ({ ...p, items: p.items.map(normaliseInvoice) }),
   });
+  const invoices = invoicePage?.items;
 
   const filtered = useMemo(() => {
     if (!invoices) return [];
@@ -2500,6 +2507,15 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                           >
                             <Pencil size={14} />
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => setEinvoiceFor(inv)}
+                            title={t('finance.einvoice.action')}
+                            aria-label={t('finance.einvoice.action')}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-content-tertiary hover:bg-surface-secondary hover:text-oe-blue transition-colors"
+                          >
+                            <FileCode2 size={14} />
+                          </button>
                           {inv.status === 'draft' && (
                             <Button
                               variant="secondary"
@@ -2599,6 +2615,18 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                       >
                         <Pencil size={14} />
                       </button>
+                      {/* The card carries the e-invoice action too, for the same
+                          reason #284 gave the status actions: an action only the
+                          desktop table offers is unreachable on a phone. */}
+                      <button
+                        type="button"
+                        onClick={() => setEinvoiceFor(inv)}
+                        title={t('finance.einvoice.action')}
+                        aria-label={t('finance.einvoice.action')}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-content-tertiary hover:bg-surface-secondary hover:text-oe-blue transition-colors"
+                      >
+                        <FileCode2 size={14} />
+                      </button>
                     </div>
                   </div>
                   <div className="flex items-center justify-between text-xs text-content-tertiary">
@@ -2675,7 +2703,25 @@ function InvoicesTab({ projectId }: { projectId: string }) {
             </div>
           </>
         )}
+
+        {/* Outside the branch above on purpose: a search that matches nothing
+            is exactly when the reader has to be told that only part of the
+            register was searched. */}
+        {!isLoading && !isError && invoicePage && (
+          <TruncationNotice page={invoicePage} className="px-4 py-3 border-t border-border-light" />
+        )}
       </Card>
+
+      {/* EN 16931 e-invoice: pick the country profile, read what a receiver
+          would object to, then take the XML or the hybrid PDF. */}
+      {einvoiceFor && (
+        <EInvoiceModal
+          open
+          onClose={() => setEinvoiceFor(null)}
+          invoiceId={einvoiceFor.id}
+          invoiceNumber={einvoiceFor.invoice_number}
+        />
+      )}
 
       {/* New / Edit Invoice Modal — the edit form reuses this exact create
           form, prefilled via openEditInvoice(). */}
@@ -3119,19 +3165,22 @@ function PaymentsTab({
   const uploadRef = useRef<HTMLInputElement>(null);
 
   const {
-    data: payments,
+    data: paymentPage,
     isLoading,
     isError,
     error,
     refetch,
   } = useQuery({
     queryKey: ['finance-payments', projectId],
+    // Enveloped, but this route sends `items` and `total` only - no
+    // `offset` / `limit` on the wire.
     queryFn: () =>
-      apiGet<Payment[]>(
+      // Keep a high limit so THCC-imported payment registers stay visible in one page.
+      apiGet<Pick<Page<Payment>, 'items' | 'total'>>(
         `/v1/finance/payments/?project_id=${projectId}&limit=500&offset=0`,
       ),
-    select: (d): Payment[] => normalizeListResponse(d),
   });
+  const payments = paymentPage?.items;
 
   const {
     data: thccScan,
@@ -3642,6 +3691,10 @@ function PaymentsTab({
           )}
         </table>
       </div>
+
+      {paymentPage && (
+        <TruncationNotice page={paymentPage} className="px-4 py-3 border-t border-border-light" />
+      )}
     </Card>
   );
 }

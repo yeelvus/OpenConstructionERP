@@ -91,3 +91,90 @@ describe('GanttChart header', () => {
     expect(new Set(ids).size, 'two charts emitted colliding clipPath ids').toBe(ids.length);
   });
 });
+
+/**
+ * The START and END columns of the left table.
+ *
+ * A programme that runs past New Year prints two rows that read the same six
+ * characters and mean dates a year apart, and nothing on the screen resolves
+ * which is which. The year has to appear then - and only then, because on a
+ * programme inside one year it is the same digits on every row.
+ *
+ * The dates below are chosen so no day number can be mistaken for a year: the
+ * single-year fixture sits in 2026 and never uses the 26th, and the multi-year
+ * one never uses the 27th or 28th.
+ */
+const SINGLE_YEAR: GanttActivity[] = [
+  { id: 'a', name: 'Groundworks', start: '2026-03-05', end: '2026-07-18', progress: 100 },
+  { id: 'b', name: 'Frame', start: '2026-07-19', end: '2026-11-12', progress: 0 },
+];
+
+// Both activities start on the 5th of March. Without a year the two START cells
+// are character-for-character identical while standing two years apart, which is
+// the defect stated as data.
+const MULTI_YEAR: GanttActivity[] = [
+  { id: 'a', name: 'Enabling works', start: '2026-03-05', end: '2027-01-11', progress: 100 },
+  { id: 'b', name: 'Fit-out', start: '2028-03-05', end: '2028-09-14', progress: 0 },
+];
+
+function cellText(container: HTMLElement, testId: string): string {
+  const cell = container.querySelector(`[data-testid="${testId}"]`);
+  expect(cell, `no ${testId} cell rendered`).not.toBeNull();
+  return cell!.textContent ?? '';
+}
+
+describe('GanttChart date columns', () => {
+  it('leaves the year off a programme that stays inside one calendar year', () => {
+    const { container } = render(<GanttChart activities={SINGLE_YEAR} />);
+
+    for (const id of ['gantt-start-a', 'gantt-end-a', 'gantt-start-b', 'gantt-end-b']) {
+      const text = cellText(container, id);
+      // Non-empty first: an assertion that only forbids characters passes on a
+      // cell that renders nothing at all.
+      expect(text.trim().length, `${id} is empty`).toBeGreaterThan(0);
+      expect(text, `${id} prints a year nobody needs on a single-year programme`).not.toMatch(
+        /26/,
+      );
+    }
+  });
+
+  it('prints the year once the programme crosses into another year', () => {
+    const { container } = render(<GanttChart activities={MULTI_YEAR} />);
+
+    const startA = cellText(container, 'gantt-start-a');
+    const startB = cellText(container, 'gantt-start-b');
+
+    expect(startA).toMatch(/26/);
+    expect(startB).toMatch(/28/);
+    expect(cellText(container, 'gantt-end-a')).toMatch(/27/);
+    // The point of the whole thing: two same-day-and-month rows two years apart
+    // have to read differently.
+    expect(startA, 'two rows two years apart print the same date').not.toBe(startB);
+  });
+
+  it('reads the span off the activities, not off the padded timeline range', () => {
+    // getDateRange pads a month past the last activity when no explicit range is
+    // given, so a programme ending in December spills into January. Deriving the
+    // flag from that padding would print a year on a single-year programme.
+    const { container } = render(
+      <GanttChart
+        activities={[
+          { id: 'a', name: 'Winter works', start: '2026-11-02', end: '2026-12-18', progress: 0 },
+        ]}
+      />,
+    );
+
+    expect(cellText(container, 'gantt-end-a')).not.toMatch(/26/);
+  });
+
+  it('carries the same dates into the bar label a screen reader announces', () => {
+    const { container } = render(<GanttChart activities={MULTI_YEAR} />);
+
+    const labels = [...container.querySelectorAll('g[role="img"]')].map(
+      (g) => g.getAttribute('aria-label') ?? '',
+    );
+    const fitOut = labels.find((l) => l.startsWith('Fit-out'));
+    expect(fitOut, 'no bar label for the second activity').toBeDefined();
+    expect(fitOut!).toMatch(/28/);
+  });
+});

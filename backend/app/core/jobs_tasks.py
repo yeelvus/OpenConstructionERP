@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING
 from app.core.jobs import celery_app
 
 if TYPE_CHECKING:
+    import uuid
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,73 @@ def _get_session_factory() -> async_sessionmaker[AsyncSession]:
     return async_session_factory
 
 
+async def _dispatch_job_via_dedicated_engine(
+    job_uuid: uuid.UUID,
+    base_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Run ``_dispatch_job_sync`` against a connection scoped to this call.
+
+    ``_run_async_in_dedicated_thread`` gives every dispatch a brand-new
+    event loop - a fresh ``asyncio.run()`` each time. ``base_factory`` is
+    whatever ``_get_session_factory()`` currently resolves to (production,
+    or a test's patched-in isolated database): an ``async_sessionmaker``
+    bound to a pooled engine that outlives any single dispatch. A
+    connection checked out on one loop and later reused from a *different*
+    loop makes asyncpg raise ``RuntimeError: ... got Future ... attached to
+    a different loop`` - deterministically from the second dispatch onward
+    in any one worker process, since a connection returned to the pool at
+    the end of one ``asyncio.run()`` is still sitting there, bound to a
+    loop that no longer exists, when the next dispatch's loop starts.
+
+    The fix builds a throwaway engine for this dispatch alone, pointed at
+    the exact same database as ``base_factory`` (same URL, same
+    localhost/SSL handling as ``app.database.create_engine_from_settings``)
+    but with ``NullPool``, so no connection is ever held between checkouts
+    to begin with - nothing can outlive the loop that opened it. Disposed
+    in the ``finally`` below; under ``NullPool`` there is nothing left
+    pooled to dispose of, but an explicit dispose keeps the engine's own
+    bookkeeping tidy rather than relying on garbage collection for it.
+
+    ``base_factory`` decides *which* database this dispatch talks to; this
+    function only changes how connections to that database are pooled for
+    the lifetime of one dispatch. It does not change what
+    ``_dispatch_job_sync`` does with the session it is handed - only which
+    engine that session comes from.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+    from sqlalchemy.ext.asyncio import async_sessionmaker as _async_sessionmaker
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.core.job_runner import _dispatch_job_sync
+    from app.database import _tolerant_json_loads
+
+    base_engine = base_factory.kw.get("bind")
+    if base_engine is None:
+        raise RuntimeError("Session factory passed to job dispatch has no bound engine")
+
+    # Mirrors app.database.create_engine_from_settings: asyncpg defaults to
+    # sslmode "prefer" and eagerly builds an SSLContext even for loopback,
+    # which crashes on the bundled OpenSSL in a frozen desktop build. Same
+    # URL as base_engine, so this is always the same database, just with a
+    # pool that cannot go stale across event loops.
+    host = (base_engine.url.host or "").lower()
+    connect_args = {"ssl": False} if host in ("", "localhost", "127.0.0.1", "::1") else {}
+
+    dedicated_engine = create_async_engine(
+        base_engine.url,
+        future=True,
+        json_deserializer=_tolerant_json_loads,
+        poolclass=NullPool,
+        connect_args=connect_args,
+    )
+    dedicated_factory = _async_sessionmaker(dedicated_engine, class_=_AsyncSession, expire_on_commit=False)
+    try:
+        await _dispatch_job_sync(job_uuid, session_factory=dedicated_factory)
+    finally:
+        await dedicated_engine.dispose()
+
+
 @celery_app.task(name="oe.dispatch_job", bind=True)
 def dispatch_job(self, job_run_id: str) -> dict[str, str]:  # noqa: ANN001 - Celery's bind=True
     """Generic dispatch task - runs the handler registered for JobRun.kind.
@@ -51,8 +120,6 @@ def dispatch_job(self, job_run_id: str) -> dict[str, str]:  # noqa: ANN001 - Cel
     """
     import uuid as _uuid
 
-    from app.core.job_runner import _dispatch_job_sync
-
     job_uuid = _uuid.UUID(job_run_id)
     factory = _get_session_factory()
 
@@ -60,9 +127,11 @@ def dispatch_job(self, job_run_id: str) -> dict[str, str]:  # noqa: ANN001 - Cel
     # call ``asyncio.run`` if a loop is already running on this thread
     # (which is the case in eager-mode tests that run inside pytest's
     # asyncio loop). The portable bridge is to spin up a dedicated
-    # thread whose only job is to drive a fresh event loop.
+    # thread whose only job is to drive a fresh event loop. See
+    # _dispatch_job_via_dedicated_engine for why that loop also gets its
+    # own throwaway engine rather than reusing factory's pooled one.
     _run_async_in_dedicated_thread(
-        _dispatch_job_sync(job_uuid, session_factory=factory),
+        _dispatch_job_via_dedicated_engine(job_uuid, factory),
     )
     return {"job_run_id": job_run_id, "status": "dispatched"}
 
@@ -70,16 +139,24 @@ def dispatch_job(self, job_run_id: str) -> dict[str, str]:  # noqa: ANN001 - Cel
 def _run_async_in_dedicated_thread(coro) -> None:  # noqa: ANN001 - coroutine
     """Run a coroutine to completion on its own thread + event loop.
 
-    Required by the Celery dispatch task because:
-      * Celery tasks are sync.
-      * In production, the worker thread has no event loop, so
-        ``asyncio.run`` would Just Work.
-      * In eager-mode tests, the calling thread already has a loop
-        (pytest-asyncio's), so ``asyncio.run`` raises
-        ``RuntimeError: asyncio.run() cannot be called from a
-        running event loop``.
+    Required by the Celery dispatch task because Celery tasks are sync
+    while our DB layer is async, and ``asyncio.run`` cannot be called
+    from a thread that already has a running loop. That is not just a
+    test-only concern: eager mode (``task_always_eager = True``, the
+    documented dev / lightweight-deployment default - see the stack
+    table in the project CLAUDE.md) runs the task in-process on
+    whatever thread called ``apply()``, and that thread is frequently
+    the one driving the caller's own asyncio loop. A real, non-eager
+    Celery worker thread usually has no loop of its own, so
+    ``asyncio.run`` would work there without this helper - but this
+    function does not special-case either mode. It always hands the
+    coroutine to a brand-new thread, so the loop it runs on is always
+    one this call created and nothing else could already be driving.
 
-    Spinning up a thread side-steps both cases uniformly.
+    That freshness is also why every dispatch is handed its own engine
+    (see :func:`_dispatch_job_via_dedicated_engine`): a new loop here
+    does not imply new connections unless the thing using it is built
+    not to reuse old ones either.
     """
     import threading
 

@@ -207,7 +207,32 @@ export function renderEntities(
     }
   }
 
-  // Render geometry entities
+  // Render geometry entities.
+  //
+  // Consecutive entities that would be stroked with the same style go into one
+  // path and are stroked once. A canvas charges for every `stroke()` and every
+  // state change, and this loop used to issue both for each of thousands of
+  // short segments that agreed about their colour anyway.
+  //
+  // Runs, not groups. Sorting the list by colour would batch far harder, and it
+  // would also change which line lands on top of which where they cross. The
+  // drawing has to keep looking like the drawing, so the order stays exactly as
+  // it arrived and only neighbours are merged.
+  //
+  // How much that wins depends on how the file was written, and the honest
+  // answer here is one measurement rather than a claim about DXF in general:
+  // on `fixtures/bench-drawings.ts`, ten strokeable entities collapse to three
+  // stroke calls. That fixture is small, and a file whose colours alternate
+  // entity by entity would gain nothing at all - it would simply behave as
+  // before, one path and one stroke each, which is why the run form is also the
+  // safe form.
+  let openBatch: string | null = null;
+  const flush = (): void => {
+    if (openBatch === null) return;
+    ctx.stroke();
+    openBatch = null;
+  };
+
   for (const entity of entities) {
     // A definition member is drawn only through the INSERTs that place it -
     // see `expandBlockReferences`. Its own coordinates are in block space, so
@@ -217,24 +242,25 @@ export function renderEntities(
     if (entity.type === 'HATCH') continue; // already rendered
     if (!isInViewport(entity, vp, cw, ch)) continue;
 
+    const path = pathBuilderFor(entity.type);
+    if (path) {
+      const style = strokeStyleKey(entity, selectedId);
+      if (style !== openBatch) {
+        flush();
+        applyStyle(ctx, entity, selectedId);
+        ctx.beginPath();
+        openBatch = style;
+      }
+      path(ctx, entity, vp);
+      continue;
+    }
+
+    // Anything that fills, draws text, or opens a path of its own has to see a
+    // finished batch, not a half-built one.
+    flush();
     applyStyle(ctx, entity, selectedId);
 
     switch (entity.type) {
-      case 'LINE':
-        renderLine(ctx, entity, vp);
-        break;
-      case 'LWPOLYLINE':
-        renderPolyline(ctx, entity, vp);
-        break;
-      case 'ARC':
-        renderArc(ctx, entity, vp);
-        break;
-      case 'CIRCLE':
-        renderCircle(ctx, entity, vp);
-        break;
-      case 'ELLIPSE':
-        renderEllipse(ctx, entity, vp);
-        break;
       case 'TEXT':
         // The one place text visibility is decided. Everything upstream - the
         // fit box, the hit test, the layer filter, the quantities - is handed
@@ -250,6 +276,23 @@ export function renderEntities(
         break;
     }
   }
+
+  flush();
+}
+
+/**
+ * What makes two entities strokeable in the same pass.
+ *
+ * `applyStyle` derives everything it sets from the resolved colour, except for
+ * the selected entity, which gets its own width and glow. So the colour is the
+ * whole identity, and the selected one is deliberately given a key nothing else
+ * can match: it must break the run on both sides rather than borrow a
+ * neighbour's style or lend it its own.
+ */
+const SELECTED_STROKE_KEY = 'selected';
+
+function strokeStyleKey(entity: DxfEntity, selectedId?: string | null): string {
+  return entity.id === selectedId ? SELECTED_STROKE_KEY : resolveColor(entity.color);
 }
 
 function applyStyle(
@@ -275,27 +318,34 @@ function applyStyle(
   }
 }
 
-export function renderLine(
-  ctx: CanvasRenderingContext2D,
-  entity: DxfEntity,
-  vp: ViewportState,
-): void {
+/* ── Path builders ──────────────────────────────────────────────────────────
+ *
+ * Each of these appends to whatever path is already open, instead of opening
+ * and stroking one of its own. That is what lets `renderEntities` collect a run
+ * of entities that share a style into a single path and stroke it once. A
+ * canvas charges for every `stroke()` and every state change, and a drawing is
+ * thousands of short segments that mostly agree about their colour, so the
+ * per-entity `beginPath`/`stroke` pair was most of the cost of a frame.
+ *
+ * The exported `render*` wrappers below still open and stroke a path of their
+ * own, so a caller that wants one entity drawn by itself keeps exactly that.
+ *
+ * The arc builders move to their own start point before curving. Inside a
+ * shared path, `arc()` is joined to the previous subpath by a straight line,
+ * which would draw a stray chord across the drawing. On a path of its own the
+ * move is redundant and harmless, which is why one builder serves both callers.
+ */
+
+function pathLine(ctx: CanvasRenderingContext2D, entity: DxfEntity, vp: ViewportState): void {
   if (!entity.start || !entity.end) return;
   const s = worldToScreen(entity.start.x, entity.start.y, vp);
   const e = worldToScreen(entity.end.x, entity.end.y, vp);
-  ctx.beginPath();
   ctx.moveTo(s.x, s.y);
   ctx.lineTo(e.x, e.y);
-  ctx.stroke();
 }
 
-export function renderPolyline(
-  ctx: CanvasRenderingContext2D,
-  entity: DxfEntity,
-  vp: ViewportState,
-): void {
+function pathPolyline(ctx: CanvasRenderingContext2D, entity: DxfEntity, vp: ViewportState): void {
   if (!entity.vertices || entity.vertices.length < 2) return;
-  ctx.beginPath();
   const v0 = entity.vertices[0]!;
   const first = worldToScreen(v0.x, v0.y, vp);
   ctx.moveTo(first.x, first.y);
@@ -307,43 +357,28 @@ export function renderPolyline(
   if (entity.closed) {
     ctx.closePath();
   }
-  ctx.stroke();
 }
 
-export function renderArc(
-  ctx: CanvasRenderingContext2D,
-  entity: DxfEntity,
-  vp: ViewportState,
-): void {
+function pathArc(ctx: CanvasRenderingContext2D, entity: DxfEntity, vp: ViewportState): void {
   if (!entity.start || entity.radius == null) return;
   const center = worldToScreen(entity.start.x, entity.start.y, vp);
   const r = entity.radius * vp.scale;
   const startAngle = entity.start_angle ?? 0;
   const endAngle = entity.end_angle ?? Math.PI * 2;
-  ctx.beginPath();
   // DXF arcs are CCW; with Y-axis flipped in worldToScreen, negate angles and sweep CW
+  ctx.moveTo(center.x + r * Math.cos(-startAngle), center.y + r * Math.sin(-startAngle));
   ctx.arc(center.x, center.y, r, -startAngle, -endAngle, false);
-  ctx.stroke();
 }
 
-export function renderCircle(
-  ctx: CanvasRenderingContext2D,
-  entity: DxfEntity,
-  vp: ViewportState,
-): void {
+function pathCircle(ctx: CanvasRenderingContext2D, entity: DxfEntity, vp: ViewportState): void {
   if (!entity.start || entity.radius == null) return;
   const center = worldToScreen(entity.start.x, entity.start.y, vp);
   const r = entity.radius * vp.scale;
-  ctx.beginPath();
+  ctx.moveTo(center.x + r, center.y);
   ctx.arc(center.x, center.y, r, 0, Math.PI * 2);
-  ctx.stroke();
 }
 
-export function renderEllipse(
-  ctx: CanvasRenderingContext2D,
-  entity: DxfEntity,
-  vp: ViewportState,
-): void {
+function pathEllipse(ctx: CanvasRenderingContext2D, entity: DxfEntity, vp: ViewportState): void {
   if (!entity.start) return;
   const center = worldToScreen(entity.start.x, entity.start.y, vp);
 
@@ -368,13 +403,136 @@ export function renderEllipse(
 
   if (majorR < 0.5 || minorR < 0.5) return; // too small to draw
 
-  ctx.beginPath();
+  ctx.moveTo(center.x + majorR * Math.cos(rotation), center.y + majorR * Math.sin(rotation));
   ctx.ellipse(center.x, center.y, majorR, minorR, rotation, 0, Math.PI * 2);
+}
+
+/**
+ * The path builder for an entity type, or `null` when the type is not a plain
+ * stroke and so cannot join a batch: text and points are filled, and a block
+ * marker carries a label.
+ */
+function pathBuilderFor(
+  type: string,
+): ((ctx: CanvasRenderingContext2D, entity: DxfEntity, vp: ViewportState) => void) | null {
+  switch (type) {
+    case 'LINE':
+      return pathLine;
+    case 'LWPOLYLINE':
+      return pathPolyline;
+    case 'ARC':
+      return pathArc;
+    case 'CIRCLE':
+      return pathCircle;
+    case 'ELLIPSE':
+      return pathEllipse;
+    default:
+      return null;
+  }
+}
+
+export function renderLine(
+  ctx: CanvasRenderingContext2D,
+  entity: DxfEntity,
+  vp: ViewportState,
+): void {
+  ctx.beginPath();
+  pathLine(ctx, entity, vp);
+  ctx.stroke();
+}
+
+export function renderPolyline(
+  ctx: CanvasRenderingContext2D,
+  entity: DxfEntity,
+  vp: ViewportState,
+): void {
+  ctx.beginPath();
+  pathPolyline(ctx, entity, vp);
+  ctx.stroke();
+}
+
+export function renderArc(
+  ctx: CanvasRenderingContext2D,
+  entity: DxfEntity,
+  vp: ViewportState,
+): void {
+  ctx.beginPath();
+  pathArc(ctx, entity, vp);
+  ctx.stroke();
+}
+
+export function renderCircle(
+  ctx: CanvasRenderingContext2D,
+  entity: DxfEntity,
+  vp: ViewportState,
+): void {
+  ctx.beginPath();
+  pathCircle(ctx, entity, vp);
+  ctx.stroke();
+}
+
+export function renderEllipse(
+  ctx: CanvasRenderingContext2D,
+  entity: DxfEntity,
+  vp: ViewportState,
+): void {
+  ctx.beginPath();
+  pathEllipse(ctx, entity, vp);
   ctx.stroke();
 }
 
 /** Cache for hatch line patterns to avoid recreating each frame. */
 const hatchPatternCache = new Map<string, CanvasPattern | null>();
+
+/**
+ * Hatch line spacing in screen px at zoom 1, and the range it may occupy once
+ * the zoom has been applied.
+ *
+ * The spacing used to be the constant 8, and the cache keyed on the colour and
+ * that constant, so the pattern never answered the zoom at all. A hatched region
+ * drawn small received the same 8 px grid as one drawn large, which filled it in
+ * and hid the linework underneath; the same region drawn large kept a grain far
+ * finer than the drawing asked for. That is why zooming in appeared to cure the
+ * overlap rather than merely postpone it. The spacing is now anchored in the
+ * drawing and moves with the view like everything else on the sheet.
+ *
+ * Rounding to whole pixels is what keeps the cache bounded. Zoom is continuous,
+ * so one entry per float would grow without limit, while 45 sizes per colour at
+ * 48 px square costs nothing. The upper clamp does mean the pattern stops
+ * growing at extreme zoom. That is a deliberate limit rather than an exact
+ * rendering: by then the reader is inside a small area where 48 px reads fine,
+ * and the thing it replaces is a pattern that never grew at all.
+ */
+const HATCH_SPACING_AT_UNIT_SCALE = 8;
+const HATCH_MIN_SCREEN_PX = 4;
+const HATCH_MAX_SCREEN_PX = 48;
+
+/**
+ * Screen size below which a hatched region is filled flat instead of patterned.
+ *
+ * Not a visibility cull. The region is still filled, so a field of small hatches
+ * still reads as texture and nothing disappears. It only skips the pattern,
+ * which at that size cannot be resolved and costs a tile lookup and a pattern
+ * fill to produce a smudge.
+ */
+const HATCH_MIN_PATTERN_BOX_PX = 3;
+
+/**
+ * Screen spacing to draw a hatch pattern at, or `null` to fill the region flat.
+ *
+ * `null` is returned for the two cases where a pattern cannot say anything: the
+ * lines would fall closer together than the screen can resolve, which is what
+ * used to paint a solid block over the geometry beneath, and the region itself
+ * is too small to hold a repeat.
+ *
+ * @param scale       viewport scale, screen px per drawing unit
+ * @param screenBoxPx longest side of the region's screen bounding box
+ */
+export function hatchPatternSpacing(scale: number, screenBoxPx: number): number | null {
+  const spacing = HATCH_SPACING_AT_UNIT_SCALE * scale;
+  if (!(spacing >= HATCH_MIN_SCREEN_PX) || screenBoxPx < HATCH_MIN_PATTERN_BOX_PX) return null;
+  return Math.round(Math.min(HATCH_MAX_SCREEN_PX, spacing));
+}
 
 /** Create a diagonal line pattern (ANSI31-style, 45-degree lines). */
 function createDiagonalPattern(
@@ -420,16 +578,27 @@ export function renderHatch(
   ctx.beginPath();
   const first = worldToScreen(entity.vertices[0]!.x, entity.vertices[0]!.y, vp);
   ctx.moveTo(first.x, first.y);
+  // The screen extent comes out of the walk the path already does, so knowing
+  // how big the region lands costs nothing beyond four comparisons a vertex.
+  let minX = first.x;
+  let maxX = first.x;
+  let minY = first.y;
+  let maxY = first.y;
   for (let i = 1; i < entity.vertices.length; i++) {
     const v = entity.vertices[i]!;
     const p = worldToScreen(v.x, v.y, vp);
     ctx.lineTo(p.x, p.y);
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
   }
   ctx.closePath();
 
   ctx.save();
 
   const patternName = (entity.pattern_name ?? '').toUpperCase();
+  const spacing = hatchPatternSpacing(vp.scale, Math.max(maxX - minX, maxY - minY));
 
   if (entity.is_solid || patternName === 'SOLID') {
     // Solid fill
@@ -438,7 +607,7 @@ export function renderHatch(
   } else if (patternName === 'ANSI31' || patternName === 'ANSI32' || patternName === 'ANSI37') {
     // Diagonal line patterns
     const color = ctx.fillStyle as string;
-    const pattern = createDiagonalPattern(ctx, color, 8);
+    const pattern = spacing === null ? null : createDiagonalPattern(ctx, color, spacing);
     if (pattern) {
       ctx.globalAlpha = 0.35;
       ctx.fillStyle = pattern;

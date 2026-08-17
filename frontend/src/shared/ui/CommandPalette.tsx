@@ -38,6 +38,7 @@ import {
 import { projectsApi, type Project } from '@/features/projects/api';
 import { boqApi, type BOQ } from '@/features/boq/api';
 import { apiGet } from '@/shared/lib/api';
+import { useModuleStore } from '@/stores/useModuleStore';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -49,6 +50,11 @@ interface SearchResult {
   description?: string;
   icon: LucideIcon;
   path: string;
+  /** Set when the screen behind `path` is mounted by a module manifest rather
+   *  than by a static Route in App.tsx. Such a screen exists only while its
+   *  module is enabled, so the entry is dropped when it is not. Mirrors
+   *  `NavItem.moduleKey` in navCatalog.ts, which gates the sidebar row. */
+  moduleKey?: string;
 }
 
 interface GlobalSearchResult {
@@ -133,7 +139,7 @@ const PAGE_RESULTS: SearchResult[] = [
   { id: 'page-tendering', type: 'page', labelKey: 'tendering.title', icon: FileText, path: '/tendering' },
   { id: 'page-reports', type: 'page', labelKey: 'nav.reports', icon: FileBarChart, path: '/reports' },
   { id: 'page-validation', type: 'page', labelKey: 'validation.title', icon: ShieldCheck, path: '/validation' },
-  { id: 'page-sustainability', type: 'page', labelKey: 'nav.sustainability', icon: Leaf, path: '/sustainability' },
+  { id: 'page-sustainability', type: 'page', labelKey: 'nav.sustainability', icon: Leaf, path: '/sustainability', moduleKey: 'sustainability' },
   { id: 'page-modules', type: 'page', labelKey: 'modules.title', icon: Package, path: '/modules' },
   { id: 'page-settings', type: 'page', labelKey: 'nav.settings', icon: Settings, path: '/settings' },
   // Quick actions
@@ -296,10 +302,15 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
     return () => cancelAnimationFrame(rafId);
   }, [open]);
 
+  const { isModuleEnabled } = useModuleStore();
+
   // Build results
   const results = useMemo(() => {
     const lowerQuery = query.toLowerCase().trim();
     const groups: { title: string; items: SearchResult[] }[] = [];
+    // Drop the pages whose module is switched off. Their route is unmounted
+    // with the module, so offering them here lands the reader on Not Found.
+    const pages = PAGE_RESULTS.filter((page) => !page.moduleKey || isModuleEnabled(page.moduleKey));
 
     if (!lowerQuery) {
       // Show recent items when query is empty
@@ -320,7 +331,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       // Show all pages
       groups.push({
         title: t('command_palette.pages', { defaultValue: 'Pages' }),
-        items: PAGE_RESULTS,
+        items: pages,
       });
 
       // Show recent projects (top 5 from API)
@@ -361,7 +372,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
     }
 
     // Filter pages
-    const matchingPages = PAGE_RESULTS.filter((page) => {
+    const matchingPages = pages.filter((page) => {
       const label = page.labelKey ? t(page.labelKey).toLowerCase() : '';
       return label.includes(lowerQuery);
     });
@@ -454,7 +465,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
     }
 
     return groups;
-  }, [query, projects, boqs, globalResults, t]);
+  }, [query, projects, boqs, globalResults, t, isModuleEnabled]);
 
   // Flat list for keyboard navigation
   const flatResults = useMemo(() => results.flatMap((g) => g.items), [results]);

@@ -17,15 +17,26 @@ import { CountryFlag } from './CountryFlag';
  * Accepts raw region keys ("DE_BERLIN", "USA_USD") or ISO codes ("de") - the
  * underlying CountryFlag resolves both. Renders nothing when no country is
  * selected, so pages can pass their state straight through.
+ *
+ * Two sizes, because a wash tuned for a full page reads as nothing at all
+ * inside a block a few hundred pixels tall. `page` (the default) is unchanged.
+ * `panel` is for a bounded region - the expanded body of one cost-base family,
+ * say - where the flag has to be smaller and a little stronger to register.
+ * Both keep the same nesting and the same mask.
  */
+const MASK = 'radial-gradient(70% 70% at 55% 45%, black 25%, transparent 75%)';
+
 export function CountryFlagBackdrop({
   code,
   className,
+  variant = 'page',
 }: {
   code?: string | null;
   className?: string;
+  variant?: 'page' | 'panel';
 }) {
   if (!code) return null;
+  const panel = variant === 'panel';
   return (
     <div
       aria-hidden
@@ -38,14 +49,15 @@ export function CountryFlagBackdrop({
           first frames of every country switch (founder report). Nested,
           the opacities multiply: the flag fades from 0 to 6%, never above. */}
       <div
-        className="absolute -right-24 top-6 rotate-[-8deg] opacity-[0.06] blur-[1.5px] saturate-[1.2] dark:opacity-[0.05] dark:blur-[3px] dark:brightness-75"
-        style={{
-          maskImage: 'radial-gradient(70% 70% at 55% 45%, black 25%, transparent 75%)',
-          WebkitMaskImage: 'radial-gradient(70% 70% at 55% 45%, black 25%, transparent 75%)',
-        }}
+        className={
+          panel
+            ? 'absolute -right-20 -top-28 rotate-[-8deg] opacity-[0.13] blur-[1px] saturate-[1.25] dark:opacity-[0.10] dark:blur-[2px] dark:brightness-75'
+            : 'absolute -right-24 top-6 rotate-[-8deg] opacity-[0.06] blur-[1.5px] saturate-[1.2] dark:opacity-[0.05] dark:blur-[3px] dark:brightness-75'
+        }
+        style={{ maskImage: MASK, WebkitMaskImage: MASK }}
       >
         <div key={code} className="animate-fade-in motion-reduce:animate-none">
-          <CountryFlag code={code} size={880} className="!rounded-[2.5rem]" />
+          <CountryFlag code={code} size={panel ? 620 : 880} className="!rounded-[2.5rem]" />
         </div>
       </div>
     </div>

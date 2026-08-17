@@ -281,6 +281,7 @@ export function PreliminariesPage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       {/* How these preliminaries roll into the whole estimate total. */}

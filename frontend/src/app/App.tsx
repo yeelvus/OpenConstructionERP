@@ -157,6 +157,17 @@ const SafetyPage = lazy(() =>
 const CredentialsPage = lazy(() =>
   import('@/features/credentials/CredentialsPage').then((m) => ({ default: m.CredentialsPage }))
 );
+const ModuleBuilderPage = lazy(() =>
+  import('@/features/module-builder/ModuleBuilderPage').then((m) => ({ default: m.ModuleBuilderPage }))
+);
+// One screen for every module ever built on this instance: it renders from the
+// specification the module serves, because a runtime module cannot ship a
+// compiled screen of its own.
+const GeneratedModulePage = lazy(() =>
+  import('@/features/module-builder/GeneratedModulePage').then((m) => ({
+    default: m.GeneratedModulePage,
+  }))
+);
 const ContactsPage = lazy(() =>
   import('@/features/contacts/ContactsPage').then((m) => ({ default: m.ContactsPage }))
 );
@@ -379,6 +390,24 @@ const ResourceLevelingPage = lazy(() =>
 const ContractsPage = lazy(() =>
   import('@/features/contracts').then((m) => ({ default: m.ContractsPage }))
 );
+const PaymentClockPage = lazy(() =>
+  import('@/features/payment-clock').then((m) => ({ default: m.PaymentClockPage }))
+);
+const TaxWithholdingPage = lazy(() =>
+  import('@/features/tax-withholding').then((m) => ({ default: m.TaxWithholdingPage }))
+);
+const EInvoiceClearancePage = lazy(() =>
+  import('@/features/einvoice-clearance').then((m) => ({ default: m.EInvoiceClearancePage }))
+);
+const CostMatchPage = lazy(() =>
+  import('@/features/cost-match').then((m) => ({ default: m.CostMatchPage }))
+);
+const FullEvmPage = lazy(() =>
+  import('@/features/full-evm').then((m) => ({ default: m.FullEvmPage }))
+);
+const FxPage = lazy(() =>
+  import('@/features/fx').then((m) => ({ default: m.FxPage }))
+);
 const ProgressClaimDetailPage = lazy(() =>
   import('@/features/contracts').then((m) => ({ default: m.ProgressClaimDetailPage }))
 );
@@ -500,6 +529,9 @@ const ReconciliationPage = lazy(() =>
 );
 const InboundCapturePage = lazy(() =>
   import('@/features/inbound').then((m) => ({ default: m.InboundCapturePage })),
+);
+const InboundEmailPage = lazy(() =>
+  import('@/features/inbound-email').then((m) => ({ default: m.InboundEmailPage })),
 );
 const RetrievalPage = lazy(() => import('@/features/retrieval').then((m) => ({ default: m.RetrievalPage })));
 // v4.1 — three additional P1 Slice-1 features land behind dedicated routes
@@ -1198,8 +1230,8 @@ export default function App() {
         <Route path="/files/search" element={<P title="Search across projects"><GlobalSearchPage /></P>} />
         <Route path="/files/transmittals" element={<P title="Transmittals"><TransmittalLogPage /></P>} />
         <Route path="/files/approvals" element={<P title="Approvals register"><FileApprovalsRegisterPage /></P>} />
-        <Route path="/files" element={<P title="Project Files"><FileManagerPage /></P>} />
-        <Route path="/projects/:projectId/files" element={<P title="Project Files"><FileManagerPage /></P>} />
+        <Route path="/files" element={<P title="Documents"><FileManagerPage /></P>} />
+        <Route path="/projects/:projectId/files" element={<P title="Documents"><FileManagerPage /></P>} />
         {/* Drawing-sheet index. The page takes :projectId when it is there
             and otherwise falls back to the active project, so both entries
             work and the sidebar can link the bare path. */}
@@ -1240,6 +1272,13 @@ export default function App() {
 
         <Route path="/credentials" element={<P title="Credentials"><CredentialsPage /></P>} />
         <Route path="/projects/:projectId/credentials" element={<P title="Credentials"><CredentialsPage /></P>} />
+
+        {/* The register of modules built here, and the screen each one renders
+            on. `:moduleKey` is the module's key, not its URL: the loader owns
+            the key-to-URL rule and the page asks the server for it. */}
+        <Route path="/module-builder" element={<P title="Module Builder"><ModuleBuilderPage /></P>} />
+        <Route path="/modules/:moduleKey" element={<P title="Module"><GeneratedModulePage /></P>} />
+        <Route path="/projects/:projectId/modules/:moduleKey" element={<P title="Module"><GeneratedModulePage /></P>} />
 
         <Route path="/contacts" element={<P title="Contacts"><ContactsPage /></P>} />
         <Route path="/projects/:projectId/tasks" element={<P title="Tasks"><TasksPage /></P>} />
@@ -1400,6 +1439,12 @@ export default function App() {
 
         {/* 18-Modules Wave — Commercial */}
         <Route path="/contracts" element={<P title="Contracts"><ContractsPage /></P>} />
+        <Route path="/payment-clock" element={<P title="Payment Clock"><PaymentClockPage /></P>} />
+        <Route path="/tax-withholding" element={<P title="Withholding Tax"><TaxWithholdingPage /></P>} />
+        <Route path="/einvoice-clearance" element={<P title="E-invoice Clearance"><EInvoiceClearancePage /></P>} />
+        <Route path="/cost-match" element={<P title="Cost Match"><CostMatchPage /></P>} />
+        <Route path="/full-evm" element={<P title="Earned Value"><FullEvmPage /></P>} />
+        <Route path="/fx" element={<P title="Currencies"><FxPage /></P>} />
         <Route path="/projects/:projectId/contracts" element={<P title="Contracts"><ContractsPage /></P>} />
         <Route path="/projects/:projectId/contracts/claims/:claimId" element={<P title="Progress Claim"><ProgressClaimDetailPage /></P>} />
         <Route path="/subcontractors" element={<P title="Subcontractors"><SubcontractorsPage /></P>} />
@@ -1498,6 +1543,10 @@ export default function App() {
             </AdminOnly>
           }
         />
+        {/* The file-import sibling of the capture gateway above: it reads one
+            exported message and keeps nothing, so it needs neither the admin
+            gate nor a project in context. */}
+        <Route path="/inbound-email" element={<P title="Email Delay Scan"><InboundEmailPage /></P>} />
         <Route path="/find" element={<P title="Find Records"><RetrievalPage /></P>} />
         <Route path="/projects/:projectId/find" element={<P title="Find Records"><RetrievalPage /></P>} />
         <Route path="/estimates" element={<Navigate to="/boq" replace />} />

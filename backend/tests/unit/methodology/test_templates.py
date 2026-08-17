@@ -220,10 +220,38 @@ def test_template_names_are_unique() -> None:
     assert len(names) == len(set(names))
 
 
+# Countries that legitimately appear twice, because two costing traditions are
+# both in use there and the estimate is read by different people. Chile prices
+# an internal budget flat and submits a public tender as an APU. A country not
+# on this list appearing twice is a copied template, not a second method.
+_DUAL_METHOD_COUNTRIES = {"CL", "CO", "BR"}
+
+
 def test_country_templates_have_unique_country_codes() -> None:
-    """No two country templates claim the same ISO country code."""
+    """One template per country, unless the country really has two methods."""
     codes = [tpl["country_code"] for tpl in t.list_templates() if tpl["country_code"] is not None]
-    assert len(codes) == len(set(codes)), "duplicate country_code in catalogue"
+    duplicated = {code for code in codes if codes.count(code) > 1}
+
+    assert duplicated <= _DUAL_METHOD_COUNTRIES, (
+        f"unexpected duplicate country_code: {sorted(duplicated - _DUAL_METHOD_COUNTRIES)}"
+    )
+
+
+def test_a_country_offered_twice_is_offered_two_different_methods() -> None:
+    """The exemption above has to buy something, or it is just a copy waved through.
+
+    Two templates for one country are only worth the confusion they cost if
+    they compute differently. Identical cascades under two names would be a
+    duplicate that this suite had been told to ignore.
+    """
+    for code in _DUAL_METHOD_COUNTRIES:
+        cascades = [
+            tuple(step["key"] for step in tpl["cascade_steps"])
+            for tpl in t.list_templates()
+            if tpl["country_code"] == code
+        ]
+        assert len(cascades) > 1, f"{code} is exempted from uniqueness but appears once"
+        assert len(set(cascades)) == len(cascades), f"{code} has two templates with the same cascade"
 
 
 def test_catalogue_covers_expected_new_markets() -> None:

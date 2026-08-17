@@ -32,6 +32,7 @@ import { Button, Badge, Card, Input, Breadcrumb, ConfirmDialog, DismissibleInfo 
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { apiGet, triggerDownload } from '@/shared/lib/api';
 import { getIntlLocale } from '@/shared/lib/formatters';
+import { currencyFractionDigits } from '@/shared/lib/money';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { usePreferencesStore } from '@/stores/usePreferencesStore';
@@ -270,10 +271,15 @@ export function AssemblyEditorPage() {
     tagsMutation.mutate(currentTags.filter((t) => t !== tag));
   }, [assembly, tagsMutation]);
 
+  // Decimals come from the assembly's own currency, not from a literal 2. An
+  // assembly priced in CLP, JPY or KRW has no minor unit, so cents there are
+  // not decoration, they are digits the currency cannot express - and this is
+  // the number a unit price analysis carries into a tender.
+  const fmtDigits = currencyFractionDigits(assembly?.currency);
   const fmt = (n: number) =>
     new Intl.NumberFormat(getIntlLocale(), {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+      minimumFractionDigits: fmtDigits,
+      maximumFractionDigits: fmtDigits,
     }).format(n);
 
   if (isLoading) {
@@ -792,6 +798,13 @@ interface CostSearchItem {
   description: string;
   unit: string;
   rate: number;
+  /**
+   * The item's own currency. `CostItemResponse` always sends it (it backfills
+   * from the region for legacy CWICR rows), but it stays optional here so a
+   * cached bundle that outlives a deploy degrades to the default digits
+   * instead of rendering nothing.
+   */
+  currency?: string;
 }
 
 function CostDbSearchForAssembly({
@@ -856,8 +869,15 @@ function CostDbSearchForAssembly({
     [assemblyId, addToast, t, queryClient],
   );
 
-  const fmt = (n: number) =>
-    new Intl.NumberFormat(getIntlLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+  // Each search hit prices in its own currency, so the digits are per row
+  // rather than per list: a catalogue can hold a CLP rate next to a USD one.
+  const fmt = (n: number, currency?: string) => {
+    const digits = currencyFractionDigits(currency);
+    return new Intl.NumberFormat(getIntlLocale(), {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }).format(n);
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 animate-fade-in" onClick={handleClose}>
@@ -928,7 +948,7 @@ function CostDbSearchForAssembly({
                   </div>
                   <span className="text-xs text-content-secondary font-mono uppercase shrink-0">{item.unit}</span>
                   <span className="text-sm font-semibold text-content-primary tabular-nums shrink-0 w-20 text-right">
-                    {fmt(item.rate)}
+                    {fmt(item.rate, item.currency)}
                   </span>
                   {added.has(item.id) ? (
                     <span className="flex items-center gap-1 text-xs font-medium text-green-600 px-2">
@@ -1813,10 +1833,14 @@ function BreakdownSidebar({
   bidFactor: number;
 }) {
   const { t } = useTranslation();
+  // Every figure in this sidebar is printed next to `currency`, so the digits
+  // have to come from it. The resource split is the part of a unit price
+  // analysis a reviewer reads line by line.
+  const breakdownDigits = currencyFractionDigits(currency);
   const fmt = (n: number) =>
     new Intl.NumberFormat(getIntlLocale(), {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+      minimumFractionDigits: breakdownDigits,
+      maximumFractionDigits: breakdownDigits,
     }).format(n);
   const order: ResourceType[] = [
     'material',
@@ -2104,8 +2128,8 @@ function CatalogResourcePickerModal({
                     <td className="py-2 text-center text-content-secondary">{it.unit}</td>
                     <td className="py-2 text-right tabular-nums text-content-primary">
                       {new Intl.NumberFormat(getIntlLocale(), {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
+                        minimumFractionDigits: currencyFractionDigits(it.currency),
+                        maximumFractionDigits: currencyFractionDigits(it.currency),
                       }).format(it.base_price || 0)}{' '}
                       <span className="text-[10px] text-content-tertiary">{it.currency}</span>
                     </td>

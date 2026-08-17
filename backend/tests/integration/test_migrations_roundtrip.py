@@ -50,6 +50,7 @@ Runtime: ~5-15 s per parametrized rev on a warm interpreter. Tier
 
 from __future__ import annotations
 
+import ast
 import os
 import uuid
 from collections.abc import Iterator
@@ -69,10 +70,10 @@ THIS_FILE = Path(__file__).resolve()
 BACKEND_DIR = THIS_FILE.parent.parent.parent
 ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
 
-# Recent revisions we want to exercise (the v250+ wave).
-# Listed newest-first so the most recent failures surface first.
-RECENT_REVISIONS: list[str] = [
-    "v3272_assignment_activity_link",
+# Older revisions we keep exercising by name. These are not the newest any
+# more; they are here because each one once broke and the coverage is worth
+# keeping regardless of how far behind head it falls.
+LEGACY_REVISIONS: list[str] = [
     "v3151_cost_spine",
     "v290_dashboards_presets",
     "v280_4d_schedule_eac",
@@ -84,6 +85,103 @@ RECENT_REVISIONS: list[str] = [
     "v260_eac_v2_core",
     "v250_dashboards_snapshot",
 ]
+
+# How many revisions back from head to always round-trip.
+NEWEST_REVISION_WINDOW = 14
+
+
+def _revision_graph() -> dict[str, tuple[str, ...]]:
+    """Map every revision id to its parents, read from the files as text.
+
+    Deliberately not ``ScriptDirectory.walk_revisions``. That imports each
+    migration module, and ``v3121_geo_raster_overlay`` imports ``app.database``
+    at module level, which refuses to load without a PostgreSQL ``DATABASE_URL``.
+    Using it here would make merely collecting this file depend on a running
+    database. Parsing the headers keeps collection free of that.
+    """
+    graph: dict[str, tuple[str, ...]] = {}
+    for path in sorted((BACKEND_DIR / "alembic" / "versions").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        found: dict[str, object] = {}
+        for node in tree.body:
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                target, value = node.target.id, node.value
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                target, value = node.targets[0].id, node.value
+            else:
+                continue
+            if target not in ("revision", "down_revision") or value is None:
+                continue
+            try:
+                found[target] = ast.literal_eval(value)
+            except ValueError:  # computed, not a literal - nothing to read
+                continue
+        rev = found.get("revision")
+        if not isinstance(rev, str):
+            continue
+        down = found.get("down_revision")
+        if isinstance(down, str):
+            graph[rev] = (down,)
+        elif isinstance(down, (tuple, list)):
+            graph[rev] = tuple(str(d) for d in down)
+        else:
+            graph[rev] = ()
+    return graph
+
+
+_SCHEMA_OP_PREFIXES = ("add_", "alter_", "create_", "drop_", "rename_")
+
+
+def _changes_schema(source: str, func_name: str) -> bool:
+    """True if ``func_name`` in ``source`` calls an Alembic op that alters schema.
+
+    ``op.get_bind`` and ``op.get_context`` are how a data migration reaches the
+    connection, so their presence is not evidence of a schema change.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.FunctionDef) or node.name != func_name:
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Attribute):
+                if inner.attr == "batch_alter_table" or inner.attr.startswith(_SCHEMA_OP_PREFIXES):
+                    return True
+    return False
+
+
+def _newest_revisions(count: int) -> list[str]:
+    """Return the newest ``count`` revision ids, walking down from the heads.
+
+    Derived rather than typed. This list used to be written by hand and it
+    stopped being updated: its newest entry was ``v3272`` while eight later
+    migrations sat on disk, so the suite was green having never executed a
+    single downgrade shipped in that release. A gate whose coverage is a
+    literal only covers what somebody remembered to add to the literal, and
+    the thing most likely to be forgotten is the migration written today,
+    which is also the one most likely to be wrong.
+
+    Walking the graph instead means a new revision is under test the moment
+    it lands. A revision that genuinely cannot round-trip belongs in
+    ``PG_DOWNGRADE_BROKEN_REVS`` with its reason, not outside the window.
+    """
+    graph = _revision_graph()
+    parents = {parent for parents in graph.values() for parent in parents}
+    frontier = sorted(rev for rev in graph if rev not in parents)
+
+    newest: list[str] = []
+    seen: set[str] = set()
+    while frontier and len(newest) < count:
+        rev = frontier.pop(0)
+        if rev in seen or rev not in graph:
+            continue
+        seen.add(rev)
+        newest.append(rev)
+        frontier.extend(graph[rev])
+    return newest
+
+
+# Newest-first, so the most recent failures surface first.
+_NEWEST = _newest_revisions(NEWEST_REVISION_WINDOW)
+RECENT_REVISIONS: list[str] = _NEWEST + [rev for rev in LEGACY_REVISIONS if rev not in set(_NEWEST)]
 
 # Revisions whose ``upgrade()`` and ``downgrade()`` are intentionally
 # both ``pass`` (typically alembic-generated merge nodes). They round-
@@ -99,6 +197,16 @@ NOOP_BOTH_REVS: set[str] = {
 #   "revision_id": "one-line reason"
 PG_DOWNGRADE_BROKEN_REVS: dict[str, str] = {
     # Example: "v999_example": "downgrade drops a PG-only ENUM that upgrade doesn't recreate"
+    "v260_eac_v2_core": (
+        "isolation artefact, not a broken downgrade. The cycle above stamps R and runs R's own "
+        "downgrade against a schema that is still at head, so this one tries to drop oe_eac_rule "
+        "while oe_eac_block_graph - created much later, by v3259 - still holds "
+        "fk_oe_eac_block_graph_rule_id_oe_eac_rule against it. A real head-to-v250 downgrade runs "
+        "v3259's downgrade first and frees the parent, so this body is correct in the chain it "
+        "actually runs in. Any revision whose downgrade drops a table a LATER migration references "
+        "will fail here the same way; that is the class, and telling it apart from a genuine "
+        "missing drop means asking which revision owns the dependent object, not reading the error."
+    ),
 }
 
 
@@ -464,6 +572,7 @@ def test_recent_migrations_have_real_downgrade_bodies() -> None:
     """
     versions_dir = BACKEND_DIR / "alembic" / "versions"
     bad: list[str] = []
+    skipped_data_only: list[str] = []
     for revision in RECENT_REVISIONS:
         if revision in NOOP_BOTH_REVS:
             continue
@@ -476,6 +585,19 @@ def test_recent_migrations_have_real_downgrade_bodies() -> None:
         candidates = [p for p in versions_dir.glob("*.py") if marker in p.read_text(encoding="utf-8")]
         assert candidates, f"Couldn't locate migration file for {revision}"
         src = candidates[0].read_text(encoding="utf-8")
+
+        # A migration that never touched the schema has nothing to reverse, and
+        # demanding a schema call in its downgrade() would be asking it to undo
+        # work it did not do. v3269, v3271 and v3273 are backfills: their only
+        # use of ``op`` is ``op.get_bind()`` to run data statements, and each
+        # documents its downgrade as a deliberate no-op. Deciding this from the
+        # upgrade body rather than from a list of exempt revision ids means a
+        # future backfill is judged correctly without anyone registering it,
+        # and a migration that does add a column is still held to the rule.
+        if not _changes_schema(src, "upgrade"):
+            skipped_data_only.append(revision)
+            continue
+
         _, _, after = src.partition("def downgrade()")
         if not after:
             bad.append(f"{revision}: no downgrade() function at all")
@@ -494,6 +616,9 @@ def test_recent_migrations_have_real_downgrade_bodies() -> None:
         if "op." not in meaningful and "batch_alter_table" not in meaningful:
             bad.append(f"{revision}: downgrade() has no schema-mutating call")
 
+    # Say what was not checked. An exemption nobody can see is the same shape
+    # of blind spot as the short revision list this guard used to run against.
+    print(f"data-only migrations exempt from the downgrade rule: {', '.join(skipped_data_only) or 'none'}")
     assert not bad, "Migrations with non-functional downgrade():\n  " + "\n  ".join(bad)
 
 

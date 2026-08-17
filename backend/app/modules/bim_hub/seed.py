@@ -8,15 +8,18 @@ dashboard has something to show. This seeder NEVER creates new BIMModel
 rows: it only queries the models already imported for a project and wires
 them together.
 
-Per project (first 3 project_ids, always including the flagship) it creates:
+Per project it creates:
     - 1 BIMFederation referencing every existing BIMModel of the project
     - N BIMFederationModel join rows (one per existing model)
     - up to 2 BIMElementGroup saved selections
     - 1 BIMModelDiff when at least 2 models exist
 
-The seeder is idempotent: it short-circuits when a federation already
-exists for ``project_ids[0]``, and it guards each federation insert by the
-unique federation name per project.
+A project with no BIMModel rows gets nothing at all rather than an empty
+federation - there is nothing to group.
+
+The seeder is idempotent per project: each federation insert is guarded by
+the unique federation name for that project, each saved group by its own
+name, and the diff by its (old, new) model pair.
 """
 
 from __future__ import annotations
@@ -36,8 +39,6 @@ from app.modules.bim_hub.models import (
 )
 
 logger = logging.getLogger(__name__)
-
-FLAGSHIP_PROJECT_ID = uuid.UUID("f1a95000-0001-4a00-8b00-000000000001")
 
 # Discipline palette used to tint each member model in the federated viewer.
 _DISCIPLINE_COLORS: dict[str, str] = {
@@ -226,13 +227,12 @@ async def seed_bim_hub(
 
     Args:
         session: Open async DB session.
-        project_ids: Candidate projects to seed against. The flagship project
-            is always included when present; otherwise at most the first 3
-            project ids are processed to stay light.
+        project_ids: Projects to seed against. Every one of them is covered;
+            :func:`_seed_one_project` skips a project that already carries its
+            federation, and a project with no models at all.
 
     Returns:
-        Aggregated counts of rows inserted per entity. Returns an empty dict
-        when a federation already exists for ``project_ids[0]`` (idempotent).
+        Aggregated counts of rows inserted per entity.
     """
     totals = {
         "federations": 0,
@@ -243,22 +243,14 @@ async def seed_bim_hub(
     if not project_ids:
         return totals
 
-    # Idempotency marker: if the first project already has any federation,
-    # treat the whole seed as already applied and return immediately.
-    marker = (
-        await session.execute(select(BIMFederation).where(BIMFederation.project_id == project_ids[0]).limit(1))
-    ).scalar_one_or_none()
-    if marker is not None:
-        logger.info("bim_hub seed: federation already present, skipping.")
-        return {}
-
-    # Pick the targets: always the flagship when present, plus the first few.
+    # No marker read off the first project id: that one project having a
+    # federation says nothing about the rest, and treating it as "the whole
+    # seed already ran" leaves every other project ungrouped for good. The
+    # per-project guards inside _seed_one_project carry the idempotency.
     targets: list[uuid.UUID] = []
-    for pid in project_ids[:3]:
+    for pid in project_ids:
         if pid not in targets:
             targets.append(pid)
-    if FLAGSHIP_PROJECT_ID in project_ids and FLAGSHIP_PROJECT_ID not in targets:
-        targets.append(FLAGSHIP_PROJECT_ID)
 
     for pid in targets:
         counts = await _seed_one_project(session, pid)

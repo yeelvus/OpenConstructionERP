@@ -181,7 +181,7 @@ function HowApprovalsWork() {
           <ModLink to="/plan-room">
             {t('files.approvals.mod_planroom', { defaultValue: 'Plan Room' })}
           </ModLink>{' '}
-          · <ModLink to="/files">{t('files.approvals.mod_files', { defaultValue: 'Files' })}</ModLink>{' '}
+          · <ModLink to="/files">{t('nav.documents', { defaultValue: 'Documents' })}</ModLink>{' '}
           ·{' '}
           <ModLink to="/closeout">
             {t('files.approvals.mod_closeout', { defaultValue: 'Handover' })}
@@ -304,6 +304,7 @@ function RegisterInner() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       <HowApprovalsWork />

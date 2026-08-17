@@ -46,7 +46,6 @@ from app.modules.einvoice_clearance.adapters import (
     adapter_registry,
 )
 from app.modules.einvoice_clearance.models import (
-    FINAL_STATUSES,
     SETTLED_STATUSES,
     STATUS_CANCELLED,
     STATUS_DRAFT,
@@ -57,6 +56,7 @@ from app.modules.einvoice_clearance.models import (
     TERMINAL_SUCCESS,
     EInvoiceDocument,
     EInvoiceProfile,
+    can_be_sent,
     can_transition,
 )
 from app.modules.einvoice_clearance.regimes import (
@@ -177,21 +177,43 @@ async def build_payload_from_invoice(
             "quantity": item.quantity,
             "unit_rate": item.unit_rate,
             "amount": item.amount,
+            # EN 16931 per-line VAT (BT-152 rate, BT-151 category). Without
+            # these a mixed-rate invoice clears under the single rate derived
+            # from the header, which reconciles and passes every rule while
+            # describing money the invoice does not describe. The finance
+            # export route flattens the same lines through
+            # ``_line_item_dicts``, and the two documents have to match.
+            "vat_rate": item.vat_rate,
+            "vat_category": item.vat_category,
         }
         for item in (invoice.line_items or [])
     ]
+
+    # The same standing configuration the finance export path resolves, buyer
+    # included. Both render the same invoice row, so resolving it in only one of
+    # them would mean a document cleared for export here and refused there, or
+    # worse, two different documents for one invoice.
+    from app.modules.finance.einvoice_parties import einvoice_defaults_for_invoice
+
+    defaults = await einvoice_defaults_for_invoice(
+        session,
+        contact_id=invoice.contact_id,
+        invoice_direction=invoice.invoice_direction,
+    )
 
     try:
         _filename, media_type, body = render_einvoice(
             invoice=invoice_dict,
             line_items=line_items,
             profile=en16931_profile,
+            defaults=defaults,
         )
     except EInvoiceError as exc:
         raise ClearanceError(
             f"The invoice is not complete enough to render as {en16931_profile}: {exc}. "
-            "Fill the seller and buyer master data and the buyer reference under the invoice "
-            "metadata 'einvoice' key."
+            "Seller identity and the bank account are set once under the e-invoice settings; "
+            "the buyer address is read from the linked contact and the buyer reference "
+            "belongs to this invoice."
         ) from exc
     # The engine emits UTF-8 XML. Held as text from here on so the stored
     # document and the bytes that go on the wire are one thing that cannot
@@ -566,7 +588,18 @@ async def submit_document(
     a tax clearance.
     """
     regime = regime_for(profile)
-    if document.status in FINAL_STATUSES:
+    if not can_be_sent(document.status):
+        # Asked of the state machine, not of a list kept here. The move to
+        # ``queued`` below would refuse the same states anyway; refusing up
+        # front says so before the duplicate lookup, the rules and the adapter
+        # have all been run, and says it in the words of what is actually wrong.
+        if document.status == STATUS_SUBMITTED:
+            raise ClearanceError(
+                f"This document has already gone to {regime.platform} and nothing is recorded about how it "
+                "was answered. Sending it again risks two cleared invoices for one sale, so read the "
+                "outcome off the platform and record that instead.",
+                conflict=True,
+            )
         raise ClearanceError(
             f"This document is already {document.status}; it cannot be sent again.",
             conflict=True,
@@ -662,7 +695,8 @@ async def submit_document(
         logger.warning("e-invoice clearance adapter %s failed", profile.adapter_key, exc_info=True)
         raise ClearanceError(
             f"The adapter failed before {regime.platform} answered, so this document is left as "
-            "submitted with an unknown outcome. Check the platform before sending it again."
+            "submitted with an unknown outcome. It cannot simply be sent again, because it may "
+            "already be cleared. Read what the platform shows and record that against this document."
         ) from exc
 
     if outcome.accepted:

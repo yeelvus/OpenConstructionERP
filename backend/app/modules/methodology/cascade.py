@@ -41,7 +41,13 @@ __all__ = [
 # Allowed step kinds.
 KIND_PERCENTAGE = "percentage"
 KIND_FIXED = "fixed"
-_VALID_KINDS = frozenset({KIND_PERCENTAGE, KIND_FIXED})
+#: A rate levied on the total that already contains it, recovered from a
+#: subtotal that does not. ``base * rate / (100 - rate)``, so the grand total
+#: comes out as ``subtotal / (1 - rate)``. Brazilian BDI needs this for PIS,
+#: COFINS and ISS: they are charged on the invoiced amount, and taking the same
+#: percentage of the subtotal under-recovers on every job.
+KIND_GROSS_UP = "gross_up"
+_VALID_KINDS = frozenset({KIND_PERCENTAGE, KIND_FIXED, KIND_GROSS_UP})
 
 
 class CascadeError(ValueError):
@@ -271,6 +277,14 @@ def compute_cascade(spec: CascadeSpec, bases: Mapping[str, Decimal]) -> CascadeR
 
         if step.kind == KIND_PERCENTAGE:
             amount = _round(base_amount * step.rate / Decimal(100), quant)
+            applied_rate = step.rate
+        elif step.kind == KIND_GROSS_UP:
+            if step.rate >= Decimal(100):
+                raise CascadeError(
+                    f"step {step.key!r} is a gross_up at {step.rate}%; a rate of 100% or more has no "
+                    f"price to be a share of (it would divide by zero or return a negative tax)"
+                )
+            amount = _round(base_amount * step.rate / (Decimal(100) - step.rate), quant)
             applied_rate = step.rate
         else:  # KIND_FIXED
             amount = _round(_coerce_decimal(step.amount, f"step {step.key!r} amount"), quant)

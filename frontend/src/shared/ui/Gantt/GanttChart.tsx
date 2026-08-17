@@ -28,7 +28,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtDate, getIntlLocale } from '@/shared/lib/formatters';
 import {
   type GanttActivity,
   type ViewMode,
@@ -75,8 +75,26 @@ const RESIZE_HANDLE_WIDTH = 7;
 
 /* ── Date formatting helpers ────────────────────────────────────── */
 
-function fmtShort(date: Date, locale: string): string {
-  return new Intl.DateTimeFormat(locale, { day: '2-digit', month: 'short' }).format(date);
+/**
+ * A date for the table columns: day and month, plus the year when asked for.
+ *
+ * A day and a month alone are unreadable on a programme that runs past New
+ * Year - two rows both reading "20 Jan" can be twelve months apart and nothing
+ * on screen says which is which. The year is therefore printed exactly when the
+ * dates on screen do not all fall in one calendar year; on a programme that
+ * stays inside a single year it would be the same digits on every row, which is
+ * noise in a 10px column somebody scans in one pass.
+ *
+ * Formatting goes through ``fmtDate`` rather than a local ``Intl`` call so a
+ * date-only ``YYYY-MM-DD`` value is pinned to UTC - read in the browser's zone
+ * it renders as the previous day at any negative offset.
+ */
+function fmtShort(iso: string, withYear: boolean): string {
+  return fmtDate(iso, {
+    day: '2-digit',
+    month: 'short',
+    ...(withYear ? { year: '2-digit' as const } : {}),
+  });
 }
 
 function toISO(date: Date): string {
@@ -163,6 +181,28 @@ export function GanttChart({
   );
 
   const bodyHeight = activities.length * ROW_HEIGHT;
+
+  // Does the table need to print years? Measured on the dates the table itself
+  // prints, not on the timeline range: that range comes from the schedule's own
+  // start/end props and is padded by a month when there are no activities, so a
+  // December programme would pad into January and claim to span two years.
+  const showYear = useMemo(() => {
+    const years = new Set<number>();
+    for (const a of activities) {
+      for (const iso of [a.start, a.end]) {
+        const d = new Date(iso);
+        if (!isNaN(d.getTime())) years.add(d.getUTCFullYear());
+      }
+    }
+    return years.size > 1;
+  }, [activities]);
+
+  // The year costs a few more characters, and rather more in the locales that
+  // append a period or an era marker, so the two date columns grow with it and
+  // the panel grows with them. Charging it to the activity name instead would
+  // truncate the one column that carries the meaning.
+  const dateColWidth = showYear ? 88 : 70;
+  const tableWidth = TABLE_WIDTH + 2 * (dateColWidth - 70);
 
   const rowIndex = useMemo(() => buildRowIndex(activities), [activities]);
 
@@ -508,7 +548,7 @@ export function GanttChart({
         <g
           key={a.id}
           role="img"
-          aria-label={`${a.name}: ${fmtShort(new Date(a.start), locale)} - ${fmtShort(new Date(a.end), locale)}, ${a.progress}% ${t('gantt.complete', 'complete')}`}
+          aria-label={`${a.name}: ${fmtShort(a.start, showYear)} - ${fmtShort(a.end, showYear)}, ${a.progress}% ${t('gantt.complete', 'complete')}`}
         >
           {/* Baseline overlay */}
           {baselineX != null && baselineWidth != null && (
@@ -640,7 +680,7 @@ export function GanttChart({
       resizeState,
       viewMode,
       timelineStart,
-      locale,
+      showYear,
       t,
       onActivityClick,
       onActivityDrag,
@@ -658,7 +698,7 @@ export function GanttChart({
       style={{ height: Math.min(bodyHeight + HEADER_HEIGHT + 2, 800) }}
     >
       {/* ── Left panel: activity table ──────────────────────────── */}
-      <div className="flex flex-col" style={{ width: TABLE_WIDTH, minWidth: TABLE_WIDTH }}>
+      <div className="flex flex-col" style={{ width: tableWidth, minWidth: tableWidth }}>
         {/* Table header */}
         <div
           className="flex shrink-0 border-b border-r border-border-light bg-surface-secondary/60"
@@ -669,12 +709,18 @@ export function GanttChart({
               {t('gantt.activity_name', 'Activity')}
             </span>
           </div>
-          <div className="flex w-[70px] items-end justify-end px-2 pb-1.5">
+          <div
+            className="flex shrink-0 items-end justify-end px-2 pb-1.5"
+            style={{ width: dateColWidth }}
+          >
             <span className="text-2xs font-semibold uppercase tracking-wider text-content-tertiary">
               {t('gantt.start', 'Start')}
             </span>
           </div>
-          <div className="flex w-[70px] items-end justify-end px-2 pb-1.5">
+          <div
+            className="flex shrink-0 items-end justify-end px-2 pb-1.5"
+            style={{ width: dateColWidth }}
+          >
             <span className="text-2xs font-semibold uppercase tracking-wider text-content-tertiary">
               {t('gantt.end', 'End')}
             </span>
@@ -694,8 +740,6 @@ export function GanttChart({
           style={{ scrollbarWidth: 'none' }}
         >
           {activities.map((a, idx) => {
-            const startD = new Date(a.start);
-            const endD = new Date(a.end);
             const isCritical = showCriticalPath && a.isCritical;
 
             return (
@@ -737,14 +781,22 @@ export function GanttChart({
                     </span>
                   )}
                 </div>
-                <div className="w-[70px] shrink-0 px-2 text-right">
+                <div
+                  className="shrink-0 px-2 text-right"
+                  data-testid={`gantt-start-${a.id}`}
+                  style={{ width: dateColWidth }}
+                >
                   <span className="text-2xs tabular-nums text-content-tertiary">
-                    {fmtShort(startD, locale)}
+                    {fmtShort(a.start, showYear)}
                   </span>
                 </div>
-                <div className="w-[70px] shrink-0 px-2 text-right">
+                <div
+                  className="shrink-0 px-2 text-right"
+                  data-testid={`gantt-end-${a.id}`}
+                  style={{ width: dateColWidth }}
+                >
                   <span className="text-2xs tabular-nums text-content-tertiary">
-                    {fmtShort(endD, locale)}
+                    {fmtShort(a.end, showYear)}
                   </span>
                 </div>
                 <div className="w-[36px] shrink-0 px-1 text-right">

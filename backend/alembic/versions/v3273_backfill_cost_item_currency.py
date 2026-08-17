@@ -48,6 +48,48 @@ hides that. If anything it makes it easier to see, because identical numbers now
 carry different currency codes instead of none. Repricing is a separate decision
 and is not taken here.
 
+**Why the writes go through a second connection.** The first shape of this
+revision issued one ``UPDATE`` per region on the migration's own connection.
+That reads as batching and is not. Alembic wraps an entire ``upgrade`` in a
+single transaction -- ``env.py`` calls ``context.run_migrations()`` inside one
+``context.begin_transaction()`` and never sets ``transaction_per_migration`` --
+so every superseded row version from every region, and from every other revision
+in the same run, stays on disk until the last one commits. Postgres keeps those
+versions until vacuum, so peak demand was the whole table rewritten, roughly
+twice the table plus comparable WAL, no matter how many regions the loop had.
+
+Measured when that bit: on a 1724 MB table with 553 360 of 592 825 rows to fill
+and 804 MB free, it died with ``DiskFull`` extending a relation while updating
+``AU_SYDNEY``. Worse than the arithmetic, the ``WHERE`` predicate below makes
+the work look resumable and inside one transaction it is not: the abort rolled
+back the regions that had already succeeded, leaving exactly the same 553 360
+rows pending. Every retry started from zero and needed the entire peak at once,
+so freeing a little space and running again could never make progress.
+
+Chunked commits on a connection of our own fix both halves. Each chunk is
+durable the moment it lands, so an interrupted run keeps what it did and a
+re-run continues from there, and dead tuples become reclaimable as we go instead
+of at the end. Committing only makes them *eligible*, though, and autovacuum
+will not keep pace with chunks issued back to back, so this vacuums explicitly
+on a row budget rather than per chunk -- a vacuum scans the whole table, and one
+per chunk would cost a hundred full scans to save the same space.
+
+The second connection cannot be taken for granted, which is why
+:func:`_open_side_connection` probes instead of assuming. A database older than
+the costs module creates ``oe_costs_item`` in a revision that runs in this same
+uncommitted transaction, and a second connection cannot see a table that has not
+been committed: merely querying it would block on the catalog lock rather than
+fail. (A *blank* database never reaches that state, because ``env.py`` short
+circuits it into ``create_all`` plus a stamp to head and never runs the chain at
+all. The case that matters is the upgrade that crosses the revision introducing
+this table, not the fresh install.) ``to_regclass`` answers from the second
+connection's own catalog snapshot and takes no lock, so it says which case we
+are in without hanging, and ``lock_timeout`` turns any future revision that
+locks this table ahead of us into a clean fallback rather than a wedged upgrade.
+When the probe says no, the original in-transaction loop runs, which is correct
+precisely because that case means the table was created in this run and is
+therefore empty or small.
+
 Revision ID: v3273_backfill_cost_item_currency
 Revises: v3272_assignment_activity_link
 Create Date: 2026-08-03
@@ -105,6 +147,25 @@ _REGION_CURRENCY: tuple[tuple[str, str], ...] = (
 )
 
 
+# A row is roughly 3 KB on the database this was measured against (1724 MB
+# over 592 825 rows), and an updated row costs a second copy until vacuum.
+# 5 000 rows is therefore about 15 MB of dead tuples per chunk, small enough
+# that the smallest disk we have seen in the field absorbs one comfortably.
+_CHUNK_ROWS = 5_000
+
+# Vacuum on a row budget, not per chunk. At ~3 KB a row this caps dead tuples
+# near 400 MB between vacuums, which is the intended peak: the 553 360 pending
+# rows on the demo box cost about five vacuums. Per chunk would be correct and
+# far slower, since a vacuum scans the whole table however little it reclaims.
+_VACUUM_EVERY_ROWS = 130_000
+
+# Long enough to ride out an ordinary concurrent statement, short enough that a
+# future revision holding this table ahead of us fails over instead of hanging.
+_LOCK_TIMEOUT = "5s"
+
+_BLANK = "(currency IS NULL OR TRIM(currency) = '')"
+
+
 def _has_column(inspector: sa.engine.reflection.Inspector, table: str, column: str) -> bool:
     """True when ``table`` exists and carries ``column``."""
     if table not in inspector.get_table_names():
@@ -112,6 +173,116 @@ def _has_column(inspector: sa.engine.reflection.Inspector, table: str, column: s
     return any(col["name"] == column for col in inspector.get_columns(table))
 
 
+def _open_side_connection(bind: sa.engine.Connection) -> sa.engine.Connection | None:
+    """An autocommit connection that can write ``_ITEM``, or ``None``.
+
+    ``None`` means "do it on the migration's own connection instead", and the
+    caller must honour that rather than treating it as an error. Three ways to
+    get it, all legitimate:
+
+    * The dialect is not PostgreSQL, so neither ``to_regclass`` nor the chunked
+      strategy's ``VACUUM`` applies.
+    * ``_ITEM`` is invisible to a second connection because an earlier revision
+      in this same uncommitted transaction created it. That is an upgrade
+      crossing the revision that introduces the costs module, where the table
+      is new and the peak is negligible either way.
+    * A lock on ``_ITEM`` is held elsewhere and ``lock_timeout`` fired.
+
+    The probe is ``to_regclass``, which answers from this connection's own
+    catalog snapshot and takes no lock, so it distinguishes those cases without
+    blocking. Querying the table itself would not: against an uncommitted
+    ``CREATE TABLE`` it waits on the catalog lock forever rather than failing.
+    """
+    try:
+        conn = bind.engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    except Exception as exc:  # pragma: no cover - driver/pool specific
+        logger.info("no second connection available (%s), filling in-transaction", exc)
+        return None
+
+    try:
+        conn.execute(sa.text(f"SET lock_timeout = '{_LOCK_TIMEOUT}'"))
+        if conn.execute(sa.text("SELECT to_regclass(:t)"), {"t": _ITEM}).scalar() is None:
+            logger.info("%s not visible to a second connection, filling in-transaction", _ITEM)
+            conn.close()
+            return None
+    except Exception as exc:
+        logger.info("second connection unusable (%s), filling in-transaction", exc)
+        conn.close()
+        return None
+
+    return conn
+
+
+def _vacuum(conn: sa.engine.Connection) -> None:
+    """Reclaim what the committed chunks made eligible. Never fatal.
+
+    ``VACUUM`` requires ownership of the table, so an install whose migration
+    role does not own ``oe_costs_item`` raises here. That must not abort a
+    backfill which is otherwise correct: without the vacuum the fill still
+    completes and still commits as it goes, it simply carries more dead tuples
+    while it runs. Losing the peak bound is worth a warning, not an upgrade.
+    """
+    try:
+        conn.execute(sa.text(f"VACUUM {_ITEM}"))  # noqa: S608 - constant
+    except Exception as exc:
+        logger.warning(
+            "could not vacuum %s between chunks (%s); the backfill continues, but "
+            "peak disk is no longer bounded by the chunk budget",
+            _ITEM,
+            exc,
+        )
+
+
+def _fill_chunked(conn: sa.engine.Connection) -> int:
+    """Fill in committed chunks, vacuuming on a row budget. Returns rows filled."""
+    filled = 0
+    unvacuumed = 0
+
+    for region, code in _REGION_CURRENCY:
+        while True:
+            # ctid rather than the primary key: this path only runs on
+            # PostgreSQL, every row has one, and it commits us to nothing about
+            # what the key is called or how it is typed. An updated row stops
+            # matching the predicate, so each pass selects fresh rows and the
+            # loop ends on its own without a cursor to carry between chunks.
+            result = conn.execute(
+                sa.text(
+                    f"UPDATE {_ITEM} SET currency = :code WHERE ctid IN "  # noqa: S608 - constants
+                    f"(SELECT ctid FROM {_ITEM} WHERE {_BLANK} AND region = :region LIMIT :chunk)"
+                ),
+                {"code": code, "region": region, "chunk": _CHUNK_ROWS},
+            )
+            done = result.rowcount or 0
+            if not done:
+                break
+            filled += done
+            unvacuumed += done
+            if unvacuumed >= _VACUUM_EVERY_ROWS:
+                _vacuum(conn)
+                logger.info("cost item currency backfill: %s filled, vacuumed", filled)
+                unvacuumed = 0
+
+    if unvacuumed:
+        _vacuum(conn)
+    return filled
+
+
+def _fill_in_transaction(conn: sa.engine.Connection) -> int:
+    """Fill in one statement per region, inside the caller's transaction."""
+    filled = 0
+    for region, code in _REGION_CURRENCY:
+        result = conn.execute(
+            sa.text(
+                f"UPDATE {_ITEM} SET currency = :code "  # noqa: S608 - constants
+                f"WHERE {_BLANK} AND region = :region"
+            ),
+            {"code": code, "region": region},
+        )
+        filled += result.rowcount or 0
+    return filled
+
+
+# data-rewrite-ack: table=oe_costs_item growth=tenure rows=core cost-estimation line items across every project; already 1724 MB in the field, see #126
 def upgrade() -> None:
     """Fill blank cost-item currencies from the region code. Never overwrite."""
     bind = op.get_bind()
@@ -126,26 +297,34 @@ def upgrade() -> None:
         logger.info("%s.region absent, nothing to backfill from", _ITEM)
         return
 
-    blank = "(currency IS NULL OR TRIM(currency) = '')"
+    side = _open_side_connection(bind)
+    worker = side if side is not None else bind
 
-    before = bind.execute(
-        sa.text(f"SELECT COUNT(*) FROM {_ITEM} WHERE {blank}")  # noqa: S608 - constants
-    ).scalar_one()
+    try:
+        before = worker.execute(
+            sa.text(f"SELECT COUNT(*) FROM {_ITEM} WHERE {_BLANK}")  # noqa: S608 - constants
+        ).scalar_one()
 
-    filled = 0
-    for region, code in _REGION_CURRENCY:
-        result = bind.execute(
-            sa.text(
-                f"UPDATE {_ITEM} SET currency = :code "  # noqa: S608 - constants
-                f"WHERE {blank} AND region = :region"
-            ),
-            {"code": code, "region": region},
-        )
-        filled += result.rowcount or 0
+        try:
+            filled = _fill_chunked(side) if side is not None else _fill_in_transaction(bind)
+        except Exception:
+            if side is not None:
+                # Worth saying out loud, because it is the whole point of the
+                # second connection: what has been filled so far is committed,
+                # and running the upgrade again continues from here rather than
+                # starting over.
+                logger.error(
+                    "cost item currency backfill interrupted; rows filled before this point are "
+                    "committed and a re-run resumes from them"
+                )
+            raise
 
-    remaining = bind.execute(
-        sa.text(f"SELECT COUNT(*) FROM {_ITEM} WHERE {blank}")  # noqa: S608 - constants
-    ).scalar_one()
+        remaining = worker.execute(
+            sa.text(f"SELECT COUNT(*) FROM {_ITEM} WHERE {_BLANK}")  # noqa: S608 - constants
+        ).scalar_one()
+    finally:
+        if side is not None:
+            side.close()
 
     logger.info(
         "cost item currency backfill: %s blank before, %s filled, %s still blank",

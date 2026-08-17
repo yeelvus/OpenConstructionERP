@@ -25,7 +25,11 @@ export type MeetingType =
   | 'kickoff'
   | 'closeout';
 
-export type MeetingStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
+// draft is the state the API creates a meeting in when the caller does not name
+// one, and the state machine only lets it move on to scheduled or cancelled.
+// Leaving it out of this union did not stop the value arriving - it only stopped
+// the page from having a label, a colour or a filter for it.
+export type MeetingStatus = 'draft' | 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
 
 export type AttendeeStatus = 'present' | 'absent' | 'excused';
 
@@ -91,6 +95,10 @@ export interface CreateMeetingPayload {
   title: string;
   meeting_type: MeetingType;
   meeting_date: string;
+  // Omitting this is not the same as not caring: the API defaults a new meeting
+  // to draft, and a draft cannot be completed until something schedules it.
+  // The form asks for a date, so what it collects is a scheduled meeting.
+  status?: MeetingStatus;
   location?: string;
   chairperson_id?: string;
   attendees?: { name: string; user_id?: string; company?: string; status?: string }[];

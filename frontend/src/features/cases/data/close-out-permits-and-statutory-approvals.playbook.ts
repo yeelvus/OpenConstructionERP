@@ -84,7 +84,7 @@ const playbook: Playbook = {
       whyKey: "cases.close_out_permits_and_statutory_approvals.step.certificates.why",
       whyDefault:
         "A certificate that cannot be found is a certificate that does not exist as far as a lawyer or a future buyer is concerned. Filing them properly protects the client for the life of the building.",
-      moduleLabel: "Files",
+      moduleLabel: "Documents",
       moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },

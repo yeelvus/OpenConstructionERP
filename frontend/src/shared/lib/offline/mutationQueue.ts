@@ -142,9 +142,9 @@ const DB_NAME = 'oe_field_offline';
 const DB_VERSION = 1;
 const STORE = 'fieldMutationQueue';
 
-function openDb(): Promise<IDBDatabase> {
+function openDb(dbName: string): Promise<IDBDatabase> {
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    const req = indexedDB.open(dbName, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
@@ -162,11 +162,19 @@ function openDb(): Promise<IDBDatabase> {
  * IndexedDB-backed queue storage used in the browser. Every method degrades to
  * a no-op / empty result on failure so a storage error never crashes a capture;
  * the in-memory fallback should be used when `indexedDB` is absent.
+ *
+ * A second surface gets a second *database*, never a second object store in
+ * this one. `onupgradeneeded` only fires when the version rises, so a browser
+ * that has already opened `oe_field_offline` at version 1 would never create a
+ * newly-added store: every write would throw `NotFoundError`, and these methods
+ * swallow it. The queue would accept entries and lose all of them, which is the
+ * exact inverse of what it is for. Passing a distinct `dbName` keeps each
+ * surface's upgrade path independent.
  */
-export function createIndexedDbQueueStorage(): QueueStorage {
+export function createIndexedDbQueueStorage(dbName: string = DB_NAME): QueueStorage {
   let dbPromise: Promise<IDBDatabase> | null = null;
   const db = (): Promise<IDBDatabase> => {
-    if (!dbPromise) dbPromise = openDb();
+    if (!dbPromise) dbPromise = openDb(dbName);
     return dbPromise;
   };
 

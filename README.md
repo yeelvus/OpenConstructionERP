@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/screenshots/banner-cast.png" alt="OpenConstructionERP - an estimator, a site supervisor, a safety manager and a buyer, and the open-source construction ERP they work in" width="900" />
+
 # OpenConstructionERP
 
 ### A leading open-source workspace for construction project management

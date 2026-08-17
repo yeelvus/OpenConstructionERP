@@ -173,6 +173,12 @@ const ROUTE_BACKEND_MODULE: Record<string, string> = {
   // Commercial
   '/crm': 'oe_crm',
   '/contracts': 'oe_contracts',
+  '/payment-clock': 'oe_payment_clock',
+  '/tax-withholding': 'oe_tax_withholding',
+  '/einvoice-clearance': 'oe_einvoice_clearance',
+  '/cost-match': 'oe_cost_match',
+  '/full-evm': 'oe_full_evm',
+  '/fx': 'oe_fx',
   '/subcontractors': 'oe_subcontractors',
   '/bid-management': 'oe_bid_management',
   '/tendering': 'oe_tendering',
@@ -220,6 +226,7 @@ const ROUTE_BACKEND_MODULE: Record<string, string> = {
   '/submittals': 'oe_submittals',
   '/transmittals': 'oe_transmittals',
   '/correspondence': 'oe_correspondence',
+  '/inbound-email': 'oe_inbound_email',
   '/collaboration': 'oe_collaboration',
   // Documentation
   '/cde': 'oe_cde',

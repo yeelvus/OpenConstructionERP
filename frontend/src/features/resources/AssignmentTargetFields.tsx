@@ -37,7 +37,7 @@ export function useProjectActivityOptions(projectId: string): {
   const q = useQuery({
     queryKey: ['resources', 'project-activities', projectId],
     queryFn: async () => {
-      const schedules = await scheduleApi.listSchedules(projectId);
+      const { items: schedules } = await scheduleApi.listSchedules(projectId);
       return Promise.all(
         schedules.map((s) =>
           scheduleApi

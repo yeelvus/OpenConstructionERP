@@ -46,6 +46,7 @@ from app.modules.finance.schemas import (
     BudgetUpdate,
     EVMSnapshotCreate,
     InvoiceCreate,
+    InvoiceLineItemCreate,
     InvoiceUpdate,
     JournalEntryCreate,
     LedgerAccountCreate,
@@ -254,6 +255,38 @@ def compute_payment_withholding(
     return _q2(amount_to_pay), _q2(withheld)
 
 
+def _line_item_from(invoice_id: uuid.UUID, item_data: InvoiceLineItemCreate, idx: int) -> InvoiceLineItem:
+    """Build a line item row from its Create schema.
+
+    Creating an invoice and replacing its lines persist the same shape, so the
+    mapping lives here once. Written out at each caller instead, a newly added
+    field reaches whichever caller the author happened to be editing and is
+    silently dropped by the other.
+
+    Args:
+        invoice_id: the invoice the line belongs to.
+        item_data: the validated Create schema for one line.
+        idx: position in the submitted list, used when no sort order is given.
+
+    Returns:
+        An unpersisted :class:`InvoiceLineItem`.
+    """
+    return InvoiceLineItem(
+        invoice_id=invoice_id,
+        description=item_data.description,
+        quantity=item_data.quantity,
+        unit=item_data.unit,
+        unit_rate=item_data.unit_rate,
+        amount=item_data.amount,
+        wbs_id=item_data.wbs_id,
+        cost_category=item_data.cost_category,
+        cost_line_id=getattr(item_data, "cost_line_id", None),
+        sort_order=item_data.sort_order if item_data.sort_order else idx,
+        vat_rate=item_data.vat_rate,
+        vat_category=item_data.vat_category,
+    )
+
+
 class FinanceService:
     """Business logic for finance operations."""
 
@@ -339,19 +372,7 @@ class FinanceService:
 
         # Create line items
         for idx, item_data in enumerate(data.line_items):
-            item = InvoiceLineItem(
-                invoice_id=invoice.id,
-                description=item_data.description,
-                quantity=item_data.quantity,
-                unit=item_data.unit,
-                unit_rate=item_data.unit_rate,
-                amount=item_data.amount,
-                wbs_id=item_data.wbs_id,
-                cost_category=item_data.cost_category,
-                cost_line_id=getattr(item_data, "cost_line_id", None),
-                sort_order=item_data.sort_order if item_data.sort_order else idx,
-            )
-            await self.line_items.create(item)
+            await self.line_items.create(_line_item_from(invoice.id, item_data, idx))
 
         # Re-fetch invoice with relationships (line_items, payments) eager-loaded
         refreshed = await self.invoices.get(invoice.id)
@@ -470,19 +491,7 @@ class FinanceService:
 
             await self.line_items.delete_by_invoice(invoice_id)
             for idx, item_data in enumerate(data.line_items):
-                item = InvoiceLineItem(
-                    invoice_id=invoice_id,
-                    description=item_data.description,
-                    quantity=item_data.quantity,
-                    unit=item_data.unit,
-                    unit_rate=item_data.unit_rate,
-                    amount=item_data.amount,
-                    wbs_id=item_data.wbs_id,
-                    cost_category=item_data.cost_category,
-                    cost_line_id=getattr(item_data, "cost_line_id", None),
-                    sort_order=item_data.sort_order if item_data.sort_order else idx,
-                )
-                await self.line_items.create(item)
+                await self.line_items.create(_line_item_from(invoice_id, item_data, idx))
 
             # Single audit row for the bulk replacement. Best-effort:
             # failures are warned (not rolled back) for the same reason as

@@ -65,6 +65,7 @@ const playbook: Playbook = {
       whyDefault:
         "Coding hundreds of lines by hand is slow and uneven. Scored matches show where to trust the machine and where to check by hand.",
       moduleLabel: "Match Elements",
+      moduleLabelKey: "nav.match_elements",
       to: "/match-elements",
     },
     {
@@ -106,6 +107,7 @@ const playbook: Playbook = {
       whyDefault:
         "A first-pass priced draft in minutes saves hours, but a number only goes in the bid once a person has signed it off.",
       moduleLabel: "AI Estimator",
+      moduleLabelKey: "nav.ai_estimator",
       to: "/ai-estimator",
     },
     {
@@ -147,6 +149,7 @@ const playbook: Playbook = {
       whyDefault:
         "The bill is what you actually price and submit. Getting the quantities right here is where the money is won or lost.",
       moduleLabel: "BOQ",
+      moduleLabelKey: "nav.boq",
       to: "/boq",
     },
     {
@@ -188,6 +191,7 @@ const playbook: Playbook = {
       whyDefault:
         "An AI draft can leave a hole or a silly rate that reads fine at a glance. Catching it before submission stops an underpriced or embarrassing bid.",
       moduleLabel: "Validation",
+      moduleLabelKey: "nav.validation",
       to: "/validation",
     },
   ],

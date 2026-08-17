@@ -133,6 +133,7 @@ const playbook: Playbook = {
       whyDefault:
         "A non-conformance left open at handover does not disappear, it follows the building into occupation and the defects period as a problem for whoever takes the building on. Closing every one, with the evidence attached, is what makes the handover both complete and defensible.",
       moduleLabel: "Non-conformances",
+      moduleLabelKey: "nav.ncr",
       to: "/projects/:projectId/inspections",
     },
     {
@@ -167,7 +168,7 @@ const playbook: Playbook = {
       whyKey: "cases.handover_and_closeout.step.documents.why",
       whyDefault:
         "The client forgets a smooth pour but remembers a messy handover for years. A complete, well ordered document set is both the last impression you leave and the first thing the facilities team actually opens.",
-      moduleLabel: "Files",
+      moduleLabel: "Documents",
       moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },

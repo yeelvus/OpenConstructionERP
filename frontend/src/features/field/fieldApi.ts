@@ -10,6 +10,8 @@
  * idempotently. This module only owns the read side + the session helpers.
  */
 
+import type { CrewRosterMember } from './crewRosterStore';
+
 /** The field session, persisted by the PIN-redemption screen into sessionStorage. */
 export interface FieldSession {
   token: string;
@@ -32,15 +34,42 @@ export function persistFieldSession(session: FieldSession): void {
   }
 }
 
-/** Read the live field session from sessionStorage, or null when absent. */
+/** The object handed out last time, so an unchanged session keeps its identity. */
+let lastSession: FieldSession | null = null;
+
+/** Read the live field session from sessionStorage, or null when absent.
+ *
+ * Returns the *same object* while the stored values are unchanged. The field
+ * shell calls this during render and re-renders on every sync tick, so minting
+ * a fresh object each time would restart every effect keyed on the session -
+ * the crew roster would refetch on a loop, on the phone, over the connection
+ * this screen exists to work without. Fixed here rather than at the one caller
+ * that noticed, because the next caller will read it during render too.
+ *
+ * The returned object is shared and must be treated as read-only.
+ */
 export function readFieldSession(): FieldSession | null {
   try {
     const token = sessionStorage.getItem('oe_field_session_token');
     const pin = sessionStorage.getItem('oe_field_session_pin');
     const projectId = sessionStorage.getItem('oe_field_session_project');
     const userId = sessionStorage.getItem('oe_field_session_user');
-    if (!token || !pin || !projectId) return null;
-    return { token, pin, projectId, userId: userId ?? '' };
+    if (!token || !pin || !projectId) {
+      lastSession = null;
+      return null;
+    }
+    const next: FieldSession = { token, pin, projectId, userId: userId ?? '' };
+    if (
+      lastSession &&
+      lastSession.token === next.token &&
+      lastSession.pin === next.pin &&
+      lastSession.projectId === next.projectId &&
+      lastSession.userId === next.userId
+    ) {
+      return lastSession;
+    }
+    lastSession = next;
+    return next;
   } catch {
     return null;
   }
@@ -81,6 +110,24 @@ export function todayIso(): string {
   const d = new Date();
   const tz = d.getTimezoneOffset() * 60_000;
   return new Date(d.getTime() - tz).toISOString().slice(0, 10);
+}
+
+/**
+ * The project's people and crews, for the punch list to pick from.
+ *
+ * Returns `null` rather than `[]` when the call does not land, so the caller
+ * can tell "nobody is on this project" from "the phone has no signal" and keep
+ * the cached list in the second case.
+ */
+export async function listRoster(session: FieldSession): Promise<CrewRosterMember[] | null> {
+  try {
+    const res = await fetch('/api/v1/field-diary/roster/', { headers: authHeaders(session) });
+    if (!res.ok) return null;
+    const data: unknown = await res.json();
+    return Array.isArray(data) ? (data as CrewRosterMember[]) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** List this field session's diary entries for the given date (read-only). */

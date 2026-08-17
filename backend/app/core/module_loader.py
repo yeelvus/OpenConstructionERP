@@ -16,6 +16,7 @@ Module lifecycle:
 import contextlib
 import importlib
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,44 @@ from fastapi import FastAPI
 logger = logging.getLogger(__name__)
 
 MODULES_DIR = Path(__file__).parent.parent / "modules"
+
+
+def served_routes(app: FastAPI) -> Iterator[tuple[str, Any]]:
+    """Every endpoint the application answers on: its URL, and the route behind it.
+
+    Reading ``path`` off each entry of ``app.routes`` used to be the whole
+    answer, because including a router copied its routes into the application's
+    own table. FastAPI 0.141 stopped copying: an include appends a single marker
+    object that carries the router and resolves paths when a request arrives.
+    A marker has no ``path``, so the old reading now sees only the handful of
+    routes the application declared itself and reports every mounted module as
+    absent - which is silent, and turns a sweep over the application's endpoints
+    into a sweep over nothing.
+
+    ``iter_route_contexts`` is the flattening FastAPI's own schema generation
+    uses, so these are the endpoints the published document describes. It does
+    not exist on the older releases this project still supports, and there the
+    plain iteration was already correct.
+
+    Both halves are needed and they come from different places: the URL is only
+    known to the include that mounted the route, while everything else about the
+    endpoint - its dependencies, its methods, the function itself - lives on the
+    route object, whose own ``path`` is the unprefixed one it was declared with.
+    """
+    from fastapi import routing as fastapi_routing
+
+    flatten = getattr(fastapi_routing, "iter_route_contexts", None)
+    for entry in flatten(app.routes) if flatten is not None else app.routes:
+        path = getattr(entry, "path", None)
+        if isinstance(path, str):
+            yield path, getattr(entry, "original_route", entry)
+
+
+def served_paths(app: FastAPI) -> Iterator[str]:
+    """Every URL path the application actually answers on. See :func:`served_routes`."""
+    for path, _ in served_routes(app):
+        yield path
+
 
 _LOADER_BUILD_TAG: str = "42bfabefac2dd435"
 
@@ -70,8 +109,37 @@ class ModuleLoader:
         return self._modules
 
     def discover(self, modules_dir: Path | None = None) -> list[ModuleManifest]:
-        """Scan modules directory for manifest.py files."""
-        scan_dir = modules_dir or MODULES_DIR
+        """Scan for manifest.py files across every module root.
+
+        With no argument this walks the whole ``app.modules`` search path:
+        the shipped directory plus any runtime root attached by
+        :mod:`app.core.module_runtime_root`. A directory name found in more
+        than one root is scanned once, from the root Python will import it
+        from, so the manifest read here is the manifest that runs.
+
+        An explicit ``modules_dir`` scans only that directory.
+        """
+        if modules_dir is not None:
+            return self._discover_in(modules_dir)
+
+        manifests: list[ModuleManifest] = []
+        seen: set[str] = set()
+        for root in self._module_roots():
+            for manifest in self._discover_in(root, skip=seen):
+                manifests.append(manifest)
+        return manifests
+
+    @staticmethod
+    def _module_roots() -> list[Path]:
+        """Every directory ``app.modules`` is searched in, in import order."""
+        with contextlib.suppress(Exception):
+            from app.core.module_runtime_root import module_search_paths
+
+            return module_search_paths()
+        return [MODULES_DIR]
+
+    def _discover_in(self, scan_dir: Path, skip: set[str] | None = None) -> list[ModuleManifest]:
+        """Read every manifest in one directory, recording names into ``skip``."""
         manifests: list[ModuleManifest] = []
 
         if not scan_dir.exists():
@@ -79,6 +147,11 @@ class ModuleLoader:
             return manifests
 
         for module_dir in sorted(scan_dir.iterdir()):
+            if skip is not None:
+                if module_dir.name in skip:
+                    continue
+                if module_dir.is_dir() and (module_dir / "manifest.py").exists():
+                    skip.add(module_dir.name)
             if not module_dir.is_dir():
                 continue
             if module_dir.name.startswith("_"):
@@ -388,19 +461,51 @@ class ModuleLoader:
         """
         return route_path == prefix or route_path.startswith(prefix + "/")
 
+    @classmethod
+    def _belongs_to(cls, route: Any, router: Any, prefixes: set[str]) -> bool:
+        """Whether an entry in the application's route table is this module's.
+
+        ``original_router`` is what an include leaves behind on current FastAPI,
+        and comparing it by identity is exact: it cannot mistake a neighbour
+        with a similar name for this module, and it finds the legacy mirror as
+        well, since mounting a module twice includes one router twice. Older
+        releases have no such attribute and the path is all there is.
+        """
+        if getattr(route, "original_router", None) is router:
+            return True
+        path = getattr(route, "path", None)
+        return isinstance(path, str) and any(cls._route_under_prefix(path, p) for p in prefixes)
+
     def _has_live_routes(self, module_name: str, app: FastAPI) -> bool:
         """True if the live ASGI route table carries this module's prefix.
 
         Mirrors the prefix derivation used by _load_module / disable_module
-        (canonical kebab-case plus the legacy underscore mirror).
+        (canonical kebab-case plus the legacy underscore mirror). Asked of the
+        paths the application serves rather than of ``app.routes`` directly,
+        because an included router no longer appears there as its routes: see
+        :func:`served_paths`. Answering no about a mounted module makes every
+        enable mount it a second time.
         """
         dir_name = module_name.removeprefix("oe_")
         kebab_name = dir_name.replace("_", "-")
         prefixes = (f"/api/v1/{kebab_name}", f"/api/v1/{dir_name}")
-        return any(
-            hasattr(r, "path") and any(self._route_under_prefix(getattr(r, "path", ""), p) for p in prefixes)
-            for r in app.routes
-        )
+        return any(any(self._route_under_prefix(path, p) for p in prefixes) for path in served_paths(app))
+
+    @staticmethod
+    def _routes_changed(app: FastAPI) -> None:
+        """Tell the application that its route table was edited behind its back.
+
+        ``app.routes`` is a plain list, and removing from it in place is
+        invisible to everything that caches a view of it. The published schema
+        is one such cache, keyed on a counter the router bumps when routes are
+        added through its own methods, so without this a document generated
+        before the removal keeps being handed out and keeps describing a module
+        that is gone.
+        """
+        app.openapi_schema = None
+        mark = getattr(getattr(app, "router", None), "_mark_routes_changed", None)
+        if callable(mark):
+            mark()
 
     async def disable_module(self, module_name: str, app: FastAPI) -> dict[str, Any]:
         """Disable a module at runtime (removes router from app).
@@ -432,21 +537,22 @@ class ModuleLoader:
                 f"Cannot disable '{module_name}': required by enabled modules: {', '.join(enabled_dependents)}"
             )
 
-        # Remove router from the FastAPI app - sweep both the canonical
-        # kebab-case prefix and the legacy underscore mirror so we do not
-        # leak ghost routes after a disable.
+        # Remove the router from the FastAPI app. Two ways of finding it,
+        # because there are two ways it can be in there. Current FastAPI does
+        # not copy a router's routes on include: it appends one marker per
+        # include, holding the router itself, and a marker has no path to match
+        # on. Identity is the exact answer there, and it takes the legacy mirror
+        # with it in the same pass because both includes carry the same router
+        # object. Older releases did copy, so the prefix sweep still has to run:
+        # it is the only thing that finds those, and it also catches a route
+        # added under the module's prefix by something other than the include.
         loaded = self._modules.get(module_name)
         if loaded and loaded.router:
             dir_name = module_name.removeprefix("oe_")
             kebab_name = dir_name.replace("_", "-")
             prefixes = {f"/api/v1/{kebab_name}", f"/api/v1/{dir_name}"}
-            app.routes[:] = [
-                r
-                for r in app.routes
-                if not (
-                    hasattr(r, "path") and any(self._route_under_prefix(getattr(r, "path", ""), p) for p in prefixes)
-                )
-            ]
+            app.routes[:] = [r for r in app.routes if not self._belongs_to(r, loaded.router, prefixes)]
+            self._routes_changed(app)
             logger.info(
                 "Removed routes for %s (prefixes %s)",
                 module_name,

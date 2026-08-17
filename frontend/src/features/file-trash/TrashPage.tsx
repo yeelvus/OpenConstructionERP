@@ -34,6 +34,7 @@ import { Button, Card, EmptyState, ModuleGuideButton, Skeleton } from '@/shared/
 import { Breadcrumb } from '@/shared/ui/Breadcrumb';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useFileTrash, useFileTrashStats, usePurgeTrash, useRestoreFromTrash } from './hooks';
@@ -157,7 +158,7 @@ export function TrashPage() {
       <Breadcrumb
         items={[
           ...(projectName ? [{ label: projectName, to: `/projects/${projectId}` }] : []),
-          { label: t('nav.project_files'), to: '/files' },
+          { label: t('nav.documents'), to: '/files' },
           { label: t('files.trash.title', { defaultValue: 'Recycle Bin' }) },
         ]}
       />
@@ -308,6 +309,12 @@ export function TrashPage() {
           })}
         </ul>
       )}
+
+      {/* The header strip counts the whole bin from the stats endpoint while
+          the list below it is one server page (50 rows by default), so on a
+          busy project the two numbers disagreed with nothing to explain it.
+          Renders nothing once the page holds everything. */}
+      {list.data && <TruncationNotice page={list.data} className="mt-2" />}
 
       {list.isError && (
         <div className="mt-4 flex items-center gap-2 px-3 py-2 text-xs text-semantic-error bg-semantic-error/5 rounded-md">

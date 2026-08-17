@@ -46,8 +46,31 @@ That leaves this script as a tripwire rather than a fix: it fails the build the 
 dependency or a packer upgrade starts sealing a vendor-signed binary inside the archive,
 which would introduce that failure for real.
 
+Both directions of the mismatch count
+-------------------------------------
+dyld does not ask whether a mapped file carries a Team ID, it asks whether the file's Team
+ID is the process's. So the property this script checks is agreement with the wrapper, and
+disagreement has two shapes. The one the 14.4.0 report named is a wrapper with no Team ID
+and a member with one. The other is a wrapper with a real Team ID and members without one,
+which is what any later signing pass over the finished executable would produce, because
+PyInstaller re-signs the members it collects ad-hoc and nothing downstream re-signs them
+again: they are sealed inside the file by then, not files on disk. That second shape used
+to pass here, and worse, it printed "no member carries a Team ID, so no member can
+disagree with the process about one" on its way out. It now fails like the first.
+
+The same file is therefore worth reading at more than one point in a build. Anything that
+signs the executable after it was measured changes the value every member is compared
+against without touching a single member, so a reading taken before that step says nothing
+about the artifact that ships.
+
 Usage:
     python scripts/inspect_desktop_sidecar_signatures.py desktop/dist/openconstructionerp-server
+
+The path may be the raw PyInstaller output or the same binary sitting inside a bundle, for
+example OpenConstructionERP.app/Contents/MacOS/openconstructionerp-server. Nothing here
+treats a bundle specially: the member census reads the archive appended to the file, and
+codesign reports the file's own signature, both of which are the same questions wherever
+the file lives.
 
 Exit code is 0 unless --fail-on-foreign-team-id is passed, so it can also run as plain
 evidence without deciding anything by itself.
@@ -165,9 +188,10 @@ def main() -> int:
         "--fail-on-foreign-team-id",
         action="store_true",
         help=(
-            "exit non-zero when a member carries a Team ID the wrapper does not, "
-            "and also when any member could not be read or parsed - a census "
-            "that skipped members cannot support a claim about all of them"
+            "exit non-zero when any member's Team ID differs from the wrapper's, "
+            "in either direction, and also when any member could not be read, "
+            "parsed or reached - a census that skipped members cannot support a "
+            "claim about all of them"
         ),
     )
     parser.add_argument(
@@ -256,23 +280,53 @@ def main() -> int:
             if len(members) > 12:
                 print(f"    ... and {len(members) - 12} more")
 
+        # What dyld compares is the mapped file's Team ID against the process's,
+        # so a member is foreign when it disagrees with the wrapper, not when it
+        # merely carries an identity. Reading it as "carries one" made this
+        # script blind in the other direction: a wrapper signed with a real Team
+        # ID over members PyInstaller left ad-hoc disagrees just as completely,
+        # and used to leave here printing an all-clear.
+        wrapper_team = (
+            None
+            if wrapper["team"] in ("not set", "unsigned", "unknown")
+            else wrapper["team"]
+        )
         foreign = {
             t: m
             for t, m in by_team.items()
-            if t not in ("not set", "unsigned", "unknown")
+            if t != "unknown"
+            and (None if t in ("not set", "unsigned") else t) != wrapper_team
         }
         # "unknown" means codesign printed something this script could not parse
         # a TeamIdentifier out of. Folding it into "no Team ID" is how a member
         # whose signature could not be read came to be counted as evidence that
         # no member has one. It is inconclusive, and it belongs with the members
-        # that could not be extracted at all.
+        # that could not be extracted at all, and with the ones the reader never
+        # reached because --limit stopped it: all three are members nobody
+        # measured, and a verdict cannot be wider than the census under it.
         inconclusive = list(by_team.get("unknown", [])) + unreadable_names
+        if skipped_over_limit:
+            inconclusive.append(
+                f"<{skipped_over_limit} member(s) never reached, --limit {args.limit}>"
+            )
+        # The wrapper is one end of every comparison below. If its own signature
+        # did not parse, there is no value to compare members against, and a
+        # verdict either way would be about a number this run never read.
+        if wrapper["team"] == "unknown":
+            inconclusive.append(f"<the wrapper itself: {args.executable}>")
         if inconclusive:
             print()
             print(
-                f"INCONCLUSIVE: {len(inconclusive)} member(s) were not read or not parsed, "
+                f"INCONCLUSIVE: {len(inconclusive)} item(s) were not read or not parsed, "
                 "so no statement about the archive as a whole is supported by this run."
             )
+            # Name them here rather than only counting them. This is the message
+            # a red build is read from, and a count alone sends the reader back
+            # to the runner to find out which of three unrelated reasons fired.
+            for item in sorted(inconclusive)[:12]:
+                print(f"    {item}")
+            if len(inconclusive) > 12:
+                print(f"    ... and {len(inconclusive) - 12} more")
 
         missing_required = [
             pat
@@ -289,24 +343,42 @@ def main() -> int:
                 "A census that never opened the file named in the failure cannot clear it."
             )
 
-        if foreign and wrapper["team"] in ("not set", "unsigned"):
+        if foreign and wrapper_team is None:
             print()
             print("MISMATCH: the wrapper carries no Team ID and these members do.")
             print(
                 "This is the shape that makes dyld refuse to map them into the process."
             )
-            if args.fail_on_foreign_team_id:
-                return 1
-        elif not foreign and not inconclusive and not missing_required:
+        elif foreign:
             print()
             print(
-                "No member carries a Team ID, so no member can disagree with the process about one."
+                f"MISMATCH: the wrapper carries Team ID {wrapper_team} and these members do not."
             )
+            print(
+                "The wrapper is the process at launch, so every member it unpacks is compared "
+                "against that Team ID and refused for disagreeing with it. Signing the wrapper "
+                "alone produces this: the members are sealed inside the file by then and no "
+                "later signing pass reaches them."
+            )
+        elif not inconclusive and not missing_required:
+            print()
+            if wrapper_team is None:
+                print(
+                    "No member carries a Team ID, so no member can disagree with the process about one."
+                )
+            else:
+                print(
+                    f"Every inspected member carries the wrapper's Team ID {wrapper_team}, "
+                    "so none disagrees with the process."
+                )
 
-        # Under the gate, an unread member and an unmeasured required member are
-        # failures in their own right: the gate's whole claim is that nothing
-        # foreign is in there, and that claim is only as wide as what was opened.
-        if args.fail_on_foreign_team_id and (inconclusive or missing_required):
+        # Under the gate, a disagreeing member, an unread member and an
+        # unmeasured required member are each failures in their own right: the
+        # gate's whole claim is that nothing in there disagrees with the process,
+        # and that claim is only as wide as what was opened.
+        if args.fail_on_foreign_team_id and (
+            foreign or inconclusive or missing_required
+        ):
             return 1
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

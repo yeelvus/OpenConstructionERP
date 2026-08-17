@@ -85,6 +85,30 @@ function naturalFractionDigits(code: string): number {
 }
 
 /**
+ * Minor units of `code`, for callers that render money themselves.
+ *
+ * `formatCurrency` is the right answer whenever the caller can hand over the
+ * whole amount, because it also places the symbol and groups the digits. Some
+ * surfaces cannot: a table that right-aligns a mono column and prints the ISO
+ * code in its own `<span>` would render the code twice if it switched. Those
+ * still need the one thing they cannot derive - how many decimals this
+ * currency actually has - and reaching for a literal `2` is what puts
+ * `82000.00 CLP` in front of a Chilean estimator. The Chilean peso, the yen
+ * and the won have no minor unit at all, so the cents are not merely
+ * redundant, they are a quantity the currency cannot express.
+ *
+ * Reads the same CLDR table `formatCurrency` reads, so a value formatted
+ * through either route shows the same number of decimals.
+ *
+ * @param currency ISO 4217 code; blank or malformed yields the plain default.
+ * @returns Fraction digits to use for both the minimum and the maximum.
+ */
+export function currencyFractionDigits(currency?: string | null): number {
+  const code = (currency || '').trim().toUpperCase();
+  return CURRENCY_CODE_RE.test(code) ? naturalFractionDigits(code) : PLAIN_FRACTION_DIGITS;
+}
+
+/**
  * Coerce a backend money value to a finite `number`, NaN-guarded.
  *
  * Accepts the Decimal-as-string the wire actually carries as well as a

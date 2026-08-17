@@ -21,6 +21,16 @@ const FLAGS: Record<string, string> = {
   // BR — Brazil
   br: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 14"><rect width="20" height="14" fill="#009B3A"/><path d="M10 1.5l8.5 5.5L10 12.5 1.5 7z" fill="#FEDF00"/><circle cx="10" cy="7" r="3" fill="#002776"/><path d="M7.5 6.8a3 3 0 0 0 5 0" fill="none" stroke="#fff" stroke-width=".3"/></svg>`,
 
+  // PT — Portugal. Needed the moment pt stopped flying the Brazilian flag,
+  // which it did when pt-BR arrived to carry it.
+  pt: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 6 4"><rect width="6" height="4" fill="#DA291C"/><rect width="2.4" height="4" fill="#046A38"/><circle cx="2.4" cy="2" r=".78" fill="none" stroke="#FFE900" stroke-width=".26"/><rect x="2.1" y="1.66" width=".6" height=".68" rx=".1" fill="#fff" stroke="#DA291C" stroke-width=".16"/></svg>`,
+
+  // CL — Chile
+  cl: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 6"><rect width="9" height="6" fill="#fff"/><rect y="3" width="9" height="3" fill="#D52B1E"/><rect width="3" height="3" fill="#0039A6"/><path d="M1.5.65l.2.575.608.012-.485.368.177.583-.5-.348-.5.348.177-.583-.485-.368.608-.012z" fill="#fff"/></svg>`,
+
+  // CO — Colombia
+  co: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 6 4"><rect width="6" height="4" fill="#FCD116"/><rect y="2" width="6" height="1" fill="#003893"/><rect y="3" width="6" height="1" fill="#CE1126"/></svg>`,
+
   // RU — Russia
   ru: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 6"><rect width="9" height="2" fill="#fff"/><rect y="2" width="9" height="2" fill="#0039A6"/><rect y="4" width="9" height="2" fill="#D52B1E"/></svg>`,
 
@@ -124,6 +134,16 @@ const FLAGS: Record<string, string> = {
   // MN — Mongolia (red-blue-red vertical + simplified soyombo on hoist red)
   mn: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 6"><rect width="3" height="6" fill="#C4272F"/><rect x="3" width="3" height="6" fill="#015197"/><rect x="6" width="3" height="6" fill="#C4272F"/><g fill="#F9CF02" transform="translate(1.5,3)"><circle r=".25"/><rect x="-.55" y="-1.4" width=".3" height="1" rx=".05"/><rect x=".25" y="-1.4" width=".3" height="1" rx=".05"/><rect x="-.55" y=".4" width=".3" height="1" rx=".05"/><rect x=".25" y=".4" width=".3" height="1" rx=".05"/><rect x="-1.05" y="-.15" width=".25" height=".3" rx=".05"/><rect x=".8" y="-.15" width=".25" height=".3" rx=".05"/></g></svg>`,
 
+  // EE — Estonia (blue-black-white horizontal). The Estonian locale shipped
+  // with country 'ee' and no entry here, and resolveIso returns null for a
+  // code in neither map, so CountryFlag rendered nothing at all: the language
+  // switcher showed a name with an empty slot where every other row has a flag.
+  ee: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 7"><rect width="11" height="2.333" fill="#0072CE"/><rect y="2.333" width="11" height="2.334" fill="#000"/><rect y="4.667" width="11" height="2.333" fill="#fff"/></svg>`,
+
+  // BD — Bangladesh (green field, red disc offset toward the hoist so it
+  // appears centred when flying)
+  bd: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 18"><rect width="30" height="18" fill="#006A4E"/><circle cx="13.5" cy="9" r="5.4" fill="#F42A41"/></svg>`,
+
   // CIS — Commonwealth of Independent States (СНГ). Not an ISO country; a
   // provenance badge for the in-house GESN/CWICR post-Soviet norm bases.
   // Blue field + gold sun emblem (CIS colours), distinct from any national flag.
@@ -131,6 +151,25 @@ const FLAGS: Record<string, string> = {
 
   // KG — Kyrgyzstan (red field, yellow sun with rays, red tunduk in the centre)
   kg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><rect width="30" height="20" fill="#E8112D"/><g stroke="#FFEF00" stroke-width="0.9" stroke-linecap="round"><line x1="15" y1="4" x2="15" y2="2.2"/><line x1="15" y1="4" x2="15" y2="2.2" transform="rotate(30 15 10)"/><line x1="15" y1="4" x2="15" y2="2.2" transform="rotate(60 15 10)"/><line x1="15" y1="4" x2="15" y2="2.2" transform="rotate(90 15 10)"/><line x1="15" y1="4" x2="15" y2="2.2" transform="rotate(120 15 10)"/><line x1="15" y1="4" x2="15" y2="2.2" transform="rotate(150 15 10)"/><line x1="15" y1="4" x2="15" y2="2.2" transform="rotate(180 15 10)"/><line x1="15" y1="4" x2="15" y2="2.2" transform="rotate(210 15 10)"/><line x1="15" y1="4" x2="15" y2="2.2" transform="rotate(240 15 10)"/><line x1="15" y1="4" x2="15" y2="2.2" transform="rotate(270 15 10)"/><line x1="15" y1="4" x2="15" y2="2.2" transform="rotate(300 15 10)"/><line x1="15" y1="4" x2="15" y2="2.2" transform="rotate(330 15 10)"/></g><circle cx="15" cy="10" r="3.6" fill="#FFEF00"/><g fill="none" stroke="#E8112D" stroke-width="0.45"><circle cx="15" cy="10" r="2.2"/><path d="M13 10 H17 M15 8 V12 M13.4 8.4 L16.6 11.6 M16.6 8.4 L13.4 11.6"/></g></svg>`,
+
+  // KZ — Kazakhstan (sky-blue field, 32-ray gold sun, gold ornament near the hoist)
+  kz: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><rect width="30" height="20" fill="#00AFCA"/><g stroke="#FEC50C" stroke-width="0.6" stroke-linecap="round"><line x1="15" y1="4.5" x2="15" y2="2.6"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(22.5 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(45 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(67.5 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(90 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(112.5 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(135 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(157.5 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(180 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(202.5 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(225 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(247.5 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(270 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(292.5 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(315 15 10)"/><line x1="15" y1="4.5" x2="15" y2="2.6" transform="rotate(337.5 15 10)"/></g><circle cx="15" cy="10" r="3.4" fill="#FEC50C"/><rect x="1.5" y="1.5" width="1.4" height="17" fill="#FEC50C"/></svg>`,
+
+  // PH — Philippines (blue over red field, white hoist triangle with an
+  // 8-ray gold sun and three gold stars at the triangle's points)
+  ph: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><rect width="30" height="10" fill="#0038A8"/><rect y="10" width="30" height="10" fill="#CE1126"/><polygon points="0,0 0,20 11,10" fill="#FFFFFF"/><g stroke="#FCD116" stroke-width="0.5" stroke-linecap="round"><line x1="4" y1="7.8" x2="4" y2="6.2" transform="rotate(0 4 10)"/><line x1="4" y1="7.8" x2="4" y2="6.2" transform="rotate(45 4 10)"/><line x1="4" y1="7.8" x2="4" y2="6.2" transform="rotate(90 4 10)"/><line x1="4" y1="7.8" x2="4" y2="6.2" transform="rotate(135 4 10)"/><line x1="4" y1="7.8" x2="4" y2="6.2" transform="rotate(180 4 10)"/><line x1="4" y1="7.8" x2="4" y2="6.2" transform="rotate(225 4 10)"/><line x1="4" y1="7.8" x2="4" y2="6.2" transform="rotate(270 4 10)"/><line x1="4" y1="7.8" x2="4" y2="6.2" transform="rotate(315 4 10)"/></g><circle cx="4" cy="10" r="1.7" fill="#FCD116"/><circle cx="1.3" cy="1.3" r="0.9" fill="#FCD116"/><circle cx="1.3" cy="18.7" r="0.9" fill="#FCD116"/><circle cx="9.2" cy="10" r="0.9" fill="#FCD116"/></svg>`,
+
+  // PK — Pakistan (dark green field with white crescent + 5-point star,
+  // white vertical hoist stripe 1/4 of the width)
+  pk: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><rect width="30" height="20" fill="#01411C"/><rect width="7.5" height="20" fill="#fff"/><circle cx="18.5" cy="10" r="5.4" fill="#fff"/><circle cx="20" cy="10" r="4.4" fill="#01411C"/><polygon points="22.3,7.3 22.79,8.82 24.39,8.82 23.1,9.76 23.59,11.28 22.3,10.34 21.01,11.28 21.5,9.76 20.21,8.82 21.81,8.82" fill="#fff"/></svg>`,
+
+  // IR — Iran (green/white/red horizontal bands with a stylized red
+  // emblem centered on the white band)
+  ir: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><rect width="30" height="6.67" fill="#239F40"/><rect y="6.67" width="30" height="6.66" fill="#fff"/><rect y="13.33" width="30" height="6.67" fill="#DA0000"/><g fill="#DA0000"><circle cx="15" cy="10" r="1.6"/><path d="M15 6.8 q1.6 1.6 0 3.2 q-1.6 -1.6 0 -3.2z"/><path d="M15 13.2 q1.6 -1.6 0 -3.2 q-1.6 1.6 0 3.2z"/><path d="M11.8 10 q1.6 1.6 3.2 0 q-1.6 -1.6 -3.2 0z"/><path d="M18.2 10 q-1.6 1.6 -3.2 0 q1.6 -1.6 3.2 0z"/></g></svg>`,
+
+  // IL — Israel (white field, blue horizontal stripes near top/bottom,
+  // blue Star of David centered)
+  il: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><rect width="30" height="20" fill="#fff"/><rect y="2.2" width="30" height="2.4" fill="#0038b8"/><rect y="15.4" width="30" height="2.4" fill="#0038b8"/><g fill="none" stroke="#0038b8" stroke-width="0.7"><polygon points="15,6 11.5,12.5 18.5,12.5"/><polygon points="15,15 11.5,8.5 18.5,8.5"/></g></svg>`,
 };
 
 /** Fallback emoji map for unknown codes. Covers everything that lands in
@@ -150,6 +189,20 @@ const EMOJI_FALLBACK: Record<string, string> = {
   mn: '🇲🇳',
   // Kyrgyz locale (12.2.0)
   kg: '🇰🇬',
+  // Estonian locale (has an SVG above; fallback only)
+  ee: '🇪🇪',
+  // Bengali locale (has an SVG above; fallback only)
+  bd: '🇧🇩',
+  // Kazakh locale (has an SVG above; fallback only)
+  kz: '🇰🇿',
+  // Filipino locale (has an SVG above; fallback only)
+  ph: '🇵🇭',
+  // Urdu locale (has an SVG above; fallback only)
+  pk: '🇵🇰',
+  // Persian/Farsi locale (has an SVG above; fallback only)
+  ir: '🇮🇷',
+  // Hebrew locale (has an SVG above; fallback only)
+  il: '🇮🇱',
   // CIS provenance badge (has an SVG above; fallback only)
   cis: '🤝',
 };

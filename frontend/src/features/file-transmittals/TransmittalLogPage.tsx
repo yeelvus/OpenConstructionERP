@@ -115,7 +115,7 @@ export function TransmittalLogPage() {
     <div className="space-y-5 animate-fade-in">
       <Breadcrumb
         items={[
-          { label: t('files.title', { defaultValue: 'Project Files' }), to: '/files' },
+          { label: t('nav.documents', { defaultValue: 'Documents' }), to: '/files' },
           {
             label: t('files.transmittals.title', { defaultValue: 'Transmittals' }),
           },

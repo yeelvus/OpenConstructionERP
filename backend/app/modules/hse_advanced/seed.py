@@ -12,9 +12,14 @@ Generates realistic volumes per PRD scope:
     50   safety audits with 300 audit findings
     80   CAPAs (mix overdue / open / closed)
     30   worker safety certifications
+    1-2  incident investigations per project, opened on real safety incidents
 
 All randomness is seeded with ``random.Random(42)`` for reproducible runs.
-Idempotent: if any HSE-Advanced table already holds rows the seed is a no-op.
+
+Idempotent: if any HSE-Advanced table already holds rows the bulk seed is a
+no-op. Investigations are the exception and are guarded on their own, per
+project - see :func:`_seed_investigations` for why a whole-module sentinel
+cannot reach them.
 """
 
 from __future__ import annotations
@@ -136,6 +141,31 @@ _CERT_TYPES: tuple[str, ...] = (
     "electrical_low_voltage",
 )
 _CERT_STATUSES: tuple[str, ...] = ("valid", "expired", "revoked")
+_INVESTIGATION_METHODS: tuple[str, ...] = ("5_whys", "fishbone", "timeline", "swot")
+# Lifecycle mix for the seeded investigations, cycled per row: most are closed
+# out, one is still running, and one was dropped once the incident turned out
+# not to need root-cause work.
+_INVESTIGATION_STATUSES: tuple[str, ...] = ("completed", "in_progress", "completed", "abandoned")
+# Findings and recommendations per method, so a reader opening two
+# investigations sees two pieces of work rather than the same sentence twice.
+_INVESTIGATION_NOTES: dict[str, tuple[str, str]] = {
+    "5_whys": (
+        "The five-why chain ended at a permit issued before the pre-start check had been signed.",
+        "Make the pre-start signature a hard stop in the permit workflow and re-brief the issuing supervisors.",
+    ),
+    "fishbone": (
+        "Cause and effect review put the weight on method and machine: the task sheet did not cover the plant in use.",
+        "Rewrite the task sheet around the plant actually on site and re-issue it to the crew.",
+    ),
+    "timeline": (
+        "Reconstructing the timeline showed the exclusion zone was reopened before the lift was confirmed complete.",
+        "Hold the exclusion zone until the lift supervisor signs it off, and brief the banksmen on the change.",
+    ),
+    "swot": (
+        "The controls read as sound on paper and were thinly supervised on the night shift.",
+        "Extend the supervision roster to the night shift and re-audit the controls in one month.",
+    ),
+}
 _TOPIC_TITLES: tuple[str, ...] = (
     "Working at height - fall protection basics",
     "Hot work permit walk-through",
@@ -214,6 +244,131 @@ async def _table_has_rows(session: AsyncSession, model: type) -> bool:
     return int(total or 0) > 0
 
 
+async def _incidents_by_project(
+    session: AsyncSession,
+    project_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """Map each project to the ids of the safety incidents recorded against it.
+
+    An investigation carries no project column: it is reachable from a project
+    only through ``incident_ref``, and ``InvestigationRepository.list_for_project``
+    resolves scope by exactly this join. So the incidents a project owns are the
+    only ids a seeded investigation may reference, and a project with none of
+    them gets no investigation rather than an unreachable one.
+    """
+    if not project_ids:
+        return {}
+    try:
+        from app.modules.safety.models import SafetyIncident
+    except ImportError:
+        logger.debug("Safety module not loaded; HSE investigations skipped")
+        return {}
+
+    stmt = (
+        select(SafetyIncident.project_id, SafetyIncident.id)
+        .where(SafetyIncident.project_id.in_(list(project_ids)))
+        .order_by(SafetyIncident.project_id, SafetyIncident.incident_number)
+    )
+    try:
+        # A SAVEPOINT around the read: on PostgreSQL a failed statement aborts
+        # the whole transaction, so an absent safety table would take the rest
+        # of the HSE seed down with it instead of costing only this block.
+        async with session.begin_nested():
+            rows = (await session.execute(stmt)).all()
+    except Exception:
+        logger.debug("Safety incidents unavailable; HSE investigations skipped", exc_info=True)
+        return {}
+
+    out: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for project_id, incident_id in rows:
+        out.setdefault(project_id, []).append(incident_id)
+    return out
+
+
+async def _seed_investigations(
+    session: AsyncSession,
+    project_ids: Sequence[uuid.UUID],
+) -> int:
+    """Open a root-cause investigation on real incidents, one project at a time.
+
+    Guarded on the investigations a project can actually reach rather than on
+    the module as a whole. That distinction is the whole point: this is the only
+    block here reachable exclusively through another module's rows, and the
+    whole-module sentinel cannot express it. On a database seeded before this
+    block referenced real incidents, eight populated tables make the sentinel
+    return first, so the tab the module opens on stays empty for good - and the
+    ten unreachable rows already in the table would satisfy a table-wide count
+    just as permanently.
+
+    Args:
+        session: Active async session (the caller commits).
+        project_ids: Projects to cover. Each is skipped when one of its own
+            incidents already carries an investigation, and when it has no
+            incidents to investigate.
+
+    Returns:
+        The number of investigations written.
+    """
+    incidents = await _incidents_by_project(session, project_ids)
+    if not incidents:
+        return 0
+
+    now = datetime.now(UTC)
+    written = 0
+    seen: set[uuid.UUID] = set()
+    for project_id in project_ids:
+        if project_id in seen:
+            continue
+        seen.add(project_id)
+        incident_ids = incidents.get(project_id) or []
+        if not incident_ids:
+            continue
+
+        already = (
+            (
+                await session.execute(
+                    select(HSEIncidentInvestigation.id)
+                    .where(HSEIncidentInvestigation.incident_ref.in_(incident_ids))
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if already is not None:
+            continue
+
+        # Not every incident is taken to root cause - about half of them are,
+        # and never fewer than one, so no project's tab opens empty while a
+        # project with a single incident does not look over-investigated.
+        wanted = max(1, (len(incident_ids) + 1) // 2)
+        for idx, incident_id in enumerate(incident_ids[:wanted]):
+            method = _INVESTIGATION_METHODS[idx % len(_INVESTIGATION_METHODS)]
+            status_choice = _INVESTIGATION_STATUSES[(written + idx) % len(_INVESTIGATION_STATUSES)]
+            findings, recommendations = _INVESTIGATION_NOTES[method]
+            started_at = now - timedelta(days=14 + idx * 9)
+            session.add(
+                HSEIncidentInvestigation(
+                    id=uuid.uuid4(),
+                    incident_ref=incident_id,
+                    investigation_lead=None,
+                    started_at=started_at,
+                    completed_at=(started_at + timedelta(days=6)) if status_choice == "completed" else None,
+                    method=method,
+                    findings=findings,
+                    recommendations=recommendations,
+                    status=status_choice,
+                    report_url=None,
+                    created_by=None,
+                )
+            )
+            written += 1
+
+    if written:
+        await session.flush()
+    return written
+
+
 async def seed_hse_advanced_demo(
     session: AsyncSession,
     project_ids: Sequence[uuid.UUID] | None = None,
@@ -234,6 +389,11 @@ async def seed_hse_advanced_demo(
     if not project_pool:
         project_pool = [uuid.uuid4() for _ in range(5)]
 
+    # Ahead of the sentinel and outside it: an investigation is reachable only
+    # through a safety incident, so it needs its own per-project guard to land
+    # on a database whose other HSE tables are already full.
+    investigations = await _seed_investigations(session, project_pool)
+
     # Idempotency: if any HSE-Advanced primary table has data, skip everything.
     sentinel_models = (
         JobSafetyAnalysis,
@@ -248,10 +408,11 @@ async def seed_hse_advanced_demo(
     for model in sentinel_models:
         if await _table_has_rows(session, model):
             logger.info(
-                "HSE Advanced demo seed: skipped (table %s already populated)",
+                "HSE Advanced demo seed: bulk tables skipped (table %s already populated), investigations=%d",
                 model.__tablename__,
+                investigations,
             )
-            return {"skipped": 1}
+            return {"skipped": 1, "investigations": investigations}
 
     now = datetime.now(UTC)
     today = date.today()
@@ -547,25 +708,8 @@ async def seed_hse_advanced_demo(
     await session.flush()
     counts["certifications"] = len(certs)
 
-    # ── Incident investigations (10) - light demo set ────────────────────
-    investigations: list[HSEIncidentInvestigation] = []
-    for idx in range(10):
-        inv = HSEIncidentInvestigation(
-            id=uuid.uuid4(),
-            incident_ref=uuid.uuid4(),
-            investigation_lead=None,
-            started_at=now - timedelta(days=rng.randint(1, 90)),
-            method=rng.choice(["5_whys", "fishbone", "timeline", "swot"]),
-            findings="Root cause traced to procedural gap.",
-            recommendations="Update SOP, retrain crew, schedule follow-up audit.",
-            status=rng.choice(["in_progress", "completed", "abandoned"]),
-            report_url=None,
-            created_by=None,
-        )
-        session.add(inv)
-        investigations.append(inv)
-    await session.flush()
-    counts["investigations"] = len(investigations)
+    # Investigations were written before the sentinel above, on real incidents.
+    counts["investigations"] = investigations
 
     logger.info("HSE Advanced demo seed completed: %s", counts)
     return counts

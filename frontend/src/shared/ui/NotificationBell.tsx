@@ -32,7 +32,8 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { apiGet, apiPost, apiDelete, ApiError } from '@/shared/lib/api';
+import { apiGet, apiPost, apiDelete, ApiError, type Page } from '@/shared/lib/api';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -63,11 +64,6 @@ interface UnreadCountResponse {
   count: number;
 }
 
-interface NotificationListResponse {
-  items: Notification[];
-  total: number;
-  unread_count: number;
-}
 
 // ── Icon config ──────────────────────────────────────────────────────────────
 
@@ -209,8 +205,8 @@ export function NotificationBell() {
   });
 
   /* List query only fires when the dropdown opens. The server returns the
-     envelope `{items, total, unread_count}`; we tolerate the bare-array
-     legacy shape too in case an older backend is serving the response. */
+     shared `Page` envelope plus this module's unread counter, so `total` is
+     the size of the whole history behind the ten rows shown here. */
   const {
     data: notifications,
     isLoading,
@@ -220,7 +216,9 @@ export function NotificationBell() {
   } = useQuery({
     queryKey: ['notifications-list'],
     queryFn: () =>
-      apiGet<NotificationListResponse>('/v1/notifications?limit=10'),
+      apiGet<Page<Notification> & { unread_count: number }>(
+        '/v1/notifications?limit=10',
+      ),
     enabled: open,
     staleTime: 10_000,
     refetchOnWindowFocus: true,
@@ -323,8 +321,8 @@ export function NotificationBell() {
   }, [navigate]);
 
   /* Tolerate the bare-array legacy shape so an older backend doesn't
-     bork the bell — the new envelope `{items, total, unread_count}` is
-     preferred but historically the endpoint returned a raw list. */
+     bork the bell — the envelope is preferred but historically the
+     endpoint returned a raw list. */
   const displayItems: Notification[] = useMemo(() => {
     if (!notifications) return [];
     if (Array.isArray(notifications)) return notifications as Notification[];
@@ -344,8 +342,9 @@ export function NotificationBell() {
     return buckets;
   }, [displayItems]);
 
-  const totalCount =
-    notifications && !Array.isArray(notifications) ? notifications.total : displayItems.length;
+  const totalCount = Array.isArray(notifications)
+    ? displayItems.length
+    : (notifications?.total ?? 0);
 
   return (
     <div className="relative" ref={ref}>
@@ -615,6 +614,17 @@ export function NotificationBell() {
           {/* Footer — View all link (always visible so user can find the
               full history even when the bell only has 0 unread). */}
           <div className="border-t border-border-light px-4 py-2 bg-surface-secondary/40">
+            {/* The header chip states the size of the whole history, which on
+                its own reads as a count of what is in the panel. Saying how
+                many of them are on screen puts the number and the ten rows
+                below it in the same sentence, right above the way out to the
+                rest. Renders nothing when the ten rows are all there is. */}
+            {notifications && (
+              <TruncationNotice
+                page={{ items: displayItems, total: totalCount }}
+                className="mb-1 text-center"
+              />
+            )}
             <button
               onClick={handleViewAll}
               className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium text-content-secondary hover:text-oe-blue hover:bg-surface-elevated transition-colors"

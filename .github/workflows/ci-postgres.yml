@@ -75,6 +75,18 @@ jobs:
       # seed sources, and it is attached here for the reason stated above: a test
       # that blocks no merge is the same as a test that does not exist, which is
       # exactly how a name rejected once already shipped in every wheel since.
+      # Safety is the third module caught storing words its own schema refuses,
+      # after contacts and variations, which is what makes this a class rather
+      # than three incidents. It also covers the other half of a demo register
+      # being useful: that it is not seeded entirely closed, and that two
+      # projects do not render the same rows.
+      # The file after it stops naming modules one at a time. It reads the
+      # vocabulary out of every module's schemas and checks every seeded record
+      # against the module that owns it, which is how the fourth instance was
+      # found - contracts, where the seed wrote a counterparty type neither the
+      # endpoint nor the picker offers. The four named files above stay because
+      # they check things a source scan cannot: values a generator computes,
+      # dates that have to agree with arithmetic, and text.
       - name: Run demo seed and import consistency tests
         run: >-
           pytest tests/unit/test_demo_contact_types.py
@@ -86,6 +98,8 @@ jobs:
           tests/unit/test_demo_seed_text_has_no_scaffolding_words.py
           tests/unit/test_demo_insight_dimensions.py
           tests/unit/test_demo_seed_has_no_real_firm_names.py
+          tests/unit/test_demo_safety_vocabulary.py
+          tests/unit/test_demo_seed_speaks_module_vocabularies.py
           -q -p no:cacheprovider
       # The region to currency table. Attached for the same reason as the suites
       # around it, which is that tests/unit runs in no lane that blocks a merge.
@@ -306,6 +320,27 @@ jobs:
       # No database, under a second.
       - name: Run release version literal reader tests
         run: pytest tests/unit/test_version_sync_check.py -q -p no:cacheprovider
+      # The guard that pins which test trees this lane actually runs. It was in
+      # no workflow at all, which is the failure it exists to describe, and it
+      # had been red for long enough that nobody could say since when. What it
+      # got wrong is worth stating: it read a step naming nineteen files under
+      # tests/integration as a run of the whole tree, because it only asked
+      # whether the tree's name appeared in the command and whether a -k was
+      # present. So the two trees this file records as thinly gated were being
+      # reported as fully gated, by the one check written to notice that.
+      # Reads workflow files as text. No database, under three seconds.
+      - name: Run CI lane coverage guard
+        run: pytest tests/unit/test_ci_lane_coverage.py -q -p no:cacheprovider
+      # Snapshot column integrity. Attached for the reason repeated above, and
+      # with a second one of its own: the check it performs is the kind that
+      # keeps reporting after it has stopped working. pandas 3 gives a text
+      # column the str dtype rather than object, the sniffing that finds a CSV
+      # whose numbers arrived as text was reached only for object, and so every
+      # text column began reading as a plain string. The report still rendered
+      # and still counted nulls. Nothing was red anywhere.
+      # No database, under five seconds.
+      - name: Run snapshot column integrity tests
+        run: pytest tests/unit/test_dashboards_integrity.py -q -p no:cacheprovider
       # What the sheet register holds after a drawing set is split. Attached here
       # for the reason stated repeatedly above, which is that tests/unit runs in
       # no lane that blocks a merge, and this release ships the register's first
@@ -370,11 +405,54 @@ jobs:
           tests/unit/test_permissions.py
           tests/unit/test_commercial_delete_guards.py
           -q -p no:cacheprovider
+      # Photo categories are stated three times, in the uploader, in the edit
+      # schema and in the gallery's own union, and one of the three disagreed:
+      # a drone shot could be uploaded and shown as "aerial" while setting that
+      # category from the editor came back 422. Each list was locally
+      # consistent, so only a check that reads all three can see it.
       - name: Run sheet access control and photo scope tests
         run: >-
           pytest tests/unit/test_sheets_access_control.py
           tests/unit/test_photos_recent_project_scope.py
+          tests/unit/test_documents_photo_categories.py
           -q -p no:cacheprovider
+      # The module builder writes Python that a server then imports and serves.
+      # A defect in the renderer is not a wrong number on a screen, it is a
+      # module that cannot load, and the failure surfaces on a user's instance
+      # rather than here. These files import every rendered module rather than
+      # only compiling it, which is what caught three imports of names that do
+      # not exist in this codebase. The service suite covers the refusals: a
+      # draft that cannot be built, a key already taken, a module that writes
+      # its files and then fails to load, each of which has to leave the server
+      # as it was found. The registry file gates removal of a module's
+      # permissions, without which an uninstalled module keeps granting what
+      # nothing enforces. No database, a few seconds together. The end-to-end
+      # install lives in tests/pg above, which this lane already runs whole.
+      # The loader file gates taking a module's routes down again. Removal was
+      # written when including a router copied its routes into the application,
+      # and current FastAPI records the include instead and resolves paths per
+      # request, so a sweep that matches on path found nothing, removed nothing
+      # and reported success while every endpoint of the disabled module kept
+      # answering. The tests ask through the door rather than through the route
+      # table, so they hold on either version. The state file gates the rule
+      # that core modules cannot be switched off, which was being applied in
+      # both directions and refused to switch one on.
+      - name: Run module builder and permission registry tests
+        run: >-
+          pytest tests/test_module_builder_generator.py
+          tests/test_module_builder_service.py
+          tests/unit/test_permission_registry.py
+          tests/unit/test_module_state.py
+          tests/unit/test_module_loader_routes.py
+          -q -p no:cacheprovider
+      # Every endpoint here spends the operator's money with an LLM provider, so
+      # the rate limit is the only thing between a stolen session and a bill.
+      # The wiring test walks the mounted application to prove the dependency is
+      # still attached, which is the right way to ask and also the reason it
+      # went red on its own when FastAPI changed how a mounted router is
+      # recorded. It was in no lane, so nothing said so.
+      - name: Run AI endpoint security tests
+        run: pytest tests/modules/test_ai_security.py -q -p no:cacheprovider
       # The literal string bim did not appear anywhere in this file, so 30 unit
       # files and 528 tests, including the ones covering all 28 BIM validation
       # rules, were enforced by nothing. Those rules are reachable in production:
@@ -406,6 +484,58 @@ jobs:
       - name: Run cost base pipeline suite
         working-directory: tools/costbase_pipeline
         run: pytest tests -q -p no:cacheprovider
+
+      # Core integration surface: background jobs, chunked uploads, and the
+      # deployment posture the in-product trust panel renders. All four files
+      # were collected by nothing in this workflow before now, which is how a
+      # real regression sat invisible for a month, pre-existing since v10.6.0 and
+      # byte-identical at the 14.8.0 release commit. Eager Celery dispatch, the
+      # documented dev and lightweight-deployment default, drives the job
+      # runner's coroutine on a thread with its own fresh event loop, but that
+      # coroutine drew its database connections from the app's one pooled engine:
+      # a connection checked out on the main loop and later reused on a
+      # dispatch's new loop makes asyncpg refuse it outright with "Task ... got
+      # Future ... attached to a different loop". Severity was worse than
+      # deterministic breakage because it depended on pool warmth. An empty pool
+      # hands the new loop a fresh connection and the job succeeds, so a cold
+      # smoke test passed and the same dispatch failed once request handling had
+      # warmed the pool, which is why it went unnoticed for a month. Every
+      # dispatch now builds its own throwaway engine inside the dedicated
+      # thread's own loop and disposes of it after, so no connection can outlive
+      # the loop that opened it. test_jobs_status_endpoint.py carried a second,
+      # unrelated gap in the same file: the fixture overrode get_current_user_id,
+      # but every route on the router is role-gated through the different
+      # get_current_user_payload dependency, so all four routes 401'd before
+      # reaching a handler and the suite had never actually exercised any of
+      # them.
+      - name: Run core integration tests (jobs, uploads, deployment posture)
+        run: >-
+          pytest tests/integration/core/test_storage_multipart.py
+          tests/integration/core/test_jobs_celery_redis.py
+          tests/integration/core/test_deployment_posture.py
+          tests/integration/core/test_jobs_status_endpoint.py
+          -q -p no:cacheprovider --timeout=300 --timeout-method=thread
+      # The rest of tests/unit/core. Job runner internals not already covered
+      # above: handler registry, progress clamping, idempotency including the
+      # cross-thread key uniqueness case, and the no-Celery fallback. The
+      # Pipeline Builder's Phase-1 spine: Kahn topological order with cycle
+      # rejection, and the side-effecting-node validation rule that backs "AI
+      # proposes, human confirms". The working-days calendar engine's multi-year
+      # holiday computation, and chunked upload streaming's temp-file spooling.
+      # Same gap as the suite above: nothing under tests/unit/core ran in a
+      # blocking lane before now, on files that carry real database and
+      # threading behaviour rather than pure functions.
+      - name: Run core unit tests (jobs, pipelines, calendar, uploads)
+        run: >-
+          pytest tests/unit/core/test_jobs_handler_registry.py
+          tests/unit/core/test_jobs_progress.py
+          tests/unit/core/test_jobs_idempotency.py
+          tests/unit/core/test_jobs_no_celery_fallback.py
+          tests/unit/core/test_pipeline_executor.py
+          tests/unit/core/test_pipeline_graph_rule.py
+          tests/unit/core/test_calendar.py
+          tests/unit/core/test_upload_streaming.py
+          -q -p no:cacheprovider --timeout=300 --timeout-method=thread
 
   # Object ownership and cross-tenant access. Of the 32 files in the repo that
   # test this, exactly one was in a blocking lane; the other 31, all 29 *_idor
@@ -523,35 +653,72 @@ jobs:
     runs-on: ubuntu-latest
     # This job needs nothing from PostgreSQL and sits in this workflow anyway,
     # because this workflow is the gate. The frontend suite does run elsewhere,
-    # in the CI workflow, which has been red for a long time on a type check
-    # that exhausts the heap, so a failure there stops nothing and nobody reads
-    # it. Until that is fixed, a frontend test outside this file gates nothing.
-    # Counted 2026-08-05: 519 vitest test files live under src, 14 are named
-    # below, so 505 of them gate nothing. That is the same 505 as yesterday,
-    # because the file added today was added to the list on the same day.
-    # Recount rather than trust that sentence, and count under src: a glob for
-    # the vitest default across the whole frontend returns 627, of which 108
-    # are Playwright specs that this job does not run.
+    # in the CI workflow, which is red often enough that a failure there stops
+    # nothing and nobody reads it. Until that is fixed, a frontend test outside
+    # this file gates nothing.
+    #
+    # The reason that workflow is red is not what this comment used to say. It
+    # blamed a type check that exhausts the heap, and that has not been true for
+    # a while: the ceiling was raised to 9216 MB, and on run 31088534634 all
+    # three Frontend CI jobs - ubuntu, windows and macos - passed. What is red
+    # there is the backend, the embedded-PG mac and windows shards, the brand
+    # token check and the IDOR job. The conclusion is unchanged, the cause is
+    # not, and a wrong cause invites somebody to "fix the OOM" and expect this
+    # job to become redundant.
+    # Counted 2026-08-07: the include in vite.config.ts is
+    # src/**/*.test.{ts,tsx} plus tests/**/*.test.{ts,tsx}, which collects 534
+    # files under src and 2 under frontend/tests/pwa, so 536 in all. 21 are
+    # named below, so 515 of them gate nothing. Recount rather than trust that
+    # sentence, and recount against that include rather than against the vitest
+    # default: the default would also sweep up the Playwright specs, which this
+    # job does not run and which were never part of this number.
     #
     # Named files rather than the whole suite, and that is a measurement rather
-    # than a preference. The timing was taken when the list held eleven files:
-    # 118 seconds against 12 logical cores, where the same work over the whole
-    # suite comes to somewhere between 55 and 95 minutes depending on how the
-    # workers saturate. That does not belong in front of every merge. The list
-    # has grown by three since that measurement and has not been re-timed, so
-    # treat 118 seconds as a floor. This mirrors how the backend half of this
-    # file already works: tests/unit is not collected wholesale either, it is
-    # named.
+    # than a preference. The whole suite came to somewhere between 55 and 95
+    # minutes when it was last timed, depending on how the workers saturate,
+    # and that does not belong in front of every merge. The twenty-one named
+    # here run 322 tests in 29 seconds against 12 logical cores with a warm
+    # cache, measured 2026-08-07. An earlier note in this file recorded 118 seconds
+    # for eleven files and that could not be reproduced, so take neither figure
+    # as the cost on the runner: it has four cores and installs cold. What the
+    # numbers do support is the shape, a named list rather than the suite. This
+    # mirrors how the backend half of this file already works: tests/unit is
+    # not collected wholesale either, it is named.
     #
     # The list is the frontend half of the work this release carries, and it is
     # deliberately short. Adding to it should be a decision each time, not a
     # habit, because every entry is paid on every merge.
+    #
+    # The three module builder entries are this release's decision. That
+    # feature ships eight test files; five are jsdom component tests covering
+    # wiring that a red build or a refused request already surfaces loudly, and
+    # they are deliberately left out, which is written here so that leaving
+    # them out reads as a choice rather than as coverage. The three named are
+    # pure TypeScript and hold the values nothing else would catch: money and
+    # quantities staying strings the whole way to the wire rather than passing
+    # through a double, a local wall-clock time leaving as a zoned instant so
+    # the module's own validator does not read "now" as the future for everyone
+    # east of UTC, an update sending the fields that changed and no others, and
+    # the module's address being taken from the server rather than rebuilt from
+    # its key on this side.
+    #
+    # The calendar feed entry is here because the defect it covers is one no
+    # other check in this repository can see. The page advertised a URL that no
+    # route has ever served, and every layer agreed with itself: the string
+    # type checked, the build passed, and the request only failed on a user's
+    # calendar client. That test reads the decorated path and the required
+    # query parameter out of the module's router and compares, so neither can
+    # move without it failing. The mount prefix is still written on both sides:
+    # the loader composes it from the module directory rather than declaring it
+    # anywhere the test can read, so a change to that scheme would pass here and
+    # break in the browser. Worth knowing before trusting this entry further
+    # than it goes.
     timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
     env:
-      # Eight of the fourteen files below are jsdom component tests, which are
+      # Nine of the twenty-one files below are jsdom component tests, which are
       # the expensive kind, and this runner has four cores rather than the
       # twelve the local measurement was taken on. The whole-program type check
       # and the build in the other workflow already need this ceiling and are
@@ -579,6 +746,10 @@ jobs:
         src/features/dwg-takeoff/lib/__tests__/viewport.test.ts
         src/features/file-manager/SheetsIndexPage.test.tsx
         src/features/file-manager/sheetsInsights.test.ts
+        src/features/integrations/calendarFeed.test.ts
+        src/features/module-builder/api.test.ts
+        src/features/module-builder/draft.test.ts
+        src/features/module-builder/fields.test.ts
         src/shared/lib/i18nInterpolatedKeys.test.ts
     steps:
       - uses: actions/checkout@v7

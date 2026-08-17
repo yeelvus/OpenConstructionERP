@@ -17,11 +17,21 @@ down as a decision rather than an oversight.
 
 from __future__ import annotations
 
+import ast
 import uuid
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
-from app.core.demo_projects import _seeded_party_id, _uuid_or_none
+from app.core import demo_projects
+from app.core.demo_projects import (
+    DEMO_TEMPLATES,
+    _contacts_for_project,
+    _generate_module_data,
+    _seeded_party_id,
+    _uuid_or_none,
+)
 
 _SEEDED = {
     "contractor": ["c-0"],
@@ -76,3 +86,73 @@ def test_the_id_is_returned_as_stored_for_the_text_columns() -> None:
     assert isinstance(resolved, str)
     assert _uuid_or_none(resolved) == uuid.UUID(ids["contractor"][0])
     assert _uuid_or_none(None) is None
+
+
+# ── The other side of the same rule ──────────────────────────────────────
+#
+# Everything above pins what happens when a role cannot be resolved. That is the
+# right behaviour for the lookup and a defect in the seed: a row pointing at a
+# role the project never seeded is silently linkless, and the screen shows an
+# empty cell that looks like data rather than a mistake. Measured on the five
+# hand-written projects that named no main contractor while the punchlist
+# assigned to one by default and both contract signature blocks named one.
+
+_ROLES_THE_SEED_POINTS_AT = ("client", "contractor", "subcontractor", "consultant")
+
+
+def _hand_written_contacts() -> dict[str, list[dict]]:
+    """``_CONTACTS`` read out of the source, because it is a local variable.
+
+    It lives inside ``_seed_module_data`` and cannot be imported. Only constant
+    keys and values are taken, which is all this needs: the roles.
+    """
+    source = Path(demo_projects.__file__).read_text(encoding="utf-8")
+    out: dict[str, list[dict]] = {}
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "_CONTACTS"):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            continue
+        for key, value in zip(node.value.keys, node.value.values, strict=False):
+            if isinstance(key, ast.Constant) and isinstance(value, ast.List):
+                out[key.value] = [
+                    {
+                        k.value: v.value
+                        for k, v in zip(entry.keys, entry.values, strict=False)
+                        if isinstance(k, ast.Constant) and isinstance(v, ast.Constant)
+                    }
+                    for entry in value.elts
+                    if isinstance(entry, ast.Dict)
+                ]
+    return out
+
+
+@pytest.mark.parametrize("demo_id", sorted(DEMO_TEMPLATES))
+def test_every_project_seeds_a_contact_for_every_role_its_rows_name(demo_id: str) -> None:
+    generated = _generate_module_data(
+        DEMO_TEMPLATES[demo_id],
+        project_id=uuid.uuid4(),
+        owner_id=uuid.uuid4(),
+        demo_id=demo_id,
+        base=datetime(2026, 1, 15, tzinfo=UTC),
+    ).get("contacts", [])
+    contacts = _contacts_for_project(_hand_written_contacts().get(demo_id), generated)
+    seeded = {c.get("contact_type") for c in contacts}
+    missing = [role for role in _ROLES_THE_SEED_POINTS_AT if role not in seeded]
+    assert not missing, f"{demo_id} seeds rows pointing at {missing}, but has no contact holding that role"
+
+
+def test_the_repair_only_fires_when_a_main_contractor_is_absent() -> None:
+    """It must fill a hole, not append a second contractor to a list that has one."""
+    generated = [{"contact_type": "contractor", "company_name": "Generated"}]
+    already = [{"contact_type": "client"}, {"contact_type": "contractor", "company_name": "Hand written"}]
+    assert [c.get("company_name") for c in _contacts_for_project(already, generated)] == [None, "Hand written"]
+
+    filled = _contacts_for_project([{"contact_type": "client"}], generated)
+    assert [c["contact_type"] for c in filled] == ["client", "contractor"]
+    assert filled[1]["company_name"] == "Generated"
+
+    # No hand-written list at all is the ordinary path, and it must pass through
+    # unchanged rather than gaining a duplicate of a row it already holds.
+    assert _contacts_for_project(None, generated) == generated
+    assert _contacts_for_project([], generated) == generated

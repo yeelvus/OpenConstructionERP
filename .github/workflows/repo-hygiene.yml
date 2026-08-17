@@ -113,6 +113,50 @@ jobs:
       - name: Check for t() keys no locale file can answer
         run: python scripts/check_i18n_orphan_keys.py
 
+  module-display-names:
+    name: Every module name a user reads can be translated
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check module display names are reachable, undrifted and unorphaned
+        run: python scripts/check_module_display_names.py
+
+  i18n-plural-forms:
+    name: Every counted key has the forms its language needs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check counted keys for missing CLDR plural forms
+        run: python scripts/check_i18n_plural_forms.py
+
+  i18n-key-nesting:
+    name: Every locale key is inside the dictionary i18next reads
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check for keys written beside the translation object
+        run: python scripts/check_i18n_key_nesting.py
+
+  i18n-script-mixing:
+    name: Every locale value is written in that language's own script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check for values written in someone else's alphabet
+        run: python scripts/check_i18n_script_mixing.py
+
   locale-lost-escapes:
     name: No locale value dropped an escape English still carries
     runs-on: ubuntu-latest
@@ -165,3 +209,40 @@ jobs:
       # a static check and not a test.
       - name: Check permission keys against the registry
         run: python scripts/check_permission_registration.py
+
+  page-envelope-consumers:
+    name: Every consumer of a paged endpoint reads the page
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # A collection endpoint moving from a bare array to {items, total,
+      # offset, limit} breaks every caller left behind. The build catches most
+      # of it and structurally cannot catch the case this guards: React Query
+      # caches by key, the key is a string, so a file sharing queryKey with a
+      # migrated one gets handed the wrong shape at runtime while tsc is
+      # green. The script self-tests before it scans, so a run that passes has
+      # also just demonstrated it can fail.
+      - name: Check every consumer of a migrated endpoint moved with it
+        run: python scripts/check_page_envelope_consumers.py
+
+  migration-data-rewrites:
+    name: Every migration touching pre-existing data carries an acknowledgement
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Grew out of #126: a migration that rewrote a 1724 MB table inside the
+      # single transaction Alembic wraps a whole upgrade() in died with
+      # DiskFull on a real box. Rewriting pre-existing data is legitimate and
+      # this does not forbid it - it fails only when a flagged revision has
+      # no "# data-rewrite-ack: table=... growth=... rows=..." comment for a
+      # table it touches, so the size question gets asked before a revision
+      # ships rather than after it lands on a customer's disk. See the
+      # module docstring in the script for the acknowledgement format.
+      - name: Check migrations that rewrite pre-existing data are acknowledged
+        run: python scripts/check_migration_data_rewrites.py

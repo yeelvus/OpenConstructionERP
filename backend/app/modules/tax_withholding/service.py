@@ -249,6 +249,7 @@ def compute_deduction(
     regime: WithholdingRegime,
     *,
     gross_amount: Decimal,
+    currency_code: str,
     qualifying_materials: Decimal = ZERO,
     vat_amount: Decimal = ZERO,
     requested_band: str = "",
@@ -262,6 +263,11 @@ def compute_deduction(
     Germany's section 48 EStG limit is - and a single payment cannot tell
     whether the year is already over it. Reporting the possibility is honest;
     zeroing the deduction on one payment's evidence would not be.
+
+    ``currency_code`` is the payment's currency and is required rather than
+    defaulted, because the exemption limit is denominated in the scheme's
+    currency and comparing across two of them is arithmetic on unlike units. A
+    default would have made the wrong answer the quiet one.
     """
     decision = resolve_band(regime, requested_band=requested_band, party_status=party_status, as_of=as_of)
     base = compute_taxable_base(
@@ -273,13 +279,25 @@ def compute_deduction(
     )
     withheld = compute_tax_withheld(base, decision.rate_pct)
     threshold = regime.threshold_amount
-    below = threshold is not None and gross_amount <= to_decimal(threshold)
+    paid_in = (currency_code or "").strip().upper()
+    scheme_currency = (regime.currency_code or "").strip().upper()
+    same_currency = bool(paid_in) and paid_in == scheme_currency
+    below = threshold is not None and same_currency and gross_amount <= to_decimal(threshold)
     reasons = list(decision.reasons)
     if below:
         reasons.append(
             f"This payment is at or below the scheme's exemption limit of "
             f"{to_decimal(threshold)} {regime.currency_code}. The limit normally applies to the "
             "payee's total for the year, so check the year to date before treating it as exempt."
+        )
+    elif threshold is not None and not same_currency:
+        # The limit is a figure in the scheme's own currency. Holding it up
+        # against a payment in another one compares two different units and
+        # would answer with whichever way the exchange rate happened to fall.
+        reasons.append(
+            f"The scheme's exemption limit is {to_decimal(threshold)} {regime.currency_code} and this "
+            f"payment is in {paid_in or 'a currency that was not stated'}, so the limit has not been "
+            "applied. Convert at the rate for the payment date before deciding whether the payee is under it."
         )
     return DeductionFigures(
         band_code=decision.band_code,
@@ -526,7 +544,20 @@ def expiry_view(status: PartyTaxStatus, as_of: date) -> tuple[bool, int | None]:
     Computed on read and never stored. A stored expiry flag is only as fresh as
     the last job that wrote it, and an expiry nobody noticed is the entire
     failure this module is here to prevent.
+
+    A standing is expired when the calendar says so or when the record does, and
+    the two are separate evidence pointing the same way. The calendar overrides
+    a record still reading "active", because nobody goes back to edit a row on
+    the day it lapses. The record overrides an open window, because a standing
+    marked expired with no end date has no calendar to consult at all, and
+    answering "not expired" there contradicts ``verification_is_current``, which
+    already refuses that row. There is no countdown in that case, since the date
+    it would count to is the date that is missing. Revocation is deliberately
+    not folded in here: a revoked standing is refused all the same, but calling
+    it expired would put the wrong word on the screen for it.
     """
+    if status.status == "expired":
+        return True, None
     if status.valid_to is None:
         return False, None
     delta = (status.valid_to - as_of).days

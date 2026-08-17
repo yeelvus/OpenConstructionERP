@@ -62,6 +62,7 @@ const playbook: Playbook = {
       whyDefault:
         "Buying off a stale price list is how a package lands over budget before a single order goes out. A current catalog keeps the estimate and the order working from the same numbers.",
       moduleLabel: "Supplier Catalogs",
+      moduleLabelKey: "nav.supplier_catalogs",
       to: "/supplier-catalogs",
     },
     {
@@ -102,6 +103,7 @@ const playbook: Playbook = {
       whyDefault:
         "Pricing the buy against the actual catalog turns a rough allowance into a committed number you can hold the supplier to, and it flags any item where the market has moved since the estimate.",
       moduleLabel: "Procurement",
+      moduleLabelKey: "nav.procurement",
       to: "/projects/:projectId/procurement",
     },
     {
@@ -143,6 +145,7 @@ const playbook: Playbook = {
       whyDefault:
         "Knowing early which packages are buying over their allowance is what lets you claw the money back elsewhere while there is still budget to move, not at final account.",
       moduleLabel: "Reports",
+      moduleLabelKey: "nav.reports",
       to: "/reports",
     },
   ],

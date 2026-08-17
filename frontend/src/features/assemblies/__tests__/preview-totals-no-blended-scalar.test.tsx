@@ -56,7 +56,10 @@ describe('PreviewTotalsFooter', () => {
     const { cellText } = renderFooter(null, MIXED);
 
     expect(cellText).toContain('100.00 EUR');
-    expect(cellText).toContain('1000.00 XOF');
+    // No decimals, and that is the point: XOF has no minor unit, so the two
+    // digits this line used to expect were a quantity the currency cannot
+    // express. Each bucket is now printed to its own currency's precision.
+    expect(cellText).toContain('1000 XOF');
     // The blend this whole change removes: 100 + 1000 stamped as one currency.
     expect(cellText.join('|')).not.toContain('1100.00');
   });

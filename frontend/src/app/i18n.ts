@@ -10,7 +10,10 @@ export const SUPPORTED_LANGUAGES = [
   { code: 'fr', name: 'Français', english: 'French', flag: '🇫🇷', country: 'fr' },
   { code: 'es', name: 'Español', english: 'Spanish', flag: '🇪🇸', country: 'es' },
   { code: 'es-MX', name: 'Español (México)', english: 'Spanish (Mexico)', flag: '🇲🇽', country: 'mx' },
-  { code: 'pt', name: 'Português', english: 'Portuguese', flag: '🇧🇷', country: 'br' },
+  { code: 'es-CL', name: 'Español (Chile)', english: 'Spanish (Chile)', flag: '🇨🇱', country: 'cl' },
+  { code: 'es-CO', name: 'Español (Colombia)', english: 'Spanish (Colombia)', flag: '🇨🇴', country: 'co' },
+  { code: 'pt', name: 'Português', english: 'Portuguese', flag: '🇵🇹', country: 'pt' },
+  { code: 'pt-BR', name: 'Português (Brasil)', english: 'Portuguese (Brazil)', flag: '🇧🇷', country: 'br' },
   { code: 'ru', name: 'Русский', english: 'Russian', flag: '🇷🇺', country: 'ru' },
   { code: 'zh', name: '简体中文', english: 'Chinese (Simplified)', flag: '🇨🇳', country: 'cn' },
   { code: 'ar', name: 'العربية', english: 'Arabic', flag: '🇸🇦', country: 'sa', dir: 'rtl' },
@@ -32,8 +35,19 @@ export const SUPPORTED_LANGUAGES = [
   { code: 'ro', name: 'Română', english: 'Romanian', flag: '🇷🇴', country: 'ro' },
   { code: 'th', name: 'ไทย', english: 'Thai', flag: '🇹🇭', country: 'th' },
   { code: 'vi', name: 'Tiếng Việt', english: 'Vietnamese', flag: '🇻🇳', country: 'vn' },
-  { code: 'mn', name: 'Монгол', english: 'Mongolian', flag: '🇲🇳', country: 'mn' },
+  // Mongolian is deliberately not offered: five invented roots passed every
+  // gate in mn.ts and the file needs a native-speaker pass before the
+  // language returns. The locale file stays on disk so the work resumes from
+  // where it stopped, but nothing loads it while it is off this list.
   { code: 'ky', name: 'Кыргызча', english: 'Kyrgyz', flag: '🇰🇬', country: 'kg' },
+  { code: 'et', name: 'Eesti', english: 'Estonian', flag: '🇪🇪', country: 'ee' },
+  { code: 'bn', name: 'বাংলা', english: 'Bengali', flag: '🇧🇩', country: 'bd' },
+  { code: 'kk', name: 'Қазақша', english: 'Kazakh', flag: '🇰🇿', country: 'kz' },
+  { code: 'fil', name: 'Filipino', english: 'Filipino', flag: '🇵🇭', country: 'ph' },
+  { code: 'ur', name: 'اردو', english: 'Urdu', flag: '🇵🇰', country: 'pk', dir: 'rtl' },
+  { code: 'fa', name: 'فارسی', english: 'Persian', flag: '🇮🇷', country: 'ir', dir: 'rtl' },
+  { code: 'he', name: 'עברית', english: 'Hebrew', flag: '🇮🇱', country: 'il', dir: 'rtl' },
+  { code: 'el', name: 'Ελληνικά', english: 'Greek', flag: '🇬🇷', country: 'gr' },
 ];
 
 export function getLanguageByCode(code: string): (typeof SUPPORTED_LANGUAGES)[number] {
@@ -214,10 +228,16 @@ i18n
     // flight) render in English instead of as raw key strings.
     resources: { en: enResource },
     lng: initialLanguage,
-    // ``es-MX`` (Mexican / LatAm Spanish) falls back to ``es`` first, then
-    // English, so any key not localised for Mexico shows Spanish rather than
-    // English. Every other locale falls back straight to English.
-    fallbackLng: { 'es-MX': ['es', 'en'], default: ['en'] },
+    // The regional variants fall back to their own language before English, so
+    // a key not localised for Chile shows Spanish rather than English. That is
+    // what lets those files carry only the words that actually differ.
+    fallbackLng: {
+      'es-MX': ['es', 'en'],
+      'es-CL': ['es', 'en'],
+      'es-CO': ['es', 'en'],
+      'pt-BR': ['pt', 'en'],
+      default: ['en'],
+    },
     // All translation keys are stored as flat strings with literal dots
     // (e.g. "match_elements.title"). Disable the dot-as-namespace
     // separator so lookups don't try to walk a nested object path that

@@ -160,6 +160,10 @@ _BACKFILL_ENTITIES: list[tuple[str, str]] = [
 ]
 
 
+# data-rewrite-ack: table=oe_finance_invoice growth=tenure rows=one row per invoice issued, accumulates across projects and years
+# data-rewrite-ack: table=oe_ncr_ncr growth=tenure rows=one row per non-conformance report raised, accumulates over project life
+# data-rewrite-ack: table=oe_rfq_rfq growth=tenure rows=one row per RFQ issued, accumulates over project life
+# data-rewrite-ack: table=oe_submittals_submittal growth=tenure rows=one row per submittal raised, accumulates over project life
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)

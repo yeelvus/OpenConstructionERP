@@ -2295,6 +2295,7 @@ async def cad_extract(
         group_cad_elements,
         parse_cad_excel,
     )
+    from app.modules.boq.dxf_native import is_natively_readable
 
     filename = file.filename or "file"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -2317,12 +2318,19 @@ async def cad_extract(
 
     # Resolve the converter, auto-downloading it on first use if missing.
     # This makes a fresh install work with zero user action: uploading a
-    # .rvt/.ifc/.dwg/.dgn/.rfa/.dxf fetches the matching converter
-    # automatically instead of returning "converter not installed".
-    try:
-        await ensure_converter_async(conv_ext)
-    except ConverterUnavailableError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # .rvt/.ifc/.dwg/.dgn/.rfa fetches the matching converter automatically
+    # instead of returning "converter not installed".
+    #
+    # A format the platform reads in-process is exempt, and the check is on the
+    # ORIGINAL ``ext`` because ``conv_ext`` has already been aliased to the
+    # binary that would have read it. Without this, a .dxf on a host with no
+    # converter for its CPU is rejected here, one call before the code that
+    # would have read it without any binary at all.
+    if not is_natively_readable(ext):
+        try:
+            await ensure_converter_async(conv_ext)
+        except ConverterUnavailableError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     content = await file.read()
     if not content:
@@ -2545,6 +2553,7 @@ async def cad_columns(
         get_available_columns,
         parse_cad_excel,
     )
+    from app.modules.boq.dxf_native import is_natively_readable
 
     filename = file.filename or "file"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -2564,11 +2573,13 @@ async def cad_columns(
     conv_ext = _CONVERTER_FORMAT_ALIASES.get(ext, ext)
 
     # Resolve the converter, auto-downloading it on first use if missing
-    # (zero-user-action provisioning - see /cad-extract/ for rationale).
-    try:
-        await ensure_converter_async(conv_ext)
-    except ConverterUnavailableError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # (zero-user-action provisioning - see /cad-extract/ for rationale, and
+    # for why the native-format exemption tests the original ``ext``).
+    if not is_natively_readable(ext):
+        try:
+            await ensure_converter_async(conv_ext)
+        except ConverterUnavailableError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     content = await file.read()
     if not content:

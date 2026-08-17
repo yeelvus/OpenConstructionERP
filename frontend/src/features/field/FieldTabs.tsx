@@ -9,12 +9,25 @@
  * is no second queue here: this reuses the v6.8 offline slice.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Clock, Plus, Play, Square, RefreshCw } from 'lucide-react';
 import { newClientOpId, type EnqueueInput } from '@/shared/lib/offline';
 import {
+  readStoredCrew,
+  shiftDate,
+  writeStoredCrew,
+  type CrewMember,
+} from './crewShiftStore';
+import {
+  availableRoster,
+  readCachedRoster,
+  writeCachedRoster,
+  type CrewRosterMember,
+} from './crewRosterStore';
+import {
   listEntries,
+  listRoster,
   todayIso,
   type DiaryEntry,
   type FieldSession,
@@ -237,13 +250,6 @@ export function CaptureTab({
 
 /* ── Crew (punch in / out) ─────────────────────────────────────────────── */
 
-interface CrewMember {
-  id: string;
-  name: string;
-  task: string;
-  /** ISO time when the punch-in started, or null when not punched in. */
-  startedAt: string | null;
-}
 
 export function CrewTab({
   session,
@@ -253,27 +259,102 @@ export function CrewTab({
   enqueue: Enqueue;
 }) {
   const { t } = useTranslation();
-  const [crew, setCrew] = useState<CrewMember[]>([]);
+  const projectId = session?.projectId ?? '';
+  const [crew, setCrew] = useState<CrewMember[]>(() => (projectId ? readStoredCrew(projectId) : []));
   const [name, setName] = useState('');
+  const [roster, setRoster] = useState<CrewRosterMember[]>(() =>
+    projectId ? readCachedRoster(projectId) : [],
+  );
+  const [picked, setPicked] = useState('');
+  /** True once the foreman says the person is not in the register. */
+  const [typing, setTyping] = useState(false);
+  /** Which project's roster the state currently holds. */
+  const hydratedFor = useRef(projectId);
 
+  // The shell reads the magic link before it knows the project, so the id
+  // usually arrives after mount and the roster has to be picked up then.
+  useEffect(() => {
+    if (!projectId || hydratedFor.current === projectId) return;
+    setCrew(readStoredCrew(projectId));
+    setRoster(readCachedRoster(projectId));
+    hydratedFor.current = projectId;
+  }, [projectId]);
+
+  // Refresh the pick list when there is signal. The cached list is shown
+  // meanwhile and kept when the call does not land, because a foreman in a
+  // basement needs the names more than they need them to be current.
+  useEffect(() => {
+    if (!session) return;
+    let live = true;
+    void listRoster(session).then((rows) => {
+      if (!live || rows === null || rows.length === 0) return;
+      setRoster(rows);
+      writeCachedRoster(session.projectId, rows);
+    });
+    return () => {
+      live = false;
+    };
+  }, [session]);
+
+  const choices = useMemo(() => availableRoster(roster, crew), [roster, crew]);
+
+  /**
+   * Change the roster and persist the same value in one step.
+   *
+   * Deliberately not a separate effect watching ``crew``. Effects in one
+   * commit run in declaration order against the state as it was, so a restore
+   * effect followed by a write effect writes the roster the restore was about
+   * to replace - the empty one - and an unmount in that window would make the
+   * loss permanent. That is the exact failure this file exists to stop, so the
+   * write goes where the value is known instead.
+   */
+  const updateCrew = useCallback(
+    (next: (current: CrewMember[]) => CrewMember[]) => {
+      setCrew((current) => {
+        const value = next(current);
+        writeStoredCrew(projectId, value);
+        return value;
+      });
+    },
+    [projectId],
+  );
+
+  /** Add whoever was picked from the register, id and all. */
+  const addFromRoster = useCallback(() => {
+    const row = choices.find((r) => r.id === picked);
+    if (!row) return;
+    updateCrew((c) => [
+      ...c,
+      { id: newClientOpId(), name: row.name, task: 'general', startedAt: null, resourceId: row.id },
+    ]);
+    setPicked('');
+  }, [choices, picked, updateCrew]);
+
+  /** Add a typed name, for somebody who is in nobody's register. */
   const addMember = useCallback(() => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    setCrew((c) => [...c, { id: newClientOpId(), name: trimmed, task: 'general', startedAt: null }]);
+    updateCrew((c) => [
+      ...c,
+      { id: newClientOpId(), name: trimmed, task: 'general', startedAt: null, resourceId: '' },
+    ]);
     setName('');
-  }, [name]);
+  }, [name, updateCrew]);
 
-  const punchIn = useCallback((id: string) => {
-    setCrew((c) =>
-      c.map((m) => (m.id === id ? { ...m, startedAt: new Date().toISOString() } : m)),
-    );
-  }, []);
+  const punchIn = useCallback(
+    (id: string) => {
+      updateCrew((c) =>
+        c.map((m) => (m.id === id ? { ...m, startedAt: new Date().toISOString() } : m)),
+      );
+    },
+    [updateCrew],
+  );
 
   const punchOut = useCallback(
     async (id: string) => {
       const member = crew.find((m) => m.id === id);
       if (!member || !member.startedAt || !session) return;
-      const date = todayIso();
+      const date = shiftDate(member.startedAt, todayIso());
       const startedAt = member.startedAt;
       const endedAt = new Date().toISOString();
       const hours =
@@ -298,12 +379,19 @@ export function CrewTab({
           hours: String(hours > 0 ? hours : 0),
           started_at: startedAt,
           ended_at: endedAt,
-          metadata: { task: member.task, crew_member: member.name },
+          metadata: {
+            task: member.task,
+            crew_member: member.name,
+            // The key the desktop timesheet reconciles on. Absent when the
+            // name was typed, which is the case the approver has to resolve by
+            // hand - and the only case where a double count is still possible.
+            ...(member.resourceId ? { resource_id: member.resourceId } : {}),
+          },
         },
       });
-      setCrew((c) => c.map((m) => (m.id === id ? { ...m, startedAt: null } : m)));
+      updateCrew((c) => c.map((m) => (m.id === id ? { ...m, startedAt: null } : m)));
     },
-    [crew, session, enqueue],
+    [crew, session, enqueue, updateCrew],
   );
 
   if (!session) {
@@ -320,22 +408,90 @@ export function CrewTab({
         {t('field.crew_title', { defaultValue: 'Crew time' })}
       </h2>
 
-      <div className="flex gap-2">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={t('field.crew_name', { defaultValue: 'Crew member name' })}
-          className="h-12 flex-1 rounded-xl border border-slate-300 px-3 text-base"
-        />
-        <button
-          type="button"
-          onClick={addMember}
-          aria-label={t('field.crew_add', { defaultValue: 'Add crew member' })}
-          className="flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-slate-700"
-        >
-          <Plus size={22} aria-hidden="true" />
-        </button>
-      </div>
+      {/* The branch turns on whether this project HAS a list, not on whether
+          anybody is left on it. Flipping to free text the moment the last
+          person is added would tell a foreman who just staffed their whole
+          crew that names must be typed here, which is the opposite of true. */}
+      {roster.length > 0 && !typing ? (
+        <div className="flex flex-col gap-2">
+          {choices.length === 0 ? (
+            <p className="rounded-xl bg-slate-50 px-3 py-3 text-sm text-slate-500">
+              {t('field.crew_all_added', {
+                defaultValue: 'Everyone on the project list is already here.',
+              })}
+            </p>
+          ) : (
+            <div className="flex gap-2">
+              <select
+                value={picked}
+                onChange={(e) => setPicked(e.target.value)}
+                aria-label={t('field.crew_pick', { defaultValue: 'Pick from the project' })}
+                className="h-12 flex-1 rounded-xl border border-slate-300 px-3 text-base"
+              >
+                <option value="">
+                  {t('field.crew_pick', { defaultValue: 'Pick from the project' })}
+                </option>
+                {choices.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {row.code ? `${row.name} (${row.code})` : row.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={addFromRoster}
+                disabled={!picked}
+                aria-label={t('field.crew_add', { defaultValue: 'Add crew member' })}
+                className="flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-slate-700 disabled:opacity-40"
+              >
+                <Plus size={22} aria-hidden="true" />
+              </button>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setTyping(true)}
+            className="self-start text-sm font-medium text-sky-700 underline"
+          >
+            {t('field.crew_not_listed', { defaultValue: 'Someone not on the list' })}
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <div className="flex gap-2">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={t('field.crew_name', { defaultValue: 'Crew member name' })}
+              className="h-12 flex-1 rounded-xl border border-slate-300 px-3 text-base"
+            />
+            <button
+              type="button"
+              onClick={addMember}
+              aria-label={t('field.crew_add', { defaultValue: 'Add crew member' })}
+              className="flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-slate-700"
+            >
+              <Plus size={22} aria-hidden="true" />
+            </button>
+          </div>
+          {/* Typed hours cannot be matched to the timesheet, so say so once
+              here rather than leaving an approver to find it later. */}
+          <p className="text-xs text-slate-500">
+            {t('field.crew_typed_hint', {
+              defaultValue: 'A typed name has to be matched to a worker by hand later.',
+            })}
+          </p>
+          {roster.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setTyping(false)}
+              className="self-start text-sm font-medium text-sky-700 underline"
+            >
+              {t('field.crew_back_to_list', { defaultValue: 'Back to the project list' })}
+            </button>
+          )}
+        </div>
+      )}
 
       {crew.length === 0 ? (
         <p className="py-6 text-center text-sm text-slate-400">
@@ -351,7 +507,7 @@ export function CrewTab({
                   <select
                     value={m.task}
                     onChange={(e) =>
-                      setCrew((c) =>
+                      updateCrew((c) =>
                         c.map((x) => (x.id === m.id ? { ...x, task: e.target.value } : x)),
                       )
                     }

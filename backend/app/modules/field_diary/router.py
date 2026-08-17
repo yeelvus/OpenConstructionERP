@@ -40,6 +40,7 @@ from app.dependencies import (
     CurrentUserId,
     RequireRole,
     SessionDep,
+    verify_project_access,
 )
 from app.modules.field_diary.schemas import (
     MAX_ATTACHMENT_BYTES,
@@ -50,6 +51,7 @@ from app.modules.field_diary.schemas import (
     DiaryEntryResponse,
     DiaryEntryUpdate,
     FieldCaptureResponse,
+    FieldCrewMemberResponse,
     FieldInspectionCreate,
     FieldMagicLinkConsume,
     FieldMagicLinkRequest,
@@ -341,6 +343,34 @@ async def submit_entry(
 
 
 @router.post(
+    "/entries/{entry_id}/approve/",
+    response_model=DiaryEntryResponse,
+    dependencies=[Depends(RequireRole("manager"))],
+)
+async def approve_entry(
+    entry_id: uuid.UUID,
+    user_id: CurrentUserId,
+    service: FieldDiaryService = Depends(_get_service),
+) -> DiaryEntryResponse:
+    """Approve a submitted diary entry, which is what costs its hours.
+
+    Deliberately on standard RBAC rather than the field grant every other
+    route here uses. The field session belongs to the worker whose hours these
+    are, and a record that posts to a budget line cannot be signed off by the
+    person it pays. The desktop timesheet has always worked this way; the
+    service method existed to match it and simply had no endpoint, so no diary
+    entry could be approved at all and the hours were costed on submit instead.
+    """
+    await verify_project_access(
+        (await service.get_diary_entry(entry_id)).project_id,
+        user_id,
+        service.session,
+    )
+    entry = await service.approve_diary_entry(entry_id, approver_id=uuid.UUID(user_id))
+    return DiaryEntryResponse.model_validate(entry)
+
+
+@router.post(
     "/entries/{entry_id}/activities/",
     response_model=DiaryActivityResponse,
     status_code=201,
@@ -407,9 +437,10 @@ async def upload_attachment(
 ) -> DiaryAttachmentResponse:
     """Upload a file attachment (S3-style - stored as opaque bytes).
 
-    Hard cap of 25 MB. The filename supplied by the client is kept as
-    metadata only; the on-disk storage key is server-derived to defuse
-    path-traversal attempts.
+    Hard cap of ``MAX_ATTACHMENT_BYTES`` (200 MB), sized for site video
+    rather than for photos alone. The filename supplied by the client is
+    kept as metadata only; the on-disk storage key is server-derived to
+    defuse path-traversal attempts.
     """
     entry = await service.get_diary_entry(entry_id)
     if entry.project_id != field_session.project_id:
@@ -534,6 +565,24 @@ async def field_today(
         open_inspection_count=open_insp_total,
         server_time=now_utc().isoformat(),
     )
+
+
+@router.get("/roster/", response_model=list[FieldCrewMemberResponse])
+async def field_roster(
+    svc: Annotated[FieldDiaryService, Depends(_get_service)],
+    field_session=Depends(_require_field_module_grant),
+) -> list[FieldCrewMemberResponse]:
+    """The project's people and crews, for the phone to pick from.
+
+    Cached by the offline shell alongside the Today seed. Hours picked off this
+    list carry a ``resource_id``, which is what the timesheet reconciliation
+    matches on; hours typed as a name carry nothing and get counted twice.
+
+    Scoped to the session's project like every other field route, so a stolen
+    session token still cannot enumerate another site's workforce.
+    """
+    rows = await svc.list_project_crew(field_session.project_id)
+    return [FieldCrewMemberResponse.model_validate(row) for row in rows]
 
 
 # ── Field capture (cross-module, idempotent) ───────────────────────────────

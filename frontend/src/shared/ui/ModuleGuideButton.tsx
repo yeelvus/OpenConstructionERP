@@ -16,15 +16,13 @@
 // shows, matching ModuleHelpButton; the button stays accessible via
 // aria-label.
 
-import { useEffect, useId, useState } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { GraduationCap } from 'lucide-react';
 import clsx from 'clsx';
 
 import { ModuleGuide, type ModuleGuideContent } from './ModuleGuide';
-import { ModuleInfoButton } from './ModuleInfoButton';
 import { ModuleCasesButton } from '@/features/cases/ModuleCasesButton';
-import { useModuleInfoStore } from '@/stores/useModuleInfoStore';
 
 export interface ModuleGuideButtonProps {
   /** The guide content to teach when the button is clicked. */
@@ -47,18 +45,6 @@ export function ModuleGuideButton({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
-  // Tell the store a "How it works" button is present on this page, so the
-  // Header suppresses its top-bar info fallback icon and lets the re-open pill
-  // below own the collapsed-card affordance. Keyed by a stable id so a
-  // StrictMode double-mount (or two guide buttons) stays balanced.
-  const guideId = useId();
-  const registerGuide = useModuleInfoStore((s) => s.registerGuide);
-  const unregisterGuide = useModuleInfoStore((s) => s.unregisterGuide);
-  useEffect(() => {
-    registerGuide(guideId);
-    return () => unregisterGuide(guideId);
-  }, [guideId, registerGuide, unregisterGuide]);
-
   const resolvedLabel = label ?? t('guide.button', { defaultValue: 'How it works' });
   const aria = t('guide.button_aria', {
     defaultValue: 'Learn how this module works',
@@ -71,10 +57,11 @@ export function ModuleGuideButton({
           playbook touches the current module, so it costs nothing on pages
           without cases. */}
       <ModuleCasesButton />
-      {/* Re-open control for a collapsed module info card, sitting immediately
-          next to "How it works" (founder 2026-07-23). Self-hides when nothing
-          on the page is collapsed. */}
-      <ModuleInfoButton />
+      {/* The re-open control for a collapsed info block used to sit here, and
+          now lives in the top bar beside the module name (founder 2026-08-07).
+          It is not rendered in both places: two controls for one action drift
+          apart, and the point of the move was that the control stops shifting
+          around with the width of each page's action row. */}
       <button
         type="button"
         onClick={() => setOpen(true)}

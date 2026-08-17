@@ -38,6 +38,7 @@ from app.modules.documents.activity_service import record_activity
 from app.modules.documents.models import Document, DocumentBIMLink, ProjectPhoto, Sheet
 from app.modules.documents.repository import DocumentRepository, PhotoRepository, SheetRepository
 from app.modules.documents.schemas import (
+    PHOTO_CATEGORIES,
     DocumentBIMLinkCreate,
     DocumentUpdate,
     PhotoUpdate,
@@ -203,7 +204,8 @@ VALID_CATEGORIES = {
     "reality_capture",
     "other",
 }
-VALID_PHOTO_CATEGORIES = {"site", "progress", "defect", "delivery", "safety", "aerial", "other"}
+# Same set the edit schema validates against, so the two cannot drift again.
+VALID_PHOTO_CATEGORIES = set(PHOTO_CATEGORIES)
 
 # Reality-capture / drone-survey point-cloud file extensions. A file dropped
 # into the generic documents upload with one of these extensions is auto-

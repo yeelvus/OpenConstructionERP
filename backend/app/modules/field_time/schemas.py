@@ -146,6 +146,83 @@ class FieldTimesheetResponse(BaseModel):
     updated_at: datetime
 
 
+# ── Offline capture and replay ───────────────────────────────────────────────
+#
+# A day recorded on a phone with no signal is queued on the device and replayed
+# when connectivity returns. The replay is at-least-once, so every op names the
+# logical entry it belongs to with a client-generated ``entry_key`` and carries
+# the entry's FULL state. Re-applying a full state is naturally idempotent,
+# which is why no revision counter is needed to make a replay safe.
+
+# What the server did with an offline op. A stable machine token: the client
+# renders its own localized sentence from it and never parses ``detail``.
+OUTCOME_CREATED = "created"  # first arrival, a new draft was written
+OUTCOME_REPLAYED = "replayed"  # already applied, the original is returned
+OUTCOME_UPDATED = "updated"  # a newer full state replaced the draft
+OUTCOME_WITHDRAWN = "withdrawn"  # the entry is gone (or was never applied)
+
+OUTCOME_PATTERN = r"^(created|replayed|updated|withdrawn)$"
+
+
+class OfflineEntrySubmission(BaseModel):
+    """One day recorded offline, as a complete replacement of that entry.
+
+    ``entry_key`` identifies the logical entry - the foreman's record of one
+    project-day - not this particular HTTP call. Every replay and every later
+    edit of the same day carries the same key, which is what lets the server
+    return the original row instead of writing a second one.
+
+    The key length mirrors the field sync ledger it is stored in. A minimum of 8
+    characters keeps a client from sending something that cannot be unique.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    entry_key: str = Field(..., min_length=8, max_length=128)
+    project_id: UUID
+    date: date_type
+    note: str | None = Field(default=None, max_length=5000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    lines: list[FieldTimesheetLineCreate] = Field(default_factory=list, max_length=1000)
+    # When the foreman wrote the day down on the device. Advisory only: the
+    # server records its own arrival time and never orders by this one.
+    captured_at: datetime | None = None
+    device: str | None = Field(default=None, max_length=120)
+    # Send the day on for approval as part of the same op. A validation failure
+    # leaves the entry as a draft rather than losing it.
+    submit: bool = False
+
+
+class OfflineEntryWithdraw(BaseModel):
+    """Withdraw a day recorded offline, by the key the device gave it.
+
+    ``project_id`` is required even when the entry is unknown here, because a
+    withdrawal that overtakes its own creation still has to be remembered - and
+    the record of it is scoped to a project.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    entry_key: str = Field(..., min_length=8, max_length=128)
+    project_id: UUID
+
+
+class OfflineEntryResult(BaseModel):
+    """The outcome of one offline op, plus the entry as it now stands."""
+
+    entry_key: str
+    outcome: str = Field(..., pattern=OUTCOME_PATTERN)
+    # The entry after the op. Absent for a withdrawal - there is nothing left.
+    timesheet: FieldTimesheetResponse | None = None
+    # True when the op asked to submit and the entry is now submitted. False
+    # with a ``draft`` timesheet means validation held it back; the client says
+    # so in its own words and points at the validation report.
+    submitted: bool = False
+    # English, technical, for a log or a support conversation. The client
+    # renders its user-facing text from ``outcome``, never from this.
+    detail: str | None = None
+
+
 # ── Reverse ──────────────────────────────────────────────────────────────────
 
 

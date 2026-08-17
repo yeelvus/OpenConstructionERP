@@ -64,7 +64,12 @@ describe('PortfolioPage empty / error states', () => {
     (portfolioCpmApi.nodeCpm as AnyFn).mockResolvedValue(undefined);
     // No active project in the store, so the cross-links panel shows its
     // "pick a project" empty state and never calls the schedule API.
-    (scheduleApi.listSchedules as AnyFn).mockResolvedValue([]);
+    (scheduleApi.listSchedules as AnyFn).mockResolvedValue({
+      items: [],
+      total: 0,
+      offset: 0,
+      limit: 50,
+    });
     (scheduleApi.getGantt as AnyFn).mockResolvedValue({ activities: [] });
   });
 

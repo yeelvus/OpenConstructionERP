@@ -8,6 +8,9 @@ Tables:
     oe_costmodel_cash_flow - monthly cash flow entries
     oe_costmodel_control_account - Cost Spine control accounts (CBS tree)
     oe_costmodel_cost_line - Cost Spine cost lines (one row per scope item)
+    oe_costmodel_labour_worker_day - one worker-day, claimed by the source that
+        costed it first, so a day recorded on a phone and again on the desktop
+        timesheet reaches the budget once
 """
 
 import uuid
@@ -310,3 +313,55 @@ class CostLine(Base):
 
     def __repr__(self) -> str:
         return f"<CostLine {self.code} ({self.source})>"
+
+
+class LabourWorkerDay(Base):
+    """One worker's day, claimed by whichever source costed it first.
+
+    The same day's work reaches this module from two places. A foreman punches
+    the crew in and out on a phone, and that diary entry publishes its hours on
+    approval. Somebody in the office fills in the desktop timesheet for the same
+    site and the same day, and that publishes too. Both are honest records of
+    the same eight hours, and without a row like this both land on the budget
+    line and the project reads as having paid twice.
+
+    The claim is per project, per calendar day, per worker, because that is the
+    grain a person can actually check: "was Marta costed twice on the 4th" is
+    answerable, "was report X costed twice" is not - the two reports have
+    different ids by construction.
+
+    A row with no ``resource_id`` cannot be claimed and is not represented here.
+    Those hours are costed as they arrive and reconciled by hand, which is why
+    the phone now asks the foreman to pick a person rather than type a name.
+    """
+
+    __tablename__ = "oe_costmodel_labour_worker_day"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "work_date",
+            "resource_id",
+            name="uq_oe_costmodel_labour_worker_day",
+        ),
+        Index("ix_oe_costmodel_labour_worker_day_project_date", "project_id", "work_date"),
+    )
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("oe_projects_project.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # ISO YYYY-MM-DD, the same string the diary entry and the timesheet carry.
+    work_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    # Stored as text, not a FK: the labour event carries whatever key its source
+    # had, and a claim must survive the resource row being deleted - otherwise
+    # deleting a leaver would silently reopen every day they ever worked.
+    resource_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Which module got here first, and the document it came from, so an approver
+    # reading a skipped-hours warning can go and look at the other record.
+    source_module: Mapped[str] = mapped_column(String(40), nullable=False, server_default="")
+    source_ref: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
+    hours: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0"), server_default="0")
+
+    def __repr__(self) -> str:  # pragma: no cover - debug repr
+        return f"<LabourWorkerDay {self.work_date} r={self.resource_id} from {self.source_module}>"

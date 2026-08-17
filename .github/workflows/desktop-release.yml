@@ -332,6 +332,14 @@ jobs:
       # the artifact round trip. This re-signs it anyway: the signature has to
       # be valid at the moment Tauri seals the bundle around it, and confirming
       # that here costs a second. Verify, do not assume.
+      #
+      # The identity is printed as well as verified. "--verify" answers whether
+      # the signature is intact and never says whose it is, and whose it is is
+      # the value dyld compares every unpacked archive member against at launch.
+      # This is one of two signing passes between the archive census in the
+      # other job and the bundled census at the end of this one, so without a
+      # reading here a disagreement between those two could not be attributed to
+      # either pass.
       - name: Confirm the sidecar signature survived the artifact round trip (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -341,6 +349,7 @@ jobs:
             codesign --verify --verbose=2 "$f" || echo "signature did not verify, re-signing"
             codesign --force --sign - --timestamp=none "$f"
             codesign --verify --verbose=2 "$f"
+            codesign -dvvv "$f" 2>&1 | grep -Ei 'teamidentifier|signature|flags=' || true
           done
 
       # Bundle the small (~30 MB) DDC IFC converter into the Windows installer
@@ -501,15 +510,194 @@ jobs:
           echo "=== spctl assess (expected: rejected, unnotarized) ==="
           spctl -a -t exec -vvv "$APP" 2>&1 || true
 
+      # Python is not otherwise needed in this job. The census below reads the
+      # sidecar's appended archive through PyInstaller's own reader, so both
+      # have to be here, and the version is pinned to the one that wrote the
+      # archive in the other job. The reader has to match the writer: the
+      # archive's table of contents has changed shape across PyInstaller
+      # releases, and a reader that cannot parse it reports members it could not
+      # read, which under a gate is a red release caused by nothing.
+      - name: Set up Python for the bundled sidecar census (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The same census as in the Build Sidecar job, taken again on the artifact
+      # that ships.
+      #
+      # That first reading is of the raw PyInstaller output, and it happens two
+      # signing passes before the file reaches a user: the round trip re-sign
+      # above, and Tauri sealing the bundle around it. Neither pass can touch
+      # the members sealed inside the archive, because by then they are payload
+      # bytes rather than files on disk. What a pass can do is change the
+      # identity on the wrapper, and that is the identity every one of those
+      # members is compared against, so a signing pass changes the answer while
+      # changing nothing the first census looked at. A reading taken before both
+      # passes cannot speak for the artifact after them.
+      #
+      # This runs against the sidecar as it sits inside the produced .app. The
+      # first line of the output is the one that decides the question, the
+      # wrapper's own TeamIdentifier, because at launch that wrapper is the
+      # process and dyld refuses to map any file whose Team ID disagrees with
+      # it. A wrapper signed with a real identity over members PyInstaller left
+      # ad-hoc is the same refusal as the reverse, and it is what a bundler
+      # applying its own signing identity would produce. --require-member keeps
+      # the file named in the user's failure report from clearing a run by never
+      # having been opened.
+      #
+      # It warns rather than fails, for now. The measurement is new here and has
+      # never been taken at this point, so nothing establishes what a healthy
+      # bundled sidecar reads as, and making a release depend on an unmeasured
+      # property is how you learn its value at tag time. The cost of the other
+      # choice is bounded but real: tauri-action uploads the installers to the
+      # draft release from inside itself, before this step runs, so failing here
+      # withholds no artifact that was going to ship, but it does turn the run
+      # red and it skips the Windows signing job, which needs build-tauri. Once
+      # one clean reading exists, turn the exit 0 at the end of the failing
+      # branch into exit 1 and this becomes a gate.
+      - name: Check what the bundled sidecar carries (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -uo pipefail
+
+          APP=$(find desktop/src-tauri/target -path '*/bundle/macos/*.app' -type d -maxdepth 8 2>/dev/null | head -1)
+          if [ -z "${APP:-}" ]; then
+            echo "::warning title=The bundled sidecar was never measured::No .app bundle was found under desktop/src-tauri/target, so the census of the artifact users install did not run. The pre-bundle census in the Build Sidecar job still holds, and it says nothing about what bundling did."
+            exit 0
+          fi
+          echo "App bundle: $APP"
+
+          SIDECAR=$(find "$APP/Contents/MacOS" -type f -name 'openconstructionerp-server*' 2>/dev/null | head -1)
+          if [ -z "${SIDECAR:-}" ]; then
+            echo "::warning title=The bundled sidecar was never measured::No openconstructionerp-server binary was found in $APP/Contents/MacOS, so the census of the artifact users install did not run."
+            ls -la "$APP/Contents/MacOS" || true
+            exit 0
+          fi
+          echo "Bundled sidecar: $SIDECAR"
+
+          SIG=$(codesign -dvvv "$SIDECAR" 2>&1)
+          echo "=== the identity bundling left on the sidecar ==="
+          echo "$SIG" | grep -Ei 'identifier=|teamidentifier|flags=|signature' || true
+
+          # Read the flags as well as the Team ID, because one flag decides how
+          # strictly the Team ID is compared. The hardened runtime turns on
+          # library validation, and library validation does not ask whether the
+          # process and the file it maps agree, it asks whether the file carries
+          # the loader's team or a platform identity. An ad-hoc file carries
+          # neither, so an ad-hoc process running under the hardened runtime is
+          # refused its own ad-hoc payload, and the refusal is worded as a Team
+          # ID disagreement even though no Team ID exists on either side. That
+          # is the one shape the census below cannot detect: every member comes
+          # back clean and the load still fails.
+          #
+          # This is measured, not hypothetical. The sidecar leaves the Build
+          # Sidecar job with flags=0x2(adhoc); inside the shipped v14.5.0 bundle
+          # the same file reads flags=0x10002(adhoc,runtime) with no entitlements
+          # embedded at all. Nothing in this repository had asked for the
+          # hardened runtime: the default lives in the bundler, in tauri-utils
+          # src/config.rs, where hardenedRuntime is serde default_true, and
+          # tauri.conf.json set only signingIdentity. That is why grepping the
+          # repo for the flag proved nothing.
+          #
+          # tauri.conf.json now says hardenedRuntime false and points at
+          # Entitlements.plist, so this warning is expected to stay quiet. If it
+          # fires again, the config stopped being applied - which is exactly
+          # what this check exists to notice, because the failure it predicts
+          # only shows up on a user's Mac.
+          if echo "$SIG" | grep -qi 'flags=.*runtime'; then
+            echo "::warning title=The shipped sidecar is ad-hoc and hardened at the same time::The sidecar inside the .app is signed ad-hoc AND with the hardened runtime, and carries no entitlements. That enables library validation with nothing able to satisfy it: the process has no Team ID, every file it unpacks into its _MEI directory has no Team ID, and the loader refuses them with a message about differing Team IDs. A clean member census below does not clear this, because no member is at fault."
+          else
+            echo "The bundled sidecar is not signed with the hardened runtime, so library validation is not in play."
+          fi
+
+          pip install "pyinstaller==6.21.0"
+
+          echo "=== what the bundled sidecar will unpack and map at launch ==="
+          if python scripts/inspect_desktop_sidecar_signatures.py \
+              --fail-on-foreign-team-id \
+              --require-member Python.framework \
+              "$SIDECAR"; then
+            echo "OK: inside the shipped bundle, nothing the sidecar unpacks disagrees with it about a Team ID."
+            echo "Bundled sidecar census: clean." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=The shipped sidecar disagrees with its own payload about a Team ID::The census above found inside the .app the shape that stops the app at 'Starting the application server' on a user's machine, or could not measure enough of it to rule that out. Compare it against the pre-bundle census in the Build Sidecar job: if that one was clean, bundling is what changed it. This warns rather than fails while the measurement is new."
+            echo "Bundled sidecar census: MISMATCH or inconclusive, see the Build Desktop (macos-latest) log." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+      # What the macOS leg publishes is ad-hoc signed and has never been
+      # notarised by Apple, and until now nothing in the run said so. That
+      # silence is how the seal integrity fix in 0c94892b0 came to be recorded
+      # as "macOS signing resolved": a real fix to a real bug, filed as a
+      # different guarantee than the one it delivers. The two claims are
+      # separate. An ad-hoc signature seals the bundle so its contents cannot
+      # be changed without breaking the seal, and only that claim is true here.
+      # It does not identify a publisher, Gatekeeper does not accept it, and it
+      # is why the release body asks people to clear the quarantine attribute
+      # by hand.
+      #
+      # This step decides which of the two the run produced by reading whether
+      # the Developer ID and notarisation credentials exist, rather than by
+      # stating a fixed answer, so it starts reporting the other outcome on its
+      # own the day someone configures them. A hardcoded "not notarised" line
+      # would become the next thing that is true until it quietly is not. Only
+      # emptiness is read; no secret value is printed or tested for content.
+      - name: State the macOS signing status
+        if: ${{ runner.os == 'macOS' && !cancelled() }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The explanatory note is chosen per branch, not printed after them.
+          # A fixed paragraph reading "only the seal holds" would keep being
+          # printed under a Developer ID build and would then be exactly the
+          # kind of confidently wrong line this step was added to remove.
+          if [ -n "${APPLE_CERTIFICATE:-}" ] && [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            identity="Developer ID credentials are configured"
+            note="Developer ID credentials are present, so this build is no longer ad-hoc by configuration. Read the codesign output in this job's log before repeating that anywhere: what is measured below is which credentials exist, and a credential is a precondition for a signature rather than evidence of one."
+          else
+            identity="**ad-hoc**, not Developer ID (\`signingIdentity\` is \`\"-\"\` in \`tauri.conf.json\`)"
+            note="An ad-hoc signature seals the bundle so its contents cannot be changed without breaking the seal. It does not identify a publisher and Gatekeeper does not accept it, which is why the release body asks people to clear the quarantine attribute by hand. Those are two separate claims and only the first one holds here."
+          fi
+
+          if [ -n "${APPLE_ID:-}" ] || [ -n "${APPLE_API_KEY:-}" ]; then
+            notarisation="notarisation credentials are configured"
+          else
+            notarisation="**none**, no notarisation credentials are configured"
+          fi
+
+          echo "macOS signature: ${identity}"
+          echo "macOS notarisation: ${notarisation}"
+          {
+            echo "### macOS signing status for this build"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Signature | ${identity} |"
+            echo "| Notarisation | ${notarisation} |"
+            echo
+            echo "${note}"
+            echo
+            echo "See \`docs/desktop/MACOS_NOTARIZATION.md\` and \`docs/desktop/RELEASE_SIGNATURE_INVENTORY.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # Authenticode code signing for the Windows installers.
   #
   # The tauri-action above uploads the Windows .exe (NSIS) and .msi to the
   # release as a draft, so the assets are never visible to users until the
   # founder publishes the release by hand. This job runs on the Windows
   # runner after the build, signs each Windows installer with the founder's
-  # GlobalSign certificate held in Azure Key Vault, and re-uploads the
-  # signed files over the unsigned ones. By the time the draft is published
-  # the binaries users download are the signed binaries.
+  # certificate held in Azure Key Vault, and re-uploads the signed files
+  # over the unsigned ones. By the time the draft is published the binaries
+  # users download are the signed binaries.
   #
   # The private key never leaves the Key Vault HSM, so signing calls out to
   # Azure Key Vault through AzureSignTool. The maintainer must set these
@@ -521,13 +709,31 @@ jobs:
   #   AZURE_KV_CLIENT_SECRET  a freshly rotated Key Vault client secret for that service principal
   #   AZURE_KV_TENANT_ID      the Entra (Azure AD) tenant id
   #
-  # AZURE_KV_CLIENT_SECRET must be a fresh, rotated secret. If the secrets
-  # are not set, on forks, on pull requests, or before the founder adds
-  # them, the signing step skips cleanly and the build still succeeds with
-  # unsigned installers.
+  # and one repository variable, WINDOWS_SIGNING_REQUIRED, described in the
+  # preflight step below. The full walkthrough is docs/desktop/WINDOWS_SIGNING.md.
+  #
+  # None of the five are set today, so every Windows installer this project
+  # has ever published is unsigned. That is a fact the run page now states
+  # rather than a silence, and it is the only branch of this job that is
+  # allowed to be green without a signature.
   sign-windows:
     name: Sign Windows installers
     needs: build-tauri
+    # `needs` alone would run this job only when build-tauri succeeded, and a
+    # skipped job says nothing at all: no preflight, no annotation, no summary
+    # block, just a grey tile. That matters because build-tauri is a matrix
+    # with fail-fast disabled, so one leg failing marks the whole job failed
+    # while the other legs still attach their installers to the release. A
+    # macOS leg that failed after the Windows leg had already uploaded its
+    # .exe and .msi would therefore leave signed-looking Windows installers on
+    # a release that this job never looked at, and WINDOWS_SIGNING_REQUIRED
+    # could not fire because nothing ran to read it. That is the same silence
+    # this job just removed from the inside, relocated to its own boundary.
+    #
+    # So: run whenever build-tauri reached a conclusion, and stay out of the
+    # way only when it was skipped, which is the sidecar-only dispatch where
+    # there is no release to sign against.
+    if: ${{ !cancelled() && needs.build-tauri.result != 'skipped' }}
     runs-on: windows-latest
     # Measured at 0.3 to 0.6 min, because there are no signing secrets and the
     # job downloads nothing. The cap is deliberately far above that: if the
@@ -536,36 +742,187 @@ jobs:
     # that discovers it.
     timeout-minutes: 30
     steps:
+      # Preflight runs before .NET is installed and before anything is
+      # downloaded, so the answer arrives in seconds rather than after a
+      # toolchain install that was never going to be used.
+      #
+      # It reads all five names as a set. The previous version tested
+      # AZURE_KV_CLIENT_SECRET alone, which meant four of the five could be
+      # empty and azuresigntool would still be invoked, with -kvu "" and
+      # -kvt "", to fail minutes later with a message about the vault instead
+      # of about the secret nobody set.
+      #
+      # The three outcomes below have the shape they have for one reason: the
+      # dangerous state is not "unsigned", it is "believed signed". An unsigned
+      # installer that says so is honest, and the person downloading it can
+      # decide what to do about it. A half configured pipeline that emits
+      # something signature shaped, without ever verifying that a signature
+      # came out, is the state where everyone downstream assumes a guarantee
+      # that does not exist and nothing in the run contradicts them. So absence
+      # is loud and green, anything partial or unverified is red, and no path
+      # through this job may end green having produced no verified signature.
+      #
+      # Three outcomes, deliberately three different colours.
+      #
+      #   none of the five set, WINDOWS_SIGNING_REQUIRED not true
+      #     -> mode=skip. Annotated, written to the job summary, and the
+      #        installers ship unsigned. This is every release to date, so
+      #        making it red would make every release red. Turning that into a
+      #        failure is a deliberate act, which is what the variable is for.
+      #
+      #   none of the five set, WINDOWS_SIGNING_REQUIRED == true
+      #     -> hard fail. Once signing has been configured once, a secret that
+      #        expires or gets deleted must not quietly return this job to
+      #        shipping unsigned installers. That regression would look exactly
+      #        like the green skip above.
+      #
+      #   some subset set
+      #     -> hard fail, naming the missing ones. A half configured vault
+      #        cannot sign anything, and the error it produces on its own does
+      #        not point at the cause.
+      #
+      # Only emptiness is ever read or printed. No secret value is echoed,
+      # tested for content, or written to the summary.
+      - name: Preflight the Azure Key Vault signing secrets
+        id: preflight
+        env:
+          AZURE_KV_URL: ${{ secrets.AZURE_KV_URL }}
+          AZURE_KV_CERT_NAME: ${{ secrets.AZURE_KV_CERT_NAME }}
+          AZURE_KV_CLIENT_ID: ${{ secrets.AZURE_KV_CLIENT_ID }}
+          AZURE_KV_CLIENT_SECRET: ${{ secrets.AZURE_KV_CLIENT_SECRET }}
+          AZURE_KV_TENANT_ID: ${{ secrets.AZURE_KV_TENANT_ID }}
+          SIGNING_REQUIRED: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          names=(AZURE_KV_URL AZURE_KV_CERT_NAME AZURE_KV_CLIENT_ID AZURE_KV_CLIENT_SECRET AZURE_KV_TENANT_ID)
+          missing=()
+          for name in "${names[@]}"; do
+            # Indirect expansion, so the branch is decided by whether the
+            # value is empty and the value itself is never expanded anywhere
+            # it could be printed.
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "All five AZURE_KV_* secrets are set. Signing will run and every step after this one is allowed to fail the job."
+            echo "mode=sign" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ ${#missing[@]} -eq 5 ]; then
+            if [ "${SIGNING_REQUIRED:-}" = "true" ]; then
+              echo "::error title=Windows signing is required and not configured::WINDOWS_SIGNING_REQUIRED is true, which says this repository has been configured to sign, but none of the five AZURE_KV_* secrets are set. Refusing to publish unsigned installers from a repository that declares it signs them." >&2
+              {
+              echo "# WINDOWS CODE SIGNING FAILED: REQUIRED AND NOT CONFIGURED"
+              echo
+              echo "\`WINDOWS_SIGNING_REQUIRED\` is \`true\` and none of the five \`AZURE_KV_*\` secrets are set."
+              echo "A secret that expired or was deleted looks exactly like a repository that never signed,"
+              echo "so this refuses to publish rather than silently going back to unsigned installers."
+            } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo "::warning title=Windows installers are not code signed::None of the five AZURE_KV_* secrets are set, so the .exe and .msi on this release are unsigned. Windows SmartScreen will warn every person who runs them. See docs/desktop/WINDOWS_SIGNING.md."
+            # A heading rather than a line, because this is the one branch
+            # that ships an unsigned artifact and stays green. It has to be
+            # the first thing read on the run page, not something found by
+            # someone who already suspected it.
+            {
+              echo "---"
+              echo
+              echo "# WINDOWS INSTALLERS ON THIS RELEASE ARE NOT CODE SIGNED"
+              echo
+              echo "> The \`.exe\` and \`.msi\` this run attached to \`${TAG:-this tag}\` carry **no Authenticode signature**."
+              echo "> Windows SmartScreen will warn every person who runs them, and nothing in the files"
+              echo "> identifies who published them. Every release of this project so far has shipped in"
+              echo "> this state. It is written here so that it reads as a decision and not as a silence."
+              echo
+              echo "| | |"
+              echo "| --- | --- |"
+              echo "| Signature | **absent, deliberately** |"
+              echo "| Cause | none of the five \`AZURE_KV_*\` secrets are set |"
+              echo "| To sign | create the secrets listed in \`docs/desktop/WINDOWS_SIGNING.md\` |"
+              echo "| To make this a hard failure instead | set the repository variable \`WINDOWS_SIGNING_REQUIRED\` to \`true\` |"
+              echo
+              echo "---"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::error title=Windows signing is half configured::${#missing[@]} of the 5 AZURE_KV_* secrets are missing: ${missing[*]}. AzureSignTool needs all five, and calling it with some of them empty fails with a message about the vault rather than about the secret. Set the missing ones, or clear all five to go back to shipping unsigned installers deliberately." >&2
+          {
+            echo "# WINDOWS CODE SIGNING FAILED: HALF CONFIGURED"
+            echo
+            echo "Missing: \`${missing[*]}\`."
+            echo
+            echo "AzureSignTool needs all five. Set the missing ones, or clear all five to go back to"
+            echo "shipping unsigned installers deliberately."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
       - name: Set up .NET 8
+        if: steps.preflight.outputs.mode == 'sign'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
 
       - name: Install AzureSignTool
+        if: steps.preflight.outputs.mode == 'sign'
         run: dotnet tool install --global AzureSignTool
 
       - name: Download Windows installers from the release
+        if: steps.preflight.outputs.mode == 'sign'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p signing
           # Pull only the Windows installers from this tag's release. The
-          # release may still be a draft at this point, which gh handles
-          # fine with a write-scoped token.
+          # release may still be a draft at this point, which gh handles fine
+          # with a write-scoped token.
+          #
+          # No `|| true` on this command or on the listing that follows it. It
+          # used to carry one, and the consequence was that a download which
+          # failed outright left an empty directory, the signing step then said
+          # "nothing to sign" and exited zero, and the job went green having
+          # signed nothing at all. A step that can successfully do nothing has
+          # to say so in its exit code.
           gh release download "$TAG" \
             --repo "${{ github.repository }}" \
             --dir signing \
             --pattern '*.exe' \
             --pattern '*.msi' \
-            --skip-existing || true
-          ls -la signing || true
+            --skip-existing
+
+          ls -la signing
+
+          # Composition, not count. Counting files would accept two .exe and no
+          # .msi, which is the shape a half finished Windows build leaves
+          # behind, and the missing installer would then ship unsigned while
+          # this job stayed green. Both kinds have to be present.
+          shopt -s nullglob
+          exes=(signing/*.exe)
+          msis=(signing/*.msi)
+          echo "downloaded ${#exes[@]} .exe and ${#msis[@]} .msi"
+          if [ ${#exes[@]} -eq 0 ] || [ ${#msis[@]} -eq 0 ]; then
+            echo "::error title=Windows installers are missing from the release::Expected at least one .exe and at least one .msi on $TAG, found ${#exes[@]} and ${#msis[@]}. Signing only what arrived would publish a release with one signed installer and one unsigned one, which is harder to notice than a release with neither." >&2
+            exit 1
+          fi
 
       - name: Sign the Windows installers with AzureSignTool
+        if: steps.preflight.outputs.mode == 'sign'
         env:
           # All five Azure values come from repository secrets. Nothing is
-          # ever hardcoded. If the client secret is empty the step skips.
+          # ever hardcoded. Preflight has already established that all five
+          # are non-empty, so there is no skip branch left in this step.
           AZURE_KV_URL: ${{ secrets.AZURE_KV_URL }}
           AZURE_KV_CERT_NAME: ${{ secrets.AZURE_KV_CERT_NAME }}
           AZURE_KV_CLIENT_ID: ${{ secrets.AZURE_KV_CLIENT_ID }}
@@ -575,28 +932,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Graceful skip: when the signing secret is not configured, on
-          # forks, on pull requests, or before the founder adds the secret,
-          # leave the build green with unsigned installers instead of failing.
-          #
-          # It says so as a warning rather than a log line. Every branch of
-          # this job exits zero, so the job is green whether it signed
-          # anything or not, and a plain echo inside a green job is read by
-          # nobody. The releases so far have all taken this branch and the
-          # run page gave no sign of it.
-          if [ -z "${AZURE_KV_CLIENT_SECRET:-}" ]; then
-            echo "::warning title=Windows installers are not code signed::AZURE_KV_CLIENT_SECRET is not set, so the .exe and .msi on this release are unsigned. Windows SmartScreen will warn every person who runs them. Set the five AZURE_KV_* secrets to sign."
-            echo "Windows code signing: SKIPPED, installers are unsigned." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
           echo "Windows code signing: running against Azure Key Vault." >> "$GITHUB_STEP_SUMMARY"
 
           shopt -s nullglob
           files=(signing/*.exe signing/*.msi)
           if [ ${#files[@]} -eq 0 ]; then
-            echo "No Windows installers were downloaded, nothing to sign."
-            exit 0
+            echo "::error title=Nothing to sign::The download step verified that installers were present and this step found none." >&2
+            exit 1
           fi
 
           for f in "${files[@]}"; do
@@ -615,51 +957,67 @@ jobs:
           done
 
       - name: Verify the signatures
-        env:
-          AZURE_KV_CLIENT_SECRET: ${{ secrets.AZURE_KV_CLIENT_SECRET }}
-        shell: bash
-        run: |
-          set -uo pipefail
-
-          # Skip when signing was skipped.
-          if [ -z "${AZURE_KV_CLIENT_SECRET:-}" ]; then
-            echo "Signing was skipped, nothing to verify."
-            exit 0
-          fi
-
-          # signtool ships with the Windows SDK and is not on PATH. Find the
-          # newest copy if it exists. Verification is best effort: a missing
-          # signtool must not fail the build.
-          signtool="$(find '/c/Program Files (x86)/Windows Kits/10/bin' \
-            -name signtool.exe -path '*x64*' 2>/dev/null | sort | tail -n 1 || true)"
-          if [ -z "$signtool" ]; then
-            echo "signtool not found, skipping signature verification."
-            exit 0
-          fi
-
-          shopt -s nullglob
-          for f in signing/*.exe signing/*.msi; do
-            echo "Verifying $f"
-            "$signtool" verify /pa /v "$f" || echo "Verification reported an issue for $f (not failing the build)."
-          done
-
-      - name: Re-upload the signed installers to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-          AZURE_KV_CLIENT_SECRET: ${{ secrets.AZURE_KV_CLIENT_SECRET }}
+        if: steps.preflight.outputs.mode == 'sign'
         shell: bash
         run: |
           set -euo pipefail
 
-          # Nothing to replace if signing was skipped.
-          if [ -z "${AZURE_KV_CLIENT_SECRET:-}" ]; then
-            echo "Signing was skipped, leaving the original installers in place."
-            exit 0
+          # This step used to be best effort: a missing signtool exited zero,
+          # and a failed verification piped into `|| echo`. That made the only
+          # step capable of catching a bad signature incapable of stopping one,
+          # so an installer that azuresigntool wrote but that Windows would
+          # refuse could ship green.
+          #
+          # Once signing has actually been attempted, verification is the gate.
+          # signtool ships with the Windows SDK on windows-latest and is not on
+          # PATH, so it still has to be found; but not finding it now fails,
+          # because "nothing checked these signatures" and "these signatures
+          # are good" must not look the same from the run page.
+          signtool="$(find '/c/Program Files (x86)/Windows Kits/10/bin' \
+            -name signtool.exe -path '*x64*' 2>/dev/null | sort | tail -n 1 || true)"
+          if [ -z "$signtool" ]; then
+            echo "::error title=signtool was not found on the runner::Signing ran, so something must check the result, and there is no signtool on this image to check it with. Refusing to publish installers whose signature nothing has verified." >&2
+            exit 1
           fi
+          echo "using $signtool"
 
           shopt -s nullglob
-          for f in signing/*.exe signing/*.msi; do
+          files=(signing/*.exe signing/*.msi)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error title=Nothing to verify::The signing step reported success and left no installers behind." >&2
+            exit 1
+          fi
+
+          # /pa uses the Authenticode policy rather than the driver policy, so
+          # this is the same check Windows performs when a user runs the file.
+          for f in "${files[@]}"; do
+            echo "Verifying $f"
+            "$signtool" verify /pa /v "$f"
+          done
+          echo "Verified all ${#files[@]} installers."
+          echo "Windows code signing: ${#files[@]} installers signed and verified." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Re-upload the signed installers to the release
+        if: steps.preflight.outputs.mode == 'sign'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          files=(signing/*.exe signing/*.msi)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error title=Nothing to upload::Verification passed over a set of installers that is now empty." >&2
+            exit 1
+          fi
+
+          # No `|| true`. If the replacement fails, the release keeps the
+          # unsigned installer that is already attached to it, while this job
+          # reports that it signed one. That is the worst of the three
+          # outcomes and the one hardest to spot afterwards.
+          for f in "${files[@]}"; do
             echo "Uploading signed $f"
             gh release upload "$TAG" "$f" \
               --repo "${{ github.repository }}" \

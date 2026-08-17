@@ -46,6 +46,7 @@ import {
 import { Card, Badge, Button, Input, InfoHint, Breadcrumb, ConfirmDialog, DismissibleInfo, IntroRichText, ModuleGuideButton } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { modulesGuide } from './modulesGuide';
+import { resolveModuleDisplayName } from './moduleDisplayName';
 import { PartnerPackApplyDialog } from './PartnerPackApplyDialog';
 import { PartnerPackDeactivateDialog } from './PartnerPackDeactivateDialog';
 import {
@@ -2008,7 +2009,7 @@ function DataPackagesTab() {
 /* ══════════════════════════════════════════════════════════════════════════ */
 
 function SystemModulesTab() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const queryClient = useQueryClient();
   const userRole = useAuthStore((s) => s.userRole);
@@ -2024,6 +2025,12 @@ function SystemModulesTab() {
   });
 
   const enabledCount = systemModules?.filter((m) => m.enabled).length ?? 0;
+
+  // Module names arrive from the backend manifest in English. Everything the
+  // user reads goes through here so a name is translated in the card, in the
+  // confirm dialog and in the toast alike. A name translated in one of those
+  // and English in the next reads as two different modules.
+  const nameOf = (mod: SystemModule): string => resolveModuleDisplayName(mod, t, i18n.language);
 
   async function handleBackendToggle(mod: SystemModule): Promise<void> {
     // Enabling/disabling a backend module is admin-only on the server
@@ -2045,7 +2052,7 @@ function SystemModulesTab() {
         title: t('modules.cannot_disable', { defaultValue: 'Cannot disable' }),
         message: t('modules.core_module_locked', {
           defaultValue: '{{name}} is a core module and cannot be disabled.',
-          name: mod.display_name,
+          name: nameOf(mod),
         }),
       });
       return;
@@ -2057,12 +2064,12 @@ function SystemModulesTab() {
       const confirmed = await confirm({
         title: t('modules.confirm_disable_system_title', {
           defaultValue: 'Disable {{name}}?',
-          name: mod.display_name,
+          name: nameOf(mod),
         }),
         message: t('modules.confirm_disable_system', {
           defaultValue:
             'Disable {{name}}? This removes the module from the backend and may require an app restart.',
-          name: mod.display_name,
+          name: nameOf(mod),
         }),
         confirmLabel: t('common.disable', { defaultValue: 'Disable' }),
         variant: 'warning',
@@ -2076,8 +2083,8 @@ function SystemModulesTab() {
       addToast({
         type: 'success',
         title: action === 'enable'
-          ? t('modules.enabled', { defaultValue: '{{name}} enabled', name: mod.display_name })
-          : t('modules.disabled', { defaultValue: '{{name}} disabled', name: mod.display_name }),
+          ? t('modules.enabled', { defaultValue: '{{name}} enabled', name: nameOf(mod) })
+          : t('modules.disabled', { defaultValue: '{{name}} disabled', name: nameOf(mod) }),
       });
       // Invalidate the shared ['system-modules'] query so BOTH this tab and
       // the Sidebar (which reads the same key to gate routes for disabled
@@ -2199,7 +2206,7 @@ function SystemModulesTab() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs font-semibold text-content-primary truncate">
-                    {mod.display_name}
+                    {nameOf(mod)}
                   </span>
                   {mod.is_core ? (
                     <Badge variant="blue" size="sm">{t('modules.core', { defaultValue: 'Core' })}</Badge>
@@ -2244,11 +2251,11 @@ function SystemModulesTab() {
                       ? t('modules.toggle_module', {
                           defaultValue: '{{action}} {{name}}',
                           action: mod.enabled ? t('common.disable', { defaultValue: 'Disable' }) : t('common.enable', { defaultValue: 'Enable' }),
-                          name: mod.display_name,
+                          name: nameOf(mod),
                         })
                       : t('modules.toggle_module_admin_only', {
                           defaultValue: '{{name}} - admin only',
-                          name: mod.display_name,
+                          name: nameOf(mod),
                         })
                   }
                   className={clsx('shrink-0', !isAdmin && 'cursor-not-allowed opacity-50')}

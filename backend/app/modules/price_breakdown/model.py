@@ -37,6 +37,34 @@ from enum import StrEnum
 _2P = Decimal("0.01")
 _4P = Decimal("0.0001")
 
+#: Quantum per number of minor-unit digits, so a currency's own precision picks
+#: its rounding step instead of every amount getting two decimals.
+_MONEY_QUANTUM: dict[int, Decimal] = {
+    0: Decimal("1"),
+    2: Decimal("0.01"),
+    3: Decimal("0.001"),
+}
+
+
+def money_quantum(currency: str | None) -> Decimal:
+    """Rounding step for one unit of ``currency``.
+
+    A unit price analysis in a currency with no minor unit was printing cents:
+    a Chilean peso rate read ``82000.00 CLP``, which is not a number anyone in
+    Chile writes and reads as false precision on a tendered rate. The registry
+    in ``app.core.money`` already knows CLP has no cents, JPY and KRW likewise;
+    nothing on this path was asking it.
+
+    Falls back to two decimals for a currency the registry does not carry,
+    which is the historical behaviour and the right guess for most codes.
+    """
+    from app.core.money import CURRENCIES
+
+    spec = CURRENCIES.get((currency or "").strip().upper())
+    decimals = spec.get("decimals", 2) if spec else 2
+    return _MONEY_QUANTUM.get(int(decimals), _2P)
+
+
 # A markup above this many percent is treated as a data error and capped. Real
 # site overhead + risk + profit almost never exceeds a few tens of percent;
 # 1000% is a generous ceiling that still blocks obviously broken values.
@@ -291,8 +319,14 @@ class PriceBreakdown:
         return self.unit_rate * self.position_quantity
 
     def to_dict(self) -> dict:
-        """JSON-ready view (money rounded to 2dp, quantities to 4dp)."""
+        """JSON-ready view (money at the currency's own precision, quantities to 4dp).
+
+        Percentages keep two decimals whatever the currency, because a markup
+        of 12.5% is 12.5% in Santiago and in Frankfurt. Only the amounts follow
+        the currency.
+        """
         kt = self.kind_totals
+        money = money_quantum(self.currency)
         return {
             "position_ref": self.position_ref,
             "description": self.description,
@@ -306,23 +340,23 @@ class PriceBreakdown:
                     "description": c.description,
                     "unit": c.unit,
                     "quantity": _q(c.quantity, _4P),
-                    "unit_cost": _q(c.unit_cost, _2P),
-                    "amount": _q(c.amount, _2P),
+                    "unit_cost": _q(c.unit_cost, money),
+                    "amount": _q(c.amount, money),
                 }
                 for c in self.components
             ],
-            "kind_totals": {k.value: _q(v, _2P) for k, v in kt.items()},
+            "kind_totals": {k.value: _q(v, money) for k, v in kt.items()},
             "kind_i18n_keys": {k.value: kind_i18n_key(k) for k in ResourceKind},
             "i18n_keys": dict(LINE_I18N_KEYS),
-            "direct_unit_cost": _q(self.direct_unit_cost, _2P),
+            "direct_unit_cost": _q(self.direct_unit_cost, money),
             "overhead_pct": _q(self.overhead_pct, _2P),
-            "overhead_amount": _q(self.overhead_amount, _2P),
+            "overhead_amount": _q(self.overhead_amount, money),
             "risk_pct": _q(self.risk_pct, _2P),
-            "risk_amount": _q(self.risk_amount, _2P),
+            "risk_amount": _q(self.risk_amount, money),
             "profit_pct": _q(self.profit_pct, _2P),
-            "profit_amount": _q(self.profit_amount, _2P),
-            "unit_rate": _q(self.unit_rate, _2P),
-            "position_total": _q(self.position_total, _2P),
+            "profit_amount": _q(self.profit_amount, money),
+            "unit_rate": _q(self.unit_rate, money),
+            "position_total": _q(self.position_total, money),
         }
 
 

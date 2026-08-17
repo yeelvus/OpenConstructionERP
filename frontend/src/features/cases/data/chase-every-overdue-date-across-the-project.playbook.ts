@@ -58,6 +58,7 @@ const playbook: Playbook = {
       whyDefault:
         "A project rarely slips in one obvious place. It slips a few days here and a week there, in registers nobody reads together, and by the time it is visible in the programme the reasons are two months old. One list turns a vague feeling that things are drifting into a count you can do something about this morning.",
       moduleLabel: "Deadlines",
+      moduleLabelKey: "deadlines.title",
       to: "/deadlines",
     },
     {
@@ -92,6 +93,7 @@ const playbook: Playbook = {
       whyDefault:
         "Very little slips because somebody decided to ignore it. It slips because nobody told them it was theirs. Escalating on a grace window rather than on day one is what keeps the escalation worth reading, because a manager copied into everything reads none of it.",
       moduleLabel: "Deadlines",
+      moduleLabelKey: "deadlines.title",
       to: "/deadlines",
     },
     {
@@ -126,6 +128,7 @@ const playbook: Playbook = {
       whyDefault:
         "A reminder tells somebody a date has passed. It does not tell them what to do next, and the ones that have gone badly overdue are usually the ones where that is not obvious. The register only shortens when the source record closes, so the task has to point at the real work rather than at the reminder about it.",
       moduleLabel: "Tasks",
+      moduleLabelKey: "tasks.title",
       to: "/tasks",
     },
   ],

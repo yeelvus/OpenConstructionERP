@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Sequence
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.daily_diary.models import (
@@ -102,6 +103,20 @@ async def seed_daily_diary_demo(
     if not project_ids:
         return {}
 
+    # Ninety days of diaries per project is not something to add twice. The
+    # boot backfill re-runs this on every start, so skip any project that
+    # already carries a diary rather than gating on a table-wide count: users
+    # write diaries too, and one real entry would otherwise stop the demo seed
+    # reaching the projects that are still empty.
+    # Compared as strings on both sides. The id column is a text-backed GUID
+    # that reads back as a uuid.UUID, and callers hand this function whichever
+    # of the two they happen to hold, so comparing the raw values would let the
+    # guard silently never match and duplicate the whole seed on every boot.
+    _rows = (
+        await session.execute(select(DailyDiary.project_id).where(DailyDiary.project_id.in_(list(project_ids))))
+    ).scalars()
+    seeded = {str(_pid) for _pid in _rows.all()}
+
     rng = random.Random(deterministic_seed)
     base = base_date or datetime.now(UTC).replace(hour=8, minute=0, second=0, microsecond=0)
 
@@ -122,6 +137,8 @@ async def seed_daily_diary_demo(
     reality_pool_remaining = _REALITY_CAPTURES
 
     for project_idx, project_id in enumerate(project_ids):
+        if str(project_id) in seeded:
+            continue
         centre = _DEFAULT_CENTRES[project_idx % len(_DEFAULT_CENTRES)]
         lat0, lng0 = centre
 
@@ -268,6 +285,8 @@ async def seed_daily_diary_demo(
             )
 
     for project_idx, project_id in enumerate(project_ids):
+        if str(project_id) in seeded:
+            continue
         for d in range(drone_pool_remaining // max(len(project_ids), 1)):
             drone_surveys.append(
                 DroneSurvey(

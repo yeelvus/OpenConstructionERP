@@ -86,7 +86,7 @@ const playbook: Playbook = {
       whyKey: "cases.register_warranties_and_guarantees_at_handover.step.file.why",
       whyDefault:
         "A register that points at missing documents is only half a register. Filing the certificates with it is what makes a claim a simple lookup instead of an archaeological dig.",
-      moduleLabel: "Files",
+      moduleLabel: "Documents",
       moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },

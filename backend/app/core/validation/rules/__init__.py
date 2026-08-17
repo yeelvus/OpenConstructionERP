@@ -6367,6 +6367,99 @@ class FieldTimePlantNeedsEquipment(ValidationRule):
         return results
 
 
+class FieldTimeOfflineClockPlausible(ValidationRule):
+    """A day captured offline must not claim to have been written in the future.
+
+    Deliberately a WARNING. Nothing in the platform orders anything by the
+    device clock - the replay queue keeps its own sequence and the server stamps
+    its own arrival time - so a wrong clock corrupts no data. It does mislead the
+    person reading two entries side by side, which is worth saying and is not
+    worth refusing a real shift over. An ERROR here would make a day permanently
+    unsubmittable because a phone was set to the wrong year.
+    """
+
+    rule_id = "field_time.offline_clock_plausible"
+    name = "Field Time Offline Clock Plausible"
+    standard = "field_time"
+    severity = Severity.WARNING
+    category = RuleCategory.CONSISTENCY
+    description = "Flags an offline entry whose device clock ran ahead of the server."
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        payload = _ft_payload(context)
+        from app.modules.field_time import field_time_math as ft
+
+        capture = ft.read_offline_capture(payload.get("metadata"))
+        if not capture.recorded:
+            return []
+        ahead = ft.offline_clock_ahead_minutes(capture)
+        if ahead is None or ahead <= ft.OFFLINE_CLOCK_TOLERANCE_MINUTES:
+            return []
+        return [
+            RuleResult(
+                rule_id=self.rule_id,
+                rule_name=self.name,
+                severity=self.severity,
+                category=self.category,
+                passed=False,
+                message=translate(
+                    "field_time.offline_clock_plausible.fail",
+                    locale=locale,
+                    minutes=f"{ahead}",
+                ),
+                element_ref=capture.device or capture.entry_key,
+                suggestion=translate("field_time.offline_clock_plausible.suggestion", locale=locale),
+            )
+        ]
+
+
+class FieldTimeOfflineSyncDelay(ValidationRule):
+    """A day that reached the office long after it was worked wants a second look.
+
+    Also a WARNING, and for the same reason: the delay is the site's, not the
+    foreman's. Hours recorded in a basement and synced a fortnight later are
+    still true hours, but they have probably missed a valuation and possibly a
+    payroll run, and the approver is the last person who can catch that.
+    """
+
+    rule_id = "field_time.offline_sync_delay"
+    name = "Field Time Offline Sync Delay"
+    standard = "field_time"
+    severity = Severity.WARNING
+    category = RuleCategory.CONSISTENCY
+    description = "Flags an offline entry that reached the server long after the day it books."
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        payload = _ft_payload(context)
+        from app.modules.field_time import field_time_math as ft
+
+        capture = ft.read_offline_capture(payload.get("metadata"))
+        if not capture.recorded:
+            return []
+        delay = ft.offline_sync_delay_days(capture, payload.get("date"))
+        if delay is None or delay <= ft.OFFLINE_SYNC_DELAY_WARN_DAYS:
+            return []
+        return [
+            RuleResult(
+                rule_id=self.rule_id,
+                rule_name=self.name,
+                severity=self.severity,
+                category=self.category,
+                passed=False,
+                message=translate(
+                    "field_time.offline_sync_delay.fail",
+                    locale=locale,
+                    days=f"{delay}",
+                    date=str(payload.get("date") or ""),
+                ),
+                element_ref=str(payload.get("id") or ""),
+                suggestion=translate("field_time.offline_sync_delay.suggestion", locale=locale),
+            )
+        ]
+
+
 class FieldTimeApprovedImmutable(ValidationRule):
     """An approved or reversed timesheet cannot be edited - only reversed."""
 
@@ -8160,6 +8253,8 @@ def register_builtin_rules() -> None:
         (FieldTimeDayworkNeedsVariation(), None),
         (FieldTimePlantNeedsEquipment(), None),
         (FieldTimeApprovedImmutable(), None),
+        (FieldTimeOfflineClockPlausible(), None),
+        (FieldTimeOfflineSyncDelay(), None),
         # Estimate Audit (curated cross-checks: wrong unit, near-duplicate,
         # missing companion, catalogue-benchmarked rate outlier)
         (WrongUnitOfMeasure(), ["estimate_audit"]),

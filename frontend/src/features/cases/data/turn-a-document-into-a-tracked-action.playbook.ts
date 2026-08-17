@@ -93,6 +93,7 @@ const playbook: Playbook = {
       whyDefault:
         "Retyping a task out of a letter is where the reference number goes missing and the deadline quietly becomes next Friday. Creating it from the source keeps both, and keeps the letter and the task as one piece of work rather than two records nobody ever links back together.",
       moduleLabel: "Tasks",
+      moduleLabelKey: "tasks.title",
       to: "/tasks",
     },
     {
@@ -127,6 +128,7 @@ const playbook: Playbook = {
       whyDefault:
         "A task with no visible origin gets closed on somebody's guess about what it meant. Months later, when a client asks what was done about a particular letter, the badge is the difference between answering in a click and losing an afternoon in the archive.",
       moduleLabel: "Tasks",
+      moduleLabelKey: "tasks.title",
       to: "/tasks",
     },
   ],

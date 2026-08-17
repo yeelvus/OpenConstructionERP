@@ -46,7 +46,7 @@ import {
 } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { DismissibleInfo, IntroRichText } from '@/shared/ui/DismissibleInfo';
-import { apiGet, apiPost, apiDelete } from '@/shared/lib/api';
+import { apiGet, apiPost, apiDelete, type Page } from '@/shared/lib/api';
 import { PreferencesTab } from './PreferencesTab';
 import { notificationsGuide } from './notificationsGuide';
 
@@ -75,11 +75,6 @@ interface Notification {
   created_at: string;
 }
 
-interface NotificationListResponse {
-  items: Notification[];
-  total: number;
-  unread_count: number;
-}
 
 const ICON_MAP: Record<IconCategory, { icon: typeof CheckCircle2; color: string; bg: string }> = {
   success: {
@@ -180,7 +175,13 @@ export function NotificationsPage() {
       params.set('limit', String(PAGE_SIZE));
       params.set('offset', String(page * PAGE_SIZE));
       if (isReadParam !== undefined) params.set('is_read', String(isReadParam));
-      return apiGet<NotificationListResponse>(`/v1/notifications?${params.toString()}`);
+      /* Spelled as the shared `Page` envelope plus this module's extra
+         counter, rather than a hand-rolled `{items, total}` copy, so the
+         pagination gate can read off the call that this caller consumes
+         the envelope. */
+      return apiGet<Page<Notification> & { unread_count: number }>(
+        `/v1/notifications?${params.toString()}`,
+      );
     },
     staleTime: 10_000,
     refetchOnWindowFocus: true,

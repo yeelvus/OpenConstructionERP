@@ -57,7 +57,7 @@ const playbook: Playbook = {
       whyKey: "cases.issue_a_controlled_drawing_revision.step.register.why",
       whyDefault:
         "Two live copies of the same drawing is how a wall gets built to last month geometry. One controlled register, with the old revision plainly retired, is what leaves no doubt which sheet is the truth.",
-      moduleLabel: "Files",
+      moduleLabel: "Documents",
       moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },

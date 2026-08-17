@@ -33,6 +33,14 @@
     "approved_immutable": {
       "fail": "This timesheet is {status} and cannot be edited",
       "suggestion": "Post a reversing timesheet to correct approved hours"
+    },
+    "offline_clock_plausible": {
+      "fail": "The device that recorded this day was {minutes} minutes ahead of the server clock",
+      "suggestion": "Set the device clock so recorded times can be read in the right order"
+    },
+    "offline_sync_delay": {
+      "fail": "This day was worked on {date} and only reached the office {days} days later",
+      "suggestion": "Check the hours against the day itself before approving, the valuation may already be closed"
     }
   },
   "ai_takeoff": {

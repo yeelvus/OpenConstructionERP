@@ -57,6 +57,7 @@ def _has_index(
 # ── upgrade ─────────────────────────────────────────────────────────────
 
 
+# data-rewrite-ack: table=oe_costmodel_snapshot growth=tenure rows=one EVM snapshot per cost model per month by construction, grows with elapsed time
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)

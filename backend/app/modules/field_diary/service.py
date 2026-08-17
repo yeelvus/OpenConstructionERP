@@ -18,10 +18,10 @@ import logging
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import event_bus
@@ -57,6 +57,10 @@ from app.modules.field_diary.schemas import (
     FieldScheduleProgressCreate,
 )
 
+if TYPE_CHECKING:  # Typing only - the roster route imports this at call time so
+    # a deployment without the resources module still loads this one.
+    from app.modules.resources.models import Resource
+
 logger = logging.getLogger(__name__)
 
 # ── Tunables ──────────────────────────────────────────────────────────────
@@ -64,6 +68,15 @@ logger = logging.getLogger(__name__)
 MAGIC_LINK_TTL = timedelta(minutes=15)
 SESSION_TTL = timedelta(days=30)  # field workers stay logged in for weeks
 PIN_MAX_ATTEMPTS = 5
+
+# Resource kinds a foreman books hours against. A crew is on the list because
+# the timesheet lets a crew carry hours as one row; equipment and
+# subcontractor companies are not, they are not who a punch clock is for.
+FIELD_ROSTER_KINDS = ("person", "crew")
+# The roster is cached whole on the device, so it is capped. A site with more
+# people than this has a register problem, not a phone problem, and the free
+# text field still takes anybody the list has cut.
+FIELD_ROSTER_LIMIT = 500
 
 # ── Pure helpers ──────────────────────────────────────────────────────────
 
@@ -310,10 +323,6 @@ class FieldDiaryService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=("Diary entry is empty - add notes, activities, or attachments before submitting"),
             )
-        # Snapshot the labour-bearing activity rows BEFORE update_fields()
-        # expires the ORM state. Each work/inspection activity with positive
-        # hours becomes a labour row; delays/visits/incidents are ignored.
-        labour_rows = self._diary_labour_rows(activities)
         project_id_s = str(entry.project_id)
         author_id_s = str(entry.author_id)
         entry_date_s = entry.entry_date
@@ -336,25 +345,10 @@ class FieldDiaryService:
             source_module="field_diary",
         )
 
-        # Feed diary work hours into the shared labour-cost / payroll flow.
-        # Best-effort: never let a rollup failure block submission.
-        if labour_rows:
-            try:
-                from app.modules.field_diary.events import publish_diary_labour
-
-                publish_diary_labour(
-                    entry_id=str(entry_id),
-                    project_id=project_id_s,
-                    entry_date=entry_date_s,
-                    author_id=author_id_s,
-                    activity_rows=labour_rows,
-                )
-            except Exception:
-                logger.exception(
-                    "Diary labour publish failed for entry=%s - submission unaffected",
-                    entry_id,
-                )
-
+        # Hours are not costed here. Submitting says the worker is finished
+        # writing, not that anyone has checked what they wrote, and these hours
+        # land straight on a budget line's actuals. They now go out on approval
+        # instead, which is the same rule the desktop timesheet has always had.
         return entry
 
     @staticmethod
@@ -399,6 +393,18 @@ class FieldDiaryService:
         *,
         approver_id: uuid.UUID,
     ) -> DiaryEntry:
+        """Transition submitted → approved, and cost the hours (idempotent).
+
+        Approval is where the work hours reach the cost model. They used to go
+        out on submit, which meant a worker's own phone posted straight onto a
+        budget line with nobody in between, on a screen where the crew is typed
+        by hand. The desktop timesheet has always required a manager, and there
+        is no reason the same hours captured on site should require less.
+
+        The publish is marked on the entry so it happens once. Approving an
+        entry twice, or approving one that was submitted while submit still
+        published, does not cost the hours again.
+        """
         entry = await self.get_diary_entry(entry_id)
         if entry.status not in ("submitted", "approved"):
             raise HTTPException(
@@ -408,6 +414,17 @@ class FieldDiaryService:
         if entry.status == "approved":
             return entry  # idempotent
         prior_status = entry.status
+
+        # Snapshot the labour-bearing rows BEFORE update_fields() expires the
+        # ORM state. Each work/inspection activity with positive hours becomes
+        # a labour row; delays, visits and incidents carry no payable hours.
+        activities = await self.activity_repo.list_for_entry(entry_id)
+        labour_rows = self._diary_labour_rows(activities)
+        already_published = entry.labour_published_at is not None
+        project_id_s = str(entry.project_id)
+        author_id_s = str(entry.author_id)
+        entry_date_s = entry.entry_date
+
         now = now_utc()
         await self.entry_repo.update_fields(
             entry_id,
@@ -416,6 +433,28 @@ class FieldDiaryService:
             approved_by=approver_id,
         )
         await self.session.refresh(entry)
+
+        # Feed diary work hours into the shared labour-cost / payroll flow.
+        # Best-effort: a rollup failure must not undo an approval the manager
+        # has already made, so the mark is only set once the publish returns.
+        if labour_rows and not already_published:
+            try:
+                from app.modules.field_diary.events import publish_diary_labour
+
+                publish_diary_labour(
+                    entry_id=str(entry_id),
+                    project_id=project_id_s,
+                    entry_date=entry_date_s,
+                    author_id=author_id_s,
+                    activity_rows=labour_rows,
+                )
+                await self.entry_repo.update_fields(entry_id, labour_published_at=now)
+                await self.session.refresh(entry)
+            except Exception:
+                logger.exception(
+                    "Diary labour publish failed for entry=%s - approval unaffected",
+                    entry_id,
+                )
 
         # Epic H - universal audit trail.
         from app.core.audit_log import log_activity as _log_activity
@@ -454,6 +493,65 @@ class FieldDiaryService:
             offset=offset,
             limit=limit,
         )
+
+    # ── Project roster ────────────────────────────────────────────────────
+
+    async def list_project_crew(self, project_id: uuid.UUID) -> list[Resource]:
+        """People and crews the phone can pick instead of typing a name.
+
+        A crew row captured under a typed name has no ``resource_id``, and the
+        timesheet reconciliation matches on exactly that, so the same person is
+        counted once from the phone and once from the desktop with nothing on
+        either screen saying so. Picking off this list carries the id.
+
+        Two ways in, because a project staffs itself both ways: a resource whose
+        ``home_project_id`` is this project (site labour that belongs here), and
+        a resource with an assignment to this project (someone lent from the
+        shared pool for a week). A foreman would not accept "not on the list"
+        for a person standing on their site.
+
+        Returns ``[]`` when the resources module is not installed - the phone
+        keeps its free-text field, which is also the fallback for a
+        subcontractor's worker who is in nobody's register.
+        """
+        try:
+            from app.modules.resources.models import Assignment, Resource
+        except ImportError:  # pragma: no cover - resources ships with core
+            logger.debug("resources module absent, field roster is empty for project=%s", project_id)
+            return []
+
+        assigned_here = (
+            select(Assignment.id)
+            .where(
+                Assignment.resource_id == Resource.id,
+                Assignment.project_id == project_id,
+            )
+            .exists()
+        )
+        stmt = (
+            select(Resource)
+            .where(
+                Resource.resource_type.in_(FIELD_ROSTER_KINDS),
+                Resource.status == "active",
+                or_(Resource.home_project_id == project_id, assigned_here),
+            )
+            .order_by(Resource.name, Resource.code)
+            # One over the cap, so a truncated list can be told from a full one
+            # rather than being reported as the whole workforce.
+            .limit(FIELD_ROSTER_LIMIT + 1)
+        )
+        rows = list((await self.session.execute(stmt)).scalars().all())
+        if len(rows) > FIELD_ROSTER_LIMIT:
+            # Say so. Somebody past the cap reads on the phone as "not on the
+            # list", the foreman types their name, and the punch goes back to
+            # the shape this whole route exists to stop - silently.
+            logger.warning(
+                "Field roster for project=%s truncated at %s people, the rest will have to be typed",
+                project_id,
+                FIELD_ROSTER_LIMIT,
+            )
+            rows = rows[:FIELD_ROSTER_LIMIT]
+        return rows
 
     # ── Activities ────────────────────────────────────────────────────────
 

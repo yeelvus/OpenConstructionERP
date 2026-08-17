@@ -59,6 +59,7 @@ const playbook: Playbook = {
       whyDefault:
         "If everyone reads and writes to their own copies, someone builds from a superseded drawing. The states tell you what is safe to use and what is still a draft.",
       moduleLabel: "CDE",
+      moduleLabelKey: "cde.title",
       to: "/projects/:projectId/cde",
     },
     {
@@ -99,6 +100,7 @@ const playbook: Playbook = {
       whyDefault:
         "These are responsibilities in the document workflow, not job titles. One person can author their own discipline and only view another. Fixing who holds each role is what makes a gate crossing accountable instead of anonymous.",
       moduleLabel: "CDE",
+      moduleLabelKey: "cde.title",
       to: "/projects/:projectId/cde",
     },
     {
@@ -139,7 +141,8 @@ const playbook: Playbook = {
         "cases.set_up_the_common_data_environment.step.load-containers.why",
       whyDefault:
         "A container with no status is a trap, nobody knows if it is checked or just parked. Correct status is what lets the next person trust the file.",
-      moduleLabel: "Project Files",
+      moduleLabel: "Documents",
+      moduleLabelKey: "nav.documents",
       to: "/projects/:projectId/files",
     },
     {
@@ -181,6 +184,7 @@ const playbook: Playbook = {
       whyDefault:
         "A review route that can never clear, or that needs two approvers where you meant one, only bites once real work is stuck in it. The dry run proves the flow terminates at approved before anyone routes a live container through it.",
       moduleLabel: "Approval routes",
+      moduleLabelKey: "approvalRoutes.title",
       to: "/approval-routes",
     },
     {
@@ -219,6 +223,7 @@ const playbook: Playbook = {
       whyDefault:
         "Clash checking against private working models finds clashes that are already fixed and misses the ones that are not. The shared area is the single source everyone federates from.",
       moduleLabel: "Coordination",
+      moduleLabelKey: "nav.coordination_hub",
       to: "/coordination",
     },
   ],

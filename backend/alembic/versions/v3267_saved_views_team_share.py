@@ -127,6 +127,8 @@ def _drop_check(table: str, name: str) -> None:
     op.execute(sa.text(f'ALTER TABLE {table} DROP CONSTRAINT IF EXISTS "{name}"'))
 
 
+# data-rewrite-ack: table=oe_saved_views_view growth=bounded rows=saved view definitions, a handful per user, not a log
+# data-rewrite-ack: table=oe_saved_views_run growth=tenure rows=append-only audit row written after every run, an execution log by its own docstring
 def upgrade() -> None:
     if not _table_exists(_VIEW):
         # The module was never installed on this database; create_all will

@@ -127,9 +127,15 @@ def set_module_enabled(
     """Enable or disable a module and persist the change.
 
     Raises:
-        ValueError: If ``module_name`` is a core module (cannot be disabled).
+        ValueError: If ``module_name`` is a core module and ``enabled`` is
+            false. Turning a core module on is always allowed: the rule is that
+            core cannot be switched off, and applying it in both directions
+            made enabling one fail with a message about disabling it. Nothing
+            asked to enable a loaded core module until modules started being
+            installed while the server runs, at which point loading a generated
+            module's dependencies walks straight into it.
     """
-    if core_modules and module_name in core_modules:
+    if core_modules and module_name in core_modules and not enabled:
         raise ValueError(f"Module '{module_name}' is a core module and cannot be disabled.")
 
     states = load_module_states(data_dir)

@@ -15,6 +15,7 @@ import pytest
 from app.modules.dashboards.integrity import (
     ColumnIntegrity,
     IntegrityReport,
+    _dtype_says_nothing_about_the_values,
     compute_integrity_report,
 )
 
@@ -208,6 +209,82 @@ class TestDtypeMismatch:
         col = report.columns[0]
         assert col.inferred_type == "string"
         assert "dtype_mismatch" not in col.issues
+
+    def test_string_column_with_dates_is_flagged(self) -> None:
+        # Dates that arrived as text. Sniffed by the same branch as the numeric
+        # case above and broken by the same thing, but nothing covered it, so
+        # the numeric test was the only reason anybody noticed.
+        df = pd.DataFrame(
+            {
+                "delivered_on": [
+                    "2026-01-04",
+                    "2026-01-11",
+                    "2026-01-18",
+                    "2026-01-25",
+                    "2026-02-01",
+                    "2026-02-08",
+                    "2026-02-15",
+                    "2026-02-22",
+                    "2026-03-01",
+                    "2026-03-08",
+                ],
+            }
+        )
+        report = compute_integrity_report(
+            df,
+            snapshot_id="s",
+            project_id="p",
+        )
+        col = report.columns[0]
+        assert col.inferred_type == "datetime"
+        assert "dtype_mismatch" in col.issues
+
+    def test_string_column_with_booleans_is_flagged(self) -> None:
+        # Same branch again. Written out rather than parametrised with the two
+        # above because what each one proves is a different sniffer.
+        df = pd.DataFrame(
+            {
+                "on_critical_path": [
+                    "true",
+                    "false",
+                    "true",
+                    "true",
+                    "false",
+                    "false",
+                    "true",
+                    "false",
+                    "true",
+                    "false",
+                ],
+            }
+        )
+        report = compute_integrity_report(
+            df,
+            snapshot_id="s",
+            project_id="p",
+        )
+        col = report.columns[0]
+        assert col.inferred_type == "boolean"
+        assert "dtype_mismatch" in col.issues
+
+    def test_a_text_column_is_not_typed_by_its_dtype_name(self) -> None:
+        """The regression itself, stated as the question that got answered wrong.
+
+        pandas 3 hands a text column the dedicated str dtype instead of object,
+        and the sniffing that gives this module its whole purpose was reached
+        only for object. Asking the predicate directly pins the behaviour to
+        "the dtype carries no type information" rather than to a dtype name
+        that has now changed once and can change again.
+        """
+        text = pd.DataFrame({"c": ["1", "2", "3"]})["c"]
+        assert _dtype_says_nothing_about_the_values(text), (
+            f"a column of dtype {text.dtype!r} is not being sniffed, so every value in it reads as a string"
+        )
+
+        # Control. A column pandas has genuinely typed must not be sniffed, or
+        # the predicate would be true of everything and prove nothing.
+        numbers = pd.DataFrame({"c": [1, 2, 3]})["c"]
+        assert not _dtype_says_nothing_about_the_values(numbers)
 
 
 class TestOutliers:

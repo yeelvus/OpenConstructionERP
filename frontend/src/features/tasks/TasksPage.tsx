@@ -1521,6 +1521,7 @@ export function TasksPage() {
         onAdd={insights.addCustom}
         onUpdate={insights.updateCustom}
         onRemove={insights.removeCustom}
+        onCollapse={() => insights.setOpen(false)}
       />
 
       {/* Cross-module navigation — connects the planning value chain.
