@@ -293,8 +293,10 @@ async def export_container(boq_id: uuid.UUID, db: AsyncSession) -> ContainerExpo
         currency=currency,
     )
 
-    safe_name = (boq.name or "boq").encode("ascii", errors="replace").decode("ascii").replace('"', "'")
-    filename = f"{safe_name}.bimlv"
+    # The raw BOQ name; the router's Content-Disposition helper derives both
+    # the ASCII fallback and the RFC 5987 ``filename*`` from it, so umlauts
+    # survive to the browser's save dialog instead of becoming question marks.
+    filename = f"{boq.name or 'boq'}.bimlv"
     return ContainerExport(
         data=data,
         filename=filename,

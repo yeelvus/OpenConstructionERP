@@ -222,6 +222,12 @@ def build_ubl_xml(inv: EInvoice, *, strict: bool = True) -> bytes:
         cat = _sub(sub, "cac", "TaxCategory")
         _sub(cat, "cbc", "ID", grp.category)
         _sub(cat, "cbc", "Percent", _pct(grp.rate))
+        # BT-121 / BT-120, in the UBL 2.1 element order: the code precedes the
+        # reason text, and both precede the TaxScheme.
+        if grp.exemption_reason_code:
+            _sub(cat, "cbc", "TaxExemptionReasonCode", grp.exemption_reason_code)
+        if grp.exemption_reason:
+            _sub(cat, "cbc", "TaxExemptionReason", grp.exemption_reason)
         scheme = _sub(cat, "cac", "TaxScheme")
         _sub(scheme, "cbc", "ID", "VAT")
 

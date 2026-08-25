@@ -40,6 +40,7 @@ import { SectionIntro } from '@/features/validation';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { apiGet, apiPost } from '@/shared/lib/api';
+import { fetchAllPages } from '@/shared/lib/apiHelpers';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import {
@@ -58,6 +59,15 @@ import { NCR_STAGES, ncrStageIndex, ncrNextMoves } from './ncrFsm';
 import { ncrGuide } from './ncrGuide';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { buildNCRInsights } from './ncrInsights';
+
+// English fallbacks for the computed `ncr.severity_*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const NCR_SEVERITY_LABELS: Record<string, string> = {
+  critical: 'Critical', major: 'Major', minor: 'Minor', observation: 'Observation'
+};
+
 
 /* -- Constants ------------------------------------------------------------- */
 
@@ -285,7 +295,7 @@ function CreateNCRModal({
                     <SevIcon size={16} className="shrink-0" />
                     <span className="text-xs font-semibold">
                       {t(`ncr.severity_${sev}`, {
-                        defaultValue: sev.charAt(0).toUpperCase() + sev.slice(1),
+                        defaultValue: NCR_SEVERITY_LABELS[sev] ?? sev.charAt(0).toUpperCase() + sev.slice(1),
                       })}
                     </span>
                   </button>
@@ -563,7 +573,7 @@ const NCRRow = React.memo(function NCRRow({
         {/* Severity badge */}
         <Badge variant={severityCfg.variant} size="sm" className={severityCfg.cls}>
           {t(`ncr.severity_${ncr.severity}`, {
-            defaultValue: ncr.severity.charAt(0).toUpperCase() + ncr.severity.slice(1),
+            defaultValue: NCR_SEVERITY_LABELS[ncr.severity] ?? ncr.severity.charAt(0).toUpperCase() + ncr.severity.slice(1),
           })}
         </Badge>
 
@@ -775,7 +785,7 @@ const NCRRow = React.memo(function NCRRow({
                 >
                   {(['critical', 'major', 'minor', 'observation'] as NCRSeverity[]).map((s) => (
                     <option key={s} value={s}>
-                      {t(`ncr.severity_${s}`, { defaultValue: s.charAt(0).toUpperCase() + s.slice(1) })}
+                      {t(`ncr.severity_${s}`, { defaultValue: NCR_SEVERITY_LABELS[s] ?? s.charAt(0).toUpperCase() + s.slice(1) })}
                     </option>
                   ))}
                 </select>
@@ -1174,8 +1184,14 @@ export function NCRPage() {
   const breadcrumbProjectName =
     projects.find((p) => p.id === selectedProjectId)?.name || '';
 
+  // Read every page rather than the first one. The route caps `limit` at 100
+  // and defaults to 50, and the four tiles below are reduced over whatever
+  // came back - the first of them is labelled "Total". On a project past the
+  // cap that tile stated the page size and called it the register. The same
+  // rows also feed the Insights panel, so a short read would have understated
+  // every chart on the page with nothing on screen saying so.
   const {
-    data: ncrs = [],
+    data: ncrsPage,
     isLoading,
     isError: ncrsError,
     error: ncrsErrorValue,
@@ -1183,12 +1199,12 @@ export function NCRPage() {
   } = useQuery({
     queryKey: ['ncrs', projectId, statusFilter],
     queryFn: () =>
-      fetchNCRs({
-        project_id: projectId,
-        status: statusFilter || undefined,
-      }),
+      fetchAllPages<NCR>((offset, limit) =>
+        fetchNCRs({ project_id: projectId, status: statusFilter || undefined, offset, limit }),
+      ),
     enabled: !!projectId,
   });
+  const ncrs = useMemo(() => ncrsPage?.items ?? [], [ncrsPage]);
 
   // Client-side search
   const filtered = useMemo(() => {

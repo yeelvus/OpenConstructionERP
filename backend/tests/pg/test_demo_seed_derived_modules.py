@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import math
 import uuid
+from collections import Counter, defaultdict
+from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
 
@@ -119,6 +121,11 @@ async def _make_project(session, name: str, *, demo: bool) -> uuid.UUID:
             currency="EUR",
             status="active",
             owner_id=owner_id,
+            # Stated rather than inherited. The measurement system a BOQ run
+            # carries is resolved from this column, so a fixture that let the
+            # model default supply it would be pinned to that default - and
+            # would change what these tests validate if it ever moved.
+            country_code="DE",
             validation_rule_sets=list(_RULE_SETS),
             metadata_={"demo_id": f"fixture-{name.lower()}", "is_demo": True} if demo else {},
         )
@@ -159,6 +166,26 @@ async def _make_project(session, name: str, *, demo: bool) -> uuid.UUID:
 # ── validation ────────────────────────────────────────────────────────────
 
 
+def _outcomes_by_rule(outcomes: Iterable[tuple[str, bool]]) -> dict[str, Counter[str]]:
+    """Rule id -> how many of that rule's results passed and how many failed.
+
+    Keyed by name, so a difference between two runs is reported as the rule it
+    is about. Counted rather than collapsed to a set, because a rule fires once
+    per finding: one that flags three positions on one side and one on the
+    other is a real disagreement, and a set would call the two sides equal.
+
+    Args:
+        outcomes: ``(rule_id, passed)`` pairs, one per validation result.
+
+    Returns:
+        Mapping of rule id to a counter over ``"passed"`` / ``"failed"``.
+    """
+    grouped: dict[str, Counter[str]] = defaultdict(Counter)
+    for rule_id, passed in outcomes:
+        grouped[rule_id]["passed" if passed else "failed"] += 1
+    return dict(grouped)
+
+
 async def _reports(session, project_id: uuid.UUID) -> list[ValidationReport]:
     return list(
         (await session.execute(select(ValidationReport).where(ValidationReport.project_id == project_id)))
@@ -175,6 +202,7 @@ async def test_validation_persists_the_engines_own_verdict(pg_session, quiet_val
     positions and every rule outcome is compared.
     """
     from app.core.validation.engine import validation_engine
+    from app.core.validation.project_context import with_project_context
     from app.modules.validation.service import ValidationModuleService
 
     project_id = await _make_project(pg_session, "Quay", demo=True)
@@ -190,18 +218,54 @@ async def test_validation_persists_the_engines_own_verdict(pg_session, quiet_val
     assert report.total_rules > 0, "a report that checked no rules is not a verdict"
 
     boq_id = uuid.UUID(report.target_id)
-    positions = await ValidationModuleService(pg_session)._load_boq_positions(boq_id, project_id)
+    service = ValidationModuleService(pg_session)
+    positions = await service._load_boq_positions(boq_id, project_id)
+    # The payload comes from the shared builder rather than being hand-rolled
+    # here - the same one the seeder's own run went through. A rule reads its
+    # inputs from this mapping, and one whose input is missing returns nothing
+    # at all rather than failing, so a payload assembled by hand quietly drops
+    # that rule from this side of the comparison, and the test then reads as
+    # the seeder having invented a verdict it did not invent.
+    engine_data = await with_project_context(pg_session, project_id, {"positions": positions})
+    # Both sides of the comparison now share that builder, so pin what it
+    # contributes: the fixture project declares DE, its regional pack answers,
+    # and the measurement system has to be in the payload. Without this the two
+    # sides could agree on a smaller rule set and the disagreement this test
+    # exists to catch would go quiet.
+    assert engine_data.get("project_unit_system") == "metric", (
+        f"the engine payload lost the project's measurement system: {sorted(engine_data)}"
+    )
     fresh = await validation_engine.validate(
-        data={"positions": positions},
+        data=engine_data,
         rule_sets=list(_RULE_SETS),
         target_type="boq",
         target_id=str(boq_id),
         project_id=str(project_id),
     )
 
-    stored = sorted((row["rule_id"], bool(row["passed"])) for row in report.results)
-    expected = sorted((result.rule_id, bool(result.passed)) for result in fresh.results)
-    assert stored == expected, "the persisted report disagrees with what the engine returns"
+    stored = _outcomes_by_rule((row["rule_id"], bool(row["passed"])) for row in report.results)
+    expected = _outcomes_by_rule((result.rule_id, bool(result.passed)) for result in fresh.results)
+    # Compared rule by rule and named in all three directions. This used to be
+    # two sorted lists checked positionally, which reports the first index that
+    # differs and identifies nothing: a rule present on one side shifts every
+    # element after it, so the failure reads as some unrelated rule disagreeing
+    # with itself, and enabling any new rule breaks the comparison rather than
+    # the thing it measures.
+    assert not set(stored) - set(expected), (
+        f"the stored report carries rules a fresh run does not produce: {sorted(set(stored) - set(expected))}"
+    )
+    assert not set(expected) - set(stored), (
+        f"a fresh run produces rules the stored report does not carry: {sorted(set(expected) - set(stored))}"
+    )
+    # Both sides carry the same rules by here, so what is left is a rule that
+    # reached a different verdict - or reached the same verdict on a different
+    # number of positions. Reported as the rule it is about, with both counts.
+    disagreeing = {
+        rule_id: {"stored": dict(stored[rule_id]), "fresh": dict(expected[rule_id])}
+        for rule_id in sorted(set(stored) & set(expected))
+        if stored[rule_id] != expected[rule_id]
+    }
+    assert not disagreeing, f"the persisted report disagrees with what the engine returns: {disagreeing}"
 
     assert report.status == fresh.status.value
     assert report.passed_count == len(fresh.passed_rules)
@@ -439,6 +503,240 @@ async def test_documents_revision_chain_is_internally_consistent(pg_session, upl
             assert ok, f"{doc.name}: {reason}"
 
 
+async def test_documents_revision_chain_shows_two_different_sheets(pg_session, upload_store) -> None:
+    """The two issues of the chain must not be the same file filed twice.
+
+    A chain is only evidence of a revision if opening both issues shows a
+    difference. The German showcase register therefore carries index A and
+    index B of the same drawing, which are rendered from one geometry module
+    and really differ - the corridor is wider on index B.
+    """
+    project_id = await _make_project(pg_session, "Bürogebäude Frankfurt Europaviertel", demo=True)
+    await seed_documents_demo(pg_session, [project_id])
+    await pg_session.flush()
+
+    docs = await _seeded_documents(pg_session, project_id)
+    chain = sorted(
+        (doc for doc in docs if doc.drawing_number == "A-2.01"),
+        key=lambda doc: doc.revision_code or "",
+    )
+    assert [doc.revision_code for doc in chain] == ["A", "B"], f"chain: {[d.name for d in chain]}"
+    assert chain[1].parent_document_id == chain[0].id, "index B must supersede index A"
+
+    bytes_a = Path(chain[0].file_path).read_bytes()
+    bytes_b = Path(chain[1].file_path).read_bytes()
+    assert bytes_a != bytes_b, "the archived and the current issue serve the same PDF"
+
+    # Only one chain: the English general-arrangement pair would be a second
+    # one, and it is the pair that shares a single asset.
+    assert [doc for doc in docs if doc.parent_document_id is not None] == [chain[1]]
+
+
+async def test_documents_top_up_reaches_a_register_seeded_before_the_chain(pg_session, upload_store) -> None:
+    """An install seeded earlier still receives the revision chain, once."""
+    project_id = await _make_project(pg_session, "Lebensmittelmarkt Heilbronn", demo=True)
+    await seed_documents_demo(pg_session, [project_id])
+    await pg_session.flush()
+
+    chain = [doc for doc in await _seeded_documents(pg_session, project_id) if doc.drawing_number == "A-2.01"]
+    assert len(chain) == 2
+    before = len(await _seeded_documents(pg_session, project_id))
+    for doc in chain:
+        await pg_session.execute(Document.__table__.delete().where(Document.id == doc.id))
+    await pg_session.flush()
+
+    counts = await seed_documents_demo(pg_session, [project_id])
+    await pg_session.flush()
+    assert counts["documents"] == 2, f"only the chain may be re-filed, got {counts}"
+    assert len(await _seeded_documents(pg_session, project_id)) == before
+
+    third = await seed_documents_demo(pg_session, [project_id])
+    await pg_session.flush()
+    assert third["documents"] == 0, "the chain must not be filed twice"
+
+
+async def _install_seeded_before_the_chain(session, german_name: str) -> uuid.UUID:
+    """A German showcase project whose register predates the revision chain.
+
+    Reproduced the way it really happened rather than by hand-writing rows: the
+    register is seeded while the project still has a neutral name, which files
+    the English general-arrangement pair, and the project becomes a German
+    showcase project only afterwards.
+    """
+    project_id = await _make_project(session, "Rivergate", demo=True)
+    await seed_documents_demo(session, [project_id])
+    await session.flush()
+    await session.execute(Project.__table__.update().where(Project.id == project_id).values(name=german_name))
+    await session.flush()
+    return project_id
+
+
+async def _sheets(session, project_id: uuid.UUID, drawing_number: str) -> list[Document]:
+    docs = await _seeded_documents(session, project_id)
+    return sorted(
+        (doc for doc in docs if doc.drawing_number == drawing_number),
+        key=lambda doc: doc.revision_code or "",
+    )
+
+
+async def test_documents_top_up_retires_the_english_pair_the_chain_replaces(pg_session, upload_store) -> None:
+    """The pair whose two issues serve one file must not survive the top-up.
+
+    That pair is the defect the German chain fixes, so leaving it beside the
+    chain would leave the register one click away from a revision that changed
+    nothing - on the very projects the chain was written for.
+    """
+    project_id = await _install_seeded_before_the_chain(pg_session, "Bürogebäude Frankfurt Europaviertel")
+    assert len(await _sheets(pg_session, project_id, "A-10-001")) == 2, "fixture filed no English pair"
+    before = len(await _seeded_documents(pg_session, project_id))
+
+    counts = await seed_documents_demo(pg_session, [project_id])
+    await pg_session.flush()
+
+    assert counts["documents"] == 2, f"only the chain may be filed, got {counts}"
+    assert counts["retired"] == 2, f"the English pair survived the top-up, got {counts}"
+    assert await _sheets(pg_session, project_id, "A-10-001") == []
+    assert [doc.revision_code for doc in await _sheets(pg_session, project_id, "A-2.01")] == ["A", "B"]
+
+    # Two out, two in: nothing else in the register moved.
+    docs = await _seeded_documents(pg_session, project_id)
+    assert len(docs) == before
+    # And exactly one chain is left, the one whose issues are different sheets.
+    linked = [(doc.drawing_number, doc.revision_code) for doc in docs if doc.parent_document_id is not None]
+    assert linked == [("A-2.01", "B")], f"expected one chain, saw {linked}"
+
+
+async def test_documents_retire_runs_once_and_then_changes_nothing(pg_session, upload_store) -> None:
+    """The pass after the retire must be a no-op, by its own report."""
+    project_id = await _install_seeded_before_the_chain(pg_session, "Lebensmittelmarkt Heilbronn")
+    await seed_documents_demo(pg_session, [project_id])
+    await pg_session.flush()
+    settled = {doc.id for doc in await _seeded_documents(pg_session, project_id)}
+
+    again = await seed_documents_demo(pg_session, [project_id])
+    await pg_session.flush()
+
+    # The counts dict, not only the row count: a delete that runs and matches
+    # nothing is still a different thing from one that never ran, and this dict
+    # is what the seeder reports to the boot log.
+    assert again == {"projects": 0, "documents": 0, "bytes": 0, "retired": 0}, f"second pass reported {again}"
+    assert {doc.id for doc in await _seeded_documents(pg_session, project_id)} == settled
+
+
+async def test_documents_retire_spares_a_sheet_the_seed_did_not_write(pg_session, upload_store) -> None:
+    """Somebody else's file under the same sheet number is not the seed's to delete."""
+    project_id = await _install_seeded_before_the_chain(pg_session, "Lebensmittelmarkt Heidelberg")
+    pair = await _sheets(pg_session, project_id, "A-10-001")
+    assert len(pair) == 2
+
+    # Same project, same sheet number, no seed marker: exactly the row a filter
+    # written on the sheet number alone would eat.
+    theirs = pair[0]
+    theirs.metadata_ = {"filed_by_hand": True}
+    await pg_session.flush()
+
+    counts = await seed_documents_demo(pg_session, [project_id])
+    await pg_session.flush()
+
+    assert counts["retired"] == 1, f"expected only the seeded half to go, got {counts}"
+    survivor = await pg_session.get(Document, theirs.id)
+    assert survivor is not None, "a document the seed did not write was deleted"
+    assert Path(survivor.file_path).exists(), "its bytes went with the row"
+
+
+async def test_documents_retire_spares_a_sheet_opened_in_takeoff(pg_session, upload_store) -> None:
+    """A takeoff document keeps its source id with no foreign key behind it.
+
+    Deleting the register row underneath one would leave that document, and
+    every measurement filed against it, pointing at nothing, with no constraint
+    anywhere to report it.
+    """
+    from app.modules.takeoff.models import TakeoffDocument
+
+    project_id = await _install_seeded_before_the_chain(pg_session, "Bürogebäude Frankfurt Europaviertel")
+    opened = (await _sheets(pg_session, project_id, "A-10-001"))[0]
+    owner_id = (await pg_session.execute(select(Project.owner_id).where(Project.id == project_id))).scalar_one()
+    pg_session.add(
+        TakeoffDocument(
+            id=uuid.uuid4(),
+            filename=opened.name,
+            project_id=project_id,
+            owner_id=owner_id,
+            source_document_id=str(opened.id),
+            file_path=opened.file_path,
+        )
+    )
+    await pg_session.flush()
+
+    counts = await seed_documents_demo(pg_session, [project_id])
+    await pg_session.flush()
+
+    assert counts["retired"] == 1, f"expected the opened sheet to stay, got {counts}"
+    assert await pg_session.get(Document, opened.id) is not None, "deleted a sheet takeoff was working on"
+
+
+async def _no_retire(session, project_id: uuid.UUID) -> int:
+    """The build that filed the chain before the retire existed."""
+    return 0
+
+
+async def test_documents_retire_reaches_a_project_whose_chain_landed_earlier(
+    pg_session, upload_store, monkeypatch
+) -> None:
+    """The pair goes even when the chain was filed by an earlier build.
+
+    An install reseeded in between carries both the chain and the pair, and it
+    will never take the top-up path again - the sheet is already there. A retire
+    that only ran beside the write that files the chain would never reach it.
+    """
+    from app.modules.documents import documents_seed
+
+    project_id = await _install_seeded_before_the_chain(pg_session, "Bürogebäude Frankfurt Europaviertel")
+    real_retire = documents_seed._retire_english_chain
+    monkeypatch.setattr(documents_seed, "_retire_english_chain", _no_retire)
+    await seed_documents_demo(pg_session, [project_id])
+    await pg_session.flush()
+    # Restored by hand rather than with undo(): the upload store is redirected
+    # through the same monkeypatch, and undoing that would send the next pass
+    # at the real one.
+    monkeypatch.setattr(documents_seed, "_retire_english_chain", real_retire)
+    assert len(await _sheets(pg_session, project_id, "A-2.01")) == 2, "fixture filed no chain"
+    assert len(await _sheets(pg_session, project_id, "A-10-001")) == 2, "fixture retired the pair too early"
+
+    counts = await seed_documents_demo(pg_session, [project_id])
+    await pg_session.flush()
+
+    assert counts["retired"] == 2, f"the pair outlived the chain, got {counts}"
+    assert counts["documents"] == 0, "the chain must not be filed a second time"
+    assert await _sheets(pg_session, project_id, "A-10-001") == []
+    assert [doc.revision_code for doc in await _sheets(pg_session, project_id, "A-2.01")] == ["A", "B"]
+
+
+async def test_documents_retire_waits_until_the_chain_is_really_there(pg_session, upload_store, monkeypatch) -> None:
+    """Half a chain must not cost the register the pair it replaces.
+
+    A sheet whose bytes cannot be stored is skipped without failing the seed,
+    so a retire that trusted the spec list instead of the rows it actually
+    wrote would leave the project with one issue and no pair at all.
+    """
+    from app.modules.documents import documents_seed
+
+    project_id = await _install_seeded_before_the_chain(pg_session, "Lebensmittelmarkt Heilbronn")
+    real_store = documents_seed._store
+    monkeypatch.setattr(
+        documents_seed,
+        "_store",
+        lambda project, spec: None if spec.key == "gr-index-b" else real_store(project, spec),
+    )
+
+    counts = await seed_documents_demo(pg_session, [project_id])
+    await pg_session.flush()
+
+    assert counts["documents"] == 1, f"fixture should have filed index A alone, got {counts}"
+    assert counts["retired"] == 0, "the pair was retired behind an incomplete chain"
+    assert len(await _sheets(pg_session, project_id, "A-10-001")) == 2
+
+
 async def test_documents_second_pass_adds_nothing(pg_session, upload_store) -> None:
     """Re-running must not file the register a second time."""
     project_id = await _make_project(pg_session, "Millrace", demo=True)
@@ -501,6 +799,29 @@ async def _annotations(session, project_id: uuid.UUID) -> list[DwgAnnotation]:
     return list(
         (await session.execute(select(DwgAnnotation).where(DwgAnnotation.project_id == project_id))).scalars().all()
     )
+
+
+def _count_file_entities(path: str) -> tuple[int, int]:
+    """Count the DXF on disk without asking the code under test.
+
+    Returns ``(entities across every layout, INSERTs among them)``. The parser
+    counts every entity in every layout plus the contents of each block
+    definition some INSERT places; with no INSERT in the file that second term
+    is empty and a walk of the layouts is the whole count. The caller asserts
+    the premise rather than assuming it, so a plan that later grows a block
+    fails loudly here instead of quietly comparing two copies of one number.
+    """
+    import ezdxf
+
+    doc = ezdxf.readfile(path)
+    total = 0
+    inserts = 0
+    for layout in doc.layouts:
+        for entity in layout:
+            total += 1
+            if entity.dxftype() == "INSERT":
+                inserts += 1
+    return total, inserts
 
 
 def _shoelace(points: list[dict]) -> float:
@@ -626,3 +947,103 @@ async def test_dwg_leaves_a_non_demo_project_alone(pg_session, dwg_store) -> Non
 
     assert counts["annotations"] == 0
     assert await _annotations(pg_session, project_id) == []
+
+
+async def test_dwg_element_count_is_a_count_of_its_own_file(pg_session, dwg_store) -> None:
+    """The count the drawing states must be a count of the drawing.
+
+    Both seeders used to pass one in, and both passed the element count of the
+    converted CAD model carrying the same format in the demo spec - a different
+    and far larger file. The drawing then advertised thousands of elements over
+    a plan that serves eight, and one click into the viewer showed the eight.
+
+    Stated as a predicate, not as eight: the plan may gain a wall, and a count
+    that follows the file survives that while a literal does not.
+    """
+    pytest.importorskip("ezdxf", reason="the demo drawing is authored with ezdxf")
+
+    from app.modules.dwg_takeoff.models import DwgDrawing, DwgDrawingVersion
+
+    project_id = await _make_project(pg_session, "Rulewright", demo=True)
+    drawing_id = await _seed_drawing(pg_session, project_id)
+
+    drawing = await pg_session.get(DwgDrawing, drawing_id)
+    assert drawing is not None
+    assert drawing.status == "ready", f"the drawing seeded as {drawing.status!r}, so no count was parsed"
+
+    in_file, inserts = _count_file_entities(drawing.file_path)
+    assert inserts == 0, (
+        "the plan has grown a block reference, so the file's own count is no longer "
+        "a walk of its layouts - widen the derivation before trusting the comparison"
+    )
+    assert in_file > 0
+
+    stated = (drawing.metadata_ or {}).get("element_count")
+    assert stated == in_file, f"the drawing states {stated} element(s); the DXF it names holds {in_file}"
+
+    version = (
+        (await pg_session.execute(select(DwgDrawingVersion).where(DwgDrawingVersion.drawing_id == drawing_id)))
+        .scalars()
+        .first()
+    )
+    assert version is not None, "a ready drawing with no parsed version"
+    assert version.entity_count == in_file, (
+        f"the version counted {version.entity_count} entities in a file holding {in_file}"
+    )
+
+
+async def test_dwg_room_labels_read_as_a_german_plan(pg_session, dwg_store) -> None:
+    """The demo plan is presented as a Grundriss, so it has to read as one.
+
+    The labels used to say ``LIVING 6.0 x 4.0`` and ``BED 2.4 x 4.0`` on a plan
+    a German estimator opens first. Two things are pinned here: the wording, and
+    the notation a German plan uses for a dimension - a decimal comma, and width
+    over depth.
+
+    The third assertion is the one that makes the numbers more than decoration.
+    Each label states the room it sits in, so the labelled widths have to add up
+    to the width of the envelope they divide. The old living-room label failed
+    that: it repeated the full 6.0 m of the outer wall while sitting in the
+    3.6 m room the partition leaves.
+    """
+    pytest.importorskip("ezdxf", reason="the demo drawing is authored with ezdxf")
+
+    from app.modules.dwg_takeoff.models import DwgDrawingVersion
+    from app.modules.dwg_takeoff.service import DwgTakeoffService
+
+    project_id = await _make_project(pg_session, "Reissbrett", demo=True)
+    drawing_id = await _seed_drawing(pg_session, project_id)
+
+    entities = await DwgTakeoffService(pg_session).get_entities(drawing_id)
+    texts = [str(e.get("text") or "").strip() for e in entities if e.get("type") == "TEXT"]
+    labels = [text for text in texts if text]
+    assert labels, "the plan carries no text at all"
+
+    rooms: dict[str, tuple[float, float]] = {}
+    for label in labels:
+        assert "." not in label, f"{label!r} writes a decimal point where a German plan writes a comma"
+        name, _, dims = label.partition(" ")
+        width, _, depth = dims.partition("/")
+        assert width and depth, f"{label!r} states no width over depth"
+        rooms[name] = (float(width.replace(",", ".")), float(depth.replace(",", ".")))
+
+    assert set(rooms) == {"Wohnen", "Schlafen"}, f"the plan names its rooms {sorted(rooms)}"
+
+    version = (
+        (await pg_session.execute(select(DwgDrawingVersion).where(DwgDrawingVersion.drawing_id == drawing_id)))
+        .scalars()
+        .first()
+    )
+    assert version is not None
+    assert version.units == "mm", f"the demo plan reports units {version.units!r}; this check assumes millimetres"
+    extents = version.extents or {}
+    envelope_width = (float(extents["max_x"]) - float(extents["min_x"])) * 0.001
+    envelope_depth = (float(extents["max_y"]) - float(extents["min_y"])) * 0.001
+
+    assert math.isclose(sum(width for width, _ in rooms.values()), envelope_width, rel_tol=1e-6), (
+        f"the labelled rooms are {sum(w for w, _ in rooms.values())} m wide across an envelope of {envelope_width} m"
+    )
+    for name, (_, depth) in rooms.items():
+        assert math.isclose(depth, envelope_depth, rel_tol=1e-6), (
+            f"{name} is labelled {depth} m deep in an envelope {envelope_depth} m deep"
+        )

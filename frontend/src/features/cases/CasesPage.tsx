@@ -43,6 +43,7 @@ import {
   FolderKanban,
   UserRound,
   Flag,
+  Globe,
   Loader2,
   FilePlus2,
   PenLine,
@@ -53,7 +54,13 @@ import {
   ChevronDown,
   type LucideProps,
 } from "lucide-react";
-import { Badge, Button, EmptyState } from "@/shared/ui";
+import {
+  Badge,
+  Button,
+  CountryFlag,
+  CountryFlagBackdrop,
+  EmptyState,
+} from "@/shared/ui";
 import { useNearViewport } from "@/shared/hooks/useNearViewport";
 import { useActiveProjectId } from "@/shared/hooks/useActiveProjectId";
 import { useProjectContextStore } from "@/stores/useProjectContextStore";
@@ -79,7 +86,10 @@ import { ROLE_META, ROLE_BY_ID, rolesForPlaybook, tintForRole } from "./roles";
 import { RoleAvatar } from "./RoleAvatar";
 import { RoleArt } from "./RoleArt";
 import { CaseArt } from "./CaseArt";
+
+import { HEX_PORTRAIT_ASPECT, HEX_PORTRAIT_CLIP } from "@/shared/lib/honeycomb";
 import { CompanyArt } from "./CompanyArt";
+import { dealCaseFaces } from "./caseFaces";
 import {
   STAGE_META,
   STAGE_BY_ID,
@@ -104,6 +114,8 @@ import type {
   LifecycleStage,
 } from "./types";
 
+import { regionDisplayName } from "./regions";
+
 export function CasesPage() {
   const { playbookId } = useParams<{ playbookId?: string }>();
   const { t } = useTranslation();
@@ -116,7 +128,7 @@ export function CasesPage() {
 
   // Detail mode: a specific case is open in the runner.
   if (playbookId) {
-    // `getPlaybook` only knows the 144 shipped files, and an authored id
+    // `getPlaybook` only knows the shipped files, and an authored id
     // (`custom-<uuid>`) is not one of them, so the authored list answers first
     // and the bundle answers for everything else.
     const playbook =
@@ -171,7 +183,7 @@ export function CasesPage() {
 }
 
 function CasesList() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const runs = useCasesStore((s) => s.runs);
   // Each of the three "who/what" filters holds a list, not one id: a user can
@@ -204,6 +216,14 @@ function CasesList() {
   const togglePin = useCasesStore((s) => s.togglePin);
   const [query, setQuery] = useState("");
   const [activeStage, setActiveStage] = useState<LifecycleStage | "all">("all");
+  // Market filter: narrows to the cases authored for one market's standards
+  // (Playbook.region). Held in the store beside company, role and discipline,
+  // and persisted like them. It was local state, which meant it silently
+  // dropped on every return to the hub while the other three came back - read
+  // by a user as the market selector being broken, not as a statement that a
+  // market describes only this visit.
+  const activeRegion = useCasesStore((s) => s.region);
+  const setRegion = useCasesStore((s) => s.setRegion);
   const [showOnlyPinned, setShowOnlyPinned] = useState(false);
 
   const { data: projects } = useQuery({
@@ -235,6 +255,12 @@ function CasesList() {
         : PLAYBOOKS,
     [authoredPlaybooks],
   );
+
+  // The person on each card, dealt over the WHOLE catalogue rather than over
+  // the narrowed or windowed list: a case wears its face because of where it
+  // sits among the cases for its company type, and clicking a filter must not
+  // re-cast the cards that survive it.
+  const facesByPlaybook = useMemo(() => dealCaseFaces(allPlaybooks), [allPlaybooks]);
 
   // Best progress for a card = the furthest a user got on this case across any
   // run (unscoped or scoped to a sample project).
@@ -299,29 +325,65 @@ function CasesList() {
       activeCategories.length === 0 || activeCategories.includes(p.category),
     [activeCategories],
   );
+  // The market row only exists when at least one case carries a region, so a
+  // catalogue without market-specific cases keeps exactly the layout it had.
+  const regions = useMemo(
+    () =>
+      [
+        ...new Set(
+          allPlaybooks
+            .map((p) => p.region)
+            .filter((r): r is string => Boolean(r)),
+        ),
+      ].sort(),
+    [allPlaybooks],
+  );
+  const inRegion = useCallback(
+    (p: Playbook) => activeRegion === "all" || p.region === activeRegion,
+    [activeRegion],
+  );
 
   // Only surface a selector option that actually has a matching case, and scope
   // each option's availability + count by the OTHER two active filters, so a
   // count always describes what clicking it would really show.
   const byCategoryRole = useMemo(
-    () => allPlaybooks.filter((p) => inCategory(p) && inRole(p) && inStage(p)),
-    [allPlaybooks, inCategory, inRole, inStage],
+    () =>
+      allPlaybooks.filter(
+        (p) => inCategory(p) && inRole(p) && inStage(p) && inRegion(p),
+      ),
+    [allPlaybooks, inCategory, inRole, inStage, inRegion],
   );
   const byCompanyRole = useMemo(
-    () => allPlaybooks.filter((p) => inCompany(p) && inRole(p) && inStage(p)),
-    [allPlaybooks, inCompany, inRole, inStage],
+    () =>
+      allPlaybooks.filter(
+        (p) => inCompany(p) && inRole(p) && inStage(p) && inRegion(p),
+      ),
+    [allPlaybooks, inCompany, inRole, inStage, inRegion],
   );
   const byCompanyCategory = useMemo(
     () =>
-      allPlaybooks.filter((p) => inCompany(p) && inCategory(p) && inStage(p)),
-    [allPlaybooks, inCompany, inCategory, inStage],
+      allPlaybooks.filter(
+        (p) => inCompany(p) && inCategory(p) && inStage(p) && inRegion(p),
+      ),
+    [allPlaybooks, inCompany, inCategory, inStage, inRegion],
   );
   // Stage availability + counts are scoped by the who/discipline filters but
   // NOT by the active stage itself (so every reachable stage stays clickable).
   const byCompanyRoleCategory = useMemo(
     () =>
-      allPlaybooks.filter((p) => inCompany(p) && inRole(p) && inCategory(p)),
-    [allPlaybooks, inCompany, inRole, inCategory],
+      allPlaybooks.filter(
+        (p) => inCompany(p) && inRole(p) && inCategory(p) && inRegion(p),
+      ),
+    [allPlaybooks, inCompany, inRole, inCategory, inRegion],
+  );
+  // Market counts mirror the stage rule: scoped by every other filter, never
+  // by the market itself, so a picked market can always be unpicked.
+  const byAllButRegion = useMemo(
+    () =>
+      allPlaybooks.filter(
+        (p) => inCompany(p) && inRole(p) && inCategory(p) && inStage(p),
+      ),
+    [allPlaybooks, inCompany, inRole, inCategory, inStage],
   );
   // An option the user has picked stays in its own row even when the other
   // filters leave it with no matching case. Dropping it would take away the
@@ -346,8 +408,37 @@ function CasesList() {
   }, [byCompanyCategory, rolesByPlaybook, roles]);
   // One entry per active pick, ordered the way the selector rows are ordered
   // on screen, each carrying the control that takes itself off.
+  //
+  // The market and the stage were both missing from this list, and the cost
+  // was larger than a missing chip. This same list gates the summary strip AND
+  // the "Reset filters" link, so a market-only pick narrowed 164 cases to 13
+  // with nothing on screen naming the market and no control to undo it short
+  // of reopening a panel that had folded itself away. Market comes first
+  // because its shelf now sits above everything else on the page.
   const activeFilterChips = useMemo(
     () => [
+      ...(activeRegion !== "all"
+        ? [
+            {
+              kind: "market" as const,
+              id: activeRegion,
+              label: regionDisplayName(activeRegion, i18n.language),
+              remove: () => setRegion("all"),
+            },
+          ]
+        : []),
+      ...(activeStage !== "all"
+        ? [
+            {
+              kind: "stage" as const,
+              id: activeStage as string,
+              label: t(STAGE_BY_ID[activeStage]?.labelKey ?? "", {
+                defaultValue: STAGE_BY_ID[activeStage]?.labelDefault ?? "",
+              }),
+              remove: () => setActiveStage("all"),
+            },
+          ]
+        : []),
       ...companyTypes.map((id) => ({
         kind: "company" as const,
         id: id as string,
@@ -374,6 +465,10 @@ function CasesList() {
       })),
     ],
     [
+      activeRegion,
+      activeStage,
+      setRegion,
+      i18n.language,
       companyTypes,
       roles,
       activeCategories,
@@ -401,6 +496,7 @@ function CasesList() {
       if (activeStage !== "all" && stageByPlaybook.get(pb.id) !== activeStage)
         return false;
       if (!inCategory(pb)) return false;
+      if (!inRegion(pb)) return false;
       if (showOnlyPinned && !pinnedIds.includes(pb.id)) return false;
       if (!q) return true;
       const haystack =
@@ -419,6 +515,7 @@ function CasesList() {
     inCompany,
     inRole,
     inCategory,
+    inRegion,
     showOnlyPinned,
     pinnedIds,
     caseNumbers,
@@ -480,7 +577,16 @@ function CasesList() {
     setActiveStage(activeStage === id ? "all" : id);
   };
 
-  // A hub of 144 cases is easy to bounce off: none of them is wrong, so none of
+  // The store clears what it owns - company, role, discipline and now the
+  // market. The stage is view-local, so it is cleared here. Both "Clear"
+  // controls call this: a chip the user can see next to a Clear button that
+  // leaves it standing is worse than no Clear button at all.
+  const clearAllFilters = useCallback(() => {
+    clearFilters();
+    setActiveStage("all");
+  }, [clearFilters]);
+
+  // A hub of this many cases is easy to bounce off: none of them is wrong, so none of
   // them is obviously the one to open. This opens one at random from whatever
   // the filters currently leave on screen, so it stays inside the discipline
   // and role the reader already chose rather than throwing them anywhere.
@@ -569,6 +675,125 @@ function CasesList() {
 
       {allPlaybooks.length > 0 && (
         <>
+          {/* ── Market ───────────────────────────────────────────────────────
+              The country a case is written for is not one more facet like a
+              discipline. A discipline narrows what a case is ABOUT; a market
+              decides whether the case is legal where you work. It used to sit
+              inside the folding panel below as a row of pill chips identical
+              to the discipline chips, two type sizes under the lifecycle cards
+              beside it, and it folded itself away entirely for anyone who had
+              already picked a persona - so the one axis nobody can substitute
+              for was the one hardest to see.
+
+              Country is a SHELF, not the catalogue's spine. Grouping the whole
+              list by market was considered and rejected on the count: 140 of
+              164 cases carry no region, so a country grouping yields four
+              small labelled sections and one bucket holding 85% of the
+              catalogue under "everything else". Those cases are universal on
+              purpose (see the `region` doc in ./types.ts), so that bucket is
+              the product rather than a backlog to be worked off.
+
+              A market with a single case still gets a card. A shelf that shows
+              the big markets and quietly drops the small one is invisible
+              exactly to the reader who came looking for it, and it decays: the
+              day a second case lands the market appears from nowhere and
+              nobody remembers why. ──────────────────────────────────────────*/}
+          {regions.length > 0 && (
+            <section className="relative overflow-hidden rounded-2xl border border-border-light bg-surface-primary p-3.5">
+              {/* The founder's own visual language for "this surface is scoped
+                  to a country", already carrying /costs and /catalog.
+                  Composition contract: this block owns the `relative`, this is
+                  its FIRST child, and there is no `isolate` or z-index on a
+                  page root - that traps fixed modals under the sticky header
+                  and the symptom appears nowhere near the cause. */}
+              <CountryFlagBackdrop
+                code={activeRegion !== "all" ? activeRegion : null}
+                variant="panel"
+              />
+              <div className="relative">
+                <div className="mb-2.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <Globe
+                    size={15}
+                    className="shrink-0 text-content-tertiary"
+                    aria-hidden="true"
+                  />
+                  <h2 className="text-xs font-semibold uppercase tracking-wide text-content-secondary">
+                    {t("cases.region_selector.heading", {
+                      defaultValue: "Market",
+                    })}
+                  </h2>
+                  <span className="text-2xs text-content-tertiary">
+                    {t("cases.region_selector.subtitle", {
+                      defaultValue:
+                        "Cases written for one country's standards, forms and payment law.",
+                    })}
+                  </span>
+                  {activeRegion !== "all" && (
+                    <button
+                      type="button"
+                      onClick={() => setRegion("all")}
+                      className="text-2xs font-medium text-oe-blue hover:underline"
+                    >
+                      {t("cases.region_selector.all", {
+                        defaultValue: "All markets",
+                      })}
+                    </button>
+                  )}
+                </div>
+                <div
+                  className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4"
+                  role="group"
+                  aria-label={t("cases.region_selector.heading", {
+                    defaultValue: "Market",
+                  })}
+                >
+                  {regions.map((r) => {
+                    const active = activeRegion === r;
+                    const count = byAllButRegion.filter(
+                      (p) => p.region === r,
+                    ).length;
+                    return (
+                      <button
+                        key={r}
+                        type="button"
+                        onClick={() => setRegion(active ? "all" : r)}
+                        aria-pressed={active}
+                        className={clsx(
+                          "flex items-center gap-2.5 rounded-xl border p-2.5 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40 motion-reduce:transition-none",
+                          active
+                            ? "border-oe-blue bg-oe-blue/10 text-oe-blue shadow-sm"
+                            : "border-border-light bg-surface-primary text-content-primary hover:border-oe-blue/30",
+                        )}
+                      >
+                        <CountryFlag
+                          code={r.toLowerCase()}
+                          size={44}
+                          className="shrink-0 shadow-sm ring-1 ring-inset ring-black/10"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-semibold leading-tight">
+                            {regionDisplayName(r, i18n.language)}
+                          </span>
+                          <span
+                            className={clsx(
+                              "mt-0.5 block text-2xs tabular-nums",
+                              active ? "opacity-80" : "text-content-tertiary",
+                            )}
+                          >
+                            {t("cases.selector.count", {
+                              defaultValue: "{{count}} cases",
+                              count,
+                            })}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </section>
+          )}
+
           {/* ── Find your case ───────────────────────────────────────────────
               The three "where am I / who am I" selectors used to be three
               full-width blocks stacked one under another, each with its own
@@ -603,7 +828,7 @@ function CasesList() {
               {activeFilterChips.length > 0 && (
                 <button
                   type="button"
-                  onClick={clearFilters}
+                  onClick={clearAllFilters}
                   className="shrink-0 text-2xs font-medium text-oe-blue hover:underline"
                 >
                   {t("cases.finder.reset", { defaultValue: "Reset filters" })}
@@ -1151,12 +1376,57 @@ function CasesList() {
           </div>
           <button
             type="button"
-            onClick={clearFilters}
+            onClick={clearAllFilters}
             className="shrink-0 rounded-lg border border-current/30 px-2.5 py-1 text-2xs font-semibold transition-colors hover:bg-white/30 dark:hover:bg-black/10"
           >
             {t("cases.persona.clear", { defaultValue: "Clear" })}
           </button>
         </div>
+      )}
+
+      {/* ── Market hero: the picked market gets a surface, not a highlight ──
+          NOT a featured strip beside the grid. `activeRegion` has already
+          narrowed `visible`, so this band labels the list that follows and no
+          case is ever rendered twice. Keep it that way: a strip alongside a
+          full grid draws the same card in two places, which breaks the
+          catalogue suites' `getAllByText(...)[0]` lookup and the single-pin
+          assertion, and it does that silently - both suites stay green until
+          the day they do not. ────────────────────────────────────────────── */}
+      {activeRegion !== "all" && (
+        <section className="relative overflow-hidden rounded-2xl border border-border-light bg-surface-primary p-5">
+          <CountryFlagBackdrop code={activeRegion} variant="panel" />
+          <div className="relative flex flex-wrap items-start gap-4">
+            <CountryFlag
+              code={activeRegion.toLowerCase()}
+              size={72}
+              className="shrink-0 shadow-md ring-1 ring-inset ring-black/10"
+            />
+            <div className="min-w-0 flex-1">
+              <h2 className="text-lg font-semibold tracking-tight text-content-primary">
+                {regionDisplayName(activeRegion, i18n.language)}
+              </h2>
+              <p className="mt-1 max-w-2xl text-sm leading-relaxed text-content-secondary">
+                {t("cases.region_hero.body", {
+                  defaultValue:
+                    "These cases follow this market's own standards, forms and payment rules, so the numbers and the paperwork match what a client there expects.",
+                })}
+              </p>
+              <span className="mt-1.5 inline-block text-2xs font-medium tabular-nums text-content-tertiary">
+                {t("cases.selector.count", {
+                  defaultValue: "{{count}} cases",
+                  count: visible.length,
+                })}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRegion("all")}
+              className="shrink-0 rounded-lg border border-border-light px-2.5 py-1 text-2xs font-semibold text-content-secondary transition-colors hover:border-oe-blue/30 hover:text-content-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40"
+            >
+              {t("cases.region_selector.all", { defaultValue: "All markets" })}
+            </button>
+          </div>
+        </section>
       )}
 
       {/* ── Cards ───────────────────────────────────────────────────────── */}
@@ -1192,7 +1462,19 @@ function CasesList() {
         />
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
+          <div
+            className={clsx(
+              "grid grid-cols-2 gap-2.5 sm:grid-cols-3",
+              // A market band above the grid is a promise that these cases are
+              // worth a closer look, and eight columns underneath it reads as
+              // the same dense list with a banner stuck on top. The largest
+              // market holds 13 cases, so five across still fills the row.
+              // Unfiltered, the density is exactly what it always was.
+              activeRegion === "all"
+                ? "md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8"
+                : "md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5",
+            )}
+          >
             {windowed.map((pb) => {
               const stageId = stageByPlaybook.get(pb.id);
               // A shipped case is a source file with nothing an editor could
@@ -1207,6 +1489,7 @@ function CasesList() {
                   totalCases={caseNumbers.size}
                   stage={stageId ? STAGE_BY_ID[stageId] : undefined}
                   roles={rolesByPlaybook.get(pb.id) ?? []}
+                  face={facesByPlaybook.get(pb.id) ?? null}
                   done={bestDoneFor(pb)}
                   pinProjectId={pinProjectId}
                   pinned={pinProjectId ? pinnedIds.includes(pb.id) : false}
@@ -1268,6 +1551,10 @@ interface CaseCardProps {
   stage: StageMeta | undefined;
   /** Professional roles that run this case (already resolved). */
   roles: ProfessionalRole[];
+  /** Photograph of the person this case is written for, dealt by `dealCaseFaces`
+   *  over the whole catalogue, or null for a case whose company types have no
+   *  cast - those cards keep the illustration alone. */
+  face: string | null;
   /** Furthest step reached across any run of this case. */
   done: number;
   /** The project the pin picker is scoped to ('' = none, hides the pin). */
@@ -1295,6 +1582,7 @@ function CaseCard({
   totalCases,
   stage,
   roles,
+  face,
   done,
   pinProjectId,
   pinned,
@@ -1302,7 +1590,7 @@ function CaseCard({
   onTogglePin,
   onEdit,
 }: CaseCardProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { ref, near } = useNearViewport<HTMLDivElement>("400px");
   const Icon = iconFor(pb.icon);
   const tint = tintFor(pb.category);
@@ -1352,17 +1640,61 @@ function CaseCard({
           tint.accent,
         )}
       />
-      {/* Line-art illustration banner: the picture carries the card, on an
-          always-light tile so the slate linework reads in both themes. The tile
-          keeps its 16/9 size whether the art or a placeholder sits inside, so
-          gating the art on `near` never shifts the layout. */}
+      {/* Illustration banner: the picture carries the card, on an always-light
+          tile so the slate linework reads in both themes. The tile keeps its
+          16/9 size whether the art or a placeholder sits inside, so gating the
+          art on `near` never shifts the layout.
+
+          A case that has a face keeps the whole diagram and wears the person
+          as a hex over one corner of it. Banding the two side by side cost the
+          diagram nearly 40% of its width, and the diagram is what says what the
+          case does; the hex is the same cell the marketing site uses on the
+          cards these cases came from, so the person still arrives first without
+          taking the meaning with them. The photograph is decorative (alt="");
+          the role it stands for is named in the card text below, so nothing is
+          said only in a picture. Both layers are absolutely positioned inside
+          the tile the layout has already reserved, so neither can shift
+          anything, and both mount on `near` so a card off screen costs
+          nothing. */}
       <div className="relative aspect-[16/9] w-full shrink-0 overflow-hidden border-b border-border-light bg-gradient-to-b from-white to-slate-50 ring-1 ring-inset ring-slate-900/[0.04]">
-        {near ? (
-          <CaseArt id={pb.id} category={pb.category} fallbackIcon={Icon} fallbackClass={tint.text} />
-        ) : (
+        {!near ? (
           <div className="h-full w-full" aria-hidden="true" />
+        ) : (
+          <>
+            {/* Nudged off the inline-start edge so the specialist's hexagon below
+                sits beside the drawing rather than on top of it. */}
+            <CaseArt
+              id={pb.id}
+              category={pb.category}
+              fallbackIcon={Icon}
+              fallbackClass={tint.text}
+              className={face ? 'ps-[13%]' : undefined}
+            />
+            {face && (
+              <div className="pointer-events-none absolute bottom-2 start-2 w-[34%] max-w-[6.5rem]">
+                {/* The rim is the wrapper's own background showing through a
+                    3px inset, because a border cannot survive a clip-path. */}
+                <div
+                  className="bg-white/90 p-[3px] shadow-md shadow-slate-900/15"
+                  style={{ aspectRatio: HEX_PORTRAIT_ASPECT, clipPath: HEX_PORTRAIT_CLIP }}
+                >
+                  <img
+                    src={face}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    width={340}
+                    height={480}
+                    draggable={false}
+                    className="h-full w-full object-cover object-[50%_18%]"
+                    style={{ clipPath: HEX_PORTRAIT_CLIP }}
+                  />
+                </div>
+              </div>
+            )}
+          </>
         )}
-        {(num != null || authored) && (
+        {(num != null || authored || pb.region) && (
           <div className="absolute left-3 top-3 flex items-center gap-1.5">
             {num != null && (
               <span
@@ -1384,6 +1716,23 @@ function CaseCard({
               <Badge variant="blue" size="sm">
                 {t("cases.card.custom_badge", { defaultValue: "Custom" })}
               </Badge>
+            )}
+            {/* Market flag: says at rest that this case is written for one
+                market's standards. The full market name is the tooltip and
+                the accessible name; the picture alone never carries it. */}
+            {pb.region && (
+              <span
+                className="inline-flex h-6 items-center gap-1 rounded-md bg-white/90 px-1.5 text-2xs font-semibold text-slate-900 shadow-sm ring-1 ring-inset ring-slate-900/10"
+                title={regionDisplayName(pb.region, i18n.language)}
+                aria-label={regionDisplayName(pb.region, i18n.language)}
+              >
+                <CountryFlag
+                  code={pb.region.toLowerCase()}
+                  size={18}
+                  className="ring-1 ring-inset ring-black/10"
+                />
+                {pb.region}
+              </span>
             )}
           </div>
         )}
@@ -1573,6 +1922,15 @@ function CaseCard({
                 count: pb.estMinutes,
               })}
             </span>
+            {pb.region && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2 py-0.5 text-[10px] font-medium text-white ring-1 ring-inset ring-white/20">
+                <CountryFlag
+                  code={pb.region.toLowerCase()}
+                  size={15}
+                />
+                {regionDisplayName(pb.region, i18n.language)}
+              </span>
+            )}
           </div>
           {roles.length > 0 && (
             <div

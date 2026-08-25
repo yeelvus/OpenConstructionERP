@@ -452,6 +452,13 @@ def notified_sum(
     A pay-less notice never appears here. It reduces the sum that has to be
     *paid* on the final date; it does not displace the notified sum, and
     conflating the two is the mistake that loses the adjudication.
+
+    Each answer carries ``reason`` and ``params`` beside ``explanation``. The
+    prose is the API's answer and stays; the code and its parameters are what a
+    screen needs to say the same thing in the reader's language, because a
+    sentence assembled here can only ever be assembled in one. ``source`` does
+    not serve: three different answers share ``undetermined`` and they are
+    different statements.
     """
     today = as_of or date.today()
     currency = application.currency
@@ -468,9 +475,32 @@ def notified_sum(
             "amount": chosen.notified_amount,
             "currency": chosen.currency or currency,
             "source": "payment_notice",
+            "reason": "payment_notice",
+            "params": {
+                "issued": chosen.issued_at.isoformat(),
+                "amount": format_money(chosen.notified_amount, chosen.currency or currency),
+            },
             "explanation": (
                 f"A payment notice served on {chosen.issued_at.isoformat()} states "
                 f"{format_money(chosen.notified_amount, chosen.currency or currency)}."
+            ),
+        }
+
+    if deadline is None and regime.no_notice_effect == "none":
+        # The EU Directive and the German regimes have no notice sequence at
+        # all, so there is no window to call open: no notice could ever fix the
+        # sum, and saying "the window is still open" would promise a settling
+        # event that will never arrive.
+        return {
+            "amount": None,
+            "currency": currency,
+            "source": "undetermined",
+            "reason": "no_notice_sequence",
+            "params": {"statute": regime.statute},
+            "explanation": (
+                f"{regime.statute} provides no payment notice sequence: it fixes the period for payment "
+                "and the interest that runs when it is missed, and no notice can settle the sum payable. "
+                "The sum applied for stands unless the payer disputes it."
             ),
         }
 
@@ -479,6 +509,10 @@ def notified_sum(
             "amount": None,
             "currency": currency,
             "source": "undetermined",
+            # Two sentences, not one with an optional tail: a language that puts
+            # the date first cannot reorder a clause glued on after the fact.
+            "reason": "window_open_until" if deadline else "window_open",
+            "params": {"deadline": deadline.isoformat()} if deadline else {},
             "explanation": (
                 "No payment notice has been served yet and the window is still open"
                 + (f" until {deadline.isoformat()}." if deadline else " under this regime.")
@@ -490,6 +524,8 @@ def notified_sum(
             "amount": None,
             "currency": currency,
             "source": "undetermined",
+            "reason": "silence_does_not_fix",
+            "params": {"deadline": deadline.isoformat(), "statute": regime.statute},
             "explanation": (
                 f"No payment notice was served by {deadline.isoformat()}. Under {regime.statute} that does "
                 "not by itself fix the sum payable, so the amount remains in dispute."
@@ -503,6 +539,12 @@ def notified_sum(
             "amount": chosen.notified_amount if chosen.notified_amount is not None else application.applied_amount,
             "currency": chosen.currency or currency,
             "source": "default_payment_notice",
+            "reason": "default_payment_notice",
+            "params": {
+                "deadline": deadline.isoformat(),
+                "issued": chosen.issued_at.isoformat(),
+                "statute": regime.statute,
+            },
             "explanation": (
                 f"No payment notice was served by {deadline.isoformat()}, and the payee's default payment "
                 f"notice of {chosen.issued_at.isoformat()} states the sum due under {regime.statute}."
@@ -513,6 +555,12 @@ def notified_sum(
         "amount": application.applied_amount,
         "currency": currency,
         "source": "application",
+        "reason": "application",
+        "params": {
+            "deadline": deadline.isoformat(),
+            "statute": regime.statute,
+            "amount": format_money(application.applied_amount, currency),
+        },
         "explanation": (
             f"No payment notice was served by {deadline.isoformat()}, so under {regime.statute} the sum "
             f"applied for, {format_money(application.applied_amount, currency)}, is the notified sum and is "

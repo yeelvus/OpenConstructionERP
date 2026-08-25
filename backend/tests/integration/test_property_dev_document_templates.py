@@ -29,9 +29,13 @@ from decimal import Decimal
 
 import pytest
 
-# pypdf is a test-only dependency (used to parse the generated PDFs) that is not
-# declared in pyproject's base/[dev] extras, so it is absent in Backend CI. Skip
-# cleanly there rather than crashing collection.
+# pypdf parses the generated PDFs below. It is a base dependency rather than a
+# test-only extra: pyproject declares it in the base list, and the application
+# imports it unconditionally at module level (app/modules/einvoice/pdf_embed.py),
+# so every lane that installs the package at all has it. This guard can only
+# fire on a broken install now, never on a lane that chose fewer extras, and a
+# skip here would mean the suite proved nothing. The document language step in
+# ci-postgres.yml runs this file and fails when anything in the group skips.
 pytest.importorskip("pypdf")
 
 import pytest_asyncio  # noqa: E402
@@ -719,6 +723,7 @@ async def test_endpoint_preview_returns_base64(http_client, tenant_a):
     assert decoded[:4] == b"%PDF"
 
 
+@pytest.mark.tenant_isolation
 @pytest.mark.asyncio
 async def test_endpoint_idor_cross_tenant_returns_404(http_client, tenant_a, tenant_b):
     # Tenant A builds the SPA; Tenant B tries to fetch the document.
@@ -740,11 +745,25 @@ async def test_endpoint_unknown_doc_type_returns_400(http_client, tenant_a):
 
 
 @pytest.mark.asyncio
-async def test_endpoint_locale_fallback_to_en_for_unknown(http_client, tenant_a):
+async def test_endpoint_unknown_locale_degrades_and_declares_english(http_client, tenant_a):
+    """An English deed reaching a French reader says so in the standard header.
+
+    ``xx`` is unassigned and will stay unassigned, so this pins the fallback
+    mechanism rather than the roster: a language the catalogue later gains
+    cannot quietly turn this test into a test of nothing.
+
+    The Accept-Language header is the point. This client boots the real app,
+    so ``AcceptLanguageMiddleware`` runs, and before the route declared the
+    language it had rendered, the middleware labelled these English bytes
+    ``fr`` - a document stating, in a header receivers act on, a language it
+    was not written in. The route now outranks the middleware, and asserting
+    both headers keeps the non-standard one and the standard one in step.
+    """
     graph = await _make_contract_graph(http_client, tenant_a)
     res = await http_client.get(
         f"/api/v1/property-dev/documents/sales_contract?contract_id={graph['contract_id']}&locale=xx",
-        headers=tenant_a["headers"],
+        headers={**tenant_a["headers"], "Accept-Language": "fr-CA,fr;q=0.9"},
     )
     assert res.status_code == 200, res.text
     assert res.headers.get("x-document-locale") == "en"
+    assert res.headers.get("content-language") == "en"

@@ -52,7 +52,16 @@ const PROFILES = {
 };
 
 /** The advisory the exporter raises when no bank account is on file. */
-const NO_ACCOUNT = {
+type Violation = {
+  rule_id: string;
+  severity: string;
+  message: string;
+  term: string | null;
+  /** Present only on the rules whose sentence names a value. */
+  params?: Record<string, string>;
+};
+
+const NO_ACCOUNT: Violation = {
   rule_id: 'OCE-PAY-01',
   severity: 'warning',
   message: 'Add a payment account so the buyer knows where to pay.',
@@ -79,7 +88,7 @@ type DryRun = {
   format: string;
   valid: boolean;
   problems: string[];
-  violations: typeof NO_ACCOUNT[];
+  violations: Violation[];
 };
 
 function dryRun(over: Partial<DryRun> = {}): DryRun {
@@ -247,6 +256,48 @@ describe('EInvoiceModal', () => {
     fireEvent.click(screen.getByText('finance.einvoice.downloadPdf').closest('button')!);
     await waitFor(() => expect(downloadMock).toHaveBeenCalledTimes(2));
     expect(downloadMock.mock.calls[1]![0]).toContain('embed=true');
+  });
+
+  it('feeds a finding its own values so a translated sentence can keep them', async () => {
+    // The engine bakes the line number and the amount into its English
+    // sentence. A translated catalogue cannot reuse that sentence, so the
+    // values travel beside it and the panel hands them to the lookup; without
+    // that, every German rendering of a line-scoped rule would have to drop
+    // the line number and say something weaker than the English one.
+    const PARAMETERISED = {
+      rule_id: 'BR-23',
+      severity: 'fatal',
+      message: 'Line {{line}} needs a unit of measure.',
+      term: 'BT-130',
+      params: { line: '3' },
+    };
+    respond({
+      xrechnung: dryRun({ valid: false, problems: [], violations: [PARAMETERISED] }),
+    });
+    renderModal();
+
+    await screen.findByText('BR-23');
+    expect(screen.getByText('Line 3 needs a unit of measure.')).toBeInTheDocument();
+  });
+
+  it('translates an enumerated value inside a finding instead of printing it raw', async () => {
+    // "seller" is a value from a closed set, not prose. It goes through its own
+    // catalogue entry, so a German sentence says Verkaeufer where the engine
+    // said seller.
+    const PARTY_RULE = {
+      rule_id: 'BR-CO-9',
+      severity: 'fatal',
+      message: 'The {{party}} VAT identifier must start with its country code, for example {{example}}.',
+      term: 'BT-31',
+      params: { party: 'seller', example: 'DE812345678' },
+    };
+    respond({ xrechnung: dryRun({ valid: false, problems: [], violations: [PARTY_RULE] }) });
+    renderModal();
+
+    await screen.findByText('BR-CO-9');
+    expect(
+      screen.getByText('The seller VAT identifier must start with its country code, for example DE812345678.'),
+    ).toBeInTheDocument();
   });
 
   it('shows the server message when the download is refused', async () => {

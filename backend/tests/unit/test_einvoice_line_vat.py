@@ -132,7 +132,12 @@ def test_mixed_rates_survive_the_ubl_syntax_too():
 
 
 def test_a_reverse_charged_line_sits_beside_a_taxed_one():
-    """The construction case: a subcontract under reverse charge, works at 19%."""
+    """The construction case: a subcontract under reverse charge, works at 19%.
+
+    The reverse-charged group must say why no VAT is charged (BR-AE-10), so
+    the invoice declares the reason; it lands on the AE group only, and the
+    standard-rated group stays clean as BR-S-10 demands.
+    """
     lines = [
         {
             "description": "Own works",
@@ -153,9 +158,13 @@ def test_a_reverse_charged_line_sits_beside_a_taxed_one():
             "vat_category": "AE",
         },
     ]
-    ei = build_einvoice(invoice=_invoice(), line_items=lines, profile="xrechnung")
+    inv = _invoice()
+    inv["metadata"]["einvoice"]["vat_exemption_reason"] = "Reverse charge"
+    ei = build_einvoice(invoice=inv, line_items=lines, profile="xrechnung")
     assert {(g.category, g.rate) for g in ei.tax_subtotals} == {("AE", Decimal("0")), ("S", Decimal("19"))}
     assert ei.tax_total == Decimal("190.00")
+    reasons = {g.category: g.exemption_reason for g in ei.tax_subtotals}
+    assert reasons == {"AE": "Reverse charge", "S": None}
     assert [v for v in check(ei) if v.severity == FATAL] == []
 
 

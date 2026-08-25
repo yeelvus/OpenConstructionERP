@@ -475,7 +475,197 @@ async def _collect_dwg_drawings(
     return out
 
 
+async def _collect_takeoff_documents(
+    session: AsyncSession,
+    project_id: str,
+) -> list[FileRow]:
+    """Collect the project's PDF-takeoff documents (``oe_takeoff_document``).
+
+    Takeoff keeps its own store: a sheet uploaded into the takeoff viewer, or
+    seeded there, exists as a ``TakeoffDocument`` and nowhere else. Until this
+    collector existed the file manager - and the "open from project files"
+    picker built on it - listed the documents module only, so a plan open in
+    the takeoff viewer could not be found by name in a dialog that called
+    itself "project files".
+
+    Scoped by PROJECT, not by owner. The takeoff module's own listing filters
+    on ``owner_id``, but every other reader of a project-bound takeoff document
+    (get, download, measurements) authorises on the project instead, so
+    project scope widens nothing - and a file manager that hid a colleague's
+    sheet would misreport what the project holds.
+
+    Deduplication. A takeoff document and a Project-Files document routinely
+    name the SAME blob on disk, in both directions:
+
+    * opening a project file in takeoff references the stored blob and stamps
+      ``source_document_id`` on the takeoff row (zero-copy, see
+      ``TakeoffService.upload_document``);
+    * a direct takeoff upload cross-links a ``Document`` row whose
+      ``file_path`` is the takeoff path verbatim.
+
+    Emitting both rows would double the project's file count and its byte
+    total on a shipped page. So a takeoff row that a document row already
+    represents is stamped ``duplicate_of_document_id`` here and dropped by
+    :func:`_link_takeoff_documents` after collection. Matching is by source id
+    first (exact) and by stored path second, which needs no JSON-path query and
+    therefore no dialect-specific SQL.
+    """
+    try:
+        from app.modules.takeoff.models import TakeoffDocument
+    except ImportError:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(TakeoffDocument).where(TakeoffDocument.project_id == project_id).limit(_PER_COLLECTOR_LIMIT),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return []
+
+    # The project's Project-Files documents, id and path only - the two keys
+    # the dedupe above matches on. Two columns rather than whole ORM rows
+    # because nothing else about them is needed here.
+    doc_ids: set[str] = set()
+    doc_id_by_path: dict[str, str] = {}
+    try:
+        from app.modules.documents.models import Document
+
+        for doc_id, doc_path in (
+            await session.execute(
+                select(Document.id, Document.file_path)
+                .where(Document.project_id == project_id)
+                .limit(_PER_COLLECTOR_LIMIT),
+            )
+        ).all():
+            doc_ids.add(str(doc_id))
+            if doc_path:
+                doc_id_by_path.setdefault(str(doc_path), str(doc_id))
+    except ImportError:  # pragma: no cover - documents is a core module
+        pass
+
+    out: list[FileRow] = []
+    for r in rows:
+        path = r.file_path or ""
+        duplicate_of: str | None = None
+        if r.source_document_id and str(r.source_document_id) in doc_ids:
+            duplicate_of = str(r.source_document_id)
+        elif path and path in doc_id_by_path:
+            duplicate_of = doc_id_by_path[path]
+        out.append(
+            FileRow(
+                id=str(r.id),
+                kind="takeoff",
+                name=r.filename,
+                project_id=str(project_id),
+                size_bytes=int(r.size_bytes or 0) or _file_size(path),
+                mime_type=r.content_type or _mime_of(r.filename),
+                extension=_ext_of(r.filename),
+                modified_at=getattr(r, "updated_at", None) or getattr(r, "created_at", None),
+                physical_path=path,
+                relative_path=_relative_path(path, project_id),
+                download_url=f"/api/v1/takeoff/documents/{r.id}/download/",
+                preview_url=None,
+                extra={
+                    "status": r.status,
+                    "pages": r.pages,
+                    "source_document_id": r.source_document_id,
+                    "duplicate_of_document_id": duplicate_of,
+                },
+            ),
+        )
+    return out
+
+
 # ── Public API ───────────────────────────────────────────────────────────
+
+
+def _link_takeoff_documents(rows: list[FileRow]) -> list[FileRow]:
+    """Drop takeoff rows a document row already represents, and cross-stamp.
+
+    Two jobs, one pass over the collected rows:
+
+    1. a takeoff row marked ``duplicate_of_document_id`` names the same blob
+       as a document row, so it is dropped - the file manager counts each file
+       once no matter which module wrote it;
+    2. when that document row is part of the same collection, it is stamped
+       with ``takeoff_document_id`` so a caller can open the takeoff document
+       that ALREADY exists instead of asking for one to be created.
+
+    Job 1 runs whether or not the document slice was collected (a caller
+    filtering to ``kinds=takeoff`` gets the same suppression, so its count
+    agrees with the sidebar's), job 2 only when there is a row to stamp. The
+    stamp is therefore a label, never a correctness requirement: without it the
+    caller falls back to the idempotent find-or-create, which resolves to the
+    very same takeoff document.
+    """
+    document_rows = {r.id: r for r in rows if r.kind == "document"}
+    kept: list[FileRow] = []
+    for r in rows:
+        if r.kind != "takeoff":
+            kept.append(r)
+            continue
+        duplicate_of = r.extra.get("duplicate_of_document_id")
+        if not duplicate_of:
+            kept.append(r)
+            continue
+        document_row = document_rows.get(str(duplicate_of))
+        if document_row is not None:
+            document_row.extra["takeoff_document_id"] = r.id
+    return kept
+
+
+async def _filter_rows_by_module_permissions(
+    session: AsyncSession,
+    user_id: str,
+    rows: list[FileRow],
+) -> list[FileRow]:
+    """Drop rows belonging to a module the caller's role may not read.
+
+    Folder permissions (below) scope the documents module. A module store has
+    no folders - it has a module permission, and the file manager must not
+    become a way around it: a role without ``takeoff.read`` gets 404 from every
+    takeoff endpoint, so it must not be handed takeoff rows here either.
+
+    Only ``takeoff`` is gated, because it is the only module store collected
+    here whose rows are not already visible through the documents module.
+    Photos, sheets, BIM models and DWG drawings predate this and keep the
+    behaviour they have always had.
+
+    Fails closed: a role that cannot be resolved loses the takeoff rows.
+    """
+    if not any(r.kind == "takeoff" for r in rows):
+        return rows
+
+    try:
+        # The takeoff module registers its permissions in its startup hook,
+        # which a process that imported this service without booting the module
+        # has not run. Registration is an idempotent dict write, so calling it
+        # here makes the check below ask a populated registry instead of being
+        # answered "unknown permission - deny" and silently dropping every
+        # takeoff row from a correctly permitted caller.
+        from app.modules.takeoff.permissions import register_takeoff_permissions
+
+        register_takeoff_permissions()
+    except ImportError:  # pragma: no cover - module absent means no rows anyway
+        return [r for r in rows if r.kind != "takeoff"]
+
+    role = ""
+    try:
+        from app.core.permissions import permission_registry
+        from app.modules.users.repository import UserRepository
+
+        user = await UserRepository(session).get_by_id(uuid.UUID(str(user_id)))
+        role = str(getattr(user, "role", "") or "") if user is not None else ""
+    except (ValueError, TypeError, ImportError):
+        return [r for r in rows if r.kind != "takeoff"]
+
+    if role and permission_registry.role_has_permission(role, "takeoff.read"):
+        return rows
+    return [r for r in rows if r.kind != "takeoff"]
 
 
 async def _filter_rows_by_folder_permissions(
@@ -558,6 +748,7 @@ async def list_project_files(
     *,
     user_id: str | None = None,
     category: FileKind | None = None,
+    kinds: Sequence[str] | None = None,
     extension: str | None = None,
     query: str | None = None,
     limit: int = 100,
@@ -571,9 +762,16 @@ async def list_project_files(
 
     When ``user_id`` is supplied, document rows are filtered down to the
     folders that user's folder permissions allow (owners / admins see
-    everything). ``user_id is None`` is a SYSTEM/internal call (e.g. the
-    bundle exporter, ``file_tree`` counts) and skips per-file filtering so
-    existing callers keep working unchanged.
+    everything) and module rows to the modules that user's role may read.
+    ``user_id is None`` is a SYSTEM/internal call (e.g. the bundle exporter,
+    ``file_tree`` counts) and skips per-file filtering so existing callers keep
+    working unchanged.
+
+    ``category`` narrows to a single kind; ``kinds`` narrows to a set of them,
+    which is what a caller wanting exactly two sources (a file picker asking
+    for documents plus this module's own store) needs. Both skip the other
+    collectors outright rather than filtering afterwards, so an unwanted module
+    is never queried.
     """
     collectors = (
         ("document", _collect_documents),
@@ -581,10 +779,14 @@ async def list_project_files(
         ("sheet", _collect_sheets),
         ("bim_model", _collect_bim_models),
         ("dwg_drawing", _collect_dwg_drawings),
+        ("takeoff", _collect_takeoff_documents),
     )
+    wanted = set(kinds) if kinds else None
     rows: list[FileRow] = []
     for kind, fn in collectors:
         if category and category != kind:
+            continue
+        if wanted is not None and kind not in wanted:
             continue
         try:
             rows.extend(await fn(session, project_id))
@@ -596,9 +798,16 @@ async def list_project_files(
             )
 
     # Per-file authorization: keep only the document folders the caller may
-    # see. Skipped for SYSTEM callers (user_id is None).
+    # see, and only the module stores their role may read. Skipped for SYSTEM
+    # callers (user_id is None).
     if user_id is not None:
         rows = await _filter_rows_by_folder_permissions(session, project_id, user_id, rows)
+        rows = await _filter_rows_by_module_permissions(session, user_id, rows)
+
+    # One row per real file: a takeoff document that shares a blob with a
+    # document row folds into it. Runs after authorization so a caller who
+    # cannot read takeoff is never stamped with a takeoff id.
+    rows = _link_takeoff_documents(rows)
 
     # Filters
     if extension:

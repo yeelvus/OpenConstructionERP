@@ -32,7 +32,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # pack slug -> (package directory under packs/<slug>/src, expected methodology slug)
 PACK_METHODOLOGY: dict[str, tuple[str, str]] = {
-    "us-rsmeans": ("openconstructionerp_us_rsmeans", "united_states"),
+    "us-costdata": ("openconstructionerp_us_costdata", "united_states"),
     "uk-jct": ("openconstructionerp_uk_jct", "united_kingdom"),
     "india-cpwd": ("openconstructionerp_india_cpwd", "india"),
     "bimhessen-de": ("openconstructionerp_bimhessen_de", "germany"),

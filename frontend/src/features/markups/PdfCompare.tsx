@@ -48,7 +48,8 @@ import { Slider } from '@/shared/ui/Slider';
 import { useTabKeyboardNav } from '@/shared/hooks/useTabKeyboardNav';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
-import { apiGet } from '@/shared/lib/api';
+import { apiGet, type Page } from '@/shared/lib/api';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -785,12 +786,13 @@ export function PdfComparePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, zoom, page]);
 
-  const { data: documents = [], isLoading: loadingDocs } = useQuery<DocItem[]>({
+  const { data: documentPage, isLoading: loadingDocs } = useQuery<Page<DocItem>>({
     queryKey: ['documents-for-compare', activeProjectId],
-    queryFn: () => apiGet<DocItem[]>(`/v1/documents/?project_id=${activeProjectId}`),
+    queryFn: () => apiGet<Page<DocItem>>(`/v1/documents/?project_id=${activeProjectId}`),
     enabled: !!activeProjectId,
     staleTime: 60_000,
   });
+  const documents = useMemo(() => documentPage?.items ?? [], [documentPage]);
 
   // Only PDF documents
   const pdfDocs = useMemo(
@@ -882,7 +884,7 @@ export function PdfComparePage() {
         {/* Doc A picker */}
         <div className="flex items-center gap-1.5">
           <span
-            className="text-xs font-bold text-semantic-error/80 uppercase"
+            className="text-xs font-bold text-semantic-error uppercase"
             title={t('pdf_compare.doc_a_old', { defaultValue: 'Old revision (A)' })}
           >
             A
@@ -1092,6 +1094,13 @@ export function PdfComparePage() {
         </button>
       </div>
 
+      {/* Both revision pickers above are filled from one page of the
+          register, so a drawing past that page cannot be compared at all.
+          Gated on the server page, not on the PDFs left after filtering. */}
+      {documentPage ? (
+        <TruncationNotice page={documentPage} className="shrink-0 px-4 py-1" />
+      ) : null}
+
       {/* ── Overlay opacity slider (only in overlay mode) ──────────────── */}
       {mode === 'overlay' && (
         <div className="shrink-0 px-4 py-2 border-b border-border-light bg-surface-secondary/40 flex items-center gap-4">
@@ -1181,7 +1190,7 @@ export function PdfComparePage() {
             <div className="flex items-center gap-2 px-2 py-1.5 border-b border-border-light bg-surface-secondary/60 shrink-0">
               <FileText size={12} className="text-content-tertiary" />
               <span className="text-xs text-content-tertiary">
-                <strong className="text-semantic-error/80">A</strong>: {docAName || t('pdf_compare.none', { defaultValue: 'none' })}
+                <strong className="text-semantic-error">A</strong>: {docAName || t('pdf_compare.none', { defaultValue: 'none' })}
                 {' '}+{' '}
                 <strong className="text-oe-blue">B</strong>: {docBName || t('pdf_compare.none', { defaultValue: 'none' })}
                 {' '}&mdash; {t('pdf_compare.opacity_b_short', { defaultValue: 'B at' })} {overlayOpacity}%
@@ -1205,7 +1214,7 @@ export function PdfComparePage() {
             <div className="flex items-center gap-2 px-2 py-1.5 border-b border-border-light bg-surface-secondary/60 shrink-0">
               <FileText size={12} className="text-content-tertiary" />
               <span className="text-xs text-content-tertiary">
-                <strong className="text-semantic-error/80">A</strong>: {docAName || t('pdf_compare.none', { defaultValue: 'none' })}
+                <strong className="text-semantic-error">A</strong>: {docAName || t('pdf_compare.none', { defaultValue: 'none' })}
                 {' '}&rarr;{' '}
                 <strong className="text-oe-blue">B</strong>: {docBName || t('pdf_compare.none', { defaultValue: 'none' })}
               </span>

@@ -4,6 +4,7 @@ import { useState, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { normalizeListResponse } from '@/shared/lib/apiHelpers';
+import { resolvePartyName } from '@/shared/lib/partyName';
 import {
   FileEdit,
   FileText,
@@ -27,8 +28,9 @@ import {
   GitBranch,
 } from 'lucide-react';
 import { Button, Card, Badge, EmptyState, Breadcrumb, InfoHint, DismissibleInfo, IntroRichText, ConfirmDialog, RecoveryCard, SkeletonTable, SkeletonCard, ModuleGuideButton } from '@/shared/ui';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/shared/ui/PageHeader';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
 import {
   WideModal,
@@ -36,8 +38,8 @@ import {
   WideModalField,
 } from '@/shared/ui/WideModal';
 import { useConfirm } from '@/shared/hooks/useConfirm';
-import { apiGet, apiPost, apiDelete } from '@/shared/lib/api';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { apiGet, apiPost, apiDelete, ApiError } from '@/shared/lib/api';
+import { fmtDate } from '@/shared/lib/formatters';
 import { formatCurrency as fmtMoney } from '@/shared/lib/money';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
@@ -51,11 +53,13 @@ import { changeordersGuide } from './changeordersGuide';
 import {
   advanceApproval,
   getApprovals,
+  isWritebackRefusal,
   startApprovalChain,
   type ApprovalRow,
 } from './api';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { buildChangeordersInsights } from './changeordersInsights';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -96,11 +100,19 @@ interface ChangeOrder {
   reason_category: string;
   status: string;
   submitted_by: string | null;
+  // Who ``submitted_by`` names. The three audit columns are free text and the
+  // demo estate writes a user id into all of them, so the card under
+  // "Submitted" used to read 3f2b8c1e-9a44-... on the one screen whose job is
+  // to show who signed off a cost change. The API resolves what it can; a null
+  // here means "print the raw value", never "nobody submitted it".
+  submitted_by_name?: string | null;
   approved_by: string | null;
+  approved_by_name?: string | null;
   // BUG-351: rejection now has its own audit columns on the backend. A CO
   // rejected straight from 'submitted' populates only these — gating the
   // audit card on approved_at hid the rejection entirely.
   rejected_by: string | null;
+  rejected_by_name?: string | null;
   submitted_at: string | null;
   approved_at: string | null;
   rejected_at: string | null;
@@ -208,6 +220,30 @@ function formatCurrency(amount: string | number, currency?: string): string {
 }
 
 /**
+ * A cost impact with its sign, written as one number rather than as a sign and
+ * a number.
+ *
+ * The register used to write `{impact >= 0 ? '+' : ''}{formatCurrency(...)}`,
+ * which puts the mark in front of every reader's figure whatever their own
+ * language does with it. Asking the formatter for the sign fixes that, and
+ * leaves the hand-rolled fallback path something to keep when `Intl` is
+ * unusable.
+ *
+ * It is not what stopped the wrap on the published frame. `+` and the currency
+ * symbol are both prefix-numeric characters, and the line-breaking algorithm
+ * allows only one of those to open an unbreakable numeric run, so the browser
+ * may break between them whether the cell holds one string or two - and in a
+ * squeezed column it did, leaving a bare `+` on the line above the figure it
+ * belonged to. The `whitespace-nowrap` on the enclosing element is what
+ * forbids it.
+ *
+ * Zero keeps its plus, which is what the hand-written `>= 0` test did.
+ */
+function formatSignedCurrency(amount: string | number, currency?: string): string {
+  return fmtMoney(amount, currency, undefined, { signDisplay: 'always' });
+}
+
+/**
  * Format a numeric quantity stored as a NUMERIC(18,6) decimal string.
  *
  * The backend serializes quantities verbatim ('5.000000'), so rendering
@@ -218,17 +254,15 @@ function formatCurrency(amount: string | number, currency?: string): string {
 function formatQuantity(value: string | number): string {
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value);
-  return n.toLocaleString(getIntlLocale(), { maximumFractionDigits: 6 });
+  return n.toLocaleString(getNumberLocale(), { maximumFractionDigits: 6 });
 }
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
   try {
-    return new Date(iso).toLocaleDateString(getIntlLocale(), {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
+    // The app-wide date formatter, so this register renders dates exactly like
+    // the variations and claims-evidence screens next to it.
+    return fmtDate(iso);
   } catch {
     return iso;
   }
@@ -258,11 +292,12 @@ function CreateDialog({
   const [contractId, setContractId] = useState('');
   const addToast = useToastStore((s) => s.addToast);
 
-  const { data: contracts = [] } = useQuery({
+  const contractsQ = useQuery({
     queryKey: ['changeorders', 'contract-options', projectId],
     queryFn: () => listContracts({ project_id: projectId, limit: 200 }),
     enabled: Boolean(projectId),
   });
+  const contracts = contractsQ.data?.items ?? [];
   // Change orders are only valid on commercially-live contracts (same
   // amendability rule as the contracts module: active / suspended).
   const linkableContracts = useMemo(
@@ -403,6 +438,15 @@ function CreateDialog({
                 </option>
               ))}
             </select>
+            {/* Driven by the server page rather than by `linkableContracts`.
+                The active/suspended rule is applied here after the fetch, so
+                it shortens the list without the server knowing, and only the
+                envelope can say whether a contract the user is looking for was
+                never sent. A picker that quietly lacks the row someone wants
+                reads as the contract not existing. */}
+            {contractsQ.data && (
+              <TruncationNotice page={contractsQ.data} className="mt-1.5" />
+            )}
           </WideModalField>
         )}
       </WideModalSection>
@@ -665,8 +709,8 @@ function AddItemDialog({
         </WideModalField>
         <div className="sm:col-span-2 rounded-lg bg-surface-secondary p-3 text-sm">
           <span className="text-content-secondary">{t('changeorders.cost_delta', { defaultValue: 'Cost Delta' })}:</span>{' '}
-          <span className={costDelta >= 0 ? 'font-semibold text-semantic-error' : 'font-semibold text-semantic-success'}>
-            {costDelta >= 0 ? '+' : ''}{formatCurrency(costDelta, currency)}
+          <span className={`whitespace-nowrap ${costDelta >= 0 ? 'font-semibold text-semantic-error' : 'font-semibold text-semantic-success'}`}>
+            {formatSignedCurrency(costDelta, currency)}
           </span>
         </div>
       </WideModalSection>
@@ -700,6 +744,10 @@ interface BoqPositionPick {
 interface BoqListItem {
   id: string;
   name: string;
+  /** A locked bill takes no writes, so it is never a candidate for an
+   *  approved change order's scope. Optional because older callers of the
+   *  same endpoint only ever read the id and the name. */
+  is_locked?: boolean;
 }
 
 interface BoqPositionRow {
@@ -1229,6 +1277,26 @@ function WorkflowStepper({ status, t }: { status: string; t: (key: string, opts?
 
 /* ── Detail View ───────────────────────────────────────────────────────── */
 
+/**
+ * The person on one audit milestone.
+ *
+ * The three audit columns are free text: a name someone typed, a contact id
+ * and a user id are all legitimate, and the demo estate writes an id. The card
+ * used to print whichever it got. An id that resolved to nobody stays visible
+ * as unknown rather than vanishing, because the order WAS submitted and a
+ * blank line says it was not.
+ */
+function PartyLine({ raw, name }: { raw: string | null; name?: string | null }) {
+  const { t } = useTranslation();
+  const party = resolvePartyName(raw, name);
+  if (party.kind === 'none') return null;
+  return (
+    <p className="mt-0.5 text-xs text-content-tertiary">
+      {party.kind === 'named' ? party.name : t('common.unknown', { defaultValue: 'Unknown' })}
+    </p>
+  );
+}
+
 function DetailView({
   orderId,
   onBack,
@@ -1274,7 +1342,14 @@ function DetailView({
   });
 
   const approveMut = useMutation({
-    mutationFn: () => apiPost<ChangeOrder>(`/v1/changeorders/${orderId}/approve/`),
+    // The approved scope is written into a bill of quantities. `boq_id` names
+    // which one; the backend accepts the omission only where there is exactly
+    // one unlocked bill and refuses with 409 where there are several, rather
+    // than writing real money into a bill nobody chose.
+    mutationFn: (boqId?: string) =>
+      apiPost<ChangeOrder>(
+        `/v1/changeorders/${orderId}/approve/${boqId ? `?boq_id=${encodeURIComponent(boqId)}` : ''}`,
+      ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['changeorder', orderId] });
       queryClient.invalidateQueries({ queryKey: ['changeorders'] });
@@ -1283,7 +1358,17 @@ function DetailView({
       queryClient.invalidateQueries({ queryKey: ['contracts'] });
       addToast({ type: 'success', title: t('changeorders.approved', { defaultValue: 'Change order approved' }) });
     },
-    onError: (err: Error) => addToast({ type: 'error', title: t('common.error', { defaultValue: 'Error' }), message: err.message }),
+    onError: (err: Error) => {
+      // Any of the four refusals says the same thing about this screen: the
+      // bill list it was built from is out of date. A bill opened between load
+      // and click makes the project ambiguous, a bill locked in that window
+      // makes the named one unusable. Refetch either way, so the next attempt
+      // is offered the bills that exist now.
+      if (err instanceof ApiError && err.status === 409 && isWritebackRefusal(err.body)) {
+        queryClient.invalidateQueries({ queryKey: ['changeorder-target-boqs', order?.project_id] });
+      }
+      addToast({ type: 'error', title: t('common.error', { defaultValue: 'Error' }), message: err.message });
+    },
   });
 
   const rejectMut = useMutation({
@@ -1327,6 +1412,37 @@ function DetailView({
     queryKey: ['changeorder-approvals', orderId],
     queryFn: () => getApprovals(orderId),
   });
+
+  // ── Which bill the approved scope lands in ────────────────────────────
+  // The register never asked: it let the backend work the target out, which
+  // was fine while the backend guessed the oldest unlocked bill and is not
+  // fine now that it refuses to guess. On a project holding several unlocked
+  // bills the approver names one here, and the approval carries that name.
+  const { data: projectBoqs = [] } = useQuery({
+    queryKey: ['changeorder-target-boqs', order?.project_id],
+    queryFn: () => apiGet<BoqListItem[]>(`/v1/boq/boqs/?project_id=${order?.project_id}`),
+    select: (d): BoqListItem[] => normalizeListResponse(d),
+    enabled: Boolean(order?.project_id) && order?.status === 'submitted',
+  });
+  // A locked bill takes no writes, so it is not a candidate - the same filter
+  // the backend applies, for the same reason.
+  const targetBoqs = useMemo(() => projectBoqs.filter((b) => !b.is_locked), [projectBoqs]);
+  const mustNameBoq = targetBoqs.length > 1;
+  const [targetBoqId, setTargetBoqId] = useState('');
+
+  // The chain authorises by name, not by role: `advance_approval` carries no
+  // role dependency, and the timeline below hands its decision buttons to
+  // whoever sits at the cursor regardless of `canApprove`. An approver who is
+  // neither admin nor manager still gets the refusal, so the picker follows
+  // the rule the timeline follows instead of the role gate the single-step
+  // path uses - otherwise that approver is asked a question with no field to
+  // answer it in.
+  const isActiveChainApprover = useMemo(() => {
+    const step = order?.current_approval_step;
+    if (!currentUserId || !step) return false;
+    const active = approvals.find((r) => r.step_order === step);
+    return !!active && active.decision === 'pending' && active.approver_user_id === currentUserId;
+  }, [approvals, currentUserId, order?.current_approval_step]);
 
   // Resolve approver UUIDs to display names for the timeline. Best-effort:
   // if the directory is unavailable (no users.list permission) the timeline
@@ -1375,6 +1491,10 @@ function DetailView({
       advanceApproval(orderId, {
         decision: input.decision,
         comments: input.comments || undefined,
+        // Only the final step writes into a bill, and the backend ignores the
+        // field on every earlier one, so it is sent whenever a bill has been
+        // named rather than gated on a step count computed twice.
+        boq_id: targetBoqId || undefined,
       }),
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['changeorder', orderId] });
@@ -1394,12 +1514,18 @@ function DetailView({
               }),
       });
     },
-    onError: (err: Error) =>
+    onError: (err: Error) => {
+      // The final step runs the same writeback check the single-step path
+      // does, so it earns the same refusals over the same stale list.
+      if (err instanceof ApiError && err.status === 409 && isWritebackRefusal(err.body)) {
+        queryClient.invalidateQueries({ queryKey: ['changeorder-target-boqs', order?.project_id] });
+      }
       addToast({
         type: 'error',
         title: t('common.error', { defaultValue: 'Error' }),
         message: err.message,
-      }),
+      });
+    },
   });
 
   if (isLoading || (!order && !isError)) {
@@ -1478,6 +1604,31 @@ function DetailView({
                 {t('changeorders.submit', { defaultValue: 'Submit' })}
               </Button>
             )}
+            {/* Several unlocked bills on the project means the approval has a
+                question to answer, and the backend refuses it rather than
+                guessing. The picker is what answers it - it is shown for the
+                chain path too, where the last approver drives the same
+                writeback from the timeline below. Rendering it only next to
+                the Approve button would leave that path with a refusal and no
+                field to reply in. */}
+            {order.status === 'submitted' && (canApprove || isActiveChainApprover) && mustNameBoq && (
+              <select
+                id="co-approve-target-boq"
+                value={targetBoqId}
+                onChange={(e) => setTargetBoqId(e.target.value)}
+                aria-label={t('changeorders.approve_boq_label', {
+                  defaultValue: 'Bill of quantities to receive the approved scope',
+                })}
+                className="h-9 rounded-lg border border-border bg-surface-primary px-2 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
+              >
+                <option value="">{t('common.select_boq', { defaultValue: 'Select BOQ...' })}</option>
+                {targetBoqs.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            )}
             {/* Single-step Approve/Reject only applies to PLAIN change orders
                 (no multi-step approval chain). Once an admin starts a chain,
                 `approve_order` rejects this legacy path with HTTP 409 — so we
@@ -1495,8 +1646,8 @@ function DetailView({
                       confirmLabel: t('changeorders.approve', { defaultValue: 'Approve' }),
                       variant: 'warning',
                     });
-                    if (ok) approveMut.mutate();
-                  }} disabled={approveMut.isPending}>
+                    if (ok) approveMut.mutate(targetBoqId || undefined);
+                  }} disabled={approveMut.isPending || (mustNameBoq && !targetBoqId)}>
                     <CheckCircle2 size={14} className="mr-1.5" />
                     {t('changeorders.approve', { defaultValue: 'Approve' })}
                   </Button>
@@ -1571,8 +1722,8 @@ function DetailView({
           {(() => {
             const impact = Number(order.cost_impact);
             return (
-              <p className={`mt-1 text-sm font-semibold ${impact >= 0 ? 'text-semantic-error' : 'text-semantic-success'}`}>
-                {impact >= 0 ? '+' : ''}{formatCurrency(impact, order.currency)}
+              <p className={`mt-1 text-sm font-semibold whitespace-nowrap ${impact >= 0 ? 'text-semantic-error' : 'text-semantic-success'}`}>
+                {formatSignedCurrency(impact, order.currency)}
               </p>
             );
           })()}
@@ -1640,9 +1791,7 @@ function DetailView({
                 {t('changeorders.submitted_at', { defaultValue: 'Submitted' })}
               </p>
               <p className="mt-1 text-sm font-medium text-content-primary">{formatDate(order.submitted_at)}</p>
-              {order.submitted_by && (
-                <p className="mt-0.5 text-xs text-content-tertiary">{order.submitted_by}</p>
-              )}
+              <PartyLine raw={order.submitted_by} name={order.submitted_by_name} />
             </Card>
           )}
           {order.approved_at && (
@@ -1651,9 +1800,7 @@ function DetailView({
                 {t('changeorders.approved_at', { defaultValue: 'Approved' })}
               </p>
               <p className="mt-1 text-sm font-medium text-content-primary">{formatDate(order.approved_at)}</p>
-              {order.approved_by && (
-                <p className="mt-0.5 text-xs text-content-tertiary">{order.approved_by}</p>
-              )}
+              <PartyLine raw={order.approved_by} name={order.approved_by_name} />
             </Card>
           )}
           {order.rejected_at && (
@@ -1662,9 +1809,7 @@ function DetailView({
                 {t('changeorders.rejected_at', { defaultValue: 'Rejected' })}
               </p>
               <p className="mt-1 text-sm font-medium text-content-primary">{formatDate(order.rejected_at)}</p>
-              {order.rejected_by && (
-                <p className="mt-0.5 text-xs text-content-tertiary">{order.rejected_by}</p>
-              )}
+              <PartyLine raw={order.rejected_by} name={order.rejected_by_name} />
             </Card>
           )}
         </div>
@@ -1889,8 +2034,8 @@ function DetailView({
                     <td className="px-4 py-3 text-right text-content-secondary tabular-nums">
                       {formatQuantity(item.new_quantity)} {item.unit}
                     </td>
-                    <td className={`px-4 py-3 text-right font-medium tabular-nums ${costDelta >= 0 ? 'text-semantic-error' : 'text-semantic-success'}`}>
-                      {costDelta >= 0 ? '+' : ''}{formatCurrency(costDelta, order.currency)}
+                    <td className={`px-4 py-3 text-right font-medium tabular-nums whitespace-nowrap ${costDelta >= 0 ? 'text-semantic-error' : 'text-semantic-success'}`}>
+                      {formatSignedCurrency(costDelta, order.currency)}
                     </td>
                     {canEdit && (
                       <td className="px-4 py-3 text-center">
@@ -1949,10 +2094,31 @@ export function ChangeOrdersPage() {
   const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
   const { confirm: confirmList, ...confirmListProps } = useConfirm();
 
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const [showCreate, setShowCreate] = useState(false);
   const [showAIDraft, setShowAIDraft] = useState(false);
-  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  // Deep-link consumer: a Variation Order's "Change order" pill lands here as
+  // /changeorders?highlight=<id> so the register opens on that record instead
+  // of on a list the user then has to search by hand. Seeded once, on mount -
+  // the param is a starting point, not a lock, so "Back" can still reach the
+  // list. Back also drops the param so a later remount does not re-open the
+  // record the user just closed.
+  const highlightedOrderId = searchParams.get('highlight');
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(highlightedOrderId);
   const [statusFilter, setStatusFilter] = useState<string>('');
+
+  const closeDetail = useCallback(() => {
+    setSelectedOrderId(null);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('highlight');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams]);
 
   // Fetch projects
   const { data: projects = [] } = useQuery({
@@ -2062,7 +2228,7 @@ export function ChangeOrdersPage() {
   if (selectedOrderId) {
     return (
       <div className="w-full">
-        <DetailView orderId={selectedOrderId} onBack={() => setSelectedOrderId(null)} />
+        <DetailView orderId={selectedOrderId} onBack={closeDetail} />
       </div>
     );
   }
@@ -2182,8 +2348,8 @@ export function ChangeOrdersPage() {
                   const unconverted = Object.entries(summary.unconverted_by_currency ?? {});
                   return (
                     <>
-                      <p className={`text-lg font-semibold ${totalImpact >= 0 ? 'text-semantic-error' : 'text-semantic-success'}`}>
-                        {totalImpact >= 0 ? '+' : ''}{formatCurrency(totalImpact, summary.currency || currency)}
+                      <p className={`text-lg font-semibold whitespace-nowrap ${totalImpact >= 0 ? 'text-semantic-error' : 'text-semantic-success'}`}>
+                        {formatSignedCurrency(totalImpact, summary.currency || currency)}
                       </p>
                       {unconverted.length > 0 && (
                         <p
@@ -2340,8 +2506,8 @@ export function ChangeOrdersPage() {
                           defaultValue: getReasonLabels(t)[order.reason_category] || order.reason_category,
                         })}
                       </td>
-                      <td className={`px-4 py-3 text-right font-medium tabular-nums ${impact >= 0 ? 'text-semantic-error' : 'text-semantic-success'}`}>
-                        {impact >= 0 ? '+' : ''}{formatCurrency(impact, order.currency)}
+                      <td className={`px-4 py-3 text-right font-medium tabular-nums whitespace-nowrap ${impact >= 0 ? 'text-semantic-error' : 'text-semantic-success'}`}>
+                        {formatSignedCurrency(impact, order.currency)}
                       </td>
                       <td className="px-4 py-3 text-right text-content-secondary tabular-nums">
                         {order.schedule_impact_days > 0
@@ -2350,7 +2516,7 @@ export function ChangeOrdersPage() {
                             ? '-'
                             : `${order.schedule_impact_days}d`}
                       </td>
-                      <td className="px-4 py-3 text-content-tertiary text-xs">{formatDate(order.created_at)}</td>
+                      <td className="px-4 py-3 text-content-tertiary text-xs whitespace-nowrap">{formatDate(order.created_at)}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1">
                           {order.status === 'draft' && (

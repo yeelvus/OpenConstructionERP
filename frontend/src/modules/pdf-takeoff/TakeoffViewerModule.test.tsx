@@ -93,15 +93,30 @@ describe('scale-helpers', () => {
 
   describe('formatMeasurement', () => {
     it('should format sub-unit values with 4 decimals', () => {
-      expect(formatMeasurement(0.123, 'm')).toBe('0.1230 m');
+      expect(formatMeasurement(0.123, 'm', 'en')).toBe('0.1230 m');
     });
 
     it('should format medium values with 2 decimals', () => {
-      expect(formatMeasurement(12.345, 'm')).toBe('12.35 m');
+      expect(formatMeasurement(12.345, 'm', 'en')).toBe('12.35 m');
     });
 
-    it('should format large values with 1 decimal', () => {
-      expect(formatMeasurement(1234.5, 'm')).toBe('1234.5 m');
+    it('should format large values with 1 decimal and grouping', () => {
+      // Grouping matches the rest of the app (BOQ formats through Intl
+      // with default grouping), so takeoff readouts stopped being the
+      // one place that printed "1234.5".
+      expect(formatMeasurement(1234.5, 'm', 'en')).toBe('1,234.5 m');
+    });
+
+    // Audit case-2 K-12: the viewer renders numbers in the app language,
+    // so a German profile reads "248,5 m²", not "248.5 m²".
+    it('renders the decimal separator of the requested locale', () => {
+      expect(formatMeasurement(248.5, 'm²', 'de')).toBe('248,5 m²');
+      expect(formatMeasurement(0.123, 'm', 'de')).toBe('0,1230 m');
+      expect(formatMeasurement(1234.5, 'm', 'de')).toBe('1.234,5 m');
+    });
+
+    it('falls back to the app language when no locale is passed', () => {
+      expect(formatMeasurement(0.123, 'm')).toMatch(/^0[.,]1230 m$/);
     });
 
     it('suppresses only genuinely degenerate values (0 / negative / NaN)', () => {
@@ -113,9 +128,9 @@ describe('scale-helpers', () => {
     // D-TKC-007: a real 9 mm distance / 80 cm² patch must stay VISIBLE
     // with enough precision, not collapse to '' or '0 m'.
     it('shows small-but-real quantities instead of hiding them', () => {
-      expect(formatMeasurement(0.009, 'm')).toBe('0.0090 m');
-      expect(formatMeasurement(0.008, 'm²')).toBe('0.0080 m²');
-      expect(formatMeasurement(0.0004, 'm')).toBe('0.00040 m');
+      expect(formatMeasurement(0.009, 'm', 'en')).toBe('0.0090 m');
+      expect(formatMeasurement(0.008, 'm²', 'en')).toBe('0.0080 m²');
+      expect(formatMeasurement(0.0004, 'm', 'en')).toBe('0.00040 m');
     });
   });
 
@@ -195,7 +210,9 @@ describe('TakeoffViewerModule', () => {
     const { MODULE_REGISTRY } = await import('../_registry');
     const mod = MODULE_REGISTRY.find((m) => m.id === 'pdf-takeoff');
     expect(mod).toBeDefined();
-    expect(mod!.name).toBe('PDF Takeoff Viewer');
+    // The manifest names itself with an i18n key; the module carries the
+    // English and German wording in its own translations block.
+    expect(mod!.name).toBe('modules.pdf_takeoff.name');
     expect(mod!.routes[0].path).toBe('/takeoff-viewer');
   }, 15000);
 });

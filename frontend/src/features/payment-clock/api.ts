@@ -138,6 +138,10 @@ export interface NotifiedSum {
   currency: string;
   source: string;
   explanation: string;
+  /** Stable code for the sentence, so the page can say it in the reader's
+   *  language. Empty on a reading written before the codes existed. */
+  reason?: string;
+  params?: Record<string, string>;
 }
 
 export interface ApplicationClock {

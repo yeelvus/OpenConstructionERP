@@ -119,6 +119,39 @@ describe('computeGroupSummaries', () => {
     expect(computeGroupSummaries([], GROUP_COLORS)).toEqual([]);
   });
 
+  // Audit case-2 K-14: a windows/doors group is whole pieces, not a
+  // measured figure - the legend must know so it can skip the ladder.
+  it('marks a group as count-only when every quantity is a count', () => {
+    const measurements = [
+      m({ group: 'Windows', value: 17, unit: 'pcs', type: 'count' }),
+      m({ group: 'Windows', value: 4, unit: 'pcs', type: 'count' }),
+    ];
+    const result = computeGroupSummaries(measurements, GROUP_COLORS);
+    expect(result[0]!.isCount).toBe(true);
+  });
+
+  it('does not mark mixed or measured groups as count-only', () => {
+    const mixed = computeGroupSummaries(
+      [
+        m({ group: 'Mixed', value: 17, unit: 'pcs', type: 'count' }),
+        m({ group: 'Mixed', value: 3.5, unit: 'm', type: 'distance' }),
+      ],
+      GROUP_COLORS,
+    );
+    expect(mixed[0]!.isCount).toBe(false);
+    const measured = computeGroupSummaries(
+      [m({ group: 'Floors', value: 12.5, unit: 'm²', type: 'area' })],
+      GROUP_COLORS,
+    );
+    expect(measured[0]!.isCount).toBe(false);
+    // Annotation-only groups have no quantity at all - not "count-only".
+    const annotations = computeGroupSummaries(
+      [m({ group: 'Notes', value: 0, type: 'cloud' })],
+      GROUP_COLORS,
+    );
+    expect(annotations[0]!.isCount).toBe(false);
+  });
+
   it('returns summaries in stable (alphabetical) order', () => {
     const measurements = [
       m({ group: 'Structural', value: 1 }),
@@ -136,19 +169,47 @@ describe('computeGroupSummaries', () => {
 
 describe('formatGroupTotal', () => {
   it('formats small numbers with 3 decimals', () => {
-    expect(formatGroupTotal(0.123, 'm')).toBe('0.123 m');
+    expect(formatGroupTotal(0.123, 'm', 'en')).toBe('0.123 m');
   });
 
   it('formats medium numbers with 2 decimals', () => {
-    expect(formatGroupTotal(12.345, 'm')).toBe('12.35 m');
+    expect(formatGroupTotal(12.345, 'm', 'en')).toBe('12.35 m');
   });
 
-  it('formats large numbers with 1 decimal', () => {
-    expect(formatGroupTotal(1234.56, 'm')).toBe('1234.6 m');
+  it('formats large numbers with 1 decimal and grouping', () => {
+    // Grouping matches the ledger/viewer (Intl with default grouping).
+    expect(formatGroupTotal(1234.56, 'm', 'en')).toBe('1,234.6 m');
+  });
+
+  // Audit case-2 K-12 follow-up: the legend total must use the same
+  // decimal separator as the measurement rows it sums - one frame held
+  // "485.3 m²" directly above the "248,5 m²" rows.
+  it('renders in the requested locale like the rows it sums', () => {
+    expect(formatGroupTotal(485.3, 'm²', 'de')).toBe('485,3 m²');
+    expect(formatGroupTotal(96.4, 'm²', 'de')).toBe('96,40 m²');
+  });
+
+  it('keeps the trailing zero of its precision tier', () => {
+    // The old Number(toFixed()) wrapper dropped it, so the legend lost a
+    // digit relative to the ledger ("96.40" row vs "96.4" total).
+    expect(formatGroupTotal(96.4, 'm²', 'en')).toBe('96.40 m²');
   });
 
   it('omits unit when empty', () => {
-    expect(formatGroupTotal(5, '')).toBe('5');
+    expect(formatGroupTotal(5, '', 'en')).toBe('5.00');
+  });
+
+  it('renders zero as a bare 0', () => {
+    expect(formatGroupTotal(0, 'm', 'en')).toBe('0 m');
+  });
+
+  // Audit case-2 K-14: "17,00 pcs" gave whole pieces a fraction. Count
+  // totals bypass the decimal ladder in every locale.
+  it('renders count totals as whole pieces', () => {
+    expect(formatGroupTotal(17, 'Stk', 'de', true)).toBe('17 Stk');
+    expect(formatGroupTotal(17, 'pcs', 'en', true)).toBe('17 pcs');
+    // Without the flag the ladder would print 17.00.
+    expect(formatGroupTotal(17, 'pcs', 'en')).toBe('17.00 pcs');
   });
 });
 

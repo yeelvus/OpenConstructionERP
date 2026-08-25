@@ -17,6 +17,7 @@ import { Card } from '@/shared/ui';
 import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
 import { getErrorMessage } from '@/shared/lib/api';
 import { getFleetOptimization } from '../api';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
 
 /**
  * Fleet Intelligence card for the /equipment list page.
@@ -95,7 +96,7 @@ export function FleetOptimizationPanel({
               {t('equipment.fleet_intel.subtitle', {
                 defaultValue:
                   'Target utilisation {{target}}% over the last {{days}} days',
-                target: o.target_utilization_pct.toFixed(0),
+                target: fmtFixed(o.target_utilization_pct, 0),
                 days: o.window_days,
               })}
             </p>
@@ -219,7 +220,7 @@ export function FleetOptimizationPanel({
                               {u.name}
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums text-amber-600 dark:text-amber-400">
-                              {u.utilization_pct.toFixed(0)}%
+                              {fmtPercent(u.utilization_pct, 0)}
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
                               <MoneyDisplay

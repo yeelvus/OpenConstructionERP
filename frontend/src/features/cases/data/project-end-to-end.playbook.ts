@@ -23,6 +23,7 @@ const playbook: Playbook = {
   order: 5,
   category: "planning",
   companyTypes: ["general-contractor", "project-manager", "developer-client"],
+  roles: ["project-manager", "site-manager", "quantity-surveyor"],
   icon: "Layers",
   titleKey: "cases.project_end_to_end.title",
   titleDefault: "Set up a project and hand it over",
@@ -132,7 +133,7 @@ const playbook: Playbook = {
       whyKey: "cases.project_end_to_end.step.schedule.why",
       whyDefault:
         "A schedule converts a priced scope into dated work fronts. It tells the site team what comes next and surfaces a slip while there is still float to absorb it.",
-      moduleLabel: "Schedule",
+      moduleLabel: "4D Schedule",
       moduleLabelKey: "nav.schedule",
       to: "/schedule",
     },
@@ -202,7 +203,7 @@ const playbook: Playbook = {
       whyKey: "cases.project_end_to_end.step.handover.why",
       whyDefault:
         "A tidy handover closes the job cleanly. The client walks away with a finished, documented building and you keep a full record of how it was delivered, snags and all.",
-      moduleLabel: "Handover",
+      moduleLabel: "Handover & Closeout",
       moduleLabelKey: "closeout.title",
       to: "/closeout",
     },

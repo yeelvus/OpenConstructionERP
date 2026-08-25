@@ -18,6 +18,7 @@ import { useBrandingStore } from '@/stores/useBrandingStore';
 import { BrandingEditorModal } from '@/app/layout/CustomBranding';
 import { extractErrorMessageFromBody } from '@/shared/lib/api';
 import { isTauri } from '@/shared/lib/desktop';
+import { HEX_PORTRAIT_ASPECT, HEX_PORTRAIT_CLIP } from '@/shared/lib/honeycomb';
 import { APP_VERSION } from '@/shared/lib/version';
 import { AuthBackground } from './AuthBackground';
 import {
@@ -418,12 +419,12 @@ export function LoginPage() {
           Dark mode keeps the original richer blob set for depth. */}
       <div className="absolute inset-y-0 left-0 right-1/2 z-0 pointer-events-none overflow-hidden hidden lg:block">
         <div className="absolute top-[-12%] left-[-6%] w-[520px] h-[520px] rounded-full bg-sky-300/10 dark:bg-oe-blue/35 blur-[120px] animate-blob-slow-1 mix-blend-screen" />
-        <div className="absolute bottom-[-18%] right-[2%] w-[400px] h-[400px] rounded-full bg-cyan-200/8 dark:bg-violet-500/35 blur-[110px] animate-blob-slow-4 mix-blend-screen hidden dark:block" />
+        <div className="absolute bottom-[-18%] right-[2%] w-[400px] h-[400px] rounded-full bg-cyan-200/10 dark:bg-violet-500/35 blur-[110px] animate-blob-slow-4 mix-blend-screen hidden dark:block" />
       </div>
 
       {/* Mobile-only ambient blobs (single column layout) */}
       <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden lg:hidden">
-        <div className="absolute top-[-12%] left-[-6%] w-[520px] h-[520px] rounded-full bg-sky-300/12 dark:bg-oe-blue/35 blur-[110px] animate-blob-slow-1 mix-blend-screen" />
+        <div className="absolute top-[-12%] left-[-6%] w-[520px] h-[520px] rounded-full bg-sky-300/10 dark:bg-oe-blue/35 blur-[110px] animate-blob-slow-1 mix-blend-screen" />
       </div>
 
       {/* Theme + Language - top right (enlarged for /login so discoverable). */}
@@ -448,7 +449,7 @@ export function LoginPage() {
                 <button
                   key={lang.code}
                   onClick={() => { i18n.changeLanguage(lang.code); setLangOpen(false); }}
-                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm transition-colors ${isActive ? 'bg-oe-blue/8 text-oe-blue font-medium' : 'text-content-primary hover:bg-surface-secondary'}`}
+                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm transition-colors ${isActive ? 'bg-oe-blue/10 text-oe-blue font-medium' : 'text-content-primary hover:bg-surface-secondary'}`}
                 >
                   <CountryFlag code={lang.country} size={18} />
                   <span className="truncate">
@@ -566,12 +567,12 @@ export function LoginPage() {
         <div className="relative mt-1 mr-auto h-[280px] w-[560px] max-w-full overflow-hidden animate-stagger-in" style={{ animationDelay: '260ms' }}>
           {([
             // Top row (y = -75) - 6 cells, offset by 44.
-            { x: -220, y: -75, icon: ShieldCheck,     label: t('login.mod.local',     { defaultValue: 'Local' }) },
-            { x: -132, y: -75, icon: Brain,           label: t('login.mod.ai',       { defaultValue: 'AI' }) },
-            { x:  -44, y: -75, icon: Ruler,           label: t('login.mod.takeoff',  { defaultValue: 'Takeoff' }) },
-            { x:   44, y: -75, icon: PenTool,         label: t('login.mod.cad',      { defaultValue: 'CAD' }) },
-            { x:  132, y: -75, icon: Box,             label: t('login.mod.bim',      { defaultValue: 'BIM' }) },
-            { x:  220, y: -75, icon: TrendingUp,      label: t('login.mod.cost5d',   { defaultValue: '5D' }) },
+            { x: -220, y: -76, icon: ShieldCheck,     label: t('login.mod.local',     { defaultValue: 'Local' }) },
+            { x: -132, y: -76, icon: Brain,           label: t('login.mod.ai',       { defaultValue: 'AI' }) },
+            { x:  -44, y: -76, icon: Ruler,           label: t('login.mod.takeoff',  { defaultValue: 'Takeoff' }) },
+            { x:   44, y: -76, icon: PenTool,         label: t('login.mod.cad',      { defaultValue: 'CAD' }) },
+            { x:  132, y: -76, icon: Box,             label: t('login.mod.bim',      { defaultValue: 'BIM' }) },
+            { x:  220, y: -76, icon: TrendingUp,      label: t('login.mod.cost5d',   { defaultValue: '5D' }) },
             // Mid row (y = 0) - 5 cells aligned on the same axis.
             { x: -176, y:  0,  icon: Database,        label: t('login.mod.costs',    { defaultValue: 'Costs' }) },
             { x:  -88, y:  0,  icon: FileSpreadsheet, label: t('common.boq') },
@@ -579,12 +580,12 @@ export function LoginPage() {
             { x:   88, y:  0,  icon: CalendarClock,   label: t('login.mod.schedule', { defaultValue: 'Schedule' }) },
             { x:  176, y:  0,  icon: BarChart3,       label: t('login.mod.tender',   { defaultValue: 'Tendering' }) },
             // Bottom row (y = 75) - 6 cells, offset by 44.
-            { x: -220, y:  75, icon: Zap,             label: t('login.mod.realtime', { defaultValue: 'Realtime' }) },
-            { x: -132, y:  75, icon: Boxes,           label: t('login.mod.resources',{ defaultValue: 'Resources' }) },
-            { x:  -44, y:  75, icon: ClipboardList,   label: t('login.mod.tasks',    { defaultValue: 'Tasks' }) },
-            { x:   44, y:  75, icon: FileCheck,       label: t('login.mod.validate', { defaultValue: 'Validate' }) },
-            { x:  132, y:  75, icon: FolderOpen,      label: t('login.mod.files',    { defaultValue: 'Files' }) },
-            { x:  220, y:  75, icon: Upload,          label: t('login.mod.exports',  { defaultValue: 'Exports' }) },
+            { x: -220, y:  76, icon: Zap,             label: t('login.mod.realtime', { defaultValue: 'Realtime' }) },
+            { x: -132, y:  76, icon: Boxes,           label: t('login.mod.resources',{ defaultValue: 'Resources' }) },
+            { x:  -44, y:  76, icon: ClipboardList,   label: t('login.mod.tasks',    { defaultValue: 'Tasks' }) },
+            { x:   44, y:  76, icon: FileCheck,       label: t('login.mod.validate', { defaultValue: 'Validate' }) },
+            { x:  132, y:  76, icon: FolderOpen,      label: t('login.mod.files',    { defaultValue: 'Files' }) },
+            { x:  220, y:  76, icon: Upload,          label: t('login.mod.exports',  { defaultValue: 'Exports' }) },
           ] as const).map((cell, idx) => {
             const isAccent = 'accent' in cell && cell.accent === true;
             const Icon = cell.icon;
@@ -601,13 +602,16 @@ export function LoginPage() {
                 }}
               >
                 <div
-                  className={`relative flex flex-col items-center justify-center w-[88px] h-[100px] animate-fade-in transition-transform duration-300 hover:scale-[1.05] ${
+                  className={`relative flex flex-col items-center justify-center w-[88px] animate-fade-in transition-transform duration-300 hover:scale-[1.05] ${
                     isAccent ? 'text-white' : 'text-slate-900'
                   }`}
                   style={{
                     animationDelay: `${280 + idx * 35}ms`,
                     animationFillMode: 'both',
-                    clipPath: 'polygon(50% 2%, 100% 26%, 100% 74%, 50% 98%, 0% 74%, 0% 26%)',
+                    // The height comes from the width, so the cell cannot
+                    // drift off the ratio the clip path is regular in.
+                    aspectRatio: HEX_PORTRAIT_ASPECT,
+                    clipPath: HEX_PORTRAIT_CLIP,
                     background: isAccent
                       ? 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 65%, #0369a1 100%)'
                       : 'linear-gradient(180deg, rgba(255,255,255,0.97), rgba(244,250,255,0.82))',
@@ -687,7 +691,7 @@ export function LoginPage() {
           <div className="absolute inset-0 bg-gradient-to-l from-white/0 via-white/60 to-white dark:from-[#070912]/0 dark:via-[#070912]/60 dark:to-[#070912]" />
           {/* Tiny far-corner sky tint just to soften the edge - the glass
               still has something to lift off, but the field reads white. */}
-          <div className="absolute -top-24 -left-24 w-[420px] h-[420px] rounded-full bg-sky-100/55 dark:bg-sky-500/12 blur-[110px]" />
+          <div className="absolute -top-24 -left-24 w-[420px] h-[420px] rounded-full bg-sky-100/55 dark:bg-sky-500/10 blur-[110px]" />
         </div>
         <div className="w-full max-w-[380px] relative z-10">
           {/* Logo - tenant white-label (logo / company name) when set via
@@ -889,7 +893,7 @@ export function LoginPage() {
                       type="button"
                       onClick={() => handleDemoLogin(acct.email)}
                       disabled={demoLoading !== null}
-                      className="flex w-full items-center gap-3 rounded-xl border border-border-light/50 dark:border-white/12 bg-surface-secondary/50 dark:bg-white/[0.06] px-3.5 py-2.5 text-left transition-all hover:border-oe-blue/40 hover:bg-oe-blue/[0.05] dark:hover:bg-oe-blue/[0.14] hover:shadow-sm disabled:opacity-50 group"
+                      className="flex w-full items-center gap-3 rounded-xl border border-border-light/50 dark:border-white/10 bg-surface-secondary/50 dark:bg-white/[0.06] px-3.5 py-2.5 text-left transition-all hover:border-oe-blue/40 hover:bg-oe-blue/[0.05] dark:hover:bg-oe-blue/[0.14] hover:shadow-sm disabled:opacity-50 group"
                     >
                       <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${acct.color} text-white text-sm font-bold shadow-sm`}>
                         {demoLoading === acct.email ? (
@@ -1100,7 +1104,7 @@ export function LoginPage() {
                   t('about.who.students', 'Students & educators'),
                   t('about.who.freelancers', 'Freelance consultants'),
                 ].map((role) => (
-                  <span key={role} className="inline-flex items-center rounded-full bg-oe-blue/8 px-2.5 py-1 text-2xs font-medium text-oe-blue">
+                  <span key={role} className="inline-flex items-center rounded-full bg-oe-blue/10 px-2.5 py-1 text-2xs font-medium text-oe-blue">
                     {role}
                   </span>
                 ))}

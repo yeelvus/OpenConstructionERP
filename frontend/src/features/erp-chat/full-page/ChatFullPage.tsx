@@ -39,6 +39,7 @@ export default function ChatFullPage() {
     activePanelIndex,
     aiConfigured,
     sessions,
+    sessionsTotal,
     sessionsLoading,
     loadingSessionId,
     sendMessage,
@@ -108,6 +109,7 @@ export default function ChatFullPage() {
               onClear={clearChat}
               aiConfigured={aiConfigured}
               sessions={sessions}
+              sessionsTotal={sessionsTotal}
               sessionsLoading={sessionsLoading}
               loadingSessionId={loadingSessionId}
               activeSessionId={sessionId}

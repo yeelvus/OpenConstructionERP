@@ -46,6 +46,7 @@ import {
 import clsx from 'clsx';
 import { Card, CardContent, Button, Badge, AIDisclaimerBanner, DismissibleInfo, IntroRichText, Breadcrumb, ModuleGuideButton } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { aiGuide } from './aiGuide';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
@@ -57,9 +58,11 @@ import {
   formatNumber,
   getFileExtension,
   getIntlLocale,
+  fmtFixed,
 } from '@/shared/lib/formatters';
 import { useLLMRun } from './hooks/useLLMRun';
 import { IntakePanel } from './intake';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 // ── Tab types ────────────────────────────────────────────────────────────────
 
@@ -151,7 +154,7 @@ const FORMAT_LABELS: { [K in FileTab]: string } = {
   photo: 'JPG, PNG, TIFF, WebP',
   pdf: 'PDF',
   excel: 'Excel (.xlsx), CSV (.csv)',
-  cad: 'Revit (.rvt), IFC (.ifc), DWG (.dwg), DGN (.dgn)',
+  cad: 'Revit® (.rvt), IFC (.ifc), DWG (.dwg), DGN (.dgn)',
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -449,7 +452,7 @@ function RecentEstimatesPanel({
                           <>
                             <span aria-hidden="true">·</span>
                             <span title={t('ai.est_cost_hint', { defaultValue: 'Estimated AI spend for this run' })}>
-                              ~${Number(job.cost_usd_estimate).toFixed(4)}
+                              ~${fmtFixed(Number(job.cost_usd_estimate), 4)}
                             </span>
                           </>
                         )}
@@ -472,6 +475,13 @@ function RecentEstimatesPanel({
               );
             })}
           </ul>
+          {/* The badge beside the heading has always carried `total`, which
+              reads as "you have 23 estimates" while eight rows are drawn -
+              true, and no help at all in working out that fifteen are missing.
+              This says which of the two numbers the list is. */}
+          <div className="px-4 py-2">
+            <TruncationNotice page={data!} />
+          </div>
         </Card>
       )}
     </section>
@@ -935,7 +945,7 @@ function QuantityTablesResult({ data }: { data: CadExtractResponse }) {
 
   const fmtNum = (v: number) => {
     if (v === 0) return '-';
-    return v.toLocaleString(getIntlLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    return v.toLocaleString(getNumberLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 2 });
   };
 
   return (
@@ -1303,10 +1313,10 @@ function CompactOptions({
 // ── Converter color map ──────────────────────────────────────────────────────
 
 const CONVERTER_COLORS: Record<string, { bg: string; border: string; icon: string }> = {
-  dwg: { bg: 'from-red-500/8 to-orange-500/8', border: 'border-red-200 dark:border-red-900/30', icon: 'bg-gradient-to-br from-red-500 to-orange-500' },
-  rvt: { bg: 'from-blue-500/8 to-indigo-500/8', border: 'border-blue-200 dark:border-blue-900/30', icon: 'bg-gradient-to-br from-blue-500 to-indigo-500' },
-  ifc: { bg: 'from-emerald-500/8 to-green-500/8', border: 'border-emerald-200 dark:border-emerald-900/30', icon: 'bg-gradient-to-br from-emerald-500 to-green-500' },
-  dgn: { bg: 'from-purple-500/8 to-violet-500/8', border: 'border-purple-200 dark:border-purple-900/30', icon: 'bg-gradient-to-br from-purple-500 to-violet-500' },
+  dwg: { bg: 'from-red-500/10 to-orange-500/10', border: 'border-red-200 dark:border-red-900/30', icon: 'bg-gradient-to-br from-red-500 to-orange-500' },
+  rvt: { bg: 'from-blue-500/10 to-indigo-500/10', border: 'border-blue-200 dark:border-blue-900/30', icon: 'bg-gradient-to-br from-blue-500 to-indigo-500' },
+  ifc: { bg: 'from-emerald-500/10 to-green-500/10', border: 'border-emerald-200 dark:border-emerald-900/30', icon: 'bg-gradient-to-br from-emerald-500 to-green-500' },
+  dgn: { bg: 'from-purple-500/10 to-violet-500/10', border: 'border-purple-200 dark:border-purple-900/30', icon: 'bg-gradient-to-br from-purple-500 to-violet-500' },
 };
 
 // ── Full Converter Section (for /data-explorer) ──────────────────────────────
@@ -1501,7 +1511,7 @@ function CadConverterSection({
               {/* Footer */}
               <div className="mt-3 flex items-center justify-between pt-2 border-t border-border-light">
                 <span className="text-2xs text-content-quaternary">
-                  v{c.version} &middot; {c.size_mb >= 1024 ? `${(c.size_mb / 1024).toFixed(1)} GB` : `${c.size_mb} MB`}
+                  v{c.version} &middot; {c.size_mb >= 1024 ? `${fmtFixed(c.size_mb / 1024, 1)} GB` : `${c.size_mb} MB`}
                 </span>
                 {c.installed ? (
                   <button
@@ -1813,9 +1823,9 @@ export function QuickEstimatePage() {
         type: 'success',
         title: t('ai.estimate_complete', { defaultValue: 'Estimate generated' }),
         message: t('ai.estimate_complete_msg', {
-          defaultValue: `${data.items.length} items in ${(data.duration_ms / 1000).toFixed(1)}s`,
+          defaultValue: `${data.items.length} items in ${fmtFixed(data.duration_ms / 1000, 1)}s`,
           count: data.items.length,
-          duration: (data.duration_ms / 1000).toFixed(1),
+          duration: fmtFixed(data.duration_ms / 1000, 1),
         }),
       });
     },
@@ -1839,9 +1849,9 @@ export function QuickEstimatePage() {
         type: 'success',
         title: t('ai.estimate_complete', { defaultValue: 'Estimate generated' }),
         message: t('ai.estimate_complete_msg', {
-          defaultValue: `${data.items.length} items in ${(data.duration_ms / 1000).toFixed(1)}s`,
+          defaultValue: `${data.items.length} items in ${fmtFixed(data.duration_ms / 1000, 1)}s`,
           count: data.items.length,
-          duration: (data.duration_ms / 1000).toFixed(1),
+          duration: fmtFixed(data.duration_ms / 1000, 1),
         }),
       });
     },
@@ -1865,9 +1875,9 @@ export function QuickEstimatePage() {
         type: 'success',
         title: t('ai.estimate_complete', { defaultValue: 'Estimate generated' }),
         message: t('ai.estimate_complete_msg', {
-          defaultValue: `${data.items.length} items in ${(data.duration_ms / 1000).toFixed(1)}s`,
+          defaultValue: `${data.items.length} items in ${fmtFixed(data.duration_ms / 1000, 1)}s`,
           count: data.items.length,
-          duration: (data.duration_ms / 1000).toFixed(1),
+          duration: fmtFixed(data.duration_ms / 1000, 1),
         }),
       });
     },
@@ -2746,11 +2756,11 @@ export function QuickEstimatePage() {
               </span>
               {t('ai.connected', { defaultValue: 'AI Connected' })}
             </span>
-            <span className="text-xs text-semantic-success/70">
+            <span className="text-xs text-semantic-success">
               {aiSettings.preferred_model || 'Claude'}
             </span>
           </div>
-          <div className="flex items-center gap-2 text-2xs text-semantic-success/60">
+          <div className="flex items-center gap-2 text-2xs text-semantic-success">
             <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-semantic-success" /> Text</span>
             <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-semantic-success" /> Photo</span>
             <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-semantic-success" /> PDF</span>
@@ -3586,12 +3596,12 @@ export function QuickEstimatePage() {
               <h3 className="text-sm font-semibold text-content-primary">
                 {cadColumnsData.filename}
               </h3>
-              <Badge variant="blue" size="sm">{cadColumnsData.total_elements.toLocaleString()} elements</Badge>
+              <Badge variant="blue" size="sm">{cadColumnsData.total_elements.toLocaleString(getNumberLocale())} elements</Badge>
               <Badge variant="neutral" size="sm">{cadColumnsData.format.toUpperCase()}</Badge>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-2xs text-content-quaternary">
-                {t('ai.extracted_in', { defaultValue: 'Extracted in {{time}}s', time: (cadColumnsData.duration_ms / 1000).toFixed(1) })}
+                {t('ai.extracted_in', { defaultValue: 'Extracted in {{time}}s', time: fmtFixed(cadColumnsData.duration_ms / 1000, 1) })}
               </span>
               <Button
                 variant="secondary"
@@ -3775,7 +3785,7 @@ export function QuickEstimatePage() {
                                 {val === null || val === undefined || val === 'None' || val === ''
                                   ? '-'
                                   : typeof displayVal === 'number'
-                                    ? displayVal.toLocaleString(getIntlLocale(), { maximumFractionDigits: 2 })
+                                    ? displayVal.toLocaleString(getNumberLocale(), { maximumFractionDigits: 2 })
                                     : String(displayVal)}
                               </td>
                             );
@@ -3961,7 +3971,7 @@ export function QuickEstimatePage() {
                               {sumCols.map((col) => (
                                 <td key={col} className="px-4 py-2 text-right font-mono text-sm font-semibold text-content-primary">
                                   {(node.sums[col] || 0) > 0
-                                    ? sumDisplay(col, node.sums[col] || 0).toLocaleString(getIntlLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                                    ? sumDisplay(col, node.sums[col] || 0).toLocaleString(getNumberLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 2 })
                                     : '-'}
                                 </td>
                               ))}
@@ -4005,7 +4015,7 @@ export function QuickEstimatePage() {
                                       (g.sums[col] ?? 0) > 0 ? 'text-content-primary font-medium' : 'text-content-quaternary',
                                     )}>
                                       {g.sums[col] != null && g.sums[col] > 0
-                                        ? sumDisplay(col, g.sums[col]).toLocaleString(getIntlLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                                        ? sumDisplay(col, g.sums[col]).toLocaleString(getNumberLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 2 })
                                         : '-'}
                                     </td>
                                   ))}
@@ -4052,7 +4062,7 @@ export function QuickEstimatePage() {
                                 (g.sums[col] ?? 0) > 0 ? 'text-content-primary font-medium' : 'text-content-quaternary',
                               )}>
                                 {g.sums[col] != null && g.sums[col] > 0
-                                  ? sumDisplay(col, g.sums[col]).toLocaleString(getIntlLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                                  ? sumDisplay(col, g.sums[col]).toLocaleString(getNumberLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 2 })
                                   : '-'}
                               </td>
                             ))}
@@ -4077,7 +4087,7 @@ export function QuickEstimatePage() {
                           ? displayQty
                               .convert(computedTotals.sums[col] ?? 0, cadColumnsData?.unit_labels?.[col] ?? '')
                               .value
-                              .toLocaleString(getIntlLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                              .toLocaleString(getNumberLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 2 })
                           : '-'}
                       </td>
                     ))}
@@ -4233,7 +4243,7 @@ export function QuickEstimatePage() {
                               {val === null || val === undefined || val === 'None' || val === ''
                                 ? '-'
                                 : typeof displayVal === 'number'
-                                  ? displayVal.toLocaleString(getIntlLocale(), { maximumFractionDigits: 4 })
+                                  ? displayVal.toLocaleString(getNumberLocale(), { maximumFractionDigits: 4 })
                                   : String(displayVal)}
                             </td>
                           );
@@ -4262,7 +4272,7 @@ export function QuickEstimatePage() {
                             )}
                           >
                             {displayTotal != null
-                              ? displayTotal.toLocaleString(getIntlLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 4 })
+                              ? displayTotal.toLocaleString(getNumberLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 4 })
                               : ''}
                           </td>
                         );
@@ -4304,7 +4314,7 @@ export function QuickEstimatePage() {
               <span>
                 {t('ai.cad_extracted_in', {
                   defaultValue: 'Extracted in {{duration}}s',
-                  duration: (cadResult.duration_ms / 1000).toFixed(1),
+                  duration: fmtFixed(cadResult.duration_ms / 1000, 1),
                 })}
               </span>
             </div>
@@ -4414,7 +4424,7 @@ export function QuickEstimatePage() {
             <div className="text-xs text-content-tertiary">
               {t('ai.generated_in', {
                 defaultValue: 'Generated in {{duration}}s using {{model}}',
-                duration: (result.duration_ms / 1000).toFixed(1),
+                duration: fmtFixed(result.duration_ms / 1000, 1),
                 model: result.model_used,
               })}
             </div>

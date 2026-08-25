@@ -49,12 +49,18 @@ interface EInvoiceViolation {
   severity: string;
   message: string;
   term: string | null;
+  /** Values the engine's sentence interpolates, named as the catalogue uses them. */
+  params?: Record<string, string>;
 }
 
 interface EInvoiceDryRun {
   format: string;
   valid: boolean;
-  problems: string[];
+  // The response also carries ``problems``, the fatal messages as bare strings.
+  // It is not read here: those same findings arrive in ``violations`` with the
+  // rule id and severity this panel is built around, and ``valid`` is already
+  // defined as "no fatal finding", so declaring it would only invite a second
+  // rendering of the same list without the identifiers.
   violations: EInvoiceViolation[];
 }
 
@@ -63,7 +69,7 @@ const selectCls =
   'text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue';
 
 export function EInvoiceModal({ open, onClose, invoiceId, invoiceNumber }: EInvoiceModalProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
 
   const [profile, setProfile] = useState('xrechnung');
   const [downloading, setDownloading] = useState<'xml' | 'pdf' | null>(null);
@@ -108,16 +114,53 @@ export function EInvoiceModal({ open, onClose, invoiceId, invoiceNumber }: EInvo
   // Only a CII profile has a hybrid form. Read it off the registry entry
   // rather than listing the CII profile keys here, so a country added to the
   // registry gets the right buttons without a second edit in this file.
-  const hybridAvailable = profiles.find((p) => p.key === profile)?.syntax === 'cii';
+  const activeProfile = profiles.find((p) => p.key === profile);
+  const hybridAvailable = activeProfile?.syntax === 'cii';
+
+  // A finding's identifier (BR-DE-15) is quoted verbatim - that is the
+  // argument of the panel - but the sentence beside it is guidance and must
+  // speak the UI language. One key per rule id; a rule the locale has no key
+  // for keeps the engine's English sentence, so nothing ever goes blank.
+  // {{label}} feeds the one message that names the selected profile, and the
+  // engine's own params carry the rest: which line, which amount, which code.
+  // A param naming an enumerated value (party) is itself translated, because
+  // printing the engine's "seller" into a German sentence is the very defect
+  // the catalogue exists to remove.
+  const ruleText = (v: EInvoiceViolation) => {
+    const params = { ...(v.params ?? {}) };
+    if (params.party) params.party = t(`einvoice.party.${params.party}`, { defaultValue: params.party });
+    return t(`einvoice.rule.${v.rule_id}`, {
+      ...params,
+      defaultValue: v.message,
+      label: activeProfile?.label ?? profile,
+    });
+  };
+
+  // The standard's name is a proper noun and stays as the registry writes it,
+  // but four entries append a country in English (Netherlands, Norway,
+  // Australia / New Zealand, Singapore), and one region reads "international".
+  // Those are ordinary words sitting under a translated heading, so they go
+  // through the catalogue while the proper noun rides along inside the value.
+  const profileName = (p: EInvoiceProfile) => t(`einvoice.profile.${p.key}`, { defaultValue: p.label });
+
+  // Every other region is an ISO country code, correct unchanged in every
+  // language, so the fallback here is the right answer rather than a gap: only
+  // a region that is a word needs an entry at all. The key is normalised
+  // because a region can name two countries ("DE/FR").
+  const regionName = (p: EInvoiceProfile) =>
+    t(`einvoice.region.${p.region.replace(/[^A-Za-z0-9]+/g, '_')}`, { defaultValue: p.region });
 
   async function download(embed: boolean) {
     const kind = embed ? 'pdf' : 'xml';
     setDownloading(kind);
     setDownloadError(null);
     try {
+      // The hybrid PDF's readable page follows the UI language; the XML (and
+      // the XML inside the hybrid) is locale-independent by the standard.
+      const localeParam = embed ? `&locale=${encodeURIComponent(i18n.language)}` : '';
       await downloadWithAuth(
         `/api/v1/finance/invoices/${encodeURIComponent(invoiceId)}/einvoice` +
-          `?format=${encodeURIComponent(profile)}&embed=${embed ? 'true' : 'false'}`,
+          `?format=${encodeURIComponent(profile)}&embed=${embed ? 'true' : 'false'}${localeParam}`,
         `einvoice_${invoiceNumber}_${profile}.${kind}`,
       );
     } catch (e: unknown) {
@@ -183,7 +226,7 @@ export function EInvoiceModal({ open, onClose, invoiceId, invoiceNumber }: EInvo
           >
             {profiles.map((p) => (
               <option key={p.key} value={p.key}>
-                {`${p.label} - ${p.region} - ${p.syntax.toUpperCase()}`}
+                {`${profileName(p)} - ${regionName(p)} - ${p.syntax.toUpperCase()}`}
               </option>
             ))}
           </select>
@@ -229,7 +272,7 @@ export function EInvoiceModal({ open, onClose, invoiceId, invoiceNumber }: EInvo
                   className="flex flex-wrap items-baseline gap-2 rounded-lg border border-semantic-error bg-semantic-error-bg p-3"
                 >
                   <code className="font-mono text-xs font-semibold text-semantic-error">{v.rule_id}</code>
-                  <span className="text-sm text-content-primary">{v.message}</span>
+                  <span className="text-sm text-content-primary">{ruleText(v)}</span>
                   {v.term && (
                     <code className="font-mono text-[11px] text-content-tertiary">{v.term}</code>
                   )}
@@ -258,7 +301,7 @@ export function EInvoiceModal({ open, onClose, invoiceId, invoiceNumber }: EInvo
                   className="flex flex-wrap items-baseline gap-2 rounded-lg border border-border bg-surface-secondary p-3"
                 >
                   <code className="font-mono text-xs font-semibold text-semantic-warning">{v.rule_id}</code>
-                  <span className="text-sm text-content-primary">{v.message}</span>
+                  <span className="text-sm text-content-primary">{ruleText(v)}</span>
                 </li>
               ))}
             </ul>

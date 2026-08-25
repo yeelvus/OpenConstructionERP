@@ -31,6 +31,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select as _select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.content_disposition import attachment_disposition
 from app.core.csv_safety import neutralise_formula
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep
 from app.modules.clash.models import ClashIssue as _IssueModel
@@ -750,7 +751,7 @@ async def export_csv(
     return StreamingResponse(
         iter([csv_text]),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": attachment_disposition(filename)},
     )
 
 

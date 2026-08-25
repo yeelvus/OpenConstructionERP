@@ -60,6 +60,8 @@ import {
   type InventoryMapPlot,
   type InventoryMapSummary,
 } from './api';
+import { fmtFixed } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ──────────────────────────────────────────────────────────────────────
  * Status palette - sales-desk colours match the task spec:
@@ -972,7 +974,7 @@ function PlotTile({
     status: t(`propdev.inventory_map.kpi.${displayStatus}`, {
       defaultValue: displayStatus.replace(/_/g, ' '),
     }),
-    price: `${num(plot.base_price).toLocaleString('en-US')} ${plot.currency}`,
+    price: `${num(plot.base_price).toLocaleString(getNumberLocale())} ${plot.currency}`,
   });
 
   const style: CSSProperties = {
@@ -1152,7 +1154,7 @@ function PlotDrawerBody({ plot }: { plot: InventoryMapPlot }) {
               defaultValue: 'Area',
             })}
           </p>
-          <p className="text-sm">{area.value.toFixed(2)} {area.unit}</p>
+          <p className="text-sm">{fmtFixed(area.value, 2)} {area.unit}</p>
         </div>
         <div>
           <p className="text-2xs uppercase text-content-tertiary">

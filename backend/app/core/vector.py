@@ -99,6 +99,77 @@ def _resolve_active_model() -> tuple[str, int]:
 _active_model_name: str | None = None
 
 
+def reset_embedder() -> None:
+    """Clear the failure latch so the next ``get_embedder`` call retries.
+
+    :func:`get_embedder` latches its failure for the lifetime of the process on
+    purpose (see its docstring - a stuck retry loop once starved the request
+    path of the GIL). That latch is correct while nothing changes underneath
+    it, and wrong the moment something does: a first boot with no weights on
+    disk fails the load, sets the latch, and then the background download
+    finishes into a process that will never look again. Semantic search would
+    stay unavailable until a restart, which makes the download decorative.
+
+    So the installer calls this the instant weights land, exactly as
+    ``reset_qdrant_client`` exists for the client the first boot-time probe
+    latched to ``None``.
+
+    A *working* embedder is deliberately left alone. Clearing one would send
+    the next request that needs it into a cold model load - tens of seconds,
+    inside a request thread, at a moment the user did not ask for and cannot
+    see. That is precisely the blocking this whole feature promises never to
+    do, and the prize for paying it is at most a better model than the one
+    already answering. It gets picked up on the next restart instead.
+    """
+    global _embedder_instance, _embedder_tried, _active_model_name
+    if _embedder_instance is not None:
+        return
+    _embedder_tried = False
+    _active_model_name = None
+
+
+def _candidate_sources(name: str) -> list[str]:
+    """Return what to hand ``SentenceTransformer`` for the model ``name``.
+
+    A locally installed copy comes first: the installer puts complete weights
+    under the platform's data directory, and loading from that path works with
+    no network at all, which is the whole point of having downloaded them.
+    The bare hub id stays as the second candidate so an installation that
+    never ran the installer behaves exactly as it did before - the loader
+    resolves it through its own cache, and downloads it if it must.
+
+    That last clause is exactly what an operator switches off with a falsy
+    ``OE_DOWNLOAD_EMBEDDING_MODEL``, so the hub id is dropped when the lock is
+    set. Without this the lock governed only the explicit installer while this
+    loader still reached the network on first embed: measured on a first run
+    with the lock set, the log carried thirty-four requests to the model hub.
+    They were fast only because a cache happened to be warm, and on the
+    air-gapped unit the lock exists for they are a stall, not a fetch.
+
+    With the lock set and no local copy there is nothing left to try, and
+    returning nothing is the honest answer: the caller logs that no model could
+    be loaded and semantic search stays off, which beats a slow failure that
+    looks like a hang.
+    """
+    try:
+        from app.core.embedding_installer import find_installed_model
+
+        local = find_installed_model(name)
+    except Exception:  # noqa: BLE001 - a missing installer is not a reason to stop loading
+        local = None
+
+    try:
+        from app.core.embedding_installer import download_locked_off
+
+        locked = download_locked_off()
+    except Exception:  # noqa: BLE001 - same reasoning as above
+        locked = False
+
+    if local is not None:
+        return [str(local)] if locked else [str(local), name]
+    return [] if locked else [name]
+
+
 def get_embedder():
     """Get singleton embedding model.
 
@@ -144,22 +215,47 @@ def get_embedder():
         pass
 
     for candidate in (primary, fallback_name):
-        try:
-            _embedder_instance = SentenceTransformer(candidate)
-            _active_model_name = candidate
-            logger.info(
-                "Loaded sentence-transformers model: %s (~%dd)",
-                candidate,
-                dim,
-            )
-            return _embedder_instance
-        except Exception as exc:
-            logger.warning("Failed to load embedding model %s: %s", candidate, exc)
-            continue
+        # A locally installed copy is tried before the bare hub id. The name we
+        # record stays the hub id either way, so status pages keep naming the
+        # model rather than a directory on someone's disk.
+        for source in _candidate_sources(candidate):
+            try:
+                _embedder_instance = SentenceTransformer(source)
+                _active_model_name = candidate
+                logger.info(
+                    "Loaded sentence-transformers model: %s from %s (~%dd)",
+                    candidate,
+                    source,
+                    dim,
+                )
+                return _embedder_instance
+            except Exception as exc:
+                logger.warning("Failed to load embedding model %s from %s: %s", candidate, source, exc)
+                continue
 
     logger.warning("No embedding model could be loaded (tried %s, %s)", primary, fallback_name)
     _embedder_tried = True
     return None
+
+
+def embedder_status() -> dict[str, Any]:
+    """Report whether the embedding model can answer, and why not when it cannot.
+
+    Cheap on purpose: it never triggers a load, so a status page cannot pay the
+    multi-second download cascade that :func:`get_embedder` guards against. The
+    states are distinct because the remedies are: a missing library is an
+    install, a failed load is usually a model that has not been fetched yet or a
+    broken cache, and "not_loaded" simply means nothing has asked for a vector
+    since the process started.
+    """
+    name, dim = _resolve_active_model()
+    if _embedder_instance is not None:
+        return {"available": True, "state": "ready", "model": active_model_name(), "dimension": dim}
+    if not _has_module("sentence_transformers"):
+        return {"available": False, "state": "library_missing", "model": name, "dimension": dim}
+    if _embedder_tried:
+        return {"available": False, "state": "load_failed", "model": name, "dimension": dim}
+    return {"available": False, "state": "not_loaded", "model": name, "dimension": dim}
 
 
 def active_model_name() -> str:
@@ -178,7 +274,15 @@ def encode_texts(texts: list[str]) -> list[list[float]]:
     """Encode texts to vectors. Works with both FastEmbed and sentence-transformers."""
     embedder = get_embedder()
     if embedder is None:
-        raise RuntimeError("No embedding model available. Install fastembed or sentence-transformers.")
+        # Of the two named, sentence-transformers is in requirements-desktop.lock
+        # and fastembed is not, so a bundle here is missing one it does ship: the
+        # repair wording rather than DESKTOP_NO_EXTRA. get_embedder() only ever
+        # tries sentence-transformers anyway.
+        from app.core.self_upgrade import repair_hint  # noqa: PLC0415
+
+        raise RuntimeError(
+            "No embedding model available. " + repair_hint("Install fastembed or sentence-transformers.")
+        )
 
     # FastEmbed returns generator
     if hasattr(embedder, "embed"):

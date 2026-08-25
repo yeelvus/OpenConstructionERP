@@ -110,11 +110,14 @@ class _StubPunchRepo:
             for r in rows
             if r.status in ("closed", "verified")
         ]
+        live = [r for r in rows if r.status in ("open", "in_progress")]
         return {
             "total": len(rows),
             "by_status": by_status,
             "by_priority": by_priority,
             "closed_timestamps": closed,
+            "urgent_open": sum(1 for r in live if r.priority in ("critical", "high")),
+            "open_created_at": [r.created_at for r in live],
         }
 
     async def count_overdue(self, project_id: uuid.UUID) -> int:
@@ -348,6 +351,40 @@ async def test_summary_aggregation() -> None:
     assert summary["by_status"]["open"] == 2
     assert summary["by_priority"]["high"] == 1
     assert summary["by_priority"]["low"] == 1
+    # Urgent means critical or high AND still live. The low item must not count.
+    assert summary["urgent_open"] == 1
+    assert summary["closed_last_7_days"] == 0
+    # Both items were just created, so the mean open age rounds to zero days.
+    # None would mean "nothing open", which is a different statement.
+    assert summary["avg_open_age_days"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_summary_counts_the_project_not_a_page() -> None:
+    """The KPI aggregates must not be capped by the list page size.
+
+    They used to be computed in the browser from whatever rows the list
+    endpoint returned, which is one page. This creates more items than the
+    50-row default page and asserts the counts still describe the project.
+    """
+    svc = _make_service()
+    for _ in range(60):
+        await svc.create_item(_create_data(priority="critical"), user_id="u1")
+
+    items, total = await svc.list_items(PROJECT_ID)
+    assert len(items) <= total, "a page cannot hold more rows than exist"
+
+    summary = await svc.get_summary(PROJECT_ID)
+    assert summary["total"] == 60
+    assert summary["urgent_open"] == 60, "urgent count fell back to a page of rows"
+
+
+@pytest.mark.asyncio
+async def test_summary_avg_open_age_is_none_when_nothing_is_open() -> None:
+    """No open work averages to None, which the band renders as a dash."""
+    svc = _make_service()
+    summary = await svc.get_summary(PROJECT_ID)
+    assert summary["avg_open_age_days"] is None
 
 
 # Note: upload size-cap tests removed in task #41 (universal cap removal).

@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 15,
   category: "estimating",
   companyTypes: ["general-contractor", "cost-consultant", "subcontractor"],
+  roles: ["estimator", "quantity-surveyor"],
   icon: "Calculator",
   titleKey: "cases.validate_estimate.title",
   titleDefault: "Check an estimate before you send it",
@@ -123,7 +124,7 @@ const playbook: Playbook = {
       whyKey: "cases.validate_estimate.step.report.why",
       whyDefault:
         "A report backed by a passed validation is one you can stand behind under questioning. It shows the client not just the total but that the total was checked against rules before it was sent.",
-      moduleLabel: "Reports",
+      moduleLabel: "Reporting",
       moduleLabelKey: "nav.reporting",
       to: "/reports",
     },

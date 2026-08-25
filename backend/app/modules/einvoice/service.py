@@ -46,6 +46,23 @@ def _dec(value: Any, default: str = "0") -> Decimal:
         return Decimal(default)
 
 
+def _money_quantum(currency: str) -> Decimal:
+    """The smallest amount ``currency`` can carry on a document.
+
+    Read from the same function that decides how many decimals get written, so
+    an amount rounded to this quantum and the string later written for it are
+    the same number rather than two roundings of one figure.
+
+    Args:
+        currency: the invoice currency (BT-5).
+
+    Returns:
+        The quantum, e.g. ``0.01`` for a two-decimal currency and ``1`` for a
+        currency written in whole units.
+    """
+    return Decimal(1).scaleb(-money_decimals(currency))
+
+
 def _is_true(value: Any) -> bool:
     """Read a permissive boolean flag (True / "true" / "yes" / "1")."""
     if isinstance(value, bool):
@@ -118,7 +135,7 @@ def _group_vat(lines: list[EInvoiceLine], currency: str) -> list[TaxSubtotal]:
         key = (line.vat_category, line.vat_rate)
         basis_by_key[key] = basis_by_key.get(key, Decimal("0")) + line.line_net_amount
 
-    quantum = Decimal(1).scaleb(-money_decimals(currency))
+    quantum = _money_quantum(currency)
     groups = [
         TaxSubtotal(
             category=category,
@@ -246,18 +263,31 @@ def build_einvoice(
 
     # Lines. Trust line amounts as the source of the document line total so
     # BR-CO-10 holds even if the stored header subtotal drifted by a cent.
+    #
+    # Each amount is rounded to the currency's own quantum before it is either
+    # carried on a line or added into the total, because BR-CO-10 is exact and
+    # a receiver adds up the amounts we WRITE. On a currency written in whole
+    # units, three lines of 100.40 are each written as 100 while an unrounded
+    # total is written as 301, and the document then contradicts itself by one
+    # unit per line. Rounding here, once, makes the sum we write the sum of the
+    # numbers we wrote. It is the currency's decimal count that decides the
+    # quantum, so this holds whatever that count is for any given currency.
+    quantum = _money_quantum(currency)
     lines: list[EInvoiceLine] = []
     line_total = Decimal("0")
     any_line_rate = False
+    any_line_category = False
 
     for idx, li in enumerate(line_items, start=1):
-        amount = _dec(li.get("amount"))
+        amount = _dec(li.get("amount")).quantize(quantum, rounding=ROUND_HALF_UP)
         if li.get("vat_rate") not in (None, ""):
             rate = _dec(li.get("vat_rate"))
             any_line_rate = True
         else:
             rate = default_rate
         raw_category = str(li.get("vat_category") or "").strip().upper()
+        if raw_category:
+            any_line_category = True
         category = raw_category or default_category
         lines.append(
             EInvoiceLine(
@@ -289,10 +319,47 @@ def build_einvoice(
             TaxSubtotal(category=default_category, rate=default_rate, basis=line_total, tax_amount=tax_total)
         ]
 
+    # BT-120 / BT-121: one declared reason for the whole invoice. It belongs to
+    # the exempting groups (E, AE, K, G, O), so on a mixed document - standard
+    # -rated own works beside a reverse-charged subcontract, the construction
+    # case - it lands on the exempt group only and the S group stays clean, as
+    # BR-S-10 demands. When no group can legitimately carry it, it is written
+    # onto every group as given rather than dropped: a claimed exemption on an
+    # all-standard or zero-rated document is a contradiction, and BR-S-10 /
+    # BR-Z-10 report it instead of this code deciding which half to believe.
+    exemption_reason = _clean(ei.get("vat_exemption_reason"))
+    exemption_reason_code = _clean(ei.get("vat_exemption_reason_code"))
+    if exemption_reason or exemption_reason_code:
+        from app.modules.einvoice.rules import _REASON_REQUIRED_CATEGORIES
+
+        carriers = [g for g in tax_subtotals if g.category in _REASON_REQUIRED_CATEGORIES] or tax_subtotals
+        for grp in carriers:
+            grp.exemption_reason = exemption_reason
+            grp.exemption_reason_code = exemption_reason_code
+
+    # Did anybody actually state the VAT treatment? An explicit invoice-level
+    # rate or category, any line-level rate or category, or a non-zero tax
+    # amount all count; their joint absence means the 0% / Z fallback above was
+    # an inference, which OCE-VAT-01 turns into an advisory instead of silence.
+    vat_declared = (
+        ei.get("vat_rate") not in (None, "")
+        or bool(str(ei.get("vat_category") or "").strip())
+        or any_line_rate
+        or any_line_category
+        or header_tax_total != 0
+    )
+
     # Totals recomputed so the document reconciles (BR-CO-10/13/15/16).
     tax_basis_total = line_total
     grand_total = tax_basis_total + tax_total
-    prepaid = retention if retention > 0 else Decimal("0")
+    # BT-113 is written at the document's quantum, so it has to be subtracted
+    # at that quantum too, or BT-115 disagrees with the subtraction a receiver
+    # performs on the two figures in front of it (BR-CO-16, exact). The case
+    # that breaks is an amount withheld at exactly half a unit: rounding it and
+    # rounding the difference then go opposite ways. This only becomes
+    # reachable because BT-109 above is now exact - while the basis still
+    # carried a fraction of its own it was cancelling the half by accident.
+    prepaid = (retention if retention > 0 else Decimal("0")).quantize(quantum, rounding=ROUND_HALF_UP)
     due_payable = grand_total - prepaid
 
     type_code = _resolve_type_code(invoice, ei)
@@ -330,6 +397,7 @@ def build_einvoice(
         tax_total_in_tax_currency=(
             _dec(ei.get("tax_total_in_tax_currency")) if ei.get("tax_total_in_tax_currency") not in (None, "") else None
         ),
+        vat_declared=vat_declared,
     )
 
 
@@ -380,12 +448,14 @@ def render_einvoice_pdf(
     buyer_fallback_name: str = "",
     defaults: dict[str, Any] | None = None,
     strict: bool = True,
+    locale: str = "en",
 ) -> tuple[str, str, bytes]:
     """Return ``(filename, "application/pdf", pdf)`` for a Factur-X/ZUGFeRD hybrid.
 
     Only CII profiles (zugferd/facturx/xrechnung/en16931) can be embedded in a
     PDF; UBL/Peppol is XML-only, so callers should use :func:`render_einvoice`
-    for those.
+    for those. ``locale`` selects the language of the readable page only; the
+    embedded XML never varies with it.
     """
     from app.modules.einvoice.pdf_embed import build_facturx_pdf
 
@@ -407,7 +477,7 @@ def render_einvoice_pdf(
         buyer_fallback_name=buyer_fallback_name,
         defaults=defaults,
     )
-    pdf = build_facturx_pdf(ei, strict=strict)
+    pdf = build_facturx_pdf(ei, strict=strict, locale=locale)
     safe_num = _safe_token(ei.invoice_number)
     filename = f"einvoice_{safe_num}_{profile}.pdf"
     return filename, "application/pdf", pdf
@@ -469,11 +539,17 @@ def problems_for(
 
 
 def _safe_token(raw: str) -> str:
-    """ASCII-safe token for a Content-Disposition filename."""
+    """Single-line token for a Content-Disposition filename.
+
+    Keeps the invoice number's real characters (umlauts included); the header
+    site wraps the finished filename in
+    :func:`app.core.content_disposition.attachment_disposition`, which derives
+    the RFC 6266 ASCII fallback and UTF-8 ``filename*`` pair. Only the
+    characters that would break the header or the filename are normalised
+    here, exactly as before.
+    """
     cleaned = (
         (raw or "invoice")
-        .encode("ascii", errors="replace")
-        .decode("ascii")
         .replace("\r", "")
         .replace("\n", "")
         .replace('"', "'")

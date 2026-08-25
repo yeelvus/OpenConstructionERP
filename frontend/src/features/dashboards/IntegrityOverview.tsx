@@ -30,6 +30,19 @@ import {
   type IntegrityIssueCode,
   type IntegrityReport,
 } from './api';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
+
+// English fallbacks for the computed `dashboards.integrity_issue_*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const INTEGRITY_ISSUE_LABELS: Record<string, string> = {
+  all_null: 'Every value is null', high_null_pct: 'High share of nulls', constant: 'Constant value',
+  dtype_mismatch: 'Data type mismatch', outliers_present: 'Outliers present',
+  high_zero_pct: 'High share of zeros', low_cardinality_string: 'Few distinct text values',
+  uuid_like: 'Looks like an identifier'
+};
+
 
 export interface IntegrityOverviewProps {
   snapshotId: string;
@@ -273,7 +286,7 @@ interface IntegrityRowProps {
 function IntegrityRow({ column, rowCount, isExpanded, onToggle }: IntegrityRowProps) {
   const { t } = useTranslation();
   const completenessPct = Math.round(column.completeness * 100);
-  const nullPctLabel = `${(column.null_pct * 100).toFixed(1)}%`;
+  const nullPctLabel = fmtPercent(column.null_pct * 100);
 
   return (
     <div data-testid={`integrity-row-${column.name}`}>
@@ -353,7 +366,7 @@ function IssueBadge({ code }: { code: IntegrityIssueCode }) {
     // Fall back to the raw code if the translation key isn't loaded —
     // tests rely on this so an empty i18next bundle still renders
     // recognisable text.
-    defaultValue: code.replace(/_/g, ' '),
+    defaultValue: INTEGRITY_ISSUE_LABELS[code] ?? code.replace(/_/g, ' '),
   });
   return (
     <span
@@ -407,7 +420,7 @@ function RowDetail({ column, rowCount }: RowDetailProps) {
                     {s.value}
                   </span>
                   <span className="text-content-tertiary tabular-nums">
-                    {s.count} ({pct.toFixed(1)}%)
+                    {s.count} ({fmtPercent(pct)})
                   </span>
                 </li>
               );
@@ -444,7 +457,7 @@ function RowDetail({ column, rowCount }: RowDetailProps) {
               <dd className="tabular-nums text-content-primary">
                 {column.zero_pct === null
                   ? '—'
-                  : `${(column.zero_pct * 100).toFixed(1)}%`}
+                  : fmtPercent(column.zero_pct * 100)}
               </dd>
               <dt>
                 {t('dashboards.integrity_outliers', { defaultValue: 'outliers' })}
@@ -462,7 +475,7 @@ function RowDetail({ column, rowCount }: RowDetailProps) {
 
 function formatStat(value: number | null): string {
   if (value === null) return '—';
-  if (Math.abs(value) >= 1000) return value.toFixed(1);
-  if (Math.abs(value) >= 1) return value.toFixed(3);
-  return value.toFixed(4);
+  if (Math.abs(value) >= 1000) return fmtFixed(value, 1);
+  if (Math.abs(value) >= 1) return fmtFixed(value, 3);
+  return fmtFixed(value, 4);
 }

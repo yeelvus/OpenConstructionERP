@@ -13,7 +13,7 @@ pack:
   name: Room-Number Naming Convention (Revit)
   description: |
     Enforces the canonical "<DEPT>.<LEVEL>.<ROOM>" room-code pattern on the
-    Revit Rooms "Number" parameter so downstream FM exports parse cleanly.
+    Revit® Rooms "Number" parameter so downstream FM exports parse cleanly.
   source: openconstructionerp
   version: "1.0.0"
   applies_to:

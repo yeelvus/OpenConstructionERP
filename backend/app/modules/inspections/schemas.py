@@ -104,3 +104,17 @@ class InspectionResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_")
     created_at: datetime
     updated_at: datetime
+
+
+class InspectionListResponse(BaseModel):
+    """One page of inspections plus the size of the whole set.
+
+    ``total`` is the row count matching the filters, not the length of
+    ``items``. A quality register that shows a page and calls it the register
+    hides exactly the inspections nobody has looked at yet.
+    """
+
+    items: list[InspectionResponse] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 50

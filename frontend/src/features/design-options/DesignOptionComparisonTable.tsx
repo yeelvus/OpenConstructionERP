@@ -8,6 +8,13 @@
  * AI-suggested recommendation, a mixed-currency notice, per-option traffic-light
  * validation chips, a by-trade delta table and a cost-per-area strip.
  *
+ * A design option is a whole alternative, so the foot also carries the
+ * programme and embodied-carbon rows, sourced from the schedule and carbon
+ * inventory each option links. Both appear only when at least one option in the
+ * set answers them, and an option that does not answer reads "-" rather than
+ * zero: an unanswered question dressed as a measurement would rank the option
+ * nobody has planned as the fastest and cleanest one on the page.
+ *
  * The comparison is computed authoritatively on the backend with exact Decimal
  * and FX rebase to the set currency. This component is a thin, well-typed view:
  * it parses the Decimal-as-string fields to numbers for display and sign only,
@@ -27,9 +34,11 @@ import {
   Scale,
 } from 'lucide-react';
 import { Badge, EmptyState } from '@/shared/ui';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtPercent } from '@/shared/lib/formatters';
 import { classifyCell } from '@/features/tendering/analysis';
 import { CostPerAreaBenchmark } from '@/features/boq/CostPerAreaBenchmark';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
+import { formatCurrency } from '@/shared/lib/money';
 import type {
   DesignOptionComparisonResponse,
   OptionValidationStatus,
@@ -51,33 +60,36 @@ function num(v: string | number | null | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Format a comparison amount with its option's currency.
+ *
+ *  This used to build its own formatter pinned to zero decimals. Every cell of
+ *  the table and every row of its foot went through it, so the column agreed
+ *  with itself - and agreed with nothing else. A euro option showed its direct
+ *  cost, its markups and its grand total without cents, and a dinar option lost
+ *  a thousandth that currency actually has. Two figures agreeing with each
+ *  other is not the standard; agreeing with the currency is, and how many minor
+ *  units a currency has is a property of the currency, which is why the shared
+ *  formatter reads it from CLDR rather than accepting a literal.
+ *
+ *  The rest of the policy is unchanged and is the shared formatter's policy
+ *  too: an unknown or blank code renders a plain grouped number and never a
+ *  substituted symbol, because a euro sign on a project priced in reais is a
+ *  worse answer than no sign at all. */
 function formatMoney(amount: string | number, currency?: string): string {
-  const value = num(amount);
-  const code = (currency || '').trim().toUpperCase();
-  // Never hard-fallback to a currency the project does not use: an unknown or
-  // blank code renders a plain grouped number with no symbol.
-  if (!/^[A-Z]{3}$/.test(code)) {
-    return new Intl.NumberFormat(getIntlLocale(), {
-      maximumFractionDigits: 0,
-    }).format(value);
-  }
-  try {
-    return new Intl.NumberFormat(getIntlLocale(), {
-      style: 'currency',
-      currency: code,
-      maximumFractionDigits: 0,
-    }).format(value);
-  } catch {
-    return `${value.toFixed(0)} ${code}`;
-  }
+  return formatCurrency(amount, currency);
 }
 
 function formatQty(amount: string | number, unit?: string): string {
   const value = num(amount);
-  const n = new Intl.NumberFormat(getIntlLocale(), {
+  const n = new Intl.NumberFormat(getNumberLocale(), {
     maximumFractionDigits: 2,
   }).format(value);
   return unit ? `${n} ${unit}` : n;
+}
+
+/** A whole-day or whole-unit count in the reader's locale. */
+function formatCount(amount: string | number): string {
+  return new Intl.NumberFormat(getNumberLocale(), { maximumFractionDigits: 0 }).format(num(amount));
 }
 
 /* ── Small presentational atoms ────────────────────────────────────────── */
@@ -94,13 +106,45 @@ function DeltaBadge({ pct }: { pct: number }) {
   if (pct < 0) {
     return (
       <span className="inline-flex items-center gap-0.5 text-xs font-medium text-semantic-success">
-        <ArrowDownRight size={12} /> {pct.toFixed(1)}%
+        <ArrowDownRight size={12} /> {fmtPercent(pct)}
       </span>
     );
   }
   return (
     <span className="inline-flex items-center gap-0.5 text-xs font-medium text-semantic-error">
-      <ArrowUpRight size={12} /> +{pct.toFixed(1)}%
+      <ArrowUpRight size={12} /> +{fmtPercent(pct)}
+    </span>
+  );
+}
+
+/**
+ * Signed day badge. Finishing sooner (negative delta) reads green, the same
+ * direction as spending less, so the two rows can be scanned together without
+ * the reader having to re-learn which way is good.
+ */
+function DayDeltaBadge({ days }: { days: number }) {
+  // Above the early return on purpose: a hook behind a branch makes React
+  // render fewer hooks than it expects on exactly the zero-delta option.
+  const { t } = useTranslation();
+  const rounded = Math.round(days);
+  // ``days`` rather than ``count``: the value is a unit abbreviation, not a
+  // counted noun, so triggering i18next's plural machinery here would demand a
+  // form per CLDR category in every language for a string that has one form.
+  const label = t('designOptions.dayDelta', {
+    defaultValue: '{{days}} d',
+    days: formatCount(Math.abs(rounded)),
+  });
+  if (!Number.isFinite(rounded) || rounded === 0) return null;
+  if (rounded < 0) {
+    return (
+      <span className="inline-flex items-center gap-0.5 text-xs font-medium text-semantic-success">
+        <ArrowDownRight size={12} /> {label}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-0.5 text-xs font-medium text-semantic-error">
+      <ArrowUpRight size={12} /> +{label}
     </span>
   );
 }
@@ -340,7 +384,7 @@ export function DesignOptionComparisonTable({
   comparison,
 }: DesignOptionComparisonTableProps) {
   const { t } = useTranslation();
-  const locale = getIntlLocale();
+  const locale = getNumberLocale();
 
   const { options, by_trade, baseline_option_id, comparison_currency } = comparison;
 
@@ -366,6 +410,12 @@ export function DesignOptionComparisonTable({
       options.find((o) => o.option_id === baseline_option_id) ?? options[0] ?? null,
     [options, baseline_option_id],
   );
+
+  // Whether the set answers the programme and carbon questions at all. Rows for
+  // a question nobody in the set has answered are worse than absent: a row of
+  // dashes reads like a measurement that came back empty.
+  const anyProgramme = useMemo(() => options.some((o) => o.has_programme), [options]);
+  const anyCarbon = useMemo(() => options.some((o) => o.has_carbon), [options]);
 
   if (options.length === 0) {
     return (
@@ -604,6 +654,70 @@ export function DesignOptionComparisonTable({
                 </td>
               ))}
             </tr>
+
+            {/* Programme and carbon. The rows appear only when at least one
+                option answers them: a set nobody has programmed would otherwise
+                grow two rows of dashes that say nothing. A cell reads "-" when
+                THAT option has no answer, which is not the same as zero and must
+                never be rendered as one. */}
+            {anyProgramme && (
+              <>
+                <tr className="border-t border-border-light bg-surface-secondary/20">
+                  <td className={`px-3 py-2 text-content-tertiary ${stickyCol} z-20 bg-surface-secondary`}>
+                    {t('designOptions.durationDays', { defaultValue: 'Duration (days)' })}
+                  </td>
+                  {options.map((o) => (
+                    <td
+                      key={o.option_id}
+                      className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-content-tertiary"
+                    >
+                      {o.has_programme ? (
+                        <>
+                          {formatCount(o.duration_days)}
+                          {o.delta_days_vs_baseline !== null &&
+                            o.option_id !== baseline_option_id &&
+                            num(o.delta_days_vs_baseline) !== 0 && (
+                              <span className="ml-1.5 inline-block align-middle">
+                                <DayDeltaBadge days={num(o.delta_days_vs_baseline)} />
+                              </span>
+                            )}
+                        </>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
+                  ))}
+                </tr>
+                <tr className="bg-surface-secondary/20">
+                  <td className={`px-3 py-2 text-content-tertiary ${stickyCol} z-20 bg-surface-secondary`}>
+                    {t('designOptions.finishDate', { defaultValue: 'Finish date' })}
+                  </td>
+                  {options.map((o) => (
+                    <td
+                      key={o.option_id}
+                      className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-content-tertiary"
+                    >
+                      {o.has_programme && o.finish_date ? o.finish_date : '-'}
+                    </td>
+                  ))}
+                </tr>
+              </>
+            )}
+            {anyCarbon && (
+              <tr className="border-t border-border-light bg-surface-secondary/20">
+                <td className={`px-3 py-2 text-content-tertiary ${stickyCol} z-20 bg-surface-secondary`}>
+                  {t('designOptions.embodiedCarbon', { defaultValue: 'Embodied carbon A1-A5' })}
+                </td>
+                {options.map((o) => (
+                  <td
+                    key={o.option_id}
+                    className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-content-tertiary"
+                  >
+                    {o.has_carbon ? formatQty(o.embodied_carbon_kg, o.carbon_unit || 'kgCO2e') : '-'}
+                  </td>
+                ))}
+              </tr>
+            )}
           </tfoot>
         </table>
       </div>

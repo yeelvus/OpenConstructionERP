@@ -12,8 +12,10 @@ import type { Playbook } from "../types";
 const playbook: Playbook = {
   id: "import-a-gaeb-tender-into-a-priced-boq",
   order: 1000,
+  region: "DE",
   category: "estimating",
   companyTypes: ["general-contractor", "subcontractor", "cost-consultant"],
+  roles: ["estimator", "quantity-surveyor"],
   icon: "FileInput",
   titleKey: "cases.import_a_gaeb_tender_into_a_priced_boq.title",
   titleDefault: "Import a GAEB tender into a priced BOQ",
@@ -87,8 +89,8 @@ const playbook: Playbook = {
       whyKey: "cases.import_a_gaeb_tender_into_a_priced_boq.step.price.why",
       whyDefault:
         "A rate pulled from a maintained catalog is defensible and fast. Reading the position text as you price it is where you catch the qualification hidden in a description that would otherwise cost you on site.",
-      moduleLabel: "Catalog",
-      moduleLabelKey: "nav.catalog",
+      moduleLabel: "Resource Catalog",
+      moduleLabelKey: "catalog.title",
       to: "/catalog",
     },
     {

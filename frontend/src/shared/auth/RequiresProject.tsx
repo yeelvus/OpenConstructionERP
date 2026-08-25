@@ -25,10 +25,9 @@
  */
 
 import type { ReactNode } from 'react';
-import { FolderOpen } from 'lucide-react';
+import { ArrowUp, FolderOpen } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { EmptyState } from '@/shared/ui/EmptyState';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 
 export interface RequiresProjectProps {
@@ -49,28 +48,50 @@ export function RequiresProject({ children, emptyHint, emptyTitle }: RequiresPro
     return <>{children}</>;
   }
 
+  const title = emptyTitle ?? t('requiresProject.title', { defaultValue: 'No project selected' });
+  const hint =
+    emptyHint ??
+    t('requiresProject.description', {
+      defaultValue:
+        'Pick a project from the header to continue, or open the Projects page to create or select one.',
+    });
+
+  // The arrow is the whole point of this panel: the switcher is in the header,
+  // at the start edge, and a person who has never used the app has no reason to
+  // look there. It leans up and towards the start, and mirrors under rtl with
+  // the rotation rather than a second icon, so it keeps pointing at the control
+  // rather than away from it. Decorative - the sentence beside it says the same
+  // thing in words.
   return (
-    <EmptyState
-      icon={<FolderOpen size={28} strokeWidth={1.5} />}
-      title={
-        emptyTitle ??
-        t('requiresProject.title', { defaultValue: 'No project selected' })
-      }
-      description={
-        emptyHint ??
-        t('requiresProject.description', {
-          defaultValue:
-            'Pick a project from the header to continue, or open the Projects page to create or select one.',
-        })
-      }
-      action={
-        <Link
-          to="/projects"
-          className="inline-flex h-10 items-center justify-center rounded-md bg-oe-blue px-4 text-sm font-medium text-white hover:bg-oe-blue/90 transition-colors"
-        >
-          {t('requiresProject.cta', { defaultValue: 'Open Projects' })}
-        </Link>
-      }
-    />
+    <div className="flex w-full justify-center px-4 py-10">
+      <div className="w-full max-w-xl">
+        <div className="mb-3 ms-2 flex" aria-hidden="true">
+          <ArrowUp
+            size={30}
+            strokeWidth={1.75}
+            className="animate-bounce -rotate-45 text-oe-blue rtl:rotate-45"
+          />
+        </div>
+        <div className="rounded-2xl border border-border-light bg-surface-primary p-6 shadow-sm sm:p-8">
+          <div className="flex items-start gap-4">
+            <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-oe-blue/10 text-oe-blue">
+              <FolderOpen size={24} strokeWidth={1.5} />
+            </span>
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold text-content-primary">{title}</h2>
+              <p className="mt-1.5 text-sm leading-relaxed text-content-secondary">{hint}</p>
+              <div className="mt-5">
+                <Link
+                  to="/projects"
+                  className="inline-flex h-10 items-center justify-center rounded-lg bg-oe-blue px-4 text-sm font-medium text-white transition-colors hover:bg-oe-blue/90"
+                >
+                  {t('requiresProject.cta', { defaultValue: 'Open Projects' })}
+                </Link>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

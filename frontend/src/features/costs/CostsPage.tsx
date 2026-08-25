@@ -34,12 +34,14 @@ import {
   Trash2,
   Pencil,
   AlertTriangle,
+  Info,
 } from 'lucide-react';
 import { Button, Card, Badge, EmptyState, SkeletonTable, CountryFlag, CountryFlagBackdrop, Breadcrumb, ConfirmDialog, DismissibleInfo, IntroRichText, ModuleGuideButton, RecoveryCard } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { useConfirm } from '@/shared/hooks/useConfirm';
-import { apiGet, apiPost, apiPatch, apiDelete, triggerDownload, extractErrorMessageFromBody } from '@/shared/lib/api';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { ApiError, apiGet, apiPost, apiPatch, apiDelete, triggerDownload, extractErrorMessageFromBody } from '@/shared/lib/api';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
+import { formatCurrency, type FormatCurrencyOptions } from '@/shared/lib/money';
 import { copyToClipboard } from '@/shared/lib/browser';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
@@ -59,6 +61,7 @@ import { RegionalAdjustPanel } from './RegionalAdjustPanel';
 import { CostCategoryTree } from '@/features/boq/CostCategoryTree';
 import { fetchCategoryTree, type CategoryTreeNode } from '@/features/boq/api';
 import { getUnitsForLocale } from '@/features/boq/boqHelpers';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -123,6 +126,12 @@ interface CostSearchResponse {
   total: number;
   limit: number;
   offset: number;
+  /**
+   * Set when the semantic toggle was on but the deployment has no embedding
+   * model, so these rows came from the text search instead. Without it the
+   * fallback is invisible and the reader believes the AI search answered.
+   */
+  semanticUnavailable?: boolean;
 }
 
 interface RegionStat {
@@ -187,6 +196,45 @@ async function downloadExcelExport(): Promise<void> {
     disposition?.match(/filename="?([^";]+)"?/)?.[1] ||
     'cost_database_export.xlsx';
   triggerDownload(blob, filename);
+}
+
+/* ── Money ─────────────────────────────────────────────────────────────── */
+
+/**
+ * Render a catalogue amount in the currency that amount is actually in.
+ *
+ * The cost database mixes currencies row by row, a EUR catalogue sitting next
+ * to an AED one, so every figure here carries its own ISO code. How many
+ * decimals that code has is a property of the currency, not a choice this
+ * screen gets to make, and the two inline formatters this replaces made it
+ * anyway: both passed a literal 2 for the floor and the ceiling, which
+ * overrides the currency table for whatever code was passed in. A catalogue
+ * priced in a currency with no minor unit therefore printed decimals it
+ * cannot express, the forint reading "1 235,00 Ft" on a whole amount.
+ *
+ * The shared formatter reads the minor units and this function does not
+ * second-guess the number it gets back. Nothing here decides how many
+ * decimals a currency has; the fix is only that this screen stopped
+ * contradicting the place that does.
+ *
+ * A blank or malformed code still renders a bare grouped number with no
+ * symbol, which is what both inline versions did, so an unpriced row never
+ * acquires a Euro sign it did not earn.
+ *
+ * At module scope, and exported, so the screens below share one answer and
+ * the decimals can be checked without mounting the page.
+ *
+ * `options` is the shared formatter's own override, forwarded untouched, for
+ * the one caller that legitimately needs a different ceiling. Overriding the
+ * ceiling is a statement about the figure being shown; overriding the floor
+ * was the bug, and no caller here does that.
+ */
+export function formatCostMoney(
+  value: number,
+  currency?: string | null,
+  options?: FormatCurrencyOptions,
+): string {
+  return formatCurrency(value, currency, undefined, options);
 }
 
 /* ── Favourites & Recently Used (localStorage) ────────────────────────── */
@@ -403,7 +451,7 @@ function RegionTabBar({
             {t('costs.all_regions', { defaultValue: 'All' })}
           </span>
           <span className={`text-2xs tabular-nums ${activeRegion === '' ? 'text-oe-blue' : 'text-content-quaternary'}`}>
-            {totalItems > 0 ? totalItems.toLocaleString() : ''}
+            {totalItems > 0 ? totalItems.toLocaleString(getNumberLocale()) : ''}
           </span>
         </button>
 
@@ -432,9 +480,15 @@ function RegionTabBar({
               `}
             >
               <MiniFlag code={info.flag} size={13} />
-              <span className="text-sm font-medium whitespace-nowrap">{info.name}</span>
+              <span className="text-sm font-medium whitespace-nowrap">
+                {/* REGION_MAP names are English; the DACH tab is the one region
+                    whose label must localise (Deutschland / DACH under de). */}
+                {regionId === 'DE_BERLIN'
+                  ? t('costdb.region_de_berlin', { defaultValue: info.name })
+                  : info.name}
+              </span>
               <span className={`text-2xs tabular-nums ${isActive ? 'text-oe-blue' : 'text-content-quaternary'}`}>
-                {count > 0 ? count.toLocaleString() : ''}
+                {count > 0 ? count.toLocaleString(getNumberLocale()) : ''}
               </span>
             </button>
           );
@@ -839,7 +893,14 @@ export function CostsPage() {
           } as CostSearchResponse;
         } catch (err) {
           if (import.meta.env.DEV) console.error('Semantic search failed, falling back to regular search:', err);
-          // Fall back to regular search
+          // A 503 is the server saying it has no embedding model, which is a
+          // different thing from a search that ran and found nothing. Fall back
+          // to the text search either way, but carry the reason so the page can
+          // say which search these rows came from.
+          if (err instanceof ApiError && err.status === 503) {
+            const fallback = await apiGet<CostSearchResponse>(searchUrl);
+            return { ...fallback, semanticUnavailable: true };
+          }
         }
       }
       return apiGet<CostSearchResponse>(searchUrl);
@@ -1103,31 +1164,17 @@ export function CostsPage() {
   const selectedItems = items.filter((i) => selectedIds.has(i.id));
 
   const fmt = (n: number) =>
-    new Intl.NumberFormat(getIntlLocale(), {
+    new Intl.NumberFormat(getNumberLocale(), {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     }).format(n);
 
-  // Currency-aware money formatter. Catalogues mix EUR / AED / SAR / USD,
-  // so a bare number is ambiguous — always render the ISO code. Falls
-  // back to the plain number formatter only when no currency is known at
-  // all (so we never crash on an unknown / empty code).
-  const fmtMoney = (n: number, currency?: string | null) => {
-    const code = (currency || regionCurrency || '').trim().toUpperCase();
-    if (!code) return fmt(n);
-    try {
-      return new Intl.NumberFormat(getIntlLocale(), {
-        style: 'currency',
-        currency: code,
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      }).format(n);
-    } catch {
-      // Non-ISO / unsupported code — keep the figure legible and still
-      // show the raw code rather than dropping it silently.
-      return `${fmt(n)} ${code}`;
-    }
-  };
+  // Currency-aware money formatter. Catalogues mix EUR / AED / SAR / USD, so
+  // a bare number is ambiguous and the ISO code is always rendered. A row that
+  // carries no currency of its own falls back to the region's, and only a row
+  // with neither renders bare, which formatCostMoney handles without throwing
+  // on an unknown or empty code.
+  const fmtMoney = (n: number, currency?: string | null) => formatCostMoney(n, currency || regionCurrency);
 
   // Localized label for a category dropdown entry. CWICR ships the
   // `collection` token as frozen-German all-caps (e.g. "BAUARBEITEN").
@@ -1168,10 +1215,10 @@ export function CostsPage() {
                     : isFetching && tabCount != null
                       ? tabCount
                       : 0;
-                return `${regionInfo.name}, ${display.toLocaleString()} ${t('costs.items', 'items')}`;
+                return `${regionInfo.name}, ${display.toLocaleString(getNumberLocale())} ${t('costs.items', 'items')}`;
               })()
             : total > 0
-              ? `${total.toLocaleString()} ${t('costs.results_found', 'results found')}`
+              ? `${total.toLocaleString(getNumberLocale())} ${t('costs.results_found', 'results found')}`
               : t('costs.search_hint', 'Search cost items by description or code')
         }
         actions={
@@ -1450,6 +1497,24 @@ export function CostsPage() {
             </button>
           </div>
 
+          {/* The semantic toggle is on but this deployment has no embedding
+              model, so these rows came from the text search. Saying so is the
+              difference between a fallback and a wrong answer. */}
+          {semanticSearch && data?.semanticUnavailable && (
+            <div
+              role="status"
+              className="flex items-start gap-2 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400"
+            >
+              <Info size={14} className="mt-0.5 shrink-0" />
+              <span>
+                {t('costs.semantic_unavailable', {
+                  defaultValue:
+                    'AI search is not installed on this deployment, so these are text search results.',
+                })}
+              </span>
+            </div>
+          )}
+
           {/* Unit filter */}
           <div className="relative">
             <select
@@ -1684,7 +1749,7 @@ export function CostsPage() {
                     defaultValue: '{{from}}-{{to}} of {{total}}',
                     from: offset + 1,
                     to: Math.min(offset + PAGE_SIZE, total),
-                    total: total.toLocaleString(),
+                    total: total.toLocaleString(getNumberLocale()),
                   })}
                 </p>
                 {totalPages > 1 && (
@@ -2042,25 +2107,10 @@ function AddToBOQModal({
     }
   }, [boqId, sectionId, items, addToast, onSuccess]);
 
-  const fmt = (n: number) =>
-    new Intl.NumberFormat(getIntlLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
-
-  // Currency-aware money formatter for the preview — selected items can
-  // span EUR / AED / SAR / USD, so always render the ISO code.
-  const fmtMoney = (n: number, currency: string) => {
-    const code = (currency || '').trim().toUpperCase();
-    if (!code) return fmt(n);
-    try {
-      return new Intl.NumberFormat(getIntlLocale(), {
-        style: 'currency',
-        currency: code,
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      }).format(n);
-    } catch {
-      return `${fmt(n)} ${code}`;
-    }
-  };
+  // Currency-aware money formatter for the preview. Selected items can span
+  // EUR / AED / SAR / USD, so the ISO code is always rendered, and each item
+  // gets the decimals its own currency has rather than a fixed two.
+  const fmtMoney = (n: number, currency: string) => formatCostMoney(n, currency);
   const itemCurrencyOf = (it: CostItem) =>
     (it.currency || REGION_MAP[it.region ?? '']?.currency || '').trim().toUpperCase();
 
@@ -2335,7 +2385,7 @@ function CreateAssemblyFromCostsModal({
   }, [onClose]);
 
   const fmt = (n: number) =>
-    new Intl.NumberFormat(getIntlLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+    new Intl.NumberFormat(getNumberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
 
   // MONEY BUG FIX: the old `items.reduce((s,i)=>s+(i.rate||0),0)` blended rates
   // across distinct ISO currencies (e.g. AED + EUR) into one figure and stored
@@ -2581,18 +2631,14 @@ function MassPricingFields({
   const { t } = useTranslation();
   const enabled = massBasis === 't' || massBasis === 'kg';
   const effective = massEffectiveUnitRate(rate, massPerUnit, massBasis);
-  const previewFmt = (n: number) => {
-    const code = (currency || '').trim().toUpperCase();
-    try {
-      return new Intl.NumberFormat(getIntlLocale(), {
-        ...(code ? { style: 'currency' as const, currency: code } : {}),
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 4,
-      }).format(n);
-    } catch {
-      return n.toFixed(2);
-    }
-  };
+  // A mass-derived unit rate earns more precision than a posted amount, hence
+  // the ceiling of four: a rate per kilogram is a working figure. The floor is
+  // a separate question and this used to answer it with a literal 2, which
+  // forced two decimals onto currencies that have none. Only the ceiling is
+  // declared now; the shared formatter takes the floor from the currency's own
+  // minor units, so a two-decimal currency still shows both and a zero-decimal
+  // one shows none until the rate itself has a fraction to show.
+  const previewFmt = (n: number) => formatCostMoney(n, currency, { maximumFractionDigits: 4 });
 
   return (
     <div className="rounded-lg border border-border-light bg-surface-secondary/30 p-3">
@@ -3266,7 +3312,7 @@ function CostVariantDetail({
           <>
             <span className="text-content-tertiary">·</span>
             <span className="rounded bg-surface-primary/70 px-1.5 py-0.5">
-              <span className="font-semibold text-content-primary">{stats.position_count.toLocaleString()}</span>
+              <span className="font-semibold text-content-primary">{stats.position_count.toLocaleString(getNumberLocale())}</span>
               <span className="ml-1 text-content-tertiary">
                 {t('costs.variant_position_count_label', { defaultValue: 'Estimates' })}
               </span>
@@ -3664,7 +3710,7 @@ function CostItemRow({
                   </div>
                   {laborHours > 0 && (
                     <div className="text-2xs text-content-tertiary mt-0.5">
-                      {t('costs.labor_hours_short', { defaultValue: '{{hours}} hrs', hours: laborHours.toFixed(1) })}
+                      {t('costs.labor_hours_short', { defaultValue: '{{hours}} hrs', hours: fmtFixed(laborHours, 1) })}
                     </div>
                   )}
                   {workers > 0 && (
@@ -3748,19 +3794,19 @@ function CostItemRow({
                     {laborCost > 0 && (
                       <span className="flex items-center gap-1">
                         <span className="h-2 w-2 rounded-full bg-amber-400" />
-                        {t('costs.component_labor', { defaultValue: 'Labor' })} {pct(laborCost).toFixed(0)}%
+                        {t('costs.component_labor', { defaultValue: 'Labor' })} {fmtPercent(pct(laborCost), 0)}
                       </span>
                     )}
                     {equipmentCost > 0 && (
                       <span className="flex items-center gap-1">
                         <span className="h-2 w-2 rounded-full bg-blue-400" />
-                        {t('costs.component_equipment', { defaultValue: 'Equipment' })} {pct(equipmentCost).toFixed(0)}%
+                        {t('costs.component_equipment', { defaultValue: 'Equipment' })} {fmtPercent(pct(equipmentCost), 0)}
                       </span>
                     )}
                     {materialCost > 0 && (
                       <span className="flex items-center gap-1">
                         <span className="h-2 w-2 rounded-full bg-green-400" />
-                        {t('costs.component_material', { defaultValue: 'Materials' })} {pct(materialCost).toFixed(0)}%
+                        {t('costs.component_material', { defaultValue: 'Materials' })} {fmtPercent(pct(materialCost), 0)}
                       </span>
                     )}
                   </div>
@@ -3822,7 +3868,7 @@ function CostItemRow({
                             {comp.unit_localized || comp.unit || '—'}
                           </td>
                           <td className="px-3 py-2 text-right tabular-nums text-content-secondary">
-                            {qty > 0 ? qty.toFixed(2) : '—'}
+                            {qty > 0 ? fmtFixed(qty, 2) : '—'}
                           </td>
                           <td className="px-3 py-2 text-right tabular-nums text-content-secondary">
                             {unitRate > 0 ? money(unitRate) : '—'}

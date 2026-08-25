@@ -57,6 +57,7 @@ import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
 import { MultiCurrencyTotal } from '@/shared/ui/MultiCurrencyTotal';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { PageHeader } from '@/shared/ui/PageHeader';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import {
   ContractTemplatesPanel,
   TEMPLATE_CATALOGUE_KEY,
@@ -72,7 +73,7 @@ import { ThccLocalSyncPanel } from './ThccLocalSyncPanel';
 import { ThccLocalFilesPanel } from './ThccLocalFilesPanel';
 import { contractsGuide } from './contractsGuide';
 import { useToastStore } from '@/stores/useToastStore';
-import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { getErrorMessage } from '@/shared/lib/api';
 import { projectsApi, type ProjectFxRate } from '@/features/projects/api';
@@ -125,6 +126,17 @@ import {
   withContractFx,
   type ContractFxPolicy,
 } from './fx';
+import { fmtPercent } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
+
+// English fallbacks for the computed `contracts.type_*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const CONTRACTS_TYPE_LABELS: Record<string, string> = {
+  lump_sum: 'Lump sum', gmp: 'GMP', cost_plus: 'Cost plus', tm: 'T&M', unit_price: 'Unit price',
+  design_build: 'Design and build', combination: 'Combination', remeasurement: 'Remeasurement'
+};
 
 type Tab = 'contracts' | 'claims' | 'final_accounts' | 'templates';
 
@@ -268,7 +280,7 @@ function ContractTypeChip({ type }: { type: ContractType }) {
   const c = CONTRACT_TYPE_COLORS[type] ?? CONTRACT_TYPE_FALLBACK;
   const safeType = type || 'unknown';
   const label = t(`contracts.type_${safeType}`, {
-    defaultValue: safeType === 'tm' ? 'T&M' : safeType.replace(/_/g, ' '),
+    defaultValue: CONTRACTS_TYPE_LABELS[safeType] ?? (safeType === 'tm' ? 'T&M' : safeType.replace(/_/g, ' ')),
   });
   return (
     <span
@@ -338,7 +350,14 @@ function CounterpartyLink({
     );
   }
 
-  const contact = (contactsQ.data ?? []).find((c) => c.id === id);
+  // Known limit, deliberately left as it stands: this component renders once
+  // per contract row, so one shared 500-row page is one request where a
+  // per-id lookup would be one per distinct counterparty on screen. Past 500
+  // contacts a client counterparty falls out of the page and the cell quietly
+  // degrades to the type word instead of the firm name. The honest fix is a
+  // by-ids batch route, which is backend scope, not a notice here - a link
+  // cell has nowhere to say "showing 500 of 3500" that would mean anything.
+  const contact = (contactsQ.data?.items ?? []).find((c) => c.id === id);
   const contactName =
     contact?.company_name ||
     contact?.legal_name ||
@@ -486,7 +505,7 @@ export function ContractsPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTab] = useState<Tab>('contracts');
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
 
   // CONN-43 consumer: a subcontractor's "Subcontract agreement" pill deep-links
   // here with ?counterparty=<id> so the register opens scoped to that firm's
@@ -557,7 +576,10 @@ export function ContractsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  const contracts = contractsQ.data ?? [];
+  /* `.items` is the page and `.total` is how many rows matched. The
+     register is asked for 200 at a time, so those two part company on
+     any project past that, and everything below counts the page. */
+  const contracts = contractsQ.data?.items ?? [];
   const selectedProject = useMemo(
     () => (projectsQ.data ?? []).find((p) => p.id === projectId),
     [projectsQ.data, projectId],
@@ -604,7 +626,7 @@ export function ContractsPage() {
   }, [contracts, search, typeFilter, statusFilter, counterpartyFilter]);
 
   const filteredClaims = useMemo(() => {
-    const items = claimsQ.data ?? [];
+    const items = claimsQ.data?.items ?? [];
     const s = search.toLowerCase();
     return items.filter((c) => {
       if (statusFilter && c.status !== statusFilter) return false;
@@ -815,7 +837,7 @@ export function ContractsPage() {
             {CONTRACT_TYPES.map((tp) => (
               <option key={tp} value={tp}>
                 {t(`contracts.type_${tp}`, {
-                  defaultValue: tp === 'tm' ? 'T&M' : tp.replace(/_/g, ' '),
+                  defaultValue: CONTRACTS_TYPE_LABELS[tp] ?? (tp === 'tm' ? 'T&M' : tp.replace(/_/g, ' ')),
                 })}
               </option>
             ))}
@@ -901,6 +923,17 @@ export function ContractsPage() {
         {/* Templates are tenant-wide paper, not project data, so the library
             sits above the project gate. Requiring a project to look at a
             standard form would be a gate on nothing. */}
+        {/* Whichever of the two registers the body is showing says how
+            much of itself the reader has. Both are read at a limit, and
+            the search and status boxes below narrow the rows in hand
+            without reaching the ones the server withheld, so the notice
+            is driven by the server page and not by the filtered list. */}
+        {tab === 'contracts' && contractsQ.data && (
+          <TruncationNotice page={contractsQ.data} className="px-4 pt-3" />
+        )}
+        {tab === 'claims' && claimsQ.data && (
+          <TruncationNotice page={claimsQ.data} className="px-4 pt-3" />
+        )}
         {tab === 'templates' ? (
           <ContractTemplatesPanel search={search} />
         ) : !projectId ? (
@@ -1088,7 +1121,6 @@ function ContractTable({
       </div>
     );
   }
-
   const renderSection = (
     sectionKey: 'main' | 'sub',
     sectionRows: ContractItem[],
@@ -1200,8 +1232,10 @@ function ContractTable({
                       <td className="px-4 py-2">
                         <ContractTypeChip type={r.contract_type} />
                       </td>
-                      <td className="px-4 py-2 text-xs text-content-secondary capitalize">
-                        {r.counterparty_type}
+                      <td className="px-4 py-2 text-xs text-content-secondary">
+                        <span onClick={(e) => e.stopPropagation()}>
+                          <CounterpartyLink type={r.counterparty_type} id={r.counterparty_id} />
+                        </span>
                       </td>
                       <td className="px-4 py-2">
                         <div className="flex items-center gap-2">
@@ -2100,7 +2134,7 @@ export function ContractDetailDrawer({
                 label={t('contracts.retention_pct', {
                   defaultValue: 'Retention %',
                 })}
-                value={`${toNum(contract.retention_percent).toFixed(2)} %`}
+                value={fmtPercent(toNum(contract.retention_percent), 2)}
               />
               <Field
                 label={t('contracts.release_event', {
@@ -2198,7 +2232,7 @@ export function ContractDetailDrawer({
                           {l.description || '—'}
                         </td>
                         <td className="py-1 text-right text-content-secondary">
-                          {toNum(l.quantity).toLocaleString()} {l.unit || ''}
+                          {toNum(l.quantity).toLocaleString(getNumberLocale())} {l.unit || ''}
                         </td>
                         <td className="py-1 text-right text-content-secondary">
                           <MoneyDisplay
@@ -2300,11 +2334,15 @@ export function ContractDetailDrawer({
           <Card padding="sm">
             <p className="text-xs font-semibold uppercase tracking-wide text-content-secondary mb-2">
               {t('contracts.claim_history', { defaultValue: 'Claim history' })}
+              {/* The count beside the heading names the whole claim
+                  history rather than the rows on this page. It is read
+                  as "how many claims have there been", and the page
+                  length answers a question nobody asked. */}
               <span className="ml-2 text-content-tertiary normal-case">
-                ({(claimsQ.data ?? []).length})
+                ({claimsQ.data?.total ?? 0})
               </span>
             </p>
-            {(claimsQ.data ?? []).length === 0 ? (
+            {(claimsQ.data?.items ?? []).length === 0 ? (
               <p className="text-sm text-content-tertiary py-2">
                 {t('contracts.no_claims_yet', {
                   defaultValue: 'No progress claims yet.',
@@ -2312,7 +2350,7 @@ export function ContractDetailDrawer({
               </p>
             ) : (
               <ul className="space-y-1 text-sm">
-                {(claimsQ.data ?? []).map((c) => (
+                {(claimsQ.data?.items ?? []).map((c) => (
                   <li
                     key={c.id}
                     className="flex items-center justify-between border-b border-border-light py-1 last:border-0"
@@ -2332,6 +2370,9 @@ export function ContractDetailDrawer({
                   </li>
                 ))}
               </ul>
+            )}
+            {claimsQ.data && (
+              <TruncationNotice page={claimsQ.data} className="mt-2" />
             )}
           </Card>
 
@@ -2679,7 +2720,7 @@ function CreateContractModal({
             {CONTRACT_TYPES.map((tp) => (
               <option key={tp} value={tp}>
                 {t(`contracts.type_${tp}`, {
-                  defaultValue: tp === 'tm' ? 'T&M' : tp.replace(/_/g, ' '),
+                  defaultValue: CONTRACTS_TYPE_LABELS[tp] ?? (tp === 'tm' ? 'T&M' : tp.replace(/_/g, ' ')),
                 })}
               </option>
             ))}

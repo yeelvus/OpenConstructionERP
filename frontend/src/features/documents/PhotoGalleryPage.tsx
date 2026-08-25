@@ -38,8 +38,9 @@ import {
 import { Card, Button, Badge, ConfirmDialog, EmptyState, Breadcrumb, AuthImage, SkeletonGrid } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { DismissibleInfo } from '@/shared/ui/DismissibleInfo';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
-import { apiGet } from '@/shared/lib/api';
+import { apiGet, type Page } from '@/shared/lib/api';
 import { hasFieldTag, nextFieldTags } from './FieldImageToggle';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { useToastStore } from '@/stores/useToastStore';
@@ -59,9 +60,10 @@ import {
   type PhotoCategory,
   type DefectSeverity,
   type PhotoFilters,
-  type PhotoTimelineGroup as _PhotoTimelineGroup,
+  groupPhotosByDay,
   type PhotoUpdatePayload,
 } from './api';
+import { getIntlLocale, fmtFixed } from '@/shared/lib/formatters';
 
 /* ── Constants ────────────────────────────────────────────────────────── */
 
@@ -101,7 +103,7 @@ function useDebounce<T>(value: T, delayMs: number): T {
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '';
   try {
-    return new Date(dateStr).toLocaleDateString(undefined, {
+    return new Date(dateStr).toLocaleDateString(getIntlLocale(), {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -114,7 +116,7 @@ function formatDate(dateStr: string | null): string {
 function formatDateFull(dateStr: string | null): string {
   if (!dateStr) return '';
   try {
-    return new Date(dateStr).toLocaleString(undefined, {
+    return new Date(dateStr).toLocaleString(getIntlLocale(), {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -258,7 +260,7 @@ function Lightbox({
                 {photo.gps_lat != null && photo.gps_lon != null && (
                   <span className="flex items-center gap-1">
                     <MapPin size={12} />
-                    {photo.gps_lat.toFixed(5)}, {photo.gps_lon.toFixed(5)}
+                    {fmtFixed(photo.gps_lat, 5)}, {fmtFixed(photo.gps_lon, 5)}
                     {isGpsFromExif(photo) && (
                       <span className="ml-1 text-white/40">
                         {t('photos.gps_auto_paren', { defaultValue: '(auto, EXIF)' })}
@@ -1120,19 +1122,23 @@ export function PhotoGalleryPage() {
     search: debouncedSearch || undefined,
   }), [category, debouncedSearch]);
 
-  const { data: photos, isLoading: photosLoading } = useQuery({
+  const { data: photoPage, isLoading: photosLoading } = useQuery({
     queryKey: ['photos', projectId, filters],
-    queryFn: () => fetchPhotos(projectId!, filters),
+    // Return type spelled out because this entry holds a page, not a list:
+    // whatever caches under ['photos', ...] next is handed this shape.
+    queryFn: (): Promise<Page<PhotoItem>> => fetchPhotos(projectId!, filters),
     enabled: !!projectId,
   });
 
-  const { data: timeline, isLoading: timelineLoading } = useQuery({
+  const { data: timelinePage, isLoading: timelineLoading } = useQuery({
     queryKey: ['photos-timeline', projectId],
-    queryFn: () => fetchPhotoTimeline(projectId!),
+    // A page of photos, newest first. Grouped into days below, not by the
+    // server - see ``groupPhotosByDay``.
+    queryFn: (): Promise<Page<PhotoItem>> => fetchPhotoTimeline(projectId!),
     enabled: !!projectId && viewMode === 'timeline',
   });
 
-  const photoList = photos ?? [];
+  const photoList = photoPage?.items ?? [];
   const isLoading = viewMode === 'grid' ? photosLoading : timelineLoading;
 
   // Flattened, date-ordered photo list backing the timeline view. The
@@ -1141,8 +1147,15 @@ export function PhotoGalleryPage() {
   // grid query), so opening a timeline photo that wasn't in the grid
   // result jumped to the wrong image (or index 0).
   const timelinePhotos = useMemo(
-    () => (timeline ?? []).flatMap((g) => g.photos),
-    [timeline],
+    () => timelinePage?.items ?? [],
+    [timelinePage],
+  );
+
+  // Days, newest first. The route hands over photos now, not groups, so this
+  // is where the timeline gets its shape - see ``groupPhotosByDay``.
+  const timelineGroups = useMemo(
+    () => groupPhotosByDay(timelinePhotos),
+    [timelinePhotos],
   );
   const lightboxPhotos = viewMode === 'timeline' ? timelinePhotos : photoList;
 
@@ -1486,11 +1499,25 @@ export function PhotoGalleryPage() {
         </div>
       )}
 
+      {/* How much of the gallery this page holds. Outside the stats block
+          below on purpose: a search that matched nothing is exactly when the
+          reader has to be told only part of the gallery was searched. */}
+      {viewMode === 'grid' && photoPage && !selectMode && (
+        <TruncationNotice page={photoPage} />
+      )}
+      {viewMode === 'timeline' && timelinePage && !selectMode && (
+        <TruncationNotice page={timelinePage} />
+      )}
+
       {/* Stats summary (only when there are photos) */}
       {photoList.length > 0 && Object.keys(categoryStats).length > 0 && !selectMode && (
         <div className="flex items-center gap-2 flex-wrap text-xs">
+          {/* The project's photo count, from the server. The per-category
+              chips beside it are counted from the page on screen, so on a
+              truncated gallery they add up to less than this number - the
+              notice above says why. */}
           <span className="font-semibold text-content-primary bg-surface-secondary px-2 py-1 rounded-md">
-            {t('photos.total', { defaultValue: 'Total' })}: {photoList.length}
+            {t('photos.total', { defaultValue: 'Total' })}: {photoPage?.total ?? photoList.length}
           </span>
           <span className="text-border-light select-none">|</span>
           {Object.entries(categoryStats).map(([cat, count]) => (
@@ -1615,7 +1642,7 @@ export function PhotoGalleryPage() {
       ) : (
         /* Timeline view */
         <div className="space-y-8">
-          {(timeline ?? []).map((group) => (
+          {timelineGroups.map((group) => (
             <div key={group.date}>
               <div className="flex items-center gap-3 mb-4">
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-surface-secondary">
@@ -1648,7 +1675,7 @@ export function PhotoGalleryPage() {
               </div>
             </div>
           ))}
-          {(!timeline || timeline.length === 0) && (
+          {timelineGroups.length === 0 && (
             <EmptyState
               icon={<ImageIcon size={28} strokeWidth={1.5} />}
               title={t('photos.empty_title', { defaultValue: 'No photos yet' })}

@@ -47,6 +47,7 @@ import { payrollGuide } from './payrollGuide';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 import { getErrorMessage } from '@/shared/lib/api';
 import {
   fetchPayrollBatches,
@@ -71,6 +72,17 @@ import type {
   DeductionMode,
   AddDeductionPayload,
 } from './api';
+import { fmtFixed } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
+
+// English fallbacks for the computed `payroll.deduction_type.*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const DEDUCTION_TYPE_LABELS: Record<string, string> = {
+  tax: 'Tax', social: 'Social security', pension: 'Pension', other: 'Other'
+};
+
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 
@@ -78,7 +90,7 @@ function money(value: string | number, currency?: string): string {
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(n)) return String(value);
   try {
-    return new Intl.NumberFormat(undefined, {
+    return new Intl.NumberFormat(getNumberLocale(), {
       style: currency ? 'currency' : 'decimal',
       currency: currency || undefined,
       minimumFractionDigits: 2,
@@ -91,7 +103,7 @@ function money(value: string | number, currency?: string): string {
 
 function hours(value: string): string {
   const n = Number(value);
-  return Number.isFinite(n) ? n.toFixed(2) : value;
+  return Number.isFinite(n) ? fmtFixed(n, 2) : value;
 }
 
 /* ── How-it-works flow + module integrations ───────────────────────────── */
@@ -258,7 +270,7 @@ function DeductionEditor({
   const typeLabel = useCallback(
     (dt: string): string =>
       t(`payroll.deduction_type.${dt}`, {
-        defaultValue: dt.charAt(0).toUpperCase() + dt.slice(1),
+        defaultValue: DEDUCTION_TYPE_LABELS[dt] ?? dt.charAt(0).toUpperCase() + dt.slice(1),
       }),
     [t],
   );
@@ -416,7 +428,7 @@ export default function PayrollPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
   const activeProjectName = useProjectContextStore((s) => s.activeProjectName);
   const projectId = activeProjectId ?? '';
 

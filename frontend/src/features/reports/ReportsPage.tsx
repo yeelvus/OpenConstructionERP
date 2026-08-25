@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { getIntlLocale, fmtFixed, fmtPercent } from '@/shared/lib/formatters';
 import { toDisplayQuantity, displayUnitFor } from '@/shared/lib/unitConversion';
 import { usePreferencesStore } from '@/stores/usePreferencesStore';
 import {
@@ -36,7 +36,7 @@ import { DismissibleInfo, IntroRichText } from '@/shared/ui/DismissibleInfo';
 import { useToastStore } from '@/stores/useToastStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
-import { apiGet, apiPost, extractErrorMessageFromBody, triggerDownload } from '@/shared/lib/api';
+import { apiGet, apiPost, extractErrorMessageFromBody, triggerDownload, type Page } from '@/shared/lib/api';
 import { fetchAllPages } from '@/shared/lib/apiHelpers';
 import { projectsApi, type Project } from '@/features/projects/api';
 import { boqApi } from '@/features/boq/api';
@@ -761,7 +761,7 @@ async function downloadRiskRegisterReport(
   // it produced a clean-looking report asserting zero risks and zero exposure.
   // The caller already converts a throw into a "failed to generate" toast.
   const { items: risks, truncated, ceiling } = await fetchAllPages<RiskRow>((offset, limit) =>
-    apiGet<RiskRow[]>(`/v1/risk/?project_id=${projectId}&limit=${limit}&offset=${offset}`),
+    apiGet<Page<RiskRow>>(`/v1/risk/?project_id=${projectId}&limit=${limit}&offset=${offset}`),
   );
 
   // Refuse rather than ship a register that is quietly missing rows. The
@@ -907,8 +907,8 @@ async function downloadProgressReport(
     const dashboard = await costModelApi.getDashboard(projectId);
     htmlParts.push(`<h2>${esc(t('reports.html_evm_performance', { defaultValue: 'Earned Value Performance' }))}</h2>`);
     htmlParts.push('<div>');
-    htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_spi', { defaultValue: 'SPI' }))}</div><div class="metric-value" style="color:${Number(dashboard.spi||0)>=1?'#166534':'#991b1b'}">${Number(dashboard.spi||0).toFixed(2)}</div></div>`);
-    htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_cpi', { defaultValue: 'CPI' }))}</div><div class="metric-value" style="color:${Number(dashboard.cpi||0)>=1?'#166534':'#991b1b'}">${Number(dashboard.cpi||0).toFixed(2)}</div></div>`);
+    htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_spi', { defaultValue: 'SPI' }))}</div><div class="metric-value" style="color:${Number(dashboard.spi||0)>=1?'#166534':'#991b1b'}">${fmtFixed(Number(dashboard.spi||0), 2)}</div></div>`);
+    htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_cpi', { defaultValue: 'CPI' }))}</div><div class="metric-value" style="color:${Number(dashboard.cpi||0)>=1?'#166534':'#991b1b'}">${fmtFixed(Number(dashboard.cpi||0), 2)}</div></div>`);
     htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_budget', { defaultValue: 'Budget' }))}</div><div class="metric-value">${Number(dashboard.total_budget||0).toLocaleString(lang)}</div></div>`);
     htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_actual', { defaultValue: 'Actual' }))}</div><div class="metric-value">${Number(dashboard.total_actual||0).toLocaleString(lang)}</div></div>`);
     htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_forecast_eac', { defaultValue: 'Forecast (EAC)' }))}</div><div class="metric-value">${Number(dashboard.total_forecast||0).toLocaleString(lang)}</div></div>`);
@@ -936,13 +936,18 @@ async function downloadProgressReport(
 
   // Risk highlights
   try {
-    const risks = await apiGet<Array<{ code: string; title: string; risk_score: number; impact_severity: string }>>(`/v1/risk/?project_id=${projectId}&limit=5`);
+    // A five-row sample under a "Top Risks" heading, with no count and no
+    // aggregate printed off it, so the page envelope is read for its rows
+    // only. (The route is asked for five without a sort, so these are five
+    // risks rather than the five highest - a separate defect, noted not
+    // fixed here.)
+    const risks = (await apiGet<Page<{ code: string; title: string; risk_score: number; impact_severity: string }>>(`/v1/risk/?project_id=${projectId}&limit=5`)).items;
     if (risks.length > 0) {
       htmlParts.push(`<h2>${esc(t('reports.html_top_risks', { defaultValue: 'Top Risks' }))}</h2>`);
       htmlParts.push(`<table><thead><tr><th>${esc(t('reports.html_col_code', { defaultValue: 'Code' }))}</th><th>${esc(t('reports.html_col_risk', { defaultValue: 'Risk' }))}</th><th>${esc(t('reports.html_col_severity', { defaultValue: 'Severity' }))}</th><th>${esc(t('reports.html_col_score', { defaultValue: 'Score' }))}</th></tr></thead><tbody>`);
       const sorted = [...risks].sort((a, b) => b.risk_score - a.risk_score);
       for (const r of sorted) {
-        htmlParts.push(`<tr><td>${esc(r.code)}</td><td>${esc(r.title)}</td><td>${esc(r.impact_severity)}</td><td>${r.risk_score.toFixed(1)}</td></tr>`);
+        htmlParts.push(`<tr><td>${esc(r.code)}</td><td>${esc(r.title)}</td><td>${esc(r.impact_severity)}</td><td>${fmtFixed(r.risk_score, 1)}</td></tr>`);
       }
       htmlParts.push('</tbody></table>');
     }
@@ -1432,8 +1437,8 @@ export function ReportsPage() {
                 try {
                   const dashboard = await getDashboard();
                   htmlParts.push('<div>');
-                  htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_spi', { defaultValue: 'SPI' }))}</div><div class="metric-value">${Number(dashboard.spi || 0).toFixed(2)}</div></div>`);
-                  htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_cpi', { defaultValue: 'CPI' }))}</div><div class="metric-value">${Number(dashboard.cpi || 0).toFixed(2)}</div></div>`);
+                  htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_spi', { defaultValue: 'SPI' }))}</div><div class="metric-value">${fmtFixed(Number(dashboard.spi || 0), 2)}</div></div>`);
+                  htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_cpi', { defaultValue: 'CPI' }))}</div><div class="metric-value">${fmtFixed(Number(dashboard.cpi || 0), 2)}</div></div>`);
                   htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_eac', { defaultValue: 'EAC' }))}</div><div class="metric-value">${Number(dashboard.total_forecast || 0).toLocaleString(lang)}</div></div>`);
                   htmlParts.push('</div>');
                   htmlParts.push(`<p style="color:#6b7280;font-size:13px">${esc(t('reports.html_evm_hint', { defaultValue: 'SPI > 1.0 = ahead of schedule. CPI > 1.0 = under budget. EAC = Estimate at Completion.' }))}</p>`);
@@ -1472,8 +1477,44 @@ export function ReportsPage() {
               if (sections.includes('risk')) {
                 htmlParts.push(`<h2>${esc(t('reports.section_risk', { defaultValue: 'Risk Summary' }))}</h2>`);
                 try {
-                  const risks = await apiGet<Array<{ id: string; code: string; title: string; probability: number; impact_cost: number; impact_severity: string; risk_score: number; status: string }>>(`/v1/risk/?project_id=${selectedProjectId}&limit=50`);
-                  if (risks.length === 0) {
+                  // Read the whole register, the way the CSV export above
+                  // already does. This section prints Total Risks and Total
+                  // Exposure, and both were reduced over whatever the first
+                  // fifty rows happened to be: a project with three hundred
+                  // risks got a confident, wrong pair of figures inside a
+                  // document the reader treats as the record.
+                  //
+                  // Past the ceiling the read is partial, and the figures that
+                  // need every row - exposure, the high and critical count, the
+                  // top five - are dropped rather than computed over part of
+                  // the register and stated with the same confidence as the
+                  // real thing. The register's own size survives being cut off,
+                  // because the page envelope carries it, so the section still
+                  // reports how many risks there are and how much of them it
+                  // read. Failing the section instead printed "No risk data
+                  // available." over a register holding thousands of rows,
+                  // which a reader takes for an empty register rather than for
+                  // a summary that was cut short.
+                  type ReportRiskRow = { id: string; code: string; title: string; probability: number; impact_cost: number; impact_severity: string; risk_score: number; status: string };
+                  const { items: risks, truncated: risksTruncated, ceiling: riskCeiling, total: riskTotal } = await fetchAllPages<ReportRiskRow>((offset, limit) =>
+                    apiGet<Page<ReportRiskRow>>(`/v1/risk/?project_id=${selectedProjectId}&limit=${limit}&offset=${offset}`),
+                  );
+                  // A partial read can only be described as partial when there
+                  // is a size to quote it against, and when that size is really
+                  // larger than what was read: rows deleted while the loop ran
+                  // can leave a total that no longer exceeds the rows in hand,
+                  // and "Showing 10,000 of 9,998" is worse than saying nothing.
+                  // Holding the number itself rather than a flag is what lets
+                  // the branch below use it without a second existence check.
+                  const partialRiskTotal =
+                    risksTruncated && riskTotal !== undefined && riskTotal > risks.length ? riskTotal : undefined;
+                  if (risksTruncated && partialRiskTotal === undefined) {
+                    throw new Error(`The risk register exceeds the ${riskCeiling} row report ceiling.`);
+                  }
+                  if (partialRiskTotal !== undefined) {
+                    htmlParts.push(`<div class="metric"><div class="metric-label">${esc(t('reports.html_total_risks', { defaultValue: 'Total Risks' }))}</div><div class="metric-value">${partialRiskTotal.toLocaleString(lang)}</div></div>`);
+                    htmlParts.push(`<p style="color:#92400e;font-size:13px">${esc(t('cases.showing_count', { defaultValue: 'Showing {{shown}} of {{total}}', shown: risks.length, total: partialRiskTotal }))}</p>`);
+                  } else if (risks.length === 0) {
                     htmlParts.push(`<p>${esc(t('reports.html_no_risks', { defaultValue: 'No risks registered.' }))}</p>`);
                   } else {
                     const totalExposure = risks.reduce((sum, r) => sum + r.probability * r.impact_cost, 0);
@@ -1486,7 +1527,7 @@ export function ReportsPage() {
                     const top5 = [...risks].sort((a, b) => b.risk_score - a.risk_score).slice(0, 5);
                     for (const r of top5) {
                       const cls = r.impact_severity === 'critical' ? 'error' : r.impact_severity === 'high' ? 'warning' : 'neutral';
-                      htmlParts.push(`<tr><td>${esc(r.code)}</td><td>${esc(r.title)}</td><td>${(r.probability * 100).toFixed(0)}%</td><td><span class="badge badge-${cls}">${esc(r.impact_severity)}</span></td><td style="text-align:right">${r.risk_score.toFixed(1)}</td></tr>`);
+                      htmlParts.push(`<tr><td>${esc(r.code)}</td><td>${esc(r.title)}</td><td>${fmtPercent(r.probability * 100, 0)}</td><td><span class="badge badge-${cls}">${esc(r.impact_severity)}</span></td><td style="text-align:right">${fmtFixed(r.risk_score, 1)}</td></tr>`);
                     }
                     htmlParts.push('</tbody></table>');
                   }

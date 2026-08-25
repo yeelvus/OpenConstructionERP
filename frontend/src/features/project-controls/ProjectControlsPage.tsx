@@ -15,7 +15,7 @@ import {
   ModuleGuideButton,
 } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
-import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 
 import type { ControlsKPI } from './api';
 import { useControlsSnapshot } from './api';
@@ -36,7 +36,7 @@ import { projectControlsGuide } from './projectControlsGuide';
 export function ProjectControlsPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
   const [drillKpi, setDrillKpi] = useState<ControlsKPI | null>(null);
 
   const projectId = activeProjectId ?? null;

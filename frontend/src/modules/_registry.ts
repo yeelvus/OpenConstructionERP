@@ -10,14 +10,13 @@
  * To add a new module:
  *   1. Create `frontend/src/modules/<name>/manifest.ts`
  *   2. Import it here and add to MODULE_REGISTRY
- *   3. Done — routes, sidebar, search all pick it up automatically
+ *   3. Done — routes and sidebar pick it up automatically
  */
 
 import type {
   ModuleManifest,
   ModuleRoute,
   ModuleNavItem,
-  ModuleSearchEntry,
 } from './_types';
 
 /* ── Module manifest imports ───────────────────────────────────────── */
@@ -79,11 +78,6 @@ export function getModuleNavItems(groupId: string): ModuleNavItem[] {
   );
 }
 
-/** All search/command-palette entries from modules. */
-export function getModuleSearchEntries(): ModuleSearchEntry[] {
-  return MODULE_REGISTRY.flatMap((m) => m.searchEntries ?? []);
-}
-
 /** Default enabled state for all modules (used by useModuleStore). */
 export function getModuleDefaults(): Record<string, boolean> {
   const defaults: Record<string, boolean> = {};
@@ -104,12 +98,6 @@ export function getModuleDependents(moduleKey: string): string[] {
 export function getModuleDependencies(moduleId: string): string[] {
   const mod = MODULE_REGISTRY.find((m) => m.id === moduleId);
   return mod?.depends ?? [];
-}
-
-/** Get display name for a module by ID. */
-export function getModuleDisplayName(moduleId: string): string {
-  const mod = MODULE_REGISTRY.find((m) => m.id === moduleId);
-  return mod?.name ?? moduleId;
 }
 
 /** Group modules by their category field. */

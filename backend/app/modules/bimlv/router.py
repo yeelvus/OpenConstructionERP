@@ -13,6 +13,7 @@ import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 
+from app.core.content_disposition import attachment_disposition
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
 from app.modules.bimlv import service
 from app.modules.bimlv.container import BimLvContainerError, read_container
@@ -115,5 +116,5 @@ async def export_boq_container(
     return Response(
         content=export.data,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{export.filename}"'},
+        headers={"Content-Disposition": attachment_disposition(export.filename)},
     )

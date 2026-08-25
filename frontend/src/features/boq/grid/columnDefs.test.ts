@@ -5,6 +5,7 @@ import {
   getColumnDefs,
   needsPrice,
   nextResourceSplitMode,
+  ordinalColumnWidth,
   resourceSplitFraction,
   resourceSplitMoneyTotals,
   resourceSplitPct,
@@ -156,6 +157,72 @@ describe('resourceSplitMoneyTotals', () => {
 
   it('returns null when no position carries a split', () => {
     expect(resourceSplitMoneyTotals([position({}), position({ metadata: {} })])).toBeNull();
+  });
+});
+
+/* ── Ordinal ("Pos.") column width (K-2 in the German pilot QA) ──────────
+ * The fixed 88px column ellipsised a standard German GAEB OZ ("01.01.0010")
+ * to "01.01.0…" exactly where the narration pointed at the Ordnungszahl.
+ * The width now derives from the longest ordinal in the grid: ~7.5px per
+ * monospace character plus 30px cell chrome (padding + validation dot),
+ * clamped so short ordinals keep the compact default.
+ */
+describe('ordinal column width', () => {
+  const makeCtx = (maxOrdinalChars?: number): BOQColumnContext => ({
+    currencySymbol: '€',
+    currencyCode: 'EUR',
+    locale: 'de-DE',
+    fmt: new Intl.NumberFormat('de-DE'),
+    t: (key: string, opts?: Record<string, string>) => (opts?.defaultValue as string) ?? key,
+    ...(maxOrdinalChars !== undefined ? { maxOrdinalChars } : {}),
+  });
+
+  const ordinalWidth = (maxOrdinalChars?: number): number => {
+    const col = getColumnDefs(makeCtx(maxOrdinalChars)).find((c) => c.field === 'ordinal');
+    if (!col) throw new Error('ordinal column not found');
+    return col.width as number;
+  };
+
+  it('fits a full German GAEB OZ like 01.01.0010 (10 chars) without truncation', () => {
+    // 10 chars need >= ceil(10 * 7.5) + 30 = 105px of column.
+    expect(ordinalColumnWidth(10)).toBeGreaterThanOrEqual(105);
+    expect(ordinalWidth(10)).toBe(ordinalColumnWidth(10));
+  });
+
+  it('keeps the compact default when ordinals are short or unknown', () => {
+    expect(ordinalWidth(undefined)).toBe(88);
+    expect(ordinalWidth(0)).toBe(88);
+    expect(ordinalWidth(5)).toBe(88);
+  });
+
+  it('grows monotonically with deeper OZ schemes', () => {
+    expect(ordinalColumnWidth(13)).toBeGreaterThan(ordinalColumnWidth(10));
+  });
+
+  /* The floor moved off the old hardcoded 70px and now tracks the data. The
+   * grid calls sizeColumnsToFit on ready and after every column change, and
+   * that pass takes width back down to minWidth - so a 70px floor undid the
+   * fitted width on any viewport that had to give space elsewhere, and
+   * "09.01.0030" was ellipsised again. A GAEB OZ is an addressable
+   * identifier that gets typed back into an inquiry, so the column is no
+   * longer shrinkable below what its longest ordinal needs (widening still
+   * works: `resizable: true` on defaultColDef). */
+  it('cannot be squeezed below the width its longest ordinal needs', () => {
+    const ordinalMinWidth = (maxOrdinalChars?: number): number => {
+      const col = getColumnDefs(makeCtx(maxOrdinalChars)).find((c) => c.field === 'ordinal');
+      if (!col) throw new Error('ordinal column not found');
+      return col.minWidth as number;
+    };
+    // "09.01.0030" - a real GAEB Ordnungszahl, 10 characters.
+    expect(ordinalMinWidth('09.01.0030'.length)).toBeGreaterThanOrEqual(105);
+    expect(ordinalMinWidth(10)).toBe(ordinalWidth(10));
+    expect(ordinalMinWidth(13)).toBe(ordinalWidth(13));
+    // Nothing to size against keeps the historic compact column.
+    expect(ordinalMinWidth(undefined)).toBe(88);
+  });
+
+  it('caps the width for pathological ordinals', () => {
+    expect(ordinalColumnWidth(60)).toBe(180);
   });
 });
 

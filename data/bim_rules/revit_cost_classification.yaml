@@ -16,7 +16,7 @@ pack:
   id: revit_cost_classification
   name: DIN 276 Cost-Group Completeness (Revit)
   description: |
-    Verifies that every Revit wall carries a DIN 276 cost-group code in the
+    Verifies that every Revit® wall carries a DIN 276 cost-group code in the
     300, 400 or 500 ranges, stored in the DIN_276_Code shared parameter, so
     cost-group rollups are well-defined.
   source: openconstructionerp

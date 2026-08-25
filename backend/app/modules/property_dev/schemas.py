@@ -12,6 +12,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
+from app.core.provenance import Provenance
+
 # ── R7 money serialization helper ───────────────────────────────────────
 #
 # Pydantic v2 serializes ``Decimal`` to a JSON *number* by default, which
@@ -2551,11 +2553,26 @@ class TaxQuoteLineItem(BaseModel):
 
 
 class ContractTaxQuote(BaseModel):
-    """Response model for ``POST /sales-contracts/{id}/tax-quote``."""
+    """Response model for ``POST /sales-contracts/{id}/tax-quote``.
+
+    ``vat_provenance`` says how ``vat`` was arrived at, because the amount on
+    its own cannot. A zero-rated supply, a jurisdiction that levies no VAT and
+    a jurisdiction this platform does not model for VAT all serialise the same
+    ``"0.00"``, and a client adding that to its own total is right in the first
+    two cases and understating in the third.
+
+    Read its ``source``. The ``used`` token is descriptive and per module by
+    design, so a client matching on its text will miss stand-ins it has not
+    heard of; see :mod:`app.core.provenance`. ``answered`` and ``usable`` are
+    properties rather than fields and so do not cross the wire, which is
+    deliberate: they are derivable from ``source``, and shipping both would
+    invite clients to branch on the copy that cannot be extended.
+    """
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
     jurisdiction: str
+    vat_provenance: Provenance
     region_subcode: str | None = None
     currency: str = ""
     net: Decimal = Decimal("0")
@@ -2635,6 +2652,15 @@ class ComplianceRegulatorReportResponse(BaseModel):
     quarter: str
     generated_at: str
     pdf_base64: str
+    #: BCP-47 primary subtag the PDF prose is written in. English for three of
+    #: the four regulators and Russian for the 214-FZ filing, because the
+    #: language here follows the jurisdiction rather than the reader. A client
+    #: decoding ``pdf_base64`` gets the same answer the streaming branch puts in
+    #: ``Content-Language``, so the two shapes of this endpoint cannot disagree.
+    #: Required rather than defaulted, for the reason the field exists: a
+    #: default of "en" would quietly answer for a regulator nobody had asked
+    #: about yet, which is the failure this whole field is here to prevent.
+    pdf_language: str
     payload_format: str
     payload_base64: str
     summary: dict[str, Any] = Field(default_factory=dict)

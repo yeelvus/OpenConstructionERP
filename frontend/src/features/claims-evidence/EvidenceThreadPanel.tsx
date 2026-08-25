@@ -21,6 +21,7 @@ import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Download, FileStack, Layers } from 'lucide-react';
 import { Card, Badge, EmptyState, SkeletonTable } from '@/shared/ui';
 import { getErrorMessage } from '@/shared/lib/api';
+import { fmtDate } from '@/shared/lib/formatters';
 import { exportReconstructedPack, reconstructChange, type ReconstructSubjectType } from './api';
 import type { EvidencePack } from './types';
 
@@ -32,10 +33,14 @@ function humanize(token: string): string {
     .trim();
 }
 
-/** Keep the date part of an ISO timestamp; pass anything shorter through. */
+/** Locale-aware date for a pack timestamp, via the app-wide formatter. */
 function formatDate(iso: string | null): string {
   if (!iso) return '';
-  return iso.length >= 10 ? iso.slice(0, 10) : iso;
+  try {
+    return fmtDate(iso);
+  } catch {
+    return iso;
+  }
 }
 
 /**
@@ -167,14 +172,18 @@ export function EvidenceThreadPanel({ projectId, subjectType, subjectId, classNa
           {pack.sections.map((section) => (
             <div key={section.name} className="space-y-1.5">
               <div className="text-2xs font-semibold uppercase tracking-wide text-content-tertiary">
-                {humanize(section.name)}
+                {/* Engine section / kind tokens are stable: translate them by
+                    token and let an unknown one fall back to a humanized form. */}
+                {t(`claims_evidence.section.${section.name}`, { defaultValue: humanize(section.name) })}
               </div>
               <ul className="space-y-1">
                 {section.entries.map((entry) => (
                   <li key={entry.ref_id} className="flex items-start gap-2 text-sm">
-                    <Badge variant="neutral">{humanize(entry.kind)}</Badge>
+                    <Badge variant="neutral">
+                      {t(`claims_evidence.kind.${entry.kind}`, { defaultValue: humanize(entry.kind) })}
+                    </Badge>
                     <span className="min-w-0 flex-1 text-content-secondary">
-                      {entry.title || humanize(entry.kind)}
+                      {entry.title || t(`claims_evidence.kind.${entry.kind}`, { defaultValue: humanize(entry.kind) })}
                     </span>
                     {entry.occurred_at ? (
                       <span className="shrink-0 tabular-nums text-xs text-content-tertiary">

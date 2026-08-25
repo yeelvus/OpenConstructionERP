@@ -42,12 +42,14 @@ import {
 
 interface Props {
   contracts: ServiceContract[];
+  /** Set on the /projects/:projectId/service mount, absent on the flat one. */
+  projectId?: string;
 }
 
 const inputCls =
   'h-9 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue';
 
-export function RecurringSchedulesTab({ contracts }: Props) {
+export function RecurringSchedulesTab({ contracts, projectId }: Props) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const toast = useToastStore((s) => s.addToast);
@@ -55,8 +57,8 @@ export function RecurringSchedulesTab({ contracts }: Props) {
   const [createOpen, setCreateOpen] = useState(false);
 
   const schedulesQ = useQuery({
-    queryKey: ['service', 'recurring-schedules'],
-    queryFn: () => listRecurringSchedules({ limit: 200 }),
+    queryKey: ['service', 'recurring-schedules', projectId ?? ''],
+    queryFn: () => listRecurringSchedules({ project_id: projectId, limit: 200 }),
   });
 
   const toggleEnabled = useMutation({
@@ -209,6 +211,7 @@ export function RecurringSchedulesTab({ contracts }: Props) {
       {createOpen && (
         <CreateRecurringModal
           contracts={contracts}
+          projectId={projectId}
           onClose={() => setCreateOpen(false)}
         />
       )}
@@ -292,9 +295,11 @@ function ScheduleRow({
 
 function CreateRecurringModal({
   contracts,
+  projectId,
   onClose,
 }: {
   contracts: ServiceContract[];
+  projectId?: string;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -312,6 +317,9 @@ function CreateRecurringModal({
       createRecurringSchedule({
         name,
         rrule,
+        // On the project mount the schedule is that project's, so it stays
+        // in the list it was created from.
+        project_id: projectId || null,
         contract_id: contractId || null,
         template_ticket_data: {
           contract_id: contractId || undefined,

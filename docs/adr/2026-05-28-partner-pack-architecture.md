@@ -191,5 +191,5 @@ back to the env-var / first-installed precedence when absent.
 - Onboarding guide: `docs/partner-packs/README.md`
 - Manifest field reference: `docs/partner-packs/MANIFEST_REFERENCE.md`
 - Source: `backend/app/core/partner_pack/{manifest,discovery,router}.py`
-- Reference packs: `packs/{aus-nzs,batimatech-ca,bimhessen-de,brazil-sinapi,doker-formwork,india-cpwd,renewables-epc,saudi-vision2030,uk-jct,us-rsmeans}/`
+- Reference packs: `packs/{aus-nzs,batimatech-ca,bimhessen-de,brazil-sinapi,doker-formwork,india-cpwd,renewables-epc,saudi-vision2030,uk-jct,us-costdata}/`
 - Memory: `v5_6_0_release.md`

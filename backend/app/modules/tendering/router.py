@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
-from app.core.http_headers import content_disposition_attachment
+from app.core.content_disposition import attachment_disposition
 from app.dependencies import (
     CurrentUserId,
     CurrentUserPayload,
@@ -34,6 +34,8 @@ from app.modules.tendering.schemas import (
     AddendumAcknowledgeRequest,
     AddendumCreate,
     AddendumResponse,
+    AwardRecordNoteCreate,
+    AwardRecordResponse,
     BidAnalysisResponse,
     BidComparisonResponse,
     BidCreate,
@@ -46,6 +48,7 @@ from app.modules.tendering.schemas import (
     LevelingMatrixResponse,
     PackageCreate,
     PackageResponse,
+    PackageScopeResponse,
     PackageUpdate,
     PackageWithBidsResponse,
     RecipientCreate,
@@ -343,6 +346,24 @@ async def get_package(
     """Get a tender package with all bids."""
     package = await _verify_package_owner(service, session, package_id, user_id, payload)
     return _package_with_bids(package)
+
+
+@router.get("/packages/{package_id}/scope", response_model=PackageScopeResponse)
+async def get_package_scope(
+    package_id: uuid.UUID,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: TenderingService = Depends(_get_service),
+    _perm: None = Depends(RequirePermission("tendering.read")),
+) -> PackageScopeResponse:
+    """Report which sections of the bill this package was raised over.
+
+    The comparison and levelling screens already narrow to that scope, so this
+    is the fact they compute made readable rather than a new one.
+    """
+    await _verify_package_owner(service, session, package_id, user_id, payload)
+    return await service.package_scope(package_id)
 
 
 @router.patch("/packages/{package_id}", response_model=PackageResponse)
@@ -676,6 +697,103 @@ async def level_package_bids(
     return await service.level_bids(package_id)
 
 
+# ── Award record (Vergabevermerk) ─────────────────────────────────────────────
+# Guarded exactly like the neighbouring package routes: the declared permission
+# plus ``_verify_package_owner``, which loads the package and then runs
+# ``verify_project_access`` (owner + admin + team, 404 on both missing and
+# denied). Reading the record is a read of the package, and writing a statement
+# into it is an update of the package, so the existing ``tendering.read`` and
+# ``tendering.update`` permissions are the right ones; the record is not a
+# separate object with a separate right.
+
+
+@router.get("/packages/{package_id}/award-record/", response_model=AwardRecordResponse)
+async def get_award_record(
+    package_id: uuid.UUID,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: TenderingService = Depends(_get_service),
+    _perm: None = Depends(RequirePermission("tendering.read")),
+) -> AwardRecordResponse:
+    """The written record of the award procedure, at whatever stage it stands.
+
+    Assembled from the procedure itself rather than from anything retyped, and
+    readable from the first day: the sections the procedure already owes and
+    that nothing has answered are returned as gaps rather than left blank.
+    """
+    await _verify_package_owner(service, session, package_id, user_id, payload)
+    return await service.award_record(package_id)
+
+
+@router.post("/packages/{package_id}/award-record/notes/", response_model=AwardRecordResponse, status_code=201)
+async def record_award_record_note(
+    package_id: uuid.UUID,
+    data: AwardRecordNoteCreate,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: TenderingService = Depends(_get_service),
+    _perm: None = Depends(RequirePermission("tendering.update")),
+) -> AwardRecordResponse:
+    """Write one statement into the record and return the record as it now reads.
+
+    Only the statements a person has to make are accepted here: which procedure
+    type was chosen and why, the award criteria, the ground for excluding a bid,
+    and why the winning bid won. Everything else the record states comes from
+    the procedure. Statements are append-only, so writing a section again
+    supersedes the earlier statement instead of erasing it.
+    """
+    await _verify_package_owner(service, session, package_id, user_id, payload)
+    return await service.record_award_note(package_id, data, actor_id=user_id)
+
+
+@router.get("/packages/{package_id}/award-record/pdf/")
+async def export_award_record_pdf(
+    package_id: uuid.UUID,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: TenderingService = Depends(_get_service),
+    _perm: None = Depends(RequirePermission("tendering.read")),
+) -> StreamingResponse:
+    """Download the award record as a PDF for filing.
+
+    Reuses the module's PDF stack (reportlab, via ``pdf_documents.py``) so the
+    record matches the award and rejection letters. Available at every stage,
+    with the still-open points printed, because a record that could only be
+    exported once the award was made would be the reconstruction after the fact
+    that the rule exists to prevent.
+    """
+    await _verify_package_owner(service, session, package_id, user_id, payload)
+    try:
+        pdf_bytes, filename = await service.build_award_record_pdf(package_id)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to generate award record for package %s", package_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate award record",
+        )
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": attachment_disposition(filename),
+            # Every tendering document on this router is written in English:
+            # pdf_documents.py holds its labels as English literals and takes no
+            # locale from anywhere. Saying so is not a limitation we are adding,
+            # it is the one we already have. Without this line the
+            # Accept-Language middleware labels these bytes with whatever the
+            # reader asked for, so a bidder who set the interface to French
+            # receives an English document declared French, and neither the
+            # browser nor an archive can tell that it is a fallback.
+            "Content-Language": "en",
+        },
+    )
+
+
 # ── Export Endpoints ──────────────────────────────────────────────────────────
 
 
@@ -808,9 +926,17 @@ async def export_tender_pdf(
     return StreamingResponse(
         buf,
         media_type="application/pdf",
-        # RFC 6266 - a package name with non-Latin-1 chars would otherwise 500
-        # while the ASGI server encodes this header.
-        headers={"Content-Disposition": content_disposition_attachment(filename)},
+        headers={
+            # RFC 6266 - a package name with non-Latin-1 chars would otherwise 500
+            # while the ASGI server encodes this header.
+            "Content-Disposition": attachment_disposition(filename),
+            # English, and this page can hold nothing else: the stream above is
+            # a single Courier byte stream written through latin-1, so the
+            # document could not carry another script even if the labels were
+            # translated. The declaration is therefore about the page as it is
+            # built rather than a placeholder for a locale that might arrive.
+            "Content-Language": "en",
+        },
     )
 
 
@@ -844,7 +970,11 @@ async def export_award_letter_pdf(
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": content_disposition_attachment(filename)},
+        headers={
+            "Content-Disposition": attachment_disposition(filename),
+            # English for the reason given on the award record above.
+            "Content-Language": "en",
+        },
     )
 
 
@@ -878,7 +1008,14 @@ async def export_rejection_letter_pdf(
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": content_disposition_attachment(filename)},
+        headers={
+            # A rejection is the letter a losing bidder keeps, so being able to
+            # tell that it was written in English rather than in the language
+            # they asked for matters more here than anywhere else on this
+            # router.
+            "Content-Disposition": attachment_disposition(filename),
+            "Content-Language": "en",
+        },
     )
 
 

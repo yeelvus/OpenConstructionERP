@@ -14,13 +14,16 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.content_disposition import attachment_disposition
 from app.dependencies import CurrentUserId, CurrentUserPayload, RequireRole, SessionDep, SettingsDep
+from app.modules.finance.variance import expected_outturn
 from app.modules.projects import profile_service
 from app.modules.projects.bundle_export import (
     export_bundle as fm_export_bundle,
@@ -41,6 +44,7 @@ from app.modules.projects.bundle_import import (
     validate_bundle as fm_validate_bundle,
 )
 from app.modules.projects.file_manager_schemas import (
+    FILE_KINDS,
     EmailLinkResponse,
     ExportOptions,
     ExportPreview,
@@ -1271,6 +1275,14 @@ async def project_dashboard(
         except Exception:
             logger.debug("Dashboard: committed PO sum unavailable", exc_info=True)
 
+        outturn_total = float(
+            expected_outturn(
+                forecast_final=Decimal("0"),
+                committed=Decimal(str(committed_total)),
+                actual=Decimal(str(actual_total)),
+            ),
+        )
+
         budget_section = {
             "original": _money(original),
             "revised": _money(revised),
@@ -1278,11 +1290,21 @@ async def project_dashboard(
             "actual": _money(actual_total),
             "forecast": _money(forecast),
             "consumed_pct": _pct(actual_total / revised * 100 if revised > 0 else 0),
+            # Two questions on two bases, as on the budget row itself.
+            # `consumed_pct` is how much money has left the building.
+            # `warning_level` is how much of the budget is spoken for, which
+            # is what a reader is deciding against. It used to sit on spend,
+            # so a project with most of its budget on signed order but little
+            # invoiced showed green on the screen whose job is to stop that.
+            # `forecast` a few lines up is a display placeholder set to the
+            # budget itself, not a recorded forecast, so it is deliberately
+            # not passed here: feeding it in would make every project finish
+            # exactly on budget by construction.
             "warning_level": (
                 "critical"
-                if revised > 0 and actual_total > revised
+                if revised > 0 and outturn_total > revised
                 else "warning"
-                if revised > 0 and actual_total > revised * 0.9
+                if revised > 0 and outturn_total > revised * 0.9
                 else "normal"
             ),
         }
@@ -2465,25 +2487,42 @@ async def analytics_overview(
 
     # Single grouped query for budget rows across the user's projects
     if project_ids:
-        budget_stmt = (
-            select(
-                BudgetLine.project_id,
-                func.sum(numeric_value(BudgetLine.planned_amount)).label("planned"),
-                func.sum(numeric_value(BudgetLine.actual_amount)).label("actual"),
-            )
-            .where(BudgetLine.project_id.in_(project_ids))
-            .group_by(BudgetLine.project_id)
-        )
+        # Read the lines rather than summing them in SQL: the outturn rule is
+        # a per-line one. A line wholly on order and a second one wholly
+        # invoiced are two different states, and folding the project into one
+        # committed total and one spend total before applying the rule drops
+        # whichever of the two is smaller in its entirety.
+        budget_stmt = select(
+            BudgetLine.project_id,
+            numeric_value(BudgetLine.planned_amount),
+            numeric_value(BudgetLine.committed_amount),
+            numeric_value(BudgetLine.actual_amount),
+            numeric_value(BudgetLine.forecast_amount),
+        ).where(BudgetLine.project_id.in_(project_ids))
         budget_rows = (await session.execute(budget_stmt)).all()
     else:
         budget_rows = []
 
-    budget_map: dict[str, tuple[float, float]] = {
-        str(r.project_id): (float(r.planned or 0), float(r.actual or 0)) for r in budget_rows
-    }
+    budget_map: dict[str, tuple[float, float, float]] = {}
+    for row_project_id, planned_amt, committed_amt, actual_amt, forecast_amt in budget_rows:
+        key = str(row_project_id)
+        planned_so_far, actual_so_far, outturn_so_far = budget_map.get(key, (0.0, 0.0, 0.0))
+        budget_map[key] = (
+            planned_so_far + float(planned_amt or 0),
+            actual_so_far + float(actual_amt or 0),
+            outturn_so_far
+            + float(
+                expected_outturn(
+                    forecast_final=Decimal(str(forecast_amt or 0)),
+                    committed=Decimal(str(committed_amt or 0)),
+                    actual=Decimal(str(actual_amt or 0)),
+                ),
+            ),
+        )
 
-    total_planned = sum(p for p, _ in budget_map.values())
-    total_actual = sum(a for _, a in budget_map.values())
+    total_planned = sum(p for p, _, _ in budget_map.values())
+    total_actual = sum(a for _, a, _ in budget_map.values())
+    total_outturn = sum(o for _, _, o in budget_map.values())
 
     # A-DASH-01: each project carries its own currency (EUR/GBP/USD/AED…).
     # A single scalar total mixes them into a financially meaningless
@@ -2492,17 +2531,19 @@ async def analytics_overview(
     # when the flat scalar must not be shown as a single headline figure.
     currency_of: dict[str, str] = {str(p.id): (p.currency or "") for p in all_projects}
     by_currency: dict[str, dict[str, float]] = {}
-    for pid_str, (planned_v, actual_v) in budget_map.items():
+    for pid_str, (planned_v, actual_v, outturn_v) in budget_map.items():
         cur = currency_of.get(pid_str) or "UNKNOWN"
-        bucket = by_currency.setdefault(cur, {"planned": 0.0, "actual": 0.0})
+        bucket = by_currency.setdefault(cur, {"planned": 0.0, "actual": 0.0, "outturn": 0.0})
         bucket["planned"] += planned_v
         bucket["actual"] += actual_v
+        bucket["outturn"] += outturn_v
     totals_by_currency = [
         {
             "currency": cur,
             "total_planned": round(v["planned"], 2),
             "total_actual": round(v["actual"], 2),
-            "total_variance": round(v["planned"] - v["actual"], 2),
+            "total_outturn": round(v["outturn"], 2),
+            "total_variance": round(v["planned"] - v["outturn"], 2),
         }
         for cur, v in sorted(by_currency.items())
     ]
@@ -2530,11 +2571,15 @@ async def analytics_overview(
         pcurrency = p.currency
 
         # Find budget for this project
-        planned, actual = budget_map.get(pid, (0.0, 0.0))
-        # Variance is always planned - actual. When planned == 0 but actual > 0
-        # the project has incurred cost with no recorded budget; that is an
-        # overspend (negative variance), not a neutral "on budget" zero.
-        variance = planned - actual
+        planned, actual, outturn = budget_map.get(pid, (0.0, 0.0, 0.0))
+        # Variance is the budget less what the project is expected to finish
+        # at, which is a recorded forecast if there is one, else what is on
+        # signed order, else spend. Measuring against spend alone reported
+        # every half-built job comfortably under budget. When planned == 0 but
+        # there is cost the project has incurred money with no recorded
+        # budget; that is an overspend (negative variance), not a neutral
+        # "on budget" zero.
+        variance = planned - outturn
         # Percentage is undefined when there is no budget to measure against;
         # return None so the frontend can render an explicit placeholder
         # instead of a misleading 0.0%.
@@ -2551,10 +2596,11 @@ async def analytics_overview(
                 "currency": pcurrency,
                 "budget": round(planned, 2),
                 "actual": round(actual, 2),
+                "outturn": round(outturn, 2),
                 "variance": round(variance, 2),
                 "variance_pct": variance_pct,
                 "boq_count": boq_count,
-                "status": "over_budget" if actual > planned else "on_budget",
+                "status": "over_budget" if outturn > planned else "on_budget",
             }
         )
 
@@ -2569,7 +2615,8 @@ async def analytics_overview(
         # rendered as a single headline figure - use ``totals_by_currency``.
         "total_planned": round(total_planned, 2),
         "total_actual": round(total_actual, 2),
-        "total_variance": round(total_planned - total_actual, 2),
+        "total_outturn": round(total_outturn, 2),
+        "total_variance": round(total_planned - total_outturn, 2),
         "multi_currency": multi_currency,
         "totals_by_currency": totals_by_currency,
         "over_budget_count": over_budget_count,
@@ -3058,6 +3105,11 @@ async def file_manager_list(
     session: SessionDep,
     service: ProjectService = Depends(_get_service),
     category: FileKind | None = Query(default=None),
+    kinds: str | None = Query(
+        default=None,
+        max_length=200,
+        description=("Comma-separated file kinds to include, e.g. 'document,takeoff'. Unknown kinds are rejected."),
+    ),
     extension: str | None = Query(default=None, max_length=10),
     q: str | None = Query(default=None, max_length=200),
     sort: str = Query(default="modified", pattern="^(modified|name|size|kind)$"),
@@ -3066,17 +3118,36 @@ async def file_manager_list(
 ) -> FileListResponse:
     """Flat listing of every file attached to ``project_id``.
 
-    Cross-module: documents, photos, sheets, BIM models, DWG drawings.
-    Each row carries the *real* on-disk path so the UI can ground users
-    on where their data actually lives.
+    Cross-module: documents, photos, sheets, BIM models, DWG drawings and
+    takeoff documents. Each row carries the *real* on-disk path so the UI can
+    ground users on where their data actually lives, and ``kind`` says which
+    module the row came from.
+
+    ``category`` selects one kind, ``kinds`` a set of them. A caller that wants
+    exactly two sources - the "open from project files" picker asking for the
+    documents area plus the calling module's own store - uses ``kinds`` and
+    gets one project-scoped, permission-checked, paged answer instead of
+    merging two listings client-side. An unknown kind is a 400 rather than a
+    silently empty page, because a typo there returns rows the caller did not
+    ask for and nothing on screen would say so.
     """
     # IDOR/RBAC: team-readable docs - allow project team members (owner/admin/member), not owner-only
     await _verify_project_access(service, project_id, user_id, session, payload)
+    wanted: list[str] | None = None
+    if kinds:
+        wanted = [k.strip() for k in kinds.split(",") if k.strip()]
+        unknown = sorted({k for k in wanted if k not in FILE_KINDS})
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unknown file kind(s): {', '.join(unknown)}",
+            )
     return await fm_list_files(
         session,
         str(project_id),
         user_id=str(user_id) if user_id else None,
         category=category,
+        kinds=wanted,
         extension=extension,
         query=q,
         limit=limit,
@@ -3200,7 +3271,7 @@ async def post_export_bundle(
         content=raw,
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="{fname}"',
+            "Content-Disposition": attachment_disposition(fname),
             "X-Bundle-Format": "ocep",
             "X-Bundle-Scope": options.scope,
         },

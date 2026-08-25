@@ -6,7 +6,7 @@
  * All endpoints are prefixed with /v1/contacts/.
  */
 
-import { apiGet, apiPost, apiPatch, apiDelete, triggerDownload, extractErrorMessageFromBody } from '@/shared/lib/api';
+import { apiGet, apiPost, apiPatch, apiDelete, triggerDownload, extractErrorMessageFromBody, type Page } from '@/shared/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
@@ -175,7 +175,18 @@ export interface UpdateContactPayload {
 
 /* ── API Functions ─────────────────────────────────────────────────────── */
 
-export async function fetchContacts(filters?: ContactFilters): Promise<Contact[]> {
+/**
+ * One page of the directory, envelope intact.
+ *
+ * The previous signature returned `Contact[]` and unwrapped a
+ * `Contact[] | { items }` union, so every caller saw the rows the server
+ * happened to send and nothing at all about the rows it did not. The
+ * directory caps at 500 per request, which a CRM tenant with a few thousand
+ * inbound leads passes without a word on screen. Callers that only need the
+ * rows read `.items`; callers that put the rows in front of a person also
+ * mount `TruncationNotice` with this page.
+ */
+export async function fetchContacts(filters?: ContactFilters): Promise<Page<Contact>> {
   const params = new URLSearchParams();
   if (filters?.contact_type) params.set('contact_type', filters.contact_type);
   if (filters?.country) params.set('country', filters.country);
@@ -187,8 +198,19 @@ export async function fetchContacts(filters?: ContactFilters): Promise<Contact[]
     }
   }
   const qs = params.toString();
-  const res = await apiGet<Contact[] | { items: Contact[] }>(`/v1/contacts/${qs ? `?${qs}` : ''}`);
-  return Array.isArray(res) ? res : res.items ?? [];
+  return apiGet<Page<Contact>>(`/v1/contacts/${qs ? `?${qs}` : ''}`);
+}
+
+/**
+ * One contact by id.
+ *
+ * Two callers used to answer "what is this contact called" by pulling 500
+ * rows and searching them, which is a lookup that silently fails for contact
+ * 501: no error, no empty state, the name just renders as a type word. The
+ * per-id route has always existed.
+ */
+export function fetchContact(contactId: string): Promise<Contact> {
+  return apiGet<Contact>(`/v1/contacts/${contactId}`);
 }
 
 export async function fetchContactTags(): Promise<TagFacet[]> {

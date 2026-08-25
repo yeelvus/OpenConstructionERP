@@ -2,7 +2,9 @@
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtPercent } from '@/shared/lib/formatters';
+import { formatCompactCurrency } from '@/shared/lib/money';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -32,17 +34,9 @@ const MIN_CHART_HEIGHT = 300;
 const TICK_COUNT = 5;
 
 function formatCompact(amount: number, currency: string): string {
-  // currency may be "" — appending it then renders a clean number with no
-  // symbol rather than a wrong one (task #217). Trim so we don't leave a
-  // trailing space.
-  const suffix = currency ? ` ${currency}` : '';
-  if (amount >= 1_000_000) {
-    return `${(amount / 1_000_000).toFixed(1)}M${suffix}`;
-  }
-  if (amount >= 1_000) {
-    return `${(amount / 1_000).toFixed(0)}K${suffix}`;
-  }
-  return `${amount.toFixed(0)}${suffix}`;
+  // currency may be "", which renders a clean number with no symbol rather
+  // than a wrong one (task #217).
+  return formatCompactCurrency(amount, currency);
 }
 
 function formatFull(amount: number, currency: string): string {
@@ -50,13 +44,13 @@ function formatFull(amount: number, currency: string): string {
   // NEVER hard-fallback to EUR (task #217): render a symbol-less number
   // when the currency is unknown.
   if (!/^[A-Z]{3}$/.test(code)) {
-    return new Intl.NumberFormat(getIntlLocale(), {
+    return new Intl.NumberFormat(getNumberLocale(), {
       minimumFractionDigits: 0,
       maximumFractionDigits: 0,
     }).format(amount);
   }
   try {
-    return new Intl.NumberFormat(getIntlLocale(), {
+    return new Intl.NumberFormat(getNumberLocale(), {
       style: 'currency',
       currency: code,
       minimumFractionDigits: 0,
@@ -364,7 +358,7 @@ export function BidComparisonChart({
                   }
                 >
                   {bar.bid.deviation_pct > 0 ? '+' : ''}
-                  {bar.bid.deviation_pct.toFixed(1)}%
+                  {fmtPercent(bar.bid.deviation_pct)}
                 </text>
 
                 {/* Company name on X axis */}

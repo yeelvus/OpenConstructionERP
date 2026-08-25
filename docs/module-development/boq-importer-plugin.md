@@ -105,8 +105,6 @@ standard.
 That's all. The new entry:
 
 - Mounts at `/ar-boq-exchange` automatically (back-compat slug).
-- Appears in the command-palette / global search via the
-  `searchEntries` synthesizer in `manifest.tsx`.
 - Picks up the shared i18n bundle under the `regional.*`
   keyspace; no per-country translation file required.
 - Routes file uploads to the existing

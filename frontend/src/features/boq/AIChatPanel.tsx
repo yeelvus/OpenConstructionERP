@@ -14,7 +14,7 @@ import {
 } from './api';
 import { ApiError } from '@/shared/lib/api';
 import { useIsRTL } from '@/shared/hooks/useIsRTL';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Types ──────────────────────────────────────────────────────────── */
 
@@ -78,7 +78,7 @@ export function AIChatPanel({
         ? t('boq.ai_generated_summary', {
             defaultValue: 'Generated {{count}} positions totalling {{total}} {{currency}}.',
             count: response.items.length,
-            total: total.toLocaleString(i18n.language, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+            total: total.toLocaleString(getNumberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
             currency,
           })
         : '';
@@ -212,7 +212,7 @@ export function AIChatPanel({
 
   /** Format a number for display. */
   const fmtNum = (n: number) =>
-    new Intl.NumberFormat(getIntlLocale(), {
+    new Intl.NumberFormat(getNumberLocale(), {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     }).format(n);

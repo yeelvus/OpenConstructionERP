@@ -13,6 +13,7 @@ interface ChatLeftPanelProps {
   onClear: () => void;
   aiConfigured: boolean | null;
   sessions: ChatSession[];
+  sessionsTotal: number;
   sessionsLoading: boolean;
   loadingSessionId: string | null;
   activeSessionId: string | null;
@@ -28,6 +29,7 @@ export default function ChatLeftPanel({
   onClear,
   aiConfigured,
   sessions,
+  sessionsTotal,
   sessionsLoading,
   loadingSessionId,
   activeSessionId,
@@ -46,6 +48,7 @@ export default function ChatLeftPanel({
     >
       <ChatHistory
         sessions={sessions}
+        sessionsTotal={sessionsTotal}
         sessionsLoading={sessionsLoading}
         loadingSessionId={loadingSessionId}
         activeSessionId={activeSessionId}

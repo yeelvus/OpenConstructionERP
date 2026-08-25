@@ -30,6 +30,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, StreamingResponse
 
+from app.core.content_disposition import attachment_disposition
 from app.core.i18n import get_locale
 from app.core.json_merge import merge_metadata
 from app.core.validation.messages import translate
@@ -82,6 +83,7 @@ from app.modules.contracts.schemas import (
     ContractLineCreate,
     ContractLineResponse,
     ContractLineUpdate,
+    ContractListResponse,
     ContractMilestoneCreate,
     ContractMilestoneResponse,
     ContractMilestoneUpdate,
@@ -123,6 +125,7 @@ from app.modules.contracts.schemas import (
     ProgressClaimLineCreate,
     ProgressClaimLineResponse,
     ProgressClaimLineUpdate,
+    ProgressClaimListResponse,
     ProgressClaimPopulatePreviewResponse,
     ProgressClaimResponse,
     ProgressClaimUpdate,
@@ -509,7 +512,7 @@ async def thcc_stream_contract_file(
 # ── Contracts ────────────────────────────────────────────────────────────
 
 
-@router.get("/contracts/", response_model=list[ContractResponse])
+@router.get("/contracts/", response_model=ContractListResponse)
 async def list_contracts(
     session: SessionDep,
     user_id: CurrentUserId,
@@ -520,11 +523,16 @@ async def list_contracts(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     _perm: None = Depends(RequirePermission("contracts.read")),
-) -> list[ContractResponse]:
-    """List contracts for a project."""
+) -> ContractListResponse:
+    """List one page of contracts for a project.
+
+    The repository has counted the whole matching set since it was written and
+    the count was discarded here, so the reader was handed at most `limit` rows
+    with nothing to say whether that was the register or the start of it.
+    """
     await verify_project_access(project_id, user_id, session)
     service = ContractsService(session)
-    items, _total = await service.contract_repo.list_for_project(
+    items, total = await service.contract_repo.list_for_project(
         project_id,
         offset=offset,
         limit=limit,
@@ -532,7 +540,12 @@ async def list_contracts(
         counterparty_type=counterparty_type,
         contract_type=contract_type,
     )
-    return [_contract_to_response(i) for i in items]
+    return ContractListResponse(
+        items=[_contract_to_response(i) for i in items],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.post("/contracts/", response_model=ContractResponse, status_code=201)
@@ -1248,7 +1261,7 @@ async def delete_ld_clause(
 
 @router.get(
     "/progress-claims/",
-    response_model=list[ProgressClaimResponse],
+    response_model=ProgressClaimListResponse,
 )
 async def list_progress_claims(
     contract_id: uuid.UUID,
@@ -1258,16 +1271,22 @@ async def list_progress_claims(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     _perm: None = Depends(RequirePermission("contracts.read")),
-) -> list[ProgressClaimResponse]:
+) -> ProgressClaimListResponse:
+    """List one page of progress claims on a contract."""
     await _verify_contract_access(session, contract_id, user_id)
     service = ContractsService(session)
-    items, _total = await service.claim_repo.claims_for_contract(
+    items, total = await service.claim_repo.claims_for_contract(
         contract_id,
         offset=offset,
         limit=limit,
         status=status,
     )
-    return [_claim_to_response(it) for it in items]
+    return ProgressClaimListResponse(
+        items=[_claim_to_response(it) for it in items],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.post(
@@ -1670,7 +1689,17 @@ async def export_aia_application_pdf(
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": attachment_disposition(filename),
+            # The payment application is drawn from English literals in
+            # aia_pdf.py and no locale reaches it, so the route declares English
+            # rather than letting the Accept-Language middleware answer for it.
+            # The form is a US contract instrument, so English is also the
+            # language it is meant to be read in; that makes the declaration
+            # settled rather than provisional, unlike the exports whose labels
+            # would follow a catalogue if one existed.
+            "Content-Language": "en",
+        },
     )
 
 

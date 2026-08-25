@@ -54,6 +54,7 @@ import {
 import { PopulatePreviewModal } from './PopulatePreviewModal';
 import { ProgressClaimLineTable } from './ProgressClaimLineTable';
 import { AIAApplicationPanel } from './AIAApplicationPanel';
+import { ClaimInvoicePreview } from '@/features/finance';
 import { projectsApi } from '@/features/projects/api';
 
 const CLAIM_STATUS_VARIANT: Record<
@@ -376,6 +377,25 @@ export function ProgressClaimDetailPage() {
           isLoading={linesQ.isLoading}
         />
       </Card>
+
+      {/* The receivable invoice this claim spawns. The component names this
+          panel as its home ("drops into the contracts claim detail panel");
+          mounting it here closes the gap where the raise-from-claim endpoint
+          existed and no screen could reach it. It gates its own action on the
+          certified status and shows the invoice once one exists (including
+          the one auto-raised by the certification event). */}
+      <ClaimInvoicePreview
+        claimId={claimId as string}
+        certified={claim.status === 'certified' || claim.status === 'paid'}
+        onInvoiced={() =>
+          addToast({
+            type: 'success',
+            title: t('finance.claimInvoice.raisedToast', {
+              defaultValue: 'Receivable invoice raised from this claim',
+            }),
+          })
+        }
+      />
 
       {/* AIA G702/G703 — US/CA/AU only (gated on project.is_aia_eligible). */}
       {aiaEligible && (

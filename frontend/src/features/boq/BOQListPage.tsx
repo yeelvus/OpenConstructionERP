@@ -13,7 +13,8 @@ import { Card, Badge, EmptyState, Skeleton, Button, Breadcrumb, FileTypeChips, D
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { apiGet } from '@/shared/lib/api';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtCompact, fmtNumber, fmtPercent } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 import { boqApi, type BOQWithPositions, groupPositionsIntoSections, type SectionGroup } from './api';
 import { resourceAwareTotalInBase, getCurrencyCode } from './boqHelpers';
 import { projectsApi, type Project, type ProjectFxRate } from '@/features/projects/api';
@@ -48,19 +49,26 @@ interface BOQWithProject extends BOQ {
 
 const ITEMS_PER_PAGE = 12;
 
-const currencyFmt = new Intl.NumberFormat(getIntlLocale(), {
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 0,
-});
+/**
+ * A whole-number amount in the reader's language.
+ *
+ * This used to be an `Intl.NumberFormat` built at module scope. The language
+ * switcher deliberately does not reload the app, so a formatter built when
+ * the chunk first loaded kept writing in whatever language the page opened
+ * in: a German reader who arrived in English saw `12,550,880` beside rows
+ * formatted `12.550.880`. Reading the locale per call is what every other
+ * helper in `shared/lib/formatters` already does.
+ */
+const currencyFmt = { format: (value: number) => fmtNumber(value, 0) };
 
 /**
- * Compact money for the stat cards: 1.2M / 340K / 9,500 — always paired
- * with its ISO currency code by the caller (money rule: a figure is never
- * shown without its currency).
+ * Compact money for the stat cards — always paired with its ISO currency
+ * code by the caller (money rule: a figure is never shown without its
+ * currency). Locale-aware: "22.1M" under en, "22,1 Mio." under de, so the
+ * tile agrees with the row-level money formatting on the same screen.
  */
 function compactMoney(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(0)}K`;
+  if (value >= 1_000) return fmtCompact(value);
   return currencyFmt.format(value);
 }
 
@@ -88,7 +96,7 @@ function fmtPct(a: number, b: number): string {
   if (na === 0) return nb === 0 ? '0%' : '+100%';
   const pct = ((nb - na) / Math.abs(na)) * 100;
   const sign = pct >= 0 ? '+' : '';
-  return `${sign}${pct.toFixed(1)}%`;
+  return `${sign}${fmtPercent(pct)}`;
 }
 
 function diffColor(diff: number): string {
@@ -867,6 +875,10 @@ export function BOQListPage() {
           { label: t('nav.validation', { defaultValue: 'Validation' }), onClick: () => navigate('/validation') },
           { label: t('nav.finance', { defaultValue: 'Finance' }), onClick: () => navigate('/finance') },
           { label: t('nav.costs', { defaultValue: 'Cost Database' }), onClick: () => navigate('/costs') },
+          {
+            label: t('nav.cost_explorer', { defaultValue: 'Cost Explorer' }),
+            onClick: () => navigate('/cost-explorer'),
+          },
         ]}
       >
         {t('boq.intro_body', {
@@ -890,7 +902,7 @@ export function BOQListPage() {
           </div>
           <div className="flex flex-col justify-start rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-gradient-to-b from-slate-50/70 to-slate-100/45 dark:from-slate-800/50 dark:to-slate-900/35 p-4 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
             <div className="text-2xs font-medium text-content-tertiary uppercase tracking-wide">{t('boq.total_positions', { defaultValue: 'Total Positions' })}</div>
-            <div className="mt-1 text-lg font-semibold text-content-primary tabular-nums">{stats.totalPositions.toLocaleString()}</div>
+            <div className="mt-1 text-lg font-semibold text-content-primary tabular-nums">{stats.totalPositions.toLocaleString(getNumberLocale())}</div>
           </div>
           <div className="flex flex-col justify-start rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-gradient-to-b from-slate-50/70 to-slate-100/45 dark:from-slate-800/50 dark:to-slate-900/35 p-4 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
             <div className="text-2xs font-medium text-content-tertiary uppercase tracking-wide">{t('boq.total_value', { defaultValue: 'Total Value' })}</div>
@@ -960,7 +972,7 @@ export function BOQListPage() {
                   aria-label={t('a11y.boq.project_filter', {
                     defaultValue: 'Filter estimates by project',
                   })}
-                  className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-44"
+                  className="h-10 max-w-full appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:min-w-44 sm:max-w-80"
                 >
                   <option value="">{t('boq.all_projects', { defaultValue: 'All projects' })}</option>
                   {uniqueProjects.map((p) => (
@@ -1125,7 +1137,9 @@ export function BOQListPage() {
                   <span aria-hidden>·</span>
                   <span className="inline-flex items-center gap-1">
                     <CalendarDays size={11} />
-                    <DateDisplay value={boq.created_at} />
+                    {/* All-numeric so a de-DE reader sees 14.03.2026, matching
+                        the tendering cards (PLAN fixes the numeric form). */}
+                    <DateDisplay value={boq.created_at} format="numeric" />
                   </span>
                   {isCollabEnabled && (
                     <span className="ml-auto"><PresenceAvatars boqId={boq.id} /></span>

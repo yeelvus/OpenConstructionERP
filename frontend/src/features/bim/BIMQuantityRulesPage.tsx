@@ -84,6 +84,7 @@ import {
   type QuantityMapTarget,
 } from './api';
 import { boqApi, type BOQ, type Position } from '@/features/boq/api';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 import {
   type BIMFormat,
   getCategoriesForFormat,
@@ -123,6 +124,25 @@ import {
   type UpdateRequirementPayload,
   type ValidateBIMResult,
 } from '@/features/requirements/api';
+import { fmtFixed, getIntlLocale } from '@/shared/lib/formatters';
+
+// English fallbacks for the computed `bim_rules.confidence_*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const RULES_CONFIDENCE_LABELS: Record<string, string> = {
+  high: 'High', medium: 'Medium', low: 'Low'
+};
+
+
+// English fallbacks for the computed `bim_rules.dim_*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const RULES_DIM_LABELS: Record<string, string> = {
+  area: 'Area', volume: 'Volume', length: 'Length', weight: 'Weight', count: 'Count', unknown: 'Unknown'
+};
+
 
 /* ── Form state types ─────────────────────────────────────────────────── */
 
@@ -441,7 +461,7 @@ function SandboxResultView({ result, unit }: { result: SandboxRunResult; unit: s
         <span className="rounded-md bg-surface-tertiary px-2 py-0.5 font-medium tabular-nums text-content-secondary">
           {t('bim_rules.sandbox_total', {
             defaultValue: 'Σ {{total}} {{unit}}',
-            total: conv(result.totalAdjusted).toLocaleString(undefined, {
+            total: conv(result.totalAdjusted).toLocaleString(getNumberLocale(), {
               maximumFractionDigits: 3,
             }),
             unit: displayUnit || '',
@@ -460,7 +480,7 @@ function SandboxResultView({ result, unit }: { result: SandboxRunResult; unit: s
         >
           {t('bim_rules.sandbox_confidence', {
             defaultValue: 'Confidence: {{level}}',
-            level: t(`bim_rules.confidence_${confidence}`, { defaultValue: confidence }),
+            level: t(`bim_rules.confidence_${confidence}`, { defaultValue: RULES_CONFIDENCE_LABELS[confidence] ?? confidence }),
           })}
         </span>
       </div>
@@ -495,9 +515,9 @@ function SandboxResultView({ result, unit }: { result: SandboxRunResult; unit: s
                 <td className="max-w-[160px] truncate px-2 py-1 text-content-tertiary">
                   {m.name || m.stable_id || m.element_id}
                 </td>
-                <td className="px-2 py-1 text-right tabular-nums">{conv(m.raw_quantity).toFixed(3)}</td>
+                <td className="px-2 py-1 text-right tabular-nums">{fmtFixed(conv(m.raw_quantity), 3)}</td>
                 <td className="px-2 py-1 text-right tabular-nums">
-                  {conv(m.adjusted_quantity).toFixed(3)}
+                  {fmtFixed(conv(m.adjusted_quantity), 3)}
                 </td>
               </tr>
             ))}
@@ -960,11 +980,11 @@ function RuleEditorModal({
                     defaultValue:
                       'Unit mismatch: the source produces a {{src}} quantity but the unit "{{unit}}" reads as {{unitDim}}. Pick a matching unit or quantity source before saving.',
                     src: t(`bim_rules.dim_${unitSafety.sourceDimension}`, {
-                      defaultValue: unitSafety.sourceDimension,
+                      defaultValue: RULES_DIM_LABELS[unitSafety.sourceDimension] ?? unitSafety.sourceDimension,
                     }),
                     unit: formula.unit,
                     unitDim: t(`bim_rules.dim_${unitSafety.unitDimension}`, {
-                      defaultValue: unitSafety.unitDimension,
+                      defaultValue: RULES_DIM_LABELS[unitSafety.unitDimension] ?? unitSafety.unitDimension,
                     }),
                   })}
                 </span>
@@ -1049,7 +1069,7 @@ function RuleEditorModal({
                           {v.waste_factor_pct}% · {v.unit || '-'}
                         </span>
                         <span className="shrink-0 text-[10px] text-content-quaternary tabular-nums">
-                          {new Date(v.saved_at).toLocaleString()}
+                          {new Date(v.saved_at).toLocaleString(getIntlLocale())}
                         </span>
                         <button
                           type="button"
@@ -1434,10 +1454,10 @@ function PreviewModal({ open, onClose, result, loading }: PreviewModalProps) {
                           {item.quantity_source}
                         </td>
                         <td className="px-2 py-1 text-right tabular-nums">
-                          {q.convert(item.raw_quantity, item.unit).value.toFixed(3)}
+                          {fmtFixed(q.convert(item.raw_quantity, item.unit).value, 3)}
                         </td>
                         <td className="px-2 py-1 text-right tabular-nums">
-                          {q.convert(item.adjusted_quantity, item.unit).value.toFixed(3)}
+                          {fmtFixed(q.convert(item.adjusted_quantity, item.unit).value, 3)}
                         </td>
                         <td className="px-2 py-1">{q.unitFor(item.unit)}</td>
                       </tr>
@@ -1775,7 +1795,7 @@ function RequirementRuleEditor({
                       }}
                       className="sr-only"
                     />
-                    {fmt === 'revit' ? 'Revit' : 'IFC'}
+                    {fmt === 'revit' ? 'Revit®' : 'IFC'}
                   </label>
                 ))}
               </div>
@@ -3217,6 +3237,18 @@ export function BIMQuantityRulesPage() {
   /* ── State ─────────────────────────────────────────────────────────── */
 
   const [modelId, setModelId] = useState<string>('');
+  // BOQ the apply writes auto-created positions into. Empty means "let the
+  // project decide", which is what a project with a single unlocked BOQ has
+  // always done. A project holding several gets a 409 from the backend
+  // instead of a silent write into the oldest one, and this picker is how
+  // the user answers it. Ids that no longer belong to the active project
+  // (the user switched projects) fall back to letting the project decide.
+  const [applyBoqId, setApplyBoqId] = useState<string>('');
+
+  // Locked BOQs are not candidates: the apply refuses to write into one, so
+  // offering it would be offering a refusal.
+  const boqOptions = (boqsListQuery.data ?? []).filter((b) => !b.is_locked);
+  const targetBoqId = boqOptions.some((b) => b.id === applyBoqId) ? applyBoqId : '';
   // URL param ?mode=requirements locks the page to the Requirements tab so
   // the sidebar can expose the compliance half as its own entry under
   // Takeoff, while /bim/rules (no param) remains the Estimation-side
@@ -3374,7 +3406,7 @@ export function BIMQuantityRulesPage() {
   });
 
   const previewMutation = useMutation({
-    mutationFn: (id: string) => applyQuantityMaps(id, true),
+    mutationFn: (id: string) => applyQuantityMaps(id, true, targetBoqId || null),
     onMutate: () => {
       setPreviewResult(null);
       setPreviewOpen(true);
@@ -3393,7 +3425,7 @@ export function BIMQuantityRulesPage() {
   });
 
   const applyMutation = useMutation({
-    mutationFn: (id: string) => applyQuantityMaps(id, false),
+    mutationFn: (id: string) => applyQuantityMaps(id, false, targetBoqId || null),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['bim-quantity-maps'] });
       // The apply result does not carry a single BOQ id (positions can land
@@ -3703,6 +3735,36 @@ export function BIMQuantityRulesPage() {
               )}
             </select>
           </div>
+
+          {/* Target BOQ - only worth asking when the project holds more than
+              one. With a single BOQ the apply has always known where to write
+              and still does; with several it refuses rather than guess, so
+              this is where the user answers that refusal. */}
+          {activeTab === 'quantity_rules' && boqOptions.length > 1 && (
+            <div className="flex items-center gap-2">
+              <label
+                htmlFor="apply-boq-picker"
+                className="text-[11px] font-medium text-content-secondary"
+              >
+                {t('bim_rules.pick_boq', { defaultValue: 'BOQ' })}
+              </label>
+              <select
+                id="apply-boq-picker"
+                value={targetBoqId}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => setApplyBoqId(e.target.value)}
+                className="rounded-lg border border-border-light bg-surface-primary px-2 py-1 text-[11px] text-content-primary focus:border-oe-blue focus:outline-none"
+              >
+                <option value="">
+                  {t('bim_rules.select_boq', { defaultValue: 'Select a BOQ…' })}
+                </option>
+                {boqOptions.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {activeTab === 'quantity_rules' && (
           <div className="ml-auto flex items-center gap-2">

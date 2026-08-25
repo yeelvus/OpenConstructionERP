@@ -64,6 +64,18 @@ _GAEB_TO_INTERNAL: dict[str, str] = {
     "mo": "month",
 }
 
+# Hard caps for human-readable text fields. ``_MAX_DESCRIPTION_CHARS``
+# mirrors the ``PositionCreate.description`` schema limit so a pathological
+# Langtext (the official BVBS Pruefdatei embeds a ~56k-char base64 JPEG next
+# to the text) can never bounce the row with a 422 downstream. Graphics are
+# already excluded from the text (only ``<span>`` runs are collected); the
+# cap is the second line of defence for files whose TEXT alone is oversized.
+_MAX_DESCRIPTION_CHARS = 5000
+# ``metadata["gaeb_long_text"]`` is JSONB (no schema limit) but is still a
+# human-readable field - cap it sanely so one degenerate item cannot bloat
+# the stored row.
+_MAX_LONG_TEXT_CHARS = 20000
+
 # DP (Datenaustauschphase) number → DA-kind token. The previous map only
 # covered 81/83/84/86 and returned "x" for DP80/82/85 (FA-GAEB-005, the
 # X86/DP80 file detected as "x"). Cover the full DP80..DP86 range.
@@ -466,7 +478,7 @@ class GAEBXMLImporter:
             up_dec = _to_decimal(_text_of(item, "UP"))
             it_dec = _to_decimal(_text_of(item, "IT"))
 
-            description = _extract_description(item)
+            description = _extract_description(item)[:_MAX_DESCRIPTION_CHARS]
 
             # ── Money reconstruction ──────────────────────────────────────
             # X83/X81 carry Qty(+optionally UP). X84/X86 carry UP and IT but
@@ -549,7 +561,7 @@ class GAEBXMLImporter:
                 metadata["gaeb_it"] = str(it_dec)
             if rno_index:
                 metadata["gaeb_rno_index"] = rno_index
-            long_text = _extract_long_text(item)
+            long_text = _extract_long_text(item)[:_MAX_LONG_TEXT_CHARS]
             if long_text and long_text != description:
                 metadata["gaeb_long_text"] = long_text
             descr_txc = _extract_descr_txc(item)

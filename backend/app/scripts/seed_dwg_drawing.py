@@ -40,9 +40,14 @@ def _build_demo_dxf(path: str) -> bool:
 
     Uses ``ezdxf`` (a base dependency) to author a tidy little plan: an outer
     room rectangle, an interior partition, a door swing arc, a window, and a
-    couple of labels - enough that the viewer has real geometry to render and
-    the layer panel shows named layers. Units are set to millimetres
+    room label per side - enough that the viewer has real geometry to render
+    and the layer panel shows named layers. Units are set to millimetres
     (``$INSUNITS = 4``) so the drawing reads at a realistic building scale.
+
+    The plan is presented as a German Grundriss, so the labels are written the
+    way a German plan writes them (see the room labels below). Layer names stay
+    on the AIA ``DISCIPLINE-MAJOR-MINOR`` codes, which are a drafting standard
+    rather than prose and are what the match extractors classify on.
 
     Returns ``True`` on success, ``False`` when ezdxf is unavailable (the
     caller then falls back to a metadata-only reference row).
@@ -85,13 +90,18 @@ def _build_demo_dxf(path: str) -> bool:
         # Window on the south wall.
         msp.add_line((1200, 0), (2800, 0), dxfattribs={"layer": "A-GLAZ"})
         msp.add_line((1200, 120), (2800, 120), dxfattribs={"layer": "A-GLAZ"})
-        # Labels.
+        # Room labels. A German Grundriss names the room and states its
+        # dimensions as width/depth in metres, with a decimal comma and two
+        # decimals - "3,60/4,00", not "3.6 x 4.0". Each label states the room
+        # it sits in: the partition at x=3600 divides the 6.00 m envelope into
+        # a 3.60 m living side and a 2.40 m sleeping side, so the left label
+        # reads 3,60 and not the 6,00 of the outer wall it is not describing.
         msp.add_text(
-            "LIVING 6.0 x 4.0",
+            "Wohnen 3,60/4,00",
             dxfattribs={"layer": "A-ANNO-TEXT", "height": 200, "insert": (300, 3600)},
         )
         msp.add_text(
-            "BED 2.4 x 4.0",
+            "Schlafen 2,40/4,00",
             dxfattribs={"layer": "A-ANNO-TEXT", "height": 200, "insert": (3900, 3600)},
         )
 
@@ -112,7 +122,6 @@ async def seed_ready_dwg_drawing(
     name: str,
     discipline: str | None = None,
     source: str = "demo_asset_seed",
-    element_count: int = 0,
 ) -> bool:
     """Seed (idempotently) a ready, viewer-renderable demo DXF drawing.
 
@@ -120,6 +129,14 @@ async def seed_ready_dwg_drawing(
     ``DwgDrawingVersion`` whose entities are written to the same on-disk store
     a real upload uses, so ``GET /drawings/{id}/entities`` serves them and the
     viewer renders immediately on a fresh install.
+
+    The ``element_count`` written to the drawing's metadata is the count the
+    parse returned for the DXF authored here, and nothing else. Callers used to
+    pass a count in, and both passed the one belonging to the converted CAD
+    model of the same format in the demo spec - a different, far larger file -
+    so the drawing advertised thousands of elements and served eight. A count
+    is only ever true of one file, so this one is taken from the file it
+    describes and the parameter is gone.
 
     Idempotent: returns early if the drawing already has a ready version, and
     regenerates the DXF + entities only when missing (e.g. a half-seeded row
@@ -185,7 +202,7 @@ async def seed_ready_dwg_drawing(
                 metadata_={
                     "source": source,
                     "seed_ready_dxf": True,
-                    "element_count": element_count,
+                    "element_count": int(parsed.get("entity_count") or 0),
                 },
             )
             session.add(drawing)
@@ -195,7 +212,9 @@ async def seed_ready_dwg_drawing(
 
         # ezdxf/parse unavailable: metadata-only reference row. The backend
         # resolves this to ``needs_conversion`` on read so the UI shows the
-        # convert CTA, not a perpetual spinner.
+        # convert CTA, not a perpetual spinner. It carries no ``element_count``
+        # at all: nothing here has read a drawing, so any number would be a
+        # claim about a file this install does not hold.
         drawing = DwgDrawing(
             id=drawing_id,
             project_id=project_id,
@@ -210,7 +229,6 @@ async def seed_ready_dwg_drawing(
             metadata_={
                 "source": source,
                 "seed_reference_only": True,
-                "element_count": element_count,
             },
         )
         session.add(drawing)
@@ -228,6 +246,11 @@ async def seed_ready_dwg_drawing(
             existing.size_bytes = os.path.getsize(file_path)
         meta = dict(existing.metadata_ or {})
         meta["seed_ready_dxf"] = True
+        # The row is being promoted off a parse we just ran, so its count is
+        # restated from that parse. A row half-seeded by an older build can
+        # carry a count that was never about this DXF; leaving it would keep
+        # that number alive under a drawing that now reports its own.
+        meta["element_count"] = int(parsed.get("entity_count") or 0)
         existing.metadata_ = meta
         session.add(existing)
         await session.flush()

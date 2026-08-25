@@ -57,7 +57,7 @@ import uuid
 from contextvars import ContextVar
 from typing import Any
 
-from sqlalchemy import JSON, Index, String, Text, select
+from sqlalchemy import JSON, Index, String, Text, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -358,9 +358,37 @@ async def log_activity(
     # left intact so the business write continues. Production deploys
     # that rely on the audit row landing should run with the dedicated
     # ``test_log_activity_*`` suite to catch genuine breakage.
+    #
+    # The savepoint is what makes the paragraph above true rather than
+    # merely intended. A failed ``flush`` leaves the session unusable until
+    # somebody rolls it back, so catching the error here is not enough: the
+    # caller's next ``commit`` raises PendingRollbackError and the audit
+    # write breaks the business write it was supposed to stay clear of.
+    # Observed on a first run of the shipped desktop build, where a long
+    # blocking model download starved the connection pool, the flush timed
+    # out, and the caller then failed on a session this function had
+    # already poisoned. ``begin_nested`` confines the loss to this row.
+    # A session that cannot open a savepoint is a test stub, not a database.
+    # The fallback matters: the stub records the row in its own list and the
+    # audit tests of several modules read it from exactly that list, so opening
+    # the savepoint first and giving up when it is missing drops the write
+    # those tests exist to assert. The savepoint guards a real session; it is
+    # never a reason to skip a fake one.
+    savepoint = None
+    if hasattr(session, "begin_nested"):
+        try:
+            savepoint = session.begin_nested()
+        except (AttributeError, TypeError):
+            savepoint = None
+
     try:
-        session.add(entry)
-        await session.flush()
+        if savepoint is None:
+            session.add(entry)
+            await session.flush()
+        else:
+            async with savepoint:
+                session.add(entry)
+                await session.flush()
     except (AttributeError, TypeError):
         # Stub sessions in tests - ``_StubSession`` has no ``add``.
         logger.debug(
@@ -371,8 +399,12 @@ async def log_activity(
         )
         return entry
     except Exception:
+        # Say what was lost and what survived. "flush failed" alone leaves a
+        # reader unable to tell whether their own write landed, and the whole
+        # point of the savepoint is that it did.
         logger.exception(
-            "activity_log: flush failed for %s:%s %s",
+            "activity_log: dropped the audit row for %s:%s %s - the savepoint "
+            "rolled back on its own and the caller's transaction is still usable",
             entity_type,
             entity_id,
             action,
@@ -465,6 +497,33 @@ async def get_activity_for_entity(
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def count_activity_for_entity(
+    session: AsyncSession,
+    *,
+    entity_type: str,
+    entity_id: str | uuid.UUID,
+) -> int:
+    """How many journal rows exist for one entity row, ignoring paging.
+
+    The sibling of :func:`get_activity_for_entity`, filtering on exactly the
+    same two columns so the number describes the page that function returns.
+    A caller that renders a page of history without this cannot tell a
+    complete journal from the opening slice of a long one, and the journal is
+    ordered oldest first, so the part it silently drops is the recent part.
+
+    Separate from ``get_activity_for_entity`` rather than folded into it
+    because two live callers want the rows and not the count, and paying for
+    a ``COUNT(*)`` they discard on every read would be a cost with no reader.
+    """
+    stmt = (
+        select(func.count())
+        .select_from(ActivityLog)
+        .where(ActivityLog.entity_type == entity_type)
+        .where(ActivityLog.entity_id == str(entity_id))
+    )
+    return int((await session.execute(stmt)).scalar_one())
 
 
 async def get_recent_activity(

@@ -11,7 +11,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, X, BookUser, Loader2 } from 'lucide-react';
-import { apiGet } from '@/shared/lib/api';
+import { apiGet, type Page } from '@/shared/lib/api';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 
 interface ContactResult {
   id: string;
@@ -68,6 +69,10 @@ export function ContactSearchInput({
   // Browse-all state
   const [browseOpen, setBrowseOpen] = useState(false);
   const [allContacts, setAllContacts] = useState<ContactResult[]>([]);
+  // How many contacts the directory holds behind the browse page, as the
+  // server counted them. `allContacts.length` is what arrived (200 at most)
+  // and the footer used to print that as if it were the directory size.
+  const [browseTotal, setBrowseTotal] = useState(0);
   const [browseLoading, setBrowseLoading] = useState(false);
   const [browseFilter, setBrowseFilter] = useState('');
   const browseRef = useRef<HTMLDivElement>(null);
@@ -173,10 +178,9 @@ export function ContactSearchInput({
         params.set('contact_type', browseContactTypes[0] ?? '');
       }
       const qs = params.toString();
-      const res = await apiGet<ContactResult[] | { items: ContactResult[] }>(
-        `/v1/contacts/${qs ? `?${qs}` : ''}`,
-      );
-      const list = Array.isArray(res) ? res : (res as { items: ContactResult[] }).items ?? [];
+      const page = await apiGet<Page<ContactResult>>(`/v1/contacts/${qs ? `?${qs}` : ''}`);
+      const list = page.items ?? [];
+      setBrowseTotal(page.total ?? list.length);
       // Client-side filter if multiple types specified
       if (browseContactTypes && browseContactTypes.length > 1) {
         setAllContacts(list.filter((c) => browseContactTypes.includes(c.contact_type)));
@@ -185,6 +189,7 @@ export function ContactSearchInput({
       }
     } catch {
       setAllContacts([]);
+      setBrowseTotal(0);
     } finally {
       setBrowseLoading(false);
     }
@@ -359,6 +364,14 @@ export function ContactSearchInput({
                           defaultValue: '{{count}} contacts',
                           count: allContacts.length,
                         })}
+                    {/* Both lines above are about the rows this dropdown
+                        loaded. The browse request asks for 200 and the
+                        directory can hold thousands, so the row that says how
+                        much of it is here has to come from the server count. */}
+                    <TruncationNotice
+                      page={{ items: allContacts, total: browseTotal }}
+                      className="text-2xs"
+                    />
                   </div>
                 )}
               </div>

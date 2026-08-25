@@ -10,6 +10,7 @@ import {
   type CostBreakdownMarkup,
   type CostBreakdownResource,
 } from './api';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 /* ── Constants ──────────────────────────────────────────────────────── */
 
@@ -218,7 +219,7 @@ export function CostBreakdownPanel({ boqId, locale = 'de-DE' }: { boqId: string;
                     </span>
                   </div>
                   <span className="text-content-primary font-medium tabular-nums">
-                    {cat.percentage.toFixed(1)}%
+                    {fmtPercent(cat.percentage)}
                   </span>
                 </div>
               ))}
@@ -229,7 +230,7 @@ export function CostBreakdownPanel({ boqId, locale = 'de-DE' }: { boqId: string;
                     <span className="text-content-secondary">{m.name}</span>
                   </div>
                   <span className="text-content-primary font-medium tabular-nums">
-                    {((toNum(m.amount) / toNum(data.grand_total)) * 100).toFixed(1)}%
+                    {fmtPercent((toNum(m.amount) / toNum(data.grand_total)) * 100)}
                   </span>
                 </div>
               ))}

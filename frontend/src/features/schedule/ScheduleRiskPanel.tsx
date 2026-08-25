@@ -38,8 +38,8 @@ import { Play, Loader2, TrendingUp, Activity, Target, AlertTriangle } from 'luci
 
 import { Button, Card, Badge, EmptyState } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
-import { getIntlLocale } from '@/shared/lib/formatters';
 import { getErrorMessage } from '@/shared/lib/api';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 import {
   scheduleRisk,
   type ScheduleRisk,
@@ -63,7 +63,7 @@ const labelCls =
 function fmtNum(n: number | null | undefined, digits = 0): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return '-';
   try {
-    return new Intl.NumberFormat(getIntlLocale(), {
+    return new Intl.NumberFormat(getNumberLocale(), {
       maximumFractionDigits: digits,
       minimumFractionDigits: 0,
     }).format(n);
@@ -149,7 +149,7 @@ export function ScheduleRiskPanel({ scheduleId, activitiesById }: ScheduleRiskPa
         title: t('schedule.risk.run_done', { defaultValue: 'Simulation complete' }),
         message: t('schedule.risk.run_done_detail', {
           defaultValue: '{{iterations}} iterations - {{status}}',
-          iterations: data.iterations.toLocaleString(),
+          iterations: data.iterations.toLocaleString(getNumberLocale()),
           status: data.convergence_status || '-',
         }),
       });

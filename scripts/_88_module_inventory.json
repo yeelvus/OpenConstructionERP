@@ -186,7 +186,7 @@
     "name": "oe_costs",
     "display_name": "Cost Database",
     "category": "core",
-    "description": "Cost item management, rate databases (CWICR, RSMeans, BKI), bulk import"
+    "description": "Cost item management, rate databases (CWICR and regional catalogues), bulk import"
   },
   {
     "folder": "crm",

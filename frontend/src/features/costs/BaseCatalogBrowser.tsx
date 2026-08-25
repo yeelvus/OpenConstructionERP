@@ -19,6 +19,7 @@ import { CountryFlag, CountryFlagBackdrop } from '@/shared/ui';
 import type { BaseCatalog, BaseFamily, BaseVariant } from './baseCatalog';
 import { variantMatches } from './baseCatalog';
 import { DEPTH_BANDS, baseDepthLevel } from './baseDepth';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 // Founder-requested family order for the base picker: China first, then the
 // flagship Global CWICR base (GESN / FER / TER) second, then every other family
@@ -70,8 +71,11 @@ interface BaseCatalogBrowserProps {
   className?: string;
 }
 
+// Grouping follows the number format the reader picked, which starts out as the
+// one their language implies: a reader on ?lang=de gets 55.719 even when their
+// browser is set to English, and a reader who chose another format gets that.
 function positionsLabel(n: number): string {
-  return n.toLocaleString('en-US');
+  return n.toLocaleString(getNumberLocale());
 }
 
 /**
@@ -427,7 +431,7 @@ export function BaseCatalogBrowser({
           {' · '}
           {t('costs.base_summary_positions', {
             defaultValue: '{{positions}}+ positions',
-            positions: positionsRounded.toLocaleString('en-US'),
+            positions: positionsRounded.toLocaleString(getNumberLocale()),
           })}
         </span>
       </div>

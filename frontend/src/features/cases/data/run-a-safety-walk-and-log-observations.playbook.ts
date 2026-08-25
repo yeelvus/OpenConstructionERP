@@ -13,6 +13,7 @@ const playbook: Playbook = {
   order: 290,
   category: "quality",
   companyTypes: ["general-contractor", "subcontractor"],
+  roles: ["hse-officer", "site-manager", "foreman"],
   icon: "ShieldCheck",
   titleKey: "cases.run_a_safety_walk_and_log_observations.title",
   titleDefault: "Run a safety walk and log observations",
@@ -98,7 +99,7 @@ const playbook: Playbook = {
       whyKey: "cases.run_a_safety_walk_and_log_observations.step.raise.why",
       whyDefault:
         "An observed hazard with no owner and no date is one that is still there next week. Raising it as a tracked action is what actually gets the guard rail fixed and gives you proof you acted.",
-      moduleLabel: "Non-conformance",
+      moduleLabel: "NCRs",
       moduleLabelKey: "ncr.title",
       to: "/projects/:projectId/ncr",
     },

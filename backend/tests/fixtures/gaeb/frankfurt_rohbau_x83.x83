@@ -1,0 +1,465 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GAEB xmlns="http://www.gaeb.de/GAEB_DA_XML/DA83/3.3">
+  <GAEBInfo>
+    <Version>3.3</Version>
+    <VersDate>2021-05</VersDate>
+    <Date>2026-08-12</Date>
+    <ProgSystem>AVA</ProgSystem>
+    <ProgName>LV-Bearbeitung</ProgName>
+  </GAEBInfo>
+  <PrjInfo>
+    <NamePrj>Bürogebäude Frankfurt Europaviertel</NamePrj>
+    <LblPrj>Bürogebäude Frankfurt Europaviertel</LblPrj>
+    <Cur>EUR</Cur>
+  </PrjInfo>
+  <Award>
+    <DP>83</DP>
+    <AwardInfo>
+      <Cur>EUR</Cur>
+      <CurLbl>EUR</CurLbl>
+    </AwardInfo>
+    <BoQ ID="idLVFfmRohbau">
+      <BoQInfo>
+        <Name>LV Rohbau</Name>
+        <LblBoQ>Bürogebäude Frankfurt Europaviertel - Gewerk Rohbau</LblBoQ>
+        <Date>2026-08-12</Date>
+        <OutlCompl>AllTxt</OutlCompl>
+        <BoQBkdn>
+          <Type>BoQLevel</Type>
+          <Length>2</Length>
+          <Num>Yes</Num>
+        </BoQBkdn>
+        <BoQBkdn>
+          <Type>BoQLevel</Type>
+          <Length>2</Length>
+          <Num>Yes</Num>
+        </BoQBkdn>
+        <BoQBkdn>
+          <Type>Item</Type>
+          <Length>4</Length>
+          <Num>Yes</Num>
+        </BoQBkdn>
+      </BoQInfo>
+      <BoQBody>
+        <BoQCtgy ID="idCtgyRohbau" RNoPart="01">
+          <LblTx><p><span>Rohbau</span></p></LblTx>
+          <BoQBody>
+            <BoQCtgy ID="idCtgyBE" RNoPart="01">
+              <LblTx><p><span>Baustelleneinrichtung</span></p></LblTx>
+              <BoQBody>
+                <Itemlist>
+                  <Item ID="idI010010" RNoPart="0010">
+                    <Qty>1.000</Qty>
+                    <QU>psch</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Baustelle einrichten, während der gesamten Bauzeit vorhalten und nach Abschluss der Rohbauarbeiten vollständig räumen. Einschließlich Bauzaun, Schutzmaßnahmen und Verkehrssicherung gemäß Baustellenverordnung.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Baustelle einrichten, vorhalten und räumen</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI010020" RNoPart="0020">
+                    <Qty>1.000</Qty>
+                    <QU>psch</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Baustrom- und Bauwasseranschluss herstellen, während der Rohbauzeit vorhalten und nach Fertigstellung zurückbauen. Verbrauchskosten werden gesondert vergütet.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Baustrom und Bauwasser vorhalten</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                </Itemlist>
+              </BoQBody>
+            </BoQCtgy>
+            <BoQCtgy ID="idCtgyErd" RNoPart="02">
+              <LblTx><p><span>Erdarbeiten</span></p></LblTx>
+              <BoQBody>
+                <Itemlist>
+                  <Item ID="idI020010" RNoPart="0010">
+                    <Qty>1485.500</Qty>
+                    <QU>m2</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Oberboden abtragen, Dicke bis 20 cm, Bodengruppe 1 DIN 18915, innerhalb der Baustelle seitlich lagern und vor Verunreinigung schützen. Fläche der Baugrube einschließlich Arbeitsraum.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Oberboden abtragen und seitlich lagern</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI020020" RNoPart="0020">
+                    <Qty>3862.250</Qty>
+                    <QU>m3</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Boden der Baugrube lösen, Homogenbereich B1 nach DIN 18300, Aushubtiefe bis 4,50 m unter Geländeoberkante, laden, fördern und auf Deponie des Auftragnehmers verwerten. Nachweis der ordnungsgemäßen Entsorgung ist zu führen.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Baugrubenaushub bis 4,50 m, entsorgen</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI020030" RNoPart="0030">
+                    <Qty>386.500</Qty>
+                    <QU>m3</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Arbeitsraum mit geeignetem, verdichtungsfähigem Boden verfüllen und lagenweise auf 97 % DPr verdichten. Lagenstärke maximal 30 cm, Verdichtungsnachweis durch dynamische Lastplattendruckversuche.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Arbeitsraum verfüllen und verdichten</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI020040" RNoPart="0040">
+                    <Qty>1212.750</Qty>
+                    <QU>m2</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Baugrubensohle profilgerecht planieren, Toleranz +/- 2 cm, und auf 100 % DPr nachverdichten. Sohle bis zur Abnahme durch den Bodengutachter vor Aufweichung schützen.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Baugrubensohle planieren und verdichten</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                </Itemlist>
+              </BoQBody>
+            </BoQCtgy>
+            <BoQCtgy ID="idCtgyBeton" RNoPart="03">
+              <LblTx><p><span>Beton- und Stahlbetonarbeiten</span></p></LblTx>
+              <BoQBody>
+                <Itemlist>
+                  <Item ID="idI030010" RNoPart="0010">
+                    <Qty>1198.400</Qty>
+                    <QU>m2</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Sauberkeitsschicht aus Beton C8/10, Dicke 10 cm, unter Bodenplatte und Fundamenten herstellen, Oberfläche abgezogen.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Sauberkeitsschicht C8/10, d = 10 cm</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI030020" RNoPart="0020">
+                    <Qty>479.350</Qty>
+                    <QU>m3</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Bodenplatte aus Ortbeton C25/30, Expositionsklasse XC2, Dicke 40 cm, einbauen, verdichten und nachbehandeln. Oberfläche flügelgeglättet, Ebenheitstoleranzen nach DIN 18202 Tabelle 3 Zeile 3. Einbau als WU-Konstruktion gemäß WU-Richtlinie, rissbreitenbeschränkt.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Bodenplatte Ortbeton C25/30, d = 40 cm</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI030030" RNoPart="0030">
+                    <Qty>148.600</Qty>
+                    <QU>m2</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Schalung der Bodenplatte als Randabstellung, Höhe bis 50 cm, herstellen, vorhalten und ausschalen. Schalungsart nach Wahl des Auftragnehmers.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Schalung Bodenplatte, Randabstellung</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI030040" RNoPart="0040">
+                    <Qty>57522.500</Qty>
+                    <QU>kg</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Bewehrung der Bodenplatte aus Betonstahl B500B, Stabstahl, liefern, schneiden, biegen und verlegen einschließlich Abstandhalter und Unterstützungen. Abrechnung nach Stahlliste.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Bewehrung Bodenplatte B500B, Stabstahl</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI030050" RNoPart="0050">
+                    <Qty>312.800</Qty>
+                    <QU>m3</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Aufgehende Wände aus Ortbeton C25/30, Expositionsklasse XC1, Dicke 25 cm, Höhe bis 3,50 m, einbauen, verdichten und nachbehandeln. Arbeitsfugen mit Fugenblech ausbilden.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Wände Ortbeton C25/30, d = 25 cm</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI030060" RNoPart="0060">
+                    <Qty>2502.400</Qty>
+                    <QU>m2</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Schalung der Wände, zweiseitig, als Rahmenschalung herstellen, vorhalten und ausschalen. Sichtbetonklasse SB2 nach DBV-Merkblatt Sichtbeton, Ankerlöcher planmäßig verschließen.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Schalung Wände zweiseitig, SB2</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI030070" RNoPart="0070">
+                    <Qty>37536.750</Qty>
+                    <QU>kg</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Bewehrung der Wände aus Betonstahlmatten B500A, liefern, schneiden und verlegen einschließlich Abstandhalter. Stöße nach statischen Vorgaben.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Bewehrung Wände B500A, Matten</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI030080" RNoPart="0080">
+                    <Qty>263.450</Qty>
+                    <QU>m3</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Decke über Erdgeschoss aus Ortbeton C25/30, Dicke 22 cm, als Flachdecke einbauen, verdichten und nachbehandeln. Untersicht schalungsglatt, Ebenheitstoleranzen nach DIN 18202.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Decke über EG, Ortbeton C25/30, d = 22 cm</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                </Itemlist>
+              </BoQBody>
+            </BoQCtgy>
+            <BoQCtgy ID="idCtgyMauer" RNoPart="04">
+              <LblTx><p><span>Mauerwerksarbeiten</span></p></LblTx>
+              <BoQBody>
+                <Itemlist>
+                  <Item ID="idI040010" RNoPart="0010">
+                    <Qty>864.200</Qty>
+                    <QU>m2</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Mauerwerk der Innenwände aus Kalksandstein KS 12 DF, Rohdichteklasse 2,0, Steinfestigkeitsklasse 12, Wanddicke 17,5 cm, in Normalmörtel MG IIa, Stoßfugen vermörtelt. Ausführung nach DIN EN 1996 mit nationalem Anhang.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Mauerwerk KS 12 DF, d = 17,5 cm</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI040020" RNoPart="0020">
+                    <Qty>421.350</Qty>
+                    <QU>m2</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Mauerwerk der nichttragenden Innenwände aus Kalksandstein, Wanddicke 11,5 cm, in Dünnbettmörtel, Anschlüsse an flankierende Bauteile gleitend ausbilden.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Mauerwerk KS, d = 11,5 cm, Dünnbett</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI040030" RNoPart="0030">
+                    <Qty>46.000</Qty>
+                    <QU>St</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Flachstürze aus Kalksandstein-Fertigteilen über Tür- und Fensteröffnungen einbauen, lichte Weite bis 1,26 m, einschließlich Übermauerung als Druckzone.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>KS-Flachstürze bis 1,26 m einbauen</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI040040" RNoPart="0040">
+                    <Qty>1.000</Qty>
+                    <QU>psch</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Aussparungen, Schlitze und Durchbrüche für die technische Gebäudeausrüstung im Mauerwerk herstellen und nach Installation fachgerecht schließen, nach Angaben der TGA-Planung.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Aussparungen und Schlitze für TGA</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                </Itemlist>
+              </BoQBody>
+            </BoQCtgy>
+            <BoQCtgy ID="idCtgyAbdicht" RNoPart="05">
+              <LblTx><p><span>Abdichtungsarbeiten</span></p></LblTx>
+              <BoQBody>
+                <Itemlist>
+                  <Item ID="idI050010" RNoPart="0010">
+                    <Qty>1156.800</Qty>
+                    <QU>m2</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Abdichtung der Bodenplatte gegen Bodenfeuchte nach DIN 18533, Wassereinwirkungsklasse W1.1-E, aus Bitumenbahn G 200 S4, zweilagig, vollflächig verklebt, Stöße 10 cm überlappt.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Abdichtung Bodenplatte, Bitumenbahn zweilagig</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI050020" RNoPart="0020">
+                    <Qty>682.450</Qty>
+                    <QU>m2</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Abdichtung der erdberührten Wände nach DIN 18533 aus kunststoffmodifizierter Bitumendickbeschichtung (PMBC), zweilagig mit Verstärkungseinlage, Trockenschichtdicke mindestens 4 mm, einschließlich Kehlen und Anschlüssen.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Abdichtung Wände erdberührt, PMBC</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                  <Item ID="idI050030" RNoPart="0030">
+                    <Qty>682.450</Qty>
+                    <QU>m2</QU>
+                    <Description>
+                      <CompleteText>
+                        <DetailTxt>
+                          <Text>
+                            <p><span>Perimeterdämmung aus extrudiertem Polystyrol XPS, Dicke 12 cm, Wärmeleitfähigkeitsgruppe 035, auf die Abdichtung punktweise kleben, als Schutzschicht der Abdichtung dienend.</span></p>
+                          </Text>
+                        </DetailTxt>
+                        <OutlineText>
+                          <OutlTxt>
+                            <TextOutlTxt><p><span>Perimeterdämmung XPS, d = 12 cm</span></p></TextOutlTxt>
+                          </OutlTxt>
+                        </OutlineText>
+                      </CompleteText>
+                    </Description>
+                  </Item>
+                </Itemlist>
+              </BoQBody>
+            </BoQCtgy>
+          </BoQBody>
+        </BoQCtgy>
+      </BoQBody>
+    </BoQ>
+  </Award>
+</GAEB>

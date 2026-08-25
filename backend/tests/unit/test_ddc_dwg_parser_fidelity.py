@@ -43,6 +43,9 @@ COLUMNS = [
     # more blank cells, which is what an export column nobody reads looks like.
     "Text String",
     "Height",
+    # Block-table metadata: true on exactly the records a sheet was built
+    # around. Blank on every row that is not an <AcDbBlockTableRecord>.
+    "Layout",
 ]
 
 
@@ -309,6 +312,248 @@ class TestOwnerClassificationDoesNotDependOnNaming:
         assert all(e["layout"] == "*Model_Space" for e in result["entities"])
         assert all("block" not in e for e in result["entities"])
         assert result["extents"] == {"min_x": 0.0, "min_y": 0.0, "max_x": 10.0, "max_y": 10.0}
+
+
+class TestTheBlockTableDecidesWhenTheExportCarriesOne:
+    """``<AcDbBlockTableRecord>`` rows answer block-or-sheet outright.
+
+    Every heuristic beside this one is inference about a name. The export
+    ships the drawing's own block table, and each record carries a ``Layout``
+    flag that is true for exactly the records a sheet was built around. A real
+    17 MB export carried 809 records with the flag true for two of them,
+    ``*Model_Space`` and ``*Paper_Space``, and false for the other 807.
+
+    This is what settles the definitions no reference places. An unplaced
+    door block is referenced by nothing and is not anonymous, so the two
+    weaker tests both had to let it through as a sheet; the block table says
+    plainly that it is a block.
+    """
+
+    def test_an_unplaced_definition_is_a_block_not_a_sheet(self, export) -> None:
+        result = export(
+            [
+                LAYER,
+                _row(Description="<AcDbBlockTableRecord>", Name="*Model_Space", Layout="True"),
+                _row(Description="<AcDbBlockTableRecord>", Name="MIM_NO_DOOR", Layout="False"),
+                _row(
+                    Description="<AcDbLine>",
+                    ID="1",
+                    Layer="A-WALL",
+                    BlockId="*Model_Space",
+                    StartPoint="0,0,0",
+                    EndPoint="10,10,0",
+                ),
+                # Placed by nothing, so only the block table can classify it.
+                _row(
+                    Description="<AcDbLine>",
+                    ID="2",
+                    Layer="A-WALL",
+                    BlockId="MIM_NO_DOOR",
+                    StartPoint="0,0,0",
+                    EndPoint="1,1,0",
+                ),
+            ]
+        )
+        assert result["layouts"] == ["*Model_Space"]
+        by_owner = {e.get("block") or e.get("layout"): e for e in result["entities"]}
+        assert by_owner["MIM_NO_DOOR"]["block"] == "MIM_NO_DOOR"
+        assert "layout" not in by_owner["MIM_NO_DOOR"]
+
+    def test_a_record_flagged_as_a_layout_stays_a_sheet(self, export) -> None:
+        """Even under a name the prefix rule would otherwise call anonymous."""
+        result = export(
+            [
+                LAYER,
+                _row(Description="<AcDbBlockTableRecord>", Name="*Paper_Space0", Layout="True"),
+                _row(
+                    Description="<AcDbLine>",
+                    ID="1",
+                    Layer="A-WALL",
+                    BlockId="*Paper_Space0",
+                    StartPoint="0,0,0",
+                    EndPoint="10,10,0",
+                ),
+            ]
+        )
+        assert result["layouts"] == ["*Paper_Space0"]
+
+    def test_an_owner_the_table_never_mentions_falls_back_to_the_heuristics(self, export) -> None:
+        """A partial table must not turn every unlisted owner into a block."""
+        result = export(
+            [
+                LAYER,
+                _row(Description="<AcDbBlockTableRecord>", Name="*Model_Space", Layout="True"),
+                _row(Description="<AcDbBlockTableRecord>", Name="DOOR-900", Layout="False"),
+                _row(
+                    Description="<AcDbLine>",
+                    ID="1",
+                    Layer="A-WALL",
+                    BlockId="Sheet-A-101",
+                    StartPoint="0,0,0",
+                    EndPoint="10,10,0",
+                ),
+            ]
+        )
+        assert result["layouts"] == ["Sheet-A-101"]
+
+    def test_a_table_that_flags_no_layout_is_not_read_at_all(self, export) -> None:
+        """The guard against a build that writes no ``Layout`` column.
+
+        Reading such a table literally makes every owner a block definition,
+        which leaves the drawing with no sheet and sends every entity through
+        the last-resort fallback with its block-local coordinates intact.
+        """
+        result = export(
+            [
+                LAYER,
+                _row(Description="<AcDbBlockTableRecord>", Name="*Model_Space"),
+                _row(Description="<AcDbBlockTableRecord>", Name="DOOR-900"),
+                _row(
+                    Description="<AcDbLine>",
+                    ID="1",
+                    Layer="A-WALL",
+                    BlockId="*Model_Space",
+                    StartPoint="0,0,0",
+                    EndPoint="10,10,0",
+                ),
+                _row(
+                    Description="<AcDbBlockReference>",
+                    ID="2",
+                    Layer="A-WALL",
+                    BlockId="*Model_Space",
+                    Position="0,0,0",
+                    BlockTableRecord="DOOR-900",
+                ),
+                _row(
+                    Description="<AcDbLine>",
+                    ID="3",
+                    Layer="A-WALL",
+                    BlockId="DOOR-900",
+                    StartPoint="0,0,0",
+                    EndPoint="1,1,0",
+                ),
+            ]
+        )
+        # The heuristics still get it right: model space is a sheet, and the
+        # door is a block because a reference places it.
+        assert result["layouts"] == ["*Model_Space"]
+        assert [e.get("block") for e in result["entities"] if e.get("block")] == ["DOOR-900"]
+
+
+class TestAnonymousBlocksAreNotSheets:
+    """A ``*`` owner that is not model or paper space is a block, not a sheet.
+
+    AutoCAD reserves the ``*`` prefix for block-table records it writes
+    itself: ``*D`` per dimension, ``*X`` per hatch, ``*U`` for an unnamed
+    group. The reference test alone could not see them, because a dimension
+    block is owned implicitly by its DIMENSION and never placed by an
+    ``<AcDbBlockReference>`` row, so every one of them failed it and was
+    offered as a sheet. A real 36 MB export offered 1108 sheets, of which
+    1107 were anonymous records and one was the drawing.
+
+    The prefix rule cannot hide a genuine sheet, which is the direction that
+    would cost geometry: a real sheet is always model or paper space, and
+    :func:`_is_layout_block_id` answers those first.
+    """
+
+    def test_a_dimension_block_is_not_offered_as_a_sheet(self, export) -> None:
+        result = export(
+            [
+                LAYER,
+                _row(
+                    Description="<AcDbLine>",
+                    ID="1",
+                    Layer="A-WALL",
+                    BlockId="*Model_Space",
+                    StartPoint="0,0,0",
+                    EndPoint="10,10,0",
+                ),
+                _row(
+                    Description="<AcDbLine>",
+                    ID="2",
+                    Layer="A-WALL",
+                    BlockId="*D1000",
+                    StartPoint="0,0,0",
+                    EndPoint="1,1,0",
+                ),
+            ]
+        )
+        assert result["layouts"] == ["*Model_Space"]
+        by_owner = {e.get("block") or e.get("layout"): e for e in result["entities"]}
+        assert set(by_owner) == {"*Model_Space", "*D1000"}
+        # The dimension's geometry is block content: tagged, and carrying no
+        # sheet, so the existing sheet filter drops it without an edit.
+        assert by_owner["*D1000"]["block"] == "*D1000"
+        assert "layout" not in by_owner["*D1000"]
+
+    def test_an_anonymous_owner_does_not_reach_the_extents(self, export) -> None:
+        """Block-local coordinates never describe where the drawing is."""
+        result = export(
+            [
+                LAYER,
+                _row(
+                    Description="<AcDbLine>",
+                    ID="1",
+                    Layer="A-WALL",
+                    BlockId="*Model_Space",
+                    StartPoint="0,0,0",
+                    EndPoint="10,10,0",
+                ),
+                _row(
+                    Description="<AcDbLine>",
+                    ID="2",
+                    Layer="A-WALL",
+                    BlockId="*U358",
+                    StartPoint="-5000,-5000,0",
+                    EndPoint="5000,5000,0",
+                ),
+            ]
+        )
+        assert result["extents"] == {"min_x": 0.0, "min_y": 0.0, "max_x": 10.0, "max_y": 10.0}
+
+    def test_paper_space_survives_the_prefix_rule(self, export) -> None:
+        """The one ``*`` family that really is a sheet stays one."""
+        result = export(
+            [
+                LAYER,
+                _row(
+                    Description="<AcDbLine>",
+                    ID="1",
+                    Layer="A-WALL",
+                    BlockId="*Paper_Space0",
+                    StartPoint="0,0,0",
+                    EndPoint="10,10,0",
+                ),
+                _row(
+                    Description="<AcDbLine>",
+                    ID="2",
+                    Layer="A-WALL",
+                    BlockId="*X7",
+                    StartPoint="0,0,0",
+                    EndPoint="1,1,0",
+                ),
+            ]
+        )
+        assert result["layouts"] == ["*Paper_Space0"]
+
+    def test_a_drawing_of_nothing_but_anonymous_blocks_still_has_a_sheet(self, export) -> None:
+        """The last-resort guard still holds: an empty picker is a blank canvas."""
+        result = export(
+            [
+                LAYER,
+                _row(
+                    Description="<AcDbLine>",
+                    ID="1",
+                    Layer="A-WALL",
+                    BlockId="*D1000",
+                    StartPoint="0,0,0",
+                    EndPoint="10,10,0",
+                ),
+            ]
+        )
+        assert result["layouts"] == ["*Model_Space"]
+        assert all(e["layout"] == "*Model_Space" for e in result["entities"])
+        assert all("block" not in e for e in result["entities"])
 
 
 class TestHatchIsReducedToItsBoundingBox:

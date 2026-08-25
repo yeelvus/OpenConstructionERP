@@ -137,16 +137,16 @@ DEMO_PROJECTS = [
         "files": ["2022 rstadvancedsampleproject.rvt", "2023 racbasicsampleproject.rvt"],
         "boq": {
             "name": "Bill of Quantities - Structural & Architectural",
-            "description": "MasterFormat-organised BOQ: Divisions 03, 04, 05, 06, 08, 09.",
+            "description": "Division-organised BOQ: Divisions 03, 04, 05, 06, 08, 09.",
             "estimate_type": "detailed",
         },
         "sections": [
-            ("03", "Division 03 - Concrete"),
-            ("04", "Division 04 - Masonry"),
-            ("05", "Division 05 - Metals"),
-            ("06", "Division 06 - Wood, Plastics & Composites"),
-            ("08", "Division 08 - Openings"),
-            ("09", "Division 09 - Finishes"),
+            ("03", "Division 03 - Cast-in-place and precast concrete work"),
+            ("04", "Division 04 - Brick, block and stone work"),
+            ("05", "Division 05 - Structural and miscellaneous metal work"),
+            ("06", "Division 06 - Carpentry, millwork and composite framing"),
+            ("08", "Division 08 - Doors, windows and glazed assemblies"),
+            ("09", "Division 09 - Interior finishing: drywall, flooring, painting"),
         ],
         "positions": [
             (0, "03 30 00.01", 'Cast-in-place concrete slab, 6" thick, 4000 psi', "sf", 4200.0, 14.50),

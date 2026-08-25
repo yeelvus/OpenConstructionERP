@@ -30,6 +30,7 @@ from app.modules.interface_management.register import (
     WorkPackageHealth,
     agreed_pct,
     build_report,
+    can_be_overdue,
     disputed_interfaces,
     is_healthy,
     is_overdue,
@@ -701,3 +702,52 @@ def test_work_package_health_dict_validates_against_report_schema() -> None:
     # Per-package health score serialises to a plain string in JSON mode.
     dumped = model.model_dump(mode="json")
     assert dumped["work_packages"][0]["health_score"] == "50.00"
+
+
+def test_the_seeder_reserved_prefix_satisfies_the_registers_own_overdue_rule() -> None:
+    """The demo seeder's reserved prefix has to hold against this core, not beside it.
+
+    The register exempts three statuses from ever being overdue and the seeder
+    picks a status before it holds a row, so the two have to agree on which
+    ones can carry the overdue tile. They disagreed once - the seeder reused
+    its own settled pair and handed paused (on_hold) rows a past date the
+    report then refused to count - which left the tile empty on roughly one
+    register in eighty. Asserted here across many draws because the failure is
+    a draw, and without a database because it is a property of the two rules
+    rather than of anything written down.
+    """
+    import random
+
+    from app.modules.interface_management.seed import (
+        _RESERVED_OVERDUE_INDEX,
+        _SETTLED,
+        _dates_for,
+        _reserved_statuses,
+    )
+
+    today = date(2026, 6, 30)
+    for seed in range(2000):
+        rng = random.Random(seed)
+        reserved = _reserved_statuses(rng)
+        assert len(set(reserved)) == 4, f"the reserved prefix repeats a status: {reserved}"
+        assert len([status for status in reserved if status in _SETTLED]) == 2, (
+            f"the reserved prefix leaves the agreed figure with nothing behind it: {reserved}"
+        )
+        for status in reserved:
+            assert status in ALL_INTERFACE_STATUSES, f"{status!r} is not a status this register knows"
+
+        # The whole chain the guarantee rests on, walked end to end rather than
+        # asserted at its first link: the reserved position holds a status this
+        # register can call overdue, the seeder dates that row into the past,
+        # and the register's own predicate then says so. Every seeded register
+        # carries this row, so a register with an empty overdue tile cannot be
+        # drawn - which is the property, not an observation about one run.
+        status = reserved[_RESERVED_OVERDUE_INDEX]
+        assert can_be_overdue(status), (
+            f"the reserved overdue position holds {status!r}, which this register never counts as overdue"
+        )
+        need_by, _agreed, _closed = _dates_for(rng, status, today=today, overdue=True)
+        assert need_by < today, f"the reserved overdue row is dated {need_by}, which is not in the past"
+        assert is_overdue(_iface(status=status, need_by_date=need_by), today), (
+            f"a {status!r} row dated {need_by} is not overdue to the register that has to display it"
+        )

@@ -4,8 +4,8 @@
 The OpenConstructionERP frontend (``frontend/package.json``) and the
 Python package (``backend/pyproject.toml``) MUST report the same version
 because the running app reads its version from the installed Python
-package via ``importlib.metadata.version("openconstructionerp")`` —
-a drift between the two files means ``/api/health`` lies about which
+package via ``importlib.metadata.version("openconstructionerp")``.
+A drift between the two files means ``/api/health`` lies about which
 version users are actually running.
 
 This script is wired into both the local pre-commit hook and the
@@ -16,15 +16,15 @@ guarding it; this script was added in v1.4.4 to make the same gap
 impossible.
 
 Exit codes:
-    0  — versions match (and matched ``CHANGELOG.md`` and the visible
+    0  - versions match (and matched ``CHANGELOG.md`` and the visible
          in-app changelog if those files were updated in the same diff)
-    1  — versions drift, missing version literals, or unparseable files
+    1  - versions drift, missing version literals, or unparseable files
 
 Usage::
 
     python scripts/check_version_sync.py
 
-Run from anywhere — the script resolves paths relative to the repo
+Run from anywhere. The script resolves paths relative to the repo
 root (one level up from this file).
 """
 
@@ -45,8 +45,9 @@ CHANGELOG_TSX = REPO_ROOT / "frontend" / "src" / "features" / "about" / "Changel
 TAURI_CONF = REPO_ROOT / "desktop" / "src-tauri" / "tauri.conf.json"
 CARGO_TOML = REPO_ROOT / "desktop" / "src-tauri" / "Cargo.toml"
 CARGO_LOCK = REPO_ROOT / "desktop" / "src-tauri" / "Cargo.lock"
+INDEX_HTML = REPO_ROOT / "frontend" / "index.html"
 
-# Match `version = "1.4.4"` in pyproject.toml — first occurrence only,
+# Match `version = "1.4.4"` in pyproject.toml, first occurrence only,
 # under the [project] table.  We deliberately stop at the first hit
 # instead of using a real TOML parser to keep the script dependency-free.
 _PYPROJECT_RE = re.compile(r'^\s*version\s*=\s*"([^"]+)"', re.MULTILINE)
@@ -175,11 +176,33 @@ def _read_cargo_lock_version(path: Path, crate: str) -> str:
     raise SystemExit(f"[FAIL] {path}: no `[[package]]` entry named `{crate}`")
 
 
+def _read_index_html_software_version(path: Path) -> str:
+    """Return the version the served page claims in its structured data.
+
+    `frontend/index.html` carries a schema.org SoftwareApplication block, and
+    `softwareVersion` in it is a public statement about which release a visitor
+    is looking at. Nothing was reading it, so it was bumped by hand twice in the
+    product's whole history and then sat at 7.6.0 while the product shipped
+    14.8.1, eight majors later. Search engines and anyone reading the page
+    source were told the wrong release for months.
+
+    Unlike every other literal here this one is not consumed by a build, so a
+    stale value fails nothing and shows up nowhere except in what the page
+    tells the world about itself. That is precisely why it needs a gate rather
+    than a convention.
+    """
+    text = path.read_text(encoding="utf-8")
+    match = re.search(r'"softwareVersion"\s*:\s*"([^"]+)"', text)
+    if match is None:
+        raise SystemExit(f'[FAIL] {path}: no `"softwareVersion": "..."` literal found')
+    return match.group(1)
+
+
 def _changelog_md_top_version(path: Path) -> str | None:
     """‌⁠‍Return the topmost version listed in CHANGELOG.md, or None.
 
     The CHANGELOG follows the Keep a Changelog format with entries
-    like ``## [1.4.4] — 2026-04-11``.  We grab the first ``## [N.N.N]``
+    like ``## [1.4.4] - 2026-04-11``.  We grab the first ``## [N.N.N]``
     we encounter as the "current" version.
     """
     if not path.exists():
@@ -192,7 +215,7 @@ def _changelog_md_top_version(path: Path) -> str | None:
 def _changelog_tsx_top_version(path: Path) -> str | None:
     """‌⁠‍Return the topmost ``version: '1.2.3'`` in the in-app Changelog.
 
-    Looks for the first ``version: '...'`` literal in the file — the
+    Looks for the first ``version: '...'`` literal in the file. The
     React component lists newest first, so the top one is "current".
     """
     if not path.exists():
@@ -212,6 +235,7 @@ def main() -> int:
     cargo_version = _read_cargo_toml_version(CARGO_TOML)
     crate_name = _read_cargo_toml_name(CARGO_TOML)
     lock_version = _read_cargo_lock_version(CARGO_LOCK, crate_name)
+    index_html_version = _read_index_html_software_version(INDEX_HTML)
 
     print(f"backend  ({PYPROJECT.name})       = {backend_version}")
     print(f"frontend ({PACKAGE_JSON.name})    = {frontend_version}")
@@ -221,6 +245,7 @@ def main() -> int:
     print(f"desktop  ({TAURI_CONF.name})    = {tauri_version}")
     print(f"desktop  ({CARGO_TOML.name})         = {cargo_version}")
     print(f"desktop  ({CARGO_LOCK.name})         = {lock_version}")
+    print(f"frontend ({INDEX_HTML.name})       = {index_html_version}")
 
     failures: list[str] = []
 
@@ -262,18 +287,26 @@ def main() -> int:
             f"lockfile disagrees with the manifest until someone compiles"
         )
 
-    # CHANGELOG drift is a softer warning — only flag if BOTH changelog
+    if index_html_version != backend_version:
+        failures.append(
+            f"[FAIL] frontend/index.html softwareVersion ({index_html_version}) "
+            f"does not match backend version ({backend_version}) - the page tells "
+            f"search engines and anyone reading its source which release this is, "
+            f"and nothing else in the build corrects it"
+        )
+
+    # CHANGELOG drift is a softer warning, only flag if BOTH changelog
     # files have a top entry but they don't match the source-of-truth
     # version.  A missing entry just means the bump is in progress.
     if changelog_md_version and changelog_md_version != backend_version:
         failures.append(
             f"[FAIL] CHANGELOG.md top entry [{changelog_md_version}] does not "
-            f"match backend version ({backend_version}) — add a new entry"
+            f"match backend version ({backend_version}), add a new entry"
         )
     if changelog_tsx_version and changelog_tsx_version != backend_version:
         failures.append(
             f"[FAIL] Changelog.tsx top entry version='{changelog_tsx_version}' "
-            f"does not match backend version ({backend_version}) — add a "
+            f"does not match backend version ({backend_version}), add a "
             f"new entry to the visible in-app changelog"
         )
 
@@ -287,9 +320,10 @@ def main() -> int:
             "frontend/package-lock.json + CHANGELOG.md + "
             "frontend/src/features/about/Changelog.tsx + "
             "desktop/src-tauri/tauri.conf.json + desktop/src-tauri/Cargo.toml + "
-            "desktop/src-tauri/Cargo.lock in a single commit so the running app, "
+            "desktop/src-tauri/Cargo.lock + frontend/index.html in a single "
+            "commit so the running app, "
             "the desktop installers and the docs stay honest about which version "
-            "users are actually getting. That is nine literals across eight "
+            "users are actually getting. That is ten literals across nine "
             "files: frontend/package-lock.json carries the version twice."
         )
         return 1

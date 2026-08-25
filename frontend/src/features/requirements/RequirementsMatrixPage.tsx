@@ -74,6 +74,7 @@ import {
   type UpdateRequirementSetPayload,
 } from './api';
 import { requirementsGuide } from './requirementsGuide';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -179,7 +180,7 @@ function CoverageChip({ pct }: CoverageChipProps) {
         tone,
       )}
     >
-      {pct.toFixed(0)}%
+      {fmtPercent(pct, 0)}
     </span>
   );
 }

@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 1022,
   category: "planning",
   companyTypes: ["general-contractor", "project-manager", "bim-consultant"],
+  roles: ["project-manager", "planner", "bim-coordinator"],
   stage: "build",
   icon: "Waypoints",
   titleKey: "cases.manage_interfaces_between_work_packages.title",
@@ -45,7 +46,7 @@ const playbook: Playbook = {
       whyDefault:
         "Naming the interfaces is what turns a fuzzy boundary into a managed one. The interface nobody wrote down is the gap that becomes a variation and a delay when both sides deny it.",
       moduleLabel: "Interface Register",
-      moduleLabelKey: "nav.interface_management",
+      moduleLabelKey: "interface_management.title",
       to: "/projects/:projectId/interface-management",
     },
     {
@@ -66,7 +67,7 @@ const playbook: Playbook = {
       whyDefault:
         "An interface with one owner is an argument waiting to happen. Naming both sides and what each owes the other is what makes the handover actually work at the boundary.",
       moduleLabel: "Interface Register",
-      moduleLabelKey: "nav.interface_management",
+      moduleLabelKey: "interface_management.title",
       to: "/projects/:projectId/interface-management",
     },
     {
@@ -87,7 +88,7 @@ const playbook: Playbook = {
       whyDefault:
         "Interfaces close when the two sides sit down and agree, not when a register sits idle. The meeting is where the ambiguity at the boundary gets resolved before the trades reach it.",
       moduleLabel: "Meetings",
-      moduleLabelKey: "nav.meetings",
+      moduleLabelKey: "meetings.title",
       to: "/projects/:projectId/meetings",
     },
     {
@@ -108,7 +109,7 @@ const playbook: Playbook = {
       whyDefault:
         "Closing on one side's say-so is how a gap reopens on site. Requiring both sides to agree is what makes the register a true picture of what is settled and what still bites.",
       moduleLabel: "Interface Register",
-      moduleLabelKey: "nav.interface_management",
+      moduleLabelKey: "interface_management.title",
       to: "/projects/:projectId/interface-management",
     },
   ],

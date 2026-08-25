@@ -291,12 +291,14 @@ export function closeTicket(id: string): Promise<ServiceTicket> {
 /* ── Work Orders ───────────────────────────────────────────────────────── */
 
 export function listWorkOrders(params?: {
+  project_id?: string;
   status?: string;
   technician_id?: string;
   offset?: number;
   limit?: number;
 }): Promise<WorkOrder[]> {
   const qs = new URLSearchParams();
+  if (params?.project_id) qs.set('project_id', params.project_id);
   if (params?.status) qs.set('status', params.status);
   if (params?.technician_id) qs.set('technician_id', params.technician_id);
   if (params?.offset !== undefined) qs.set('offset', String(params.offset));

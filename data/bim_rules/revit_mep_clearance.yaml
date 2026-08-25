@@ -16,7 +16,7 @@ pack:
   id: revit_mep_clearance
   name: MEP-to-Structure Clearance (Revit)
   description: |
-    Validates that Revit pipes maintain a minimum 100 mm clearance from
+    Validates that Revit® pipes maintain a minimum 100 mm clearance from
     structural framing per VDI 2055.
   source: openconstructionerp
   version: "1.0.0"

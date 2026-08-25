@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 326,
   category: "commercial",
   companyTypes: ["general-contractor", "subcontractor", "cost-consultant"],
+  roles: ["commercial-manager", "planner", "contract-administrator"],
   icon: "Scale",
   titleKey: "cases.build_a_delay_and_disruption_claim_with_evidence.title",
   titleDefault: "Build a delay and disruption claim with evidence",
@@ -159,7 +160,7 @@ const playbook: Playbook = {
         "cases.build_a_delay_and_disruption_claim_with_evidence.step.link.why",
       whyDefault:
         "A big number with nothing behind it invites a fight. Linking each day of delay back to the change that caused it is what turns a round figure into a substantiated cause and effect.",
-      moduleLabel: "Change intelligence",
+      moduleLabel: "Change Intelligence",
       moduleLabelKey: "nav.change_intelligence",
       to: "/change-intelligence",
     },

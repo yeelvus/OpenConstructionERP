@@ -166,18 +166,51 @@ class DiaryEntryRepository(_BaseRepository):
 
     model = DiaryEntry
 
+    def _entries_stmt(self, diary_id: uuid.UUID, entry_type: str | None):
+        """The filter both reads below share, written once."""
+        stmt = select(DiaryEntry).where(DiaryEntry.diary_id == diary_id)
+        if entry_type is not None:
+            stmt = stmt.where(DiaryEntry.entry_type == entry_type)
+        return stmt
+
     async def list_for_diary(
         self,
         diary_id: uuid.UUID,
         *,
         entry_type: str | None = None,
     ) -> list[DiaryEntry]:
-        stmt = select(DiaryEntry).where(DiaryEntry.diary_id == diary_id)
-        if entry_type is not None:
-            stmt = stmt.where(DiaryEntry.entry_type == entry_type)
-        stmt = stmt.order_by(DiaryEntry.entry_time.asc())
+        """Every entry on the diary, unbounded and in time order.
+
+        Deliberately not paged. The callers are the day's PDF, the
+        completeness check and the workforce rollup, and each of those is
+        wrong rather than merely short if it is handed a page: a diary export
+        that silently drops its last deliveries is worse than one that is slow
+        to produce. The HTTP surface reads :meth:`page_for_diary` instead.
+        """
+        stmt = self._entries_stmt(diary_id, entry_type).order_by(DiaryEntry.entry_time.asc())
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def page_for_diary(
+        self,
+        diary_id: uuid.UUID,
+        *,
+        entry_type: str | None = None,
+        offset: int = 0,
+        limit: int = 500,
+    ) -> tuple[list[DiaryEntry], int]:
+        """One page of a diary's entries plus how many matched the filter.
+
+        ``entry_time`` ties freely - a bulk import writes a whole day's
+        entries with the same stamp - so the page is ordered by ``id`` as
+        well. Without that second key the database may return a tied row on
+        two consecutive pages and omit another entirely.
+        """
+        base = self._entries_stmt(diary_id, entry_type)
+        total = (await self.session.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
+        stmt = base.order_by(DiaryEntry.entry_time.asc(), DiaryEntry.id.asc()).offset(offset).limit(limit)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), total
 
     async def entries_by_source_module(
         self,

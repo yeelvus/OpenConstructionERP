@@ -21,6 +21,7 @@ from app.core.validation.engine import (
     rule_registry,
     validation_engine,
 )
+from app.core.validation.project_context import with_project_context
 from app.modules.validation import audit as estimate_audit
 from app.modules.validation.models import ValidationReport
 from app.modules.validation.repository import ValidationReportRepository
@@ -122,7 +123,7 @@ class ValidationModuleService:
         from app.core.i18n import get_locale
 
         engine_report: EngineReport = await validation_engine.validate(
-            data={"positions": positions_data},
+            data=await with_project_context(self.session, project_id, {"positions": positions_data}),
             rule_sets=rule_sets,
             target_type="boq",
             target_id=str(boq_id),
@@ -198,7 +199,7 @@ class ValidationModuleService:
         # report.created handler above. We carry a compact, capped error list so
         # the subscriber needs no DB read.
         try:
-            from app.core.events import event_bus
+            from app.core.events import publish_after_commit
 
             if engine_report.errors:
                 error_digest = [
@@ -210,7 +211,12 @@ class ValidationModuleService:
                     }
                     for r in engine_report.errors[:50]
                 ]
-                event_bus.publish_detached(
+                # Deferred to the commit: the NCR bridge inserts
+                # NCR(project_id=...) from its own session, and a seeder that
+                # validates a project it has not committed yet would hand that
+                # insert an invisible parent. See publish_after_commit.
+                publish_after_commit(
+                    self.session,
                     "validation.results.errors_found",
                     {
                         "report_id": str(db_report.id),
@@ -422,7 +428,7 @@ class ValidationModuleService:
         rule_sets = _build_rule_sets([estimate_audit.ESTIMATE_AUDIT_RULE_SET])
 
         engine_report: EngineReport = await validation_engine.validate(
-            data={"positions": positions_data},
+            data=await with_project_context(self.session, project_id, {"positions": positions_data}),
             rule_sets=rule_sets,
             target_type="boq",
             target_id=str(boq_id),

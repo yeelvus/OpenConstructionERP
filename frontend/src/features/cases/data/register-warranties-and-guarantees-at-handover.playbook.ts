@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 1029,
   category: "handover",
   companyTypes: ["general-contractor", "owner-operator", "developer-client"],
+  roles: ["document-controller", "contract-administrator", "project-manager"],
   icon: "ShieldCheck",
   titleKey: "cases.register_warranties_and_guarantees_at_handover.title",
   titleDefault: "Register warranties and guarantees at handover",
@@ -43,7 +44,7 @@ const playbook: Playbook = {
       whyKey: "cases.register_warranties_and_guarantees_at_handover.step.collect.why",
       whyDefault:
         "A warranty is far easier to extract while you still hold retention than a year after a subcontractor has left. Collecting them at handover is the moment of maximum leverage.",
-      moduleLabel: "Handover",
+      moduleLabel: "Close-out",
       moduleLabelKey: "nav.closeout",
       to: "/closeout",
     },
@@ -107,7 +108,7 @@ const playbook: Playbook = {
       whyKey: "cases.register_warranties_and_guarantees_at_handover.step.handover.why",
       whyDefault:
         "A warranty the operator does not know about is money left unclaimed. Handing over a live register with its dates is what lets them make good on cover instead of paying for a repair twice.",
-      moduleLabel: "Service",
+      moduleLabel: "Service & Maintenance",
       moduleLabelKey: "nav.service",
       to: "/projects/:projectId/service",
     },

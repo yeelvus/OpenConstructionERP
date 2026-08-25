@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 1028,
   category: "handover",
   companyTypes: ["general-contractor", "project-manager", "developer-client"],
+  roles: ["project-manager", "document-controller", "contract-administrator"],
   icon: "Landmark",
   titleKey: "cases.close_out_permits_and_statutory_approvals.title",
   titleDefault: "Close out permits and statutory approvals",
@@ -42,7 +43,7 @@ const playbook: Playbook = {
       whyKey: "cases.close_out_permits_and_statutory_approvals.step.list.why",
       whyDefault:
         "A condition forgotten until handover week can stall occupation. Listing them all early is what turns a scramble for certificates into a schedule that closes out in good time.",
-      moduleLabel: "Handover",
+      moduleLabel: "Close-out",
       moduleLabelKey: "nav.closeout",
       to: "/closeout",
     },
@@ -105,7 +106,7 @@ const playbook: Playbook = {
       whyKey: "cases.close_out_permits_and_statutory_approvals.step.discharge.why",
       whyDefault:
         "One undischarged condition can make an occupied building non-compliant. Confirming the full set is closed is the final gate that lets everyone hand over and move on with confidence.",
-      moduleLabel: "Handover",
+      moduleLabel: "Close-out",
       moduleLabelKey: "nav.closeout",
       to: "/closeout",
     },

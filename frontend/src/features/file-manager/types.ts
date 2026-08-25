@@ -202,6 +202,14 @@ export interface FolderPermissionCreatePayload {
 
 export interface FileFilters {
   category?: FileKind;
+  /**
+   * Several kinds at once, where ``category`` selects exactly one. A caller
+   * that wants two sources - the file picker asking for the documents area
+   * plus the calling module's own store - sends this and gets one
+   * project-scoped, permission-checked, paged answer rather than merging two
+   * listings itself. An unknown kind is a 400 from the server.
+   */
+  kinds?: readonly FileKind[];
   extension?: string;
   q?: string;
   sort?: 'modified' | 'name' | 'size' | 'kind';

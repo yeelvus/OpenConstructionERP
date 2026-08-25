@@ -23,7 +23,7 @@ import {
 import { TabBar, tabIds, ModuleGuideButton, type TabBarTab } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
-import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 import { constructionControlGuide } from './construction_controlGuide';
 import { AcceptanceInspectionsSection } from './sections/AcceptanceInspectionsSection';
 import { MaterialsLabsSection } from './sections/MaterialsLabsSection';
@@ -37,7 +37,7 @@ const TAB_PANEL = tabIds('construction-control');
 
 export function ConstructionControlPage() {
   const { t } = useTranslation();
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
   const [activeTab, setActiveTab] = useState<PillarTab>('inspections');
 
   const tabs: TabBarTab<PillarTab>[] = [

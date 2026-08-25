@@ -83,9 +83,10 @@ import {
 import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
 import { MultiCurrencyTotal } from '@/shared/ui/MultiCurrencyTotal';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useToastStore } from '@/stores/useToastStore';
 import { getErrorMessage } from '@/shared/lib/api';
-import { fetchContacts, type Contact } from '@/features/contacts/api';
+import { fetchContact, fetchContacts, type Contact } from '@/features/contacts/api';
 import { projectsApi, type Project } from '@/features/projects/api';
 import {
   listAccounts,
@@ -1323,12 +1324,12 @@ function DealDrawer({
   );
 
   // Resolve the linked Contact through the Contacts module (no local copy).
+  // Asks for the one contact by id. It used to pull 500 rows and search them,
+  // which answered "no such contact" for every contact past the page - a
+  // silent wrong answer, since the drawer just rendered the empty state.
   const contactQ = useQuery({
     queryKey: ['contacts', 'one', opp?.primary_contact_id],
-    queryFn: () =>
-      fetchContacts({ limit: 500 }).then(
-        (cs) => cs.find((c) => c.id === opp?.primary_contact_id) ?? null,
-      ),
+    queryFn: () => fetchContact(opp!.primary_contact_id as string).catch(() => null),
     enabled: Boolean(opp?.primary_contact_id),
   });
 
@@ -2001,12 +2002,13 @@ function LinkRecordsForm({
           <option value="">
             {t('crm.no_contact', { defaultValue: '- No contact -' })}
           </option>
-          {(contactsQ.data ?? []).map((c) => (
+          {(contactsQ.data?.items ?? []).map((c) => (
             <option key={c.id} value={c.id}>
               {contactLabel(c)}
             </option>
           ))}
         </select>
+        {contactsQ.data && <TruncationNotice page={contactsQ.data} className="mt-1" />}
       </div>
       <div>
         <p className="mb-1 text-[11px] uppercase tracking-wide text-content-tertiary">
@@ -3028,12 +3030,13 @@ function CreateModal({
                 <option value="">
                   {t('crm.no_contact', { defaultValue: '- No contact -' })}
                 </option>
-                {(contactsQ.data ?? []).map((c) => (
+                {(contactsQ.data?.items ?? []).map((c) => (
                   <option key={c.id} value={c.id}>
                     {contactLabel(c)}
                   </option>
                 ))}
               </select>
+              {contactsQ.data && <TruncationNotice page={contactsQ.data} className="mt-1" />}
             </WideModalField>
             <WideModalField
               label={t('crm.project', { defaultValue: 'Project' })}

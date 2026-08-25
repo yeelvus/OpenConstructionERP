@@ -19,8 +19,8 @@ regime rather than assumed:
   in time cannot put that material before the adjudicator.
 * ``deemed_dispute`` - Malaysia. Silence is a denial of the whole claim, and
   the claim goes to adjudication.
-* ``none`` - the EU Late Payment Directive, which sets a payment period and
-  interest but no notice sequence.
+* ``none`` - the EU Late Payment Directive and the German VOB/B and BGB
+  regimes, which set a payment period and interest but no notice sequence.
 
 Rules, all registered under the ``payment_clock`` rule set:
 

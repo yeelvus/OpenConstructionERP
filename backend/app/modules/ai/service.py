@@ -895,13 +895,11 @@ class AIService:
             source_module="oe_ai",
         )
 
-        # Propagate the saved self-hosted endpoints into the process-wide
-        # provider config. That way every later call_ai() invocation, no
-        # matter which module fires it (boq, takeoff, erp_chat and so on),
-        # picks up the user's custom URL without passing it around.
-        from app.modules.ai import ai_client
-
-        ai_client.update_provider_config(settings.metadata_)
+        # Saving does NOT publish this user's endpoint anywhere outside their
+        # own row. It used to write into a module-global provider config, which
+        # made one person's Ollama URL the URL every user of the worker process
+        # then sent their project data to (GHSA-wfpw-cv5v-64j5). The endpoint is
+        # now read back per call, from the settings of whoever is calling.
         return _build_settings_response(settings)
 
     # ── Quick estimate (text -> AI -> BOQ items) ─────────────────────────

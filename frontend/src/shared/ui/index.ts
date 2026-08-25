@@ -17,6 +17,7 @@ export { Input } from './Input';
 export type { InputProps } from './Input';
 
 export { Badge } from './Badge';
+export type { BadgeVariant } from './Badge';
 
 export { Card, CardHeader, CardContent, CardFooter } from './Card';
 
@@ -107,6 +108,8 @@ export { BOQPicker } from './BOQPicker';
 
 export { ConfirmDialog } from './ConfirmDialog';
 export type { ConfirmDialogProps } from './ConfirmDialog';
+
+export { DemoReadOnlyDialog } from './DemoReadOnlyDialog';
 
 export { TabBar, tabIds } from './TabBar';
 export type {
@@ -230,6 +233,9 @@ export type { MiniGeometryPreviewProps } from './MiniGeometryPreview';
 
 export { ContactSearchInput } from './ContactSearchInput';
 
+export { ProjectPeopleSelect } from './ProjectPeopleSelect';
+export type { ProjectPeopleSelectProps } from './ProjectPeopleSelect';
+
 export { ElementInfoPopover } from './ElementInfoPopover';
 export type {
   ElementInfoPopoverProps,
@@ -251,8 +257,8 @@ export { OfflineFallback, markLastSync } from './OfflineFallback';
 export { Markdown, renderDocMarkdown } from './Markdown';
 export type { MarkdownProps } from './Markdown';
 
-export { ProjectFilePicker, projectDocumentToFile } from './ProjectFilePicker';
-export type { ProjectFilePickerProps } from './ProjectFilePicker';
+export { ProjectFilePicker, projectDocumentToFile, pickedProjectFileToFile } from './ProjectFilePicker';
+export type { PickedProjectFile, ProjectFilePickerProps } from './ProjectFilePicker';
 
 export { SearchableSelect } from './SearchableSelect';
 export type { SearchableSelectOption, SearchableSelectProps } from './SearchableSelect';

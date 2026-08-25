@@ -115,10 +115,10 @@ def _template():
 
 
 def test_registered_as_ninth_showcase() -> None:
-    """The demo is appended as the ninth showcase id, replacing nothing."""
+    """The demo is the ninth showcase id, followed by its German siblings."""
     assert DEMO_ID in DEMO_TEMPLATES
-    assert len(SHOWCASE_DEMO_IDS) == 9
-    assert SHOWCASE_DEMO_IDS[-1] == DEMO_ID
+    assert len(SHOWCASE_DEMO_IDS) == 12
+    assert SHOWCASE_DEMO_IDS[8] == DEMO_ID
     # The original eight stay untouched and in order.
     assert SHOWCASE_DEMO_IDS[:8] == (
         "residential-berlin",
@@ -129,6 +129,13 @@ def test_registered_as_ninth_showcase() -> None:
         "residential-saopaulo",
         "govt-building-delhi",
         "condo-toronto",
+    )
+    # The German showcase quartet closes the list, so a fresh install seeds
+    # all four German projects without POST /api/demo/install.
+    assert SHOWCASE_DEMO_IDS[9:] == (
+        "office-frankfurt",
+        "retail-market-heidelberg",
+        "retail-market-karlsruhe",
     )
 
 

@@ -49,6 +49,8 @@ import {
 } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useNumberLocale } from '@/stores/usePreferencesStore';
+import { formatCurrency } from '@/shared/lib/money';
 import {
   AlertTriangle,
   Building2,
@@ -82,6 +84,25 @@ import {
   type PortalKycCode,
   type PortalOverviewResponse,
 } from './api';
+import { fmtFixed, getIntlLocale } from '@/shared/lib/formatters';
+
+// English fallbacks for the computed `buyer_portal.documents.cat.*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const DOCUMENTS_CAT_LABELS: Record<string, string> = {
+  reservation_receipt: 'Reservation receipt', sales_contract: 'Sales contract',
+  payment_receipt: 'Payment receipt', handover_certificate: 'Handover certificate',
+  warranty_certificate: 'Warranty certificate', noc: 'No objection certificate',
+  tenant_lease_agreement: 'Tenant lease agreement', move_in_checklist: 'Move-in checklist',
+  mortgage_clearance_letter: 'Mortgage clearance letter',
+  title_deed_transfer_request: 'Title deed transfer request',
+  escrow_release_authorization: 'Escrow release authorisation',
+  refund_authorization: 'Refund authorisation', snag_report: 'Snag report', invoice: 'Invoice',
+  payment_reminder: 'Payment reminder', kyc_checklist: 'KYC checklist',
+  brokerage_commission: 'Brokerage commission', custom: 'Custom', other: 'Other'
+};
+
 
 type PageState =
   | { kind: 'loading' }
@@ -107,6 +128,11 @@ interface PendingFile {
 export function BuyerPortalPage() {
   const { token } = useParams<{ token: string }>();
   const { t, i18n } = useTranslation();
+  // The buyer is the reader here, so their money and dates go through the
+  // same resolver as every other register rather than a second answer built
+  // in this file. `i18n.language` stays where it means the language itself:
+  // the switcher in the shell below.
+  const numberLocale = useNumberLocale();
 
   const [state, setState] = useState<PageState>({ kind: 'loading' });
   const [contactMessage, setContactMessage] = useState('');
@@ -508,7 +534,7 @@ export function BuyerPortalPage() {
                   {formatMoney(
                     data.reservation.deposit_amount,
                     data.reservation.currency,
-                    i18n.language,
+                    numberLocale,
                   )}
                 </dd>
               </div>
@@ -520,7 +546,7 @@ export function BuyerPortalPage() {
                     })}
                   </dt>
                   <dd className="text-content-primary">
-                    {formatDate(data.reservation.signed_on, i18n.language)}
+                    {formatDate(data.reservation.signed_on)}
                   </dd>
                 </div>
               )}
@@ -563,7 +589,7 @@ export function BuyerPortalPage() {
                   {formatMoney(
                     data.sales_contract.total_value,
                     data.sales_contract.currency,
-                    i18n.language,
+                    numberLocale,
                   )}
                 </dd>
               </div>
@@ -588,14 +614,11 @@ export function BuyerPortalPage() {
           totalOutstanding={data.payment_schedule_outstanding}
           totalValue={data.payment_schedule_total}
           currency={data.payment_schedule_currency}
-          locale={i18n.language}
+          locale={numberLocale}
         />
 
         {/* Documents + KYC */}
-        <DocumentsSection
-          documents={data.documents}
-          locale={i18n.language}
-        />
+        <DocumentsSection documents={data.documents} />
 
         <KycSection
           kycRequests={data.kyc_requests}
@@ -707,7 +730,7 @@ export function BuyerPortalPage() {
         hasPendingKyc={hasPendingKyc}
         nextDueAmount={nextDueInstalment?.amount}
         nextDueCurrency={nextDueInstalment?.currency}
-        locale={i18n.language}
+        locale={numberLocale}
       />
     </ShellWrapper>
   );
@@ -987,7 +1010,7 @@ function PaymentScheduleSection({
                   <div className="mt-1 flex items-baseline justify-between gap-2">
                     <span className="text-xs text-content-secondary">
                       {row.due_date
-                        ? formatDate(row.due_date, locale)
+                        ? formatDate(row.due_date)
                         : t('buyer_portal.na', { defaultValue: '—' })}
                     </span>
                     <span className="text-sm font-semibold tabular-nums text-content-primary">
@@ -1045,7 +1068,7 @@ function PaymentScheduleSection({
                     </td>
                     <td className="py-2 pr-3 text-content-secondary">
                       {row.due_date
-                        ? formatDate(row.due_date, locale)
+                        ? formatDate(row.due_date)
                         : '—'}
                     </td>
                     <td className="py-2 pr-3 text-right tabular-nums text-content-primary">
@@ -1160,7 +1183,7 @@ function InstalmentDetailDrawer({
               {t('buyer_portal.payments.due', { defaultValue: 'Due' })}
             </dt>
             <dd className="text-content-primary">
-              {row.due_date ? formatDate(row.due_date, locale) : '—'}
+              {row.due_date ? formatDate(row.due_date) : '—'}
             </dd>
           </div>
           <div>
@@ -1205,7 +1228,7 @@ function InstalmentDetailDrawer({
                 })}
               </dt>
               <dd className="text-content-primary">
-                {formatDate(row.paid_at, locale)}
+                {formatDate(row.paid_at)}
               </dd>
             </div>
           )}
@@ -1228,10 +1251,8 @@ function InstalmentDetailDrawer({
 
 function DocumentsSection({
   documents,
-  locale,
 }: {
   documents: PortalDocumentRow[];
-  locale: string;
 }) {
   const { t } = useTranslation();
 
@@ -1276,7 +1297,7 @@ function DocumentsSection({
             <div key={category}>
               <h3 className="text-2xs font-semibold uppercase tracking-wide text-content-tertiary mb-1.5">
                 {t(`buyer_portal.documents.cat.${category}`, {
-                  defaultValue: prettifyDocType(category),
+                  defaultValue: DOCUMENTS_CAT_LABELS[category] ?? prettifyDocType(category),
                 })}{' '}
                 <span className="text-content-quaternary">({docs.length})</span>
               </h3>
@@ -1300,7 +1321,7 @@ function DocumentsSection({
                             {doc.delivered_at
                               ? t('buyer_portal.documents.delivered_on', {
                                   defaultValue: 'Delivered {{date}}',
-                                  date: formatDate(doc.delivered_at, locale),
+                                  date: formatDate(doc.delivered_at),
                                 })
                               : t('buyer_portal.documents.no_date', {
                                   defaultValue: 'Delivery date pending',
@@ -1729,7 +1750,7 @@ function humanFileSize(bytes: number): string {
     v /= 1024;
     u++;
   }
-  return `${v.toFixed(v >= 10 || u === 0 ? 0 : 1)} ${units[u]}`;
+  return `${fmtFixed(v, v >= 10 || u === 0 ? 0 : 1)} ${units[u]}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1970,26 +1991,38 @@ function formatMoney(amount: string, currency: string, locale: string): string {
   // ≤12-digit values typical of property pricing. For pure
   // ledger-correctness we'd keep Decimal end-to-end, but the buyer
   // portal is a display surface.
+  //
+  // The buyer is the one person on this page who cannot ask anybody what the
+  // number means, so it is formatted by the module that owns money rather
+  // than here. The formatter this replaces capped every currency at two
+  // decimals with no floor under it: a yen instalment of 1234.50 read
+  // "1.234,5 ¥" for a currency with no subunit, and a dinar instalment lost
+  // its third digit - on an engine without the ES2023 digit clamping it threw
+  // a `RangeError` and took the portal down with it, since a floor of three
+  // cannot sit under a ceiling of two. It also stamped a euro sign on a blank
+  // currency; `formatCurrency` prints a bare grouped number instead, and the
+  // one caller that can reach a blank currency already hides the figure.
   if (!amount) return '';
   const value = Number(amount);
   if (!isFinite(value)) return amount;
-  try {
-    return new Intl.NumberFormat(locale || 'en', {
-      style: 'currency',
-      currency: (currency || 'EUR').toUpperCase(),
-      maximumFractionDigits: 2,
-    }).format(value);
-  } catch {
-    return `${amount} ${currency}`.trim();
-  }
+  return formatCurrency(value, currency, locale);
 }
 
-function formatDate(iso: string, locale: string): string {
+/**
+ * A date, in the reader's language rather than in their number format.
+ *
+ * Takes no locale on purpose. Every caller here has the money locale to hand,
+ * so a locale parameter is a parameter that gets the wrong argument: this
+ * picks a month name, and which month names a reader knows is their language,
+ * not the convention they chose for grouping digits. Somebody who reads
+ * English and writes numbers the German way wants "Aug", not "Aug.".
+ */
+function formatDate(iso: string): string {
   if (!iso) return '';
   try {
     const d = new Date(iso);
     if (isNaN(d.getTime())) return iso;
-    return new Intl.DateTimeFormat(locale || 'en', {
+    return new Intl.DateTimeFormat(getIntlLocale(), {
       year: 'numeric',
       month: 'short',
       day: 'numeric',

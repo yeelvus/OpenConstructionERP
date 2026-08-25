@@ -53,6 +53,7 @@ export async function fetchFileList(
 ): Promise<FileListResponse> {
   const params = new URLSearchParams();
   if (filters.category) params.set('category', filters.category);
+  if (filters.kinds?.length) params.set('kinds', filters.kinds.join(','));
   if (filters.extension) params.set('extension', filters.extension);
   if (filters.q) params.set('q', filters.q);
   if (filters.sort) params.set('sort', filters.sort);

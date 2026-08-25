@@ -46,6 +46,7 @@ import { Badge } from '@/shared/ui/Badge';
 import { Button } from '@/shared/ui/Button';
 import { ConfirmDialog } from '@/shared/ui/ConfirmDialog';
 import { EmptyState } from '@/shared/ui/EmptyState';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { getErrorMessage } from '@/shared/lib/api';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useToastStore } from '@/stores/useToastStore';
@@ -509,6 +510,11 @@ function RateSetsTab() {
         </ul>
       )}
 
+      {/* The register asks for 50 of a 200 cap and has no way to ask for the
+          next 50, so a long-running instance keeps recording sets that this
+          list stops showing. Says so rather than ending on the 50th row. */}
+      {setsQuery.data && <TruncationNotice page={setsQuery.data} />}
+
       <ConfirmDialog
         open={pendingDelete !== null}
         onCancel={() => setPendingDelete(null)}
@@ -729,6 +735,10 @@ function PolicyTab({ projectId }: { projectId: string }) {
                   </option>
                 ))}
               </select>
+              {/* A set the picker never loaded cannot be pinned, and the
+                  hint below is about which set to pick, not about how many
+                  were offered. */}
+              {setsQuery.data && <TruncationNotice page={setsQuery.data} className="mt-1" />}
               <span className="mt-0.5 block text-[11px] text-content-tertiary">
                 {t('fx.field_pinned_set_hint', {
                   defaultValue:

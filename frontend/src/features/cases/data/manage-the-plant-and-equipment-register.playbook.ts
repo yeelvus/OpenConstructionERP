@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 310,
   category: "site",
   companyTypes: ["general-contractor", "subcontractor"],
+  roles: ["site-manager", "foreman", "procurement-buyer"],
   icon: "Boxes",
   titleKey: "cases.manage_the_plant_and_equipment_register.title",
   titleDefault: "Manage the plant and equipment register",
@@ -59,7 +60,7 @@ const playbook: Playbook = {
       whyKey: "cases.manage_the_plant_and_equipment_register.step.register.why",
       whyDefault:
         "Plant that is not on a register gets hired twice or serviced late. One list is the base for both cost and maintenance.",
-      moduleLabel: "Equipment",
+      moduleLabel: "Equipment & Fleet",
       moduleLabelKey: "nav.equipment",
       to: "/equipment",
     },
@@ -143,7 +144,7 @@ const playbook: Playbook = {
         "cases.manage_the_plant_and_equipment_register.step.maintenance.why",
       whyDefault:
         "An uninspected lift or a machine past service is a stop-work and a safety risk. Flagging early keeps plant legal and running.",
-      moduleLabel: "Equipment",
+      moduleLabel: "Equipment & Fleet",
       moduleLabelKey: "nav.equipment",
       to: "/projects/:projectId/equipment",
     },

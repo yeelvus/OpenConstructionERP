@@ -9,13 +9,15 @@ manifest = ModuleManifest(
     version="1.0.0",
     display_name="Payment Clock",
     description=(
-        "The statutory payment notice sequence. In the United Kingdom, "
-        "Ireland, Australia, New Zealand, Singapore and Malaysia the dates "
-        "around a payment application are set by statute rather than agreed, "
-        "and missing one has a defined legal consequence. This module holds "
-        "the regime, computes the due date, the notice deadlines and the final "
-        "date for payment, records the notices actually served, and reports "
-        "the consequence when a deadline passes unanswered."
+        "The statutory payment clock. In the United Kingdom, Ireland, "
+        "Australia, New Zealand, Singapore and Malaysia the dates and notices "
+        "around a payment application are set by statute rather than agreed; "
+        "in Germany the VOB/B and the BGB fix the payment deadlines for "
+        "interim and final invoices. Missing one has a defined legal "
+        "consequence. This module holds the regime, computes the due date, "
+        "the notice deadlines and the final date for payment, records the "
+        "notices actually served, and reports the consequence when a deadline "
+        "passes unanswered."
     ),
     author="OpenConstructionERP Core Team",
     # Regional rather than core: which regime applies is a question about where

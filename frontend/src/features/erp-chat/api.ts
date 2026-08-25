@@ -1,10 +1,19 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
-import { apiGet, apiPost, apiDelete } from '@/shared/lib/api';
+import { apiGet, apiPost, apiDelete, type Page } from '@/shared/lib/api';
 import type { AdminStats, ChatSession, FeedbackResponse } from './types';
 
-export async function fetchChatSessions(): Promise<{ items: ChatSession[]; total: number }> {
-  return apiGet('/v1/erp_chat/sessions/');
+/**
+ * The caller's chat sessions, newest first.
+ *
+ * `Pick<Page<…>>` rather than `Page<…>`: the route returns items and a real
+ * count and nothing else. It takes no limit or offset either - the service is
+ * called with a hardcoded 20 - so this is a page nobody can turn from here.
+ * `total` is what lets the sidebar admit that, which is the whole reason it
+ * has to reach the components rather than being discarded at this line.
+ */
+export async function fetchChatSessions(): Promise<Pick<Page<ChatSession>, 'items' | 'total'>> {
+  return apiGet<Pick<Page<ChatSession>, 'items' | 'total'>>('/v1/erp_chat/sessions/');
 }
 
 export async function createChatSession(projectId?: string): Promise<ChatSession> {

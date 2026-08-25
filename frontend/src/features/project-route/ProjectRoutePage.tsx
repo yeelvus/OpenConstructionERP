@@ -36,7 +36,7 @@ import { PageHeader } from '@/shared/ui/PageHeader';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { apiGet } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
-import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 import {
   fetchProjectRouteMeta,
   fetchRouteAssessments,
@@ -53,6 +53,7 @@ import {
   type ClassifyResult,
 } from './api';
 import { projectRouteGuide } from './projectRouteGuide';
+import { getIntlLocale } from '@/shared/lib/formatters';
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
 
@@ -363,7 +364,7 @@ const AssessmentRow = React.memo(function AssessmentRow({
             <p className="text-xs text-content-tertiary">
               {t('project_route.classified_at', {
                 defaultValue: 'Classified {{date}}',
-                date: new Date(item.classified_at).toLocaleString(),
+                date: new Date(item.classified_at).toLocaleString(getIntlLocale()),
               })}
             </p>
           )}
@@ -438,7 +439,7 @@ export function ProjectRoutePage() {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingItem, setEditingItem] = useState<RouteAssessment | null>(null);

@@ -29,7 +29,8 @@ import { PageHeader } from '@/shared/ui/PageHeader';
 import { DismissibleInfo, IntroRichText } from '@/shared/ui/DismissibleInfo';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
 import { useConfirm } from '@/shared/hooks/useConfirm';
-import { apiGet } from '@/shared/lib/api';
+import { apiGet, type Page } from '@/shared/lib/api';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useAuthStore } from '@/stores/useAuthStore';
@@ -55,6 +56,7 @@ import { CDEHistoryDrawer } from './CDEHistoryDrawer';
 import { CDETransmittalsBadge } from './CDETransmittalsBadge';
 import { CDESetupWizard } from './CDESetupWizard';
 import { cdeGuide } from './cdeGuide';
+import { fmtFixed } from '@/shared/lib/formatters';
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
 
@@ -594,13 +596,12 @@ function LinkDocumentModal({
   const [selected, setSelected] = useState<DocItem[]>([]);
   const [linking, setLinking] = useState(false);
 
-  const { data: docs = [], isLoading } = useQuery({
+  const { data: docPage, isLoading } = useQuery({
     queryKey: ['documents-for-link', projectId],
     queryFn: () =>
-      apiGet<DocItem[] | { items: DocItem[] }>(
-        `/v1/documents/?project_id=${projectId}&limit=100`,
-      ).then((res) => (Array.isArray(res) ? res : (res as { items: DocItem[] }).items ?? [])),
+      apiGet<Page<DocItem>>(`/v1/documents/?project_id=${projectId}&limit=100`),
   });
+  const docs = useMemo(() => docPage?.items ?? [], [docPage]);
 
   const filtered = useMemo(() => {
     if (!search) return docs;
@@ -712,8 +713,8 @@ function LinkDocumentModal({
   const formatSize = (bytes: number | null) => {
     if (!bytes) return '';
     if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    if (bytes < 1024 * 1024) return `${fmtFixed(bytes / 1024, 0)} KB`;
+    return `${fmtFixed(bytes / (1024 * 1024), 1)} MB`;
   };
 
   return (
@@ -835,6 +836,11 @@ function LinkDocumentModal({
             })
           )}
         </div>
+
+        {/* The picker asks for 100 and cannot page, so a document past that
+            is not linkable and only this line would say so. Gated on the
+            server page, never on the search-filtered rows. */}
+        {docPage ? <TruncationNotice page={docPage} className="px-5 pb-2" /> : null}
 
         {/* Footer */}
         <div className="flex items-center justify-between px-5 py-3 border-t border-border shrink-0">

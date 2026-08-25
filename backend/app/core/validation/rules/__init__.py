@@ -176,8 +176,8 @@ def _is_provisional_position(pos: dict[str, Any]) -> bool:
 
 # GAEB exchange phases that carry NO bidder prices. In these the unit rate is
 # legitimately 0 / absent for every position, so a zero Einheitspreis must not
-# be flagged (FA-STD-045). X81 (Kostenanschlag) and X83 (Angebotsaufforderung)
-# are the unpriced request phases.
+# be flagged (FA-STD-045). X81 (Leistungsverzeichnis), X82 (Kostenanschlag)
+# and X83 (Angebotsaufforderung) are the unpriced request phases.
 _UNPRICED_DA_KINDS: frozenset[str] = frozenset({"x80", "x81", "x82", "x83"})
 
 
@@ -1610,8 +1610,63 @@ _METRIC_BOQ_UNITS: frozenset[str] = frozenset(
         "litre",
         "liter",
         "ha",  # hectare
+        # Cyrillic spellings. russia_pack declares its default_units in this
+        # script and units.py preserves non-Latin units verbatim rather than
+        # folding them to Latin, so a bill written the way a Russian-market
+        # estimator writes it reached this rule as an unrecognised token - and
+        # an unrecognised unit is silently ignored, never flagged. That made
+        # the metric half of the check blind on exactly the market whose pack
+        # declares these. The digit forms sit beside the glyph forms because
+        # both are typed in practice (units.py cites "м3" as a real input).
+        "м",
+        "м2",
+        "м²",
+        "м3",
+        "м³",
+        "кг",
+        # Chinese spellings, for the same reason and by the same route: a
+        # GB/T 50500 bill writes its metric units as words, and units.py keeps
+        # them verbatim, so they arrived here unrecognised and were skipped.
+        # Both readings of each unit are listed because both are written: the
+        # colloquial 公斤 / 公里 sit beside the SI-derived 千克 / 千米, and a
+        # bill mixes them freely. Count units are NOT here; see the note below
+        # this set for where they live and why they are not a measurement
+        # system. The CJK compatibility glyphs "㎡" and "㎥" are also absent on
+        # purpose: units.py rejects them before storage (their leading
+        # character is category So, which ``_is_safe_unit_shape`` refuses), so
+        # a token in this set would be one the write path can never produce.
+        # The full-width Latin forms below do store verbatim and do reach
+        # here, which is why those are listed and the compatibility glyphs are
+        # not.
+        "米",
+        "平方米",
+        "立方米",
+        "吨",
+        "千克",
+        "公斤",
+        "毫米",
+        "厘米",
+        "千米",
+        "公里",
+        "升",
+        "公顷",
+        # Full-width Latin, produced by a Chinese IME left in full-width mode.
+        # ``str.lower()`` folds full-width capitals to full-width lowercase but
+        # never to ASCII, and nothing on the write path applies NFKC, so these
+        # reach the rule exactly as typed.
+        "ｍ",
+        "ｍ２",
+        "ｍ３",
     },
 )
+# Count units - "项", "台", "pcs", "Stk" - are deliberately in NEITHER this set
+# nor the imperial one. Both sets are only ever read as the *wrong* set (see
+# ``BOQUnitSystemConsistencyRule``), and a count of discrete items cannot be
+# the wrong measurement system: it has no dimension to be metric or imperial
+# about. Putting one here would make every count row on an imperial project
+# report as a metric mismatch. The set that does know about counts is
+# ``_COUNT_UNITS`` in ``app.modules.bim_hub.service``, which is where the
+# Chinese count units were added.
 # Units that are definitively imperial (US/UK) - ft, lb, etc.
 _IMPERIAL_BOQ_UNITS: frozenset[str] = frozenset(
     {
@@ -1620,6 +1675,14 @@ _IMPERIAL_BOQ_UNITS: frozenset[str] = frozenset(
         "ft3",
         "sqft",
         "cuft",
+        # The everyday US abbreviations, and the area and volume defaults
+        # us_pack itself declares. Without them a US bill written in the very
+        # units its own pack prescribes read as unrecognised here, so the pack
+        # failed its own rule. units.py folds both to ft2 / ft3 on write, which
+        # is why only rows that bypass that path (imports, legacy data) carried
+        # them - and those are precisely the rows this rule exists to judge.
+        "sf",
+        "cf",
         "in",
         "inch",
         "yd",
@@ -1629,6 +1692,7 @@ _IMPERIAL_BOQ_UNITS: frozenset[str] = frozenset(
         "lbs",
         "oz",
         "ton",  # short ton
+        "ton_us",  # short ton, the canonical boq/units.py emits for "ton"
         "gal",
         "gallon",
     },
@@ -1644,9 +1708,18 @@ class BOQUnitSystemConsistencyRule(ValidationRule):
     how many positions disagree and ``details["mismatches"]`` lists up
     to the first 10 by ordinal+unit for drill-down.
 
-    Skips silently when project_unit_system is absent or unrecognised
-    (no "unit_system" project setting means the user hasn't opted in to
-    this guard yet).
+    Three silences, told apart. A bill with no rows is silent outright:
+    there is nothing to be inconsistent with, and a passing result would
+    hand an empty BOQ the compliance signal E-VAL-008 exists to deny it.
+    A ``project_unit_system`` that is
+    present and null means the question was asked and no regional pack
+    answered, and the rule skips - the behaviour every project in an
+    unclaimed country has always had. A key that is absent entirely means
+    the payload was not built by
+    :func:`app.core.validation.project_context.with_project_context`, and
+    the rule says so as an engine error rather than passing for a check it
+    never made. An unrecognised value still passes rather than
+    false-positives.
     """
 
     rule_id = "boq_quality.unit_system_consistency"
@@ -1661,10 +1734,46 @@ class BOQUnitSystemConsistencyRule(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         data = context.data if isinstance(context.data, dict) else {}
+        positions = _get_positions(context)
+        if not positions:
+            # No rows, so no unit to be inconsistent with, and nothing to
+            # complain about not having been told either. Returning a passing
+            # result here would give an empty BOQ a compliance signal and make
+            # it read PASSED at score 1.0, which is exactly what E-VAL-008
+            # forbids; the check below only speaks when it had work to do.
+            return []
+        if "project_unit_system" not in data:
+            # Nobody asked. The payload did not come from
+            # ``app.core.validation.project_context.with_project_context``, so
+            # this rule was never handed the one input it reads - and a rule
+            # that shrugs in that case is indistinguishable from one that
+            # looked and found nothing, which is how it stayed dormant while
+            # registered and enabled. Reported as an engine error: surfaced
+            # separately, never flips the report to ERRORS and never drags the
+            # score (E-VAL-018), so an otherwise-clean bill still reads clean
+            # while the gap has a name.
+            return [
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=False,
+                    message=(
+                        "The measurement system was never resolved for this validation run, so unit consistency "
+                        "was not checked. The payload is missing 'project_unit_system'; build it with "
+                        "app.core.validation.project_context.with_project_context."
+                    ),
+                    is_engine_error=True,
+                    details={"missing_key": "project_unit_system"},
+                )
+            ]
         project_system_raw = data.get("project_unit_system")
         if project_system_raw is None:
-            # No project-level unit-system configured → nothing to check.
-            # Return [] so an otherwise-empty BOQ stays SKIPPED (E-VAL-008).
+            # Asked, and no regional pack answered: the project's country is
+            # claimed by none, or by packs that disagree. Nothing to check, and
+            # guessing a system is worse than declining to judge. Return [] so
+            # an otherwise-empty BOQ stays SKIPPED (E-VAL-008).
             return []
         project_system = str(project_system_raw).strip().lower()
         if project_system not in {"metric", "imperial"}:
@@ -1684,7 +1793,6 @@ class BOQUnitSystemConsistencyRule(ValidationRule):
         wrong_label = "imperial" if project_system == "metric" else "metric"
 
         mismatches: list[dict[str, str]] = []
-        positions = _get_positions(context)
         for pos in positions:
             unit = (pos.get("unit") or "").strip().lower()
             if not unit:
@@ -2681,13 +2789,15 @@ class MasterFormatCompleteness(ValidationRule):
     standard = "masterformat"
     severity = Severity.WARNING
     category = RuleCategory.COMPLETENESS
-    description = "Core divisions (03 Concrete, 05 Metals, 26 Electrical) should be present"
+    description = "Core divisions (03, 05, 26) should be present"
 
     REQUIRED_DIVISIONS = {"03", "05", "26"}
+    # Our own scope wording, not the proprietary division titles
+    # (licensing denylist) - these feed user-facing rule messages.
     DIV_NAMES = {
-        "03": "Concrete",
-        "05": "Metals",
-        "26": "Electrical",
+        "03": "concrete work",
+        "05": "metal work",
+        "26": "electrical systems",
     }
 
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
@@ -4177,7 +4287,23 @@ class MeasurementConsistency(ValidationRule):
     category = RuleCategory.CONSISTENCY
     description = "Flags mixing of metric and imperial units in the same BOQ"
 
-    IMPERIAL_UNITS = {"ft", "ft2", "ft3", "yd", "yd2", "yd3", "in", "lb", "ton", "gal", "sf", "sy", "cy", "lf"}
+    IMPERIAL_UNITS = {
+        "ft",
+        "ft2",
+        "ft3",
+        "yd",
+        "yd2",
+        "yd3",
+        "in",
+        "lb",
+        "ton",
+        "ton_us",
+        "gal",
+        "sf",
+        "sy",
+        "cy",
+        "lf",
+    }
     METRIC_UNITS = {"m", "m2", "m3", "mm", "cm", "km", "kg", "t", "l", "kl", "ml"}
 
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
@@ -6604,6 +6730,7 @@ _UNIT_DIMENSIONS: dict[str, str] = {
     "tonne": "mass",
     "tonnes": "mass",
     "ton": "mass",
+    "ton_us": "mass",
     "lb": "mass",
     "lbs": "mass",
     "g": "mass",

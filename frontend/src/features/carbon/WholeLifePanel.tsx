@@ -72,6 +72,7 @@ import {
   toNumber,
   type CoverageTone,
 } from './sixd';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
 
 const inputCls =
   'h-9 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue';
@@ -568,7 +569,7 @@ function CoverageRow({
             linked,
             total,
           })}{' '}
-          ({safePct.toFixed(0)}%)
+          ({fmtPercent(safePct, 0)})
         </span>
       </div>
       <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-surface-secondary">
@@ -1326,7 +1327,7 @@ function OperationalPreview({
       <p className="text-xs text-content-tertiary">
         {t('carbon.sixd.wl_op_grid_factor_used', {
           defaultValue: 'Grid factor {{value}} kg CO2e/kWh ({{source}})',
-          value: toNumber(preview.grid_factor_kg_co2e_per_kwh).toFixed(3),
+          value: fmtFixed(toNumber(preview.grid_factor_kg_co2e_per_kwh), 3),
           source: preview.grid_factor_source,
         })}
       </p>

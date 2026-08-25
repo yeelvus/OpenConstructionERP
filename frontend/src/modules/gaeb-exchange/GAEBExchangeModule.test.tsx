@@ -2,12 +2,15 @@
 import { describe, it, expect } from 'vitest';
 import {
   generateGAEBXML,
+  hasPricedPositions,
+  priceCoverage,
   toGaebUnitCode,
   fromGaebUnitCode,
   type ExportPosition,
   type GAEBExportOptions,
 } from './data/gaebExport';
-import { parseGAEBXML } from '@/features/boq/gaebImport';
+import { parseGAEBXML, parseGAEBProjectName, truncateFinding } from '@/features/boq/gaebImport';
+import { isSection as isSectionRow } from '@/features/boq/api';
 
 // ---------------------------------------------------------------------------
 // Test data
@@ -253,6 +256,17 @@ describe('generateGAEBXML', () => {
     expect(toGaebUnitCode('')).toBe('Stk'); // empty -> default
   });
 
+  it('keeps the imperial mass units unambiguous through a GAEB round-trip', () => {
+    expect(toGaebUnitCode('lb')).toBe('lb');
+    expect(fromGaebUnitCode('lb')).toBe('lb');
+    // GAEB has no short-ton code. The canonical is forwarded verbatim so a
+    // re-import cannot read it back as the metric tonne, which is what
+    // mapping it onto 'ton' or 't' would do.
+    expect(toGaebUnitCode('ton_us')).toBe('ton_us');
+    expect(fromGaebUnitCode('ton_us')).toBe('ton_us');
+    expect(toGaebUnitCode('t')).toBe('t');
+  });
+
   // ── New: Hierarchy preservation — multi-level (Los → Titel → Position) ─
   it('preserves multi-level hierarchy on export (Los → Titel → Position)', () => {
     const positions: ExportPosition[] = [
@@ -342,5 +356,164 @@ describe('generateGAEBXML', () => {
   it('uses DA81 namespace for X81 export', () => {
     const result = generateGAEBXML(makeOptions({ format: 'X81' }));
     expect(result.xml).toContain('http://www.gaeb.de/GAEB_DA_XML/DA81/3.3');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Import findings must stay screen-sized (a GAEB Langtext can carry a
+// base64 graphics blob of tens of thousands of characters).
+// ---------------------------------------------------------------------------
+
+describe('truncateFinding', () => {
+  it('leaves short findings untouched', () => {
+    expect(truncateFinding('Position 01.001 failed', 300)).toBe('Position 01.001 failed');
+  });
+
+  it('cuts a payload-sized finding to the cap plus an ellipsis', () => {
+    const blob = 'A'.repeat(56_492); // size of the BVBS Prüfdatei Langtext
+    const out = truncateFinding(blob, 300);
+    expect(out.length).toBe(301);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  it('defaults the cap to 300 characters', () => {
+    expect(truncateFinding('B'.repeat(1000)).length).toBe(301);
+  });
+
+  it('never throws on empty input', () => {
+    expect(truncateFinding('')).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// New-BOQ import target: the proposed name comes from PrjInfo/NamePrj.
+// ---------------------------------------------------------------------------
+
+describe('parseGAEBProjectName', () => {
+  it('reads PrjInfo/NamePrj from a generated document', () => {
+    const result = generateGAEBXML(makeOptions());
+    expect(parseGAEBProjectName(result.xml)).toBe('Testprojekt Berlin');
+  });
+
+  it('returns an empty string when NamePrj is absent', () => {
+    expect(parseGAEBProjectName('<GAEB><Award></Award></GAEB>')).toBe('');
+  });
+
+  it('returns an empty string for unparseable input', () => {
+    expect(parseGAEBProjectName('not xml at all <')).toBe('');
+    expect(parseGAEBProjectName('')).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Export summary truthfulness (B-2: "PREISE: Ja" over an all-zero LV)
+// ---------------------------------------------------------------------------
+
+describe('hasPricedPositions', () => {
+  it('is false for an LV whose every line is unpriced', () => {
+    const unpriced = samplePositions.map((p) => ({ ...p, unitRate: 0, total: 0 }));
+    expect(hasPricedPositions(unpriced)).toBe(false);
+  });
+
+  it('is true as soon as one line item carries a rate', () => {
+    const unpriced = samplePositions.map((p) => ({ ...p, unitRate: 0, total: 0 }));
+    unpriced[1] = { ...unpriced[1], unitRate: 18.5 };
+    expect(hasPricedPositions(unpriced)).toBe(true);
+  });
+
+  it('ignores section header rows entirely', () => {
+    // A degenerate section row carrying a rate must not make an unpriced
+    // LV claim prices — sections never carry money.
+    const rows = samplePositions.map((p) => ({ ...p, unitRate: 0, total: 0 }));
+    rows[0] = { ...rows[0], unitRate: 99 };
+    expect(hasPricedPositions(rows)).toBe(false);
+  });
+
+  it('is true for the priced sample LV', () => {
+    expect(hasPricedPositions(samplePositions)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Export summary truthfulness, part two: the half-priced LV.
+//
+// "At least one rate" was still enough for the tile to read "Prices: Yes",
+// so a bill with one priced line out of four hundred announced itself as a
+// priced bid. The tile reads this coverage directly - 'all' is the only state
+// that may claim prices, 'partial' says so and names the gap.
+// ---------------------------------------------------------------------------
+
+describe('priceCoverage', () => {
+  const unpricedRows = () => samplePositions.map((p) => ({ ...p, unitRate: 0, total: 0 }));
+
+  it('claims nothing for an LV whose every line is unpriced', () => {
+    const coverage = priceCoverage(unpricedRows());
+    expect(coverage.state).toBe('none');
+    expect(coverage.state).not.toBe('all');
+    expect(coverage.priced).toBe(0);
+    expect(coverage.missing).toBe(3); // 5 rows, 2 of them sections
+    expect(coverage.items).toBe(3);
+  });
+
+  it('reports a half-priced LV as partial, not as priced', () => {
+    const rows = unpricedRows();
+    rows[1] = { ...rows[1], unitRate: 18.5, total: 6484.25 };
+    const coverage = priceCoverage(rows);
+    expect(coverage.state).toBe('partial');
+    expect(coverage.priced).toBe(1);
+    expect(coverage.missing).toBe(2);
+    // The rule the tile used to run on says "priced" about this same bill.
+    // That is the statement being replaced, not a second opinion about it.
+    expect(hasPricedPositions(rows)).toBe(true);
+  });
+
+  it('claims prices only when every line item carries a rate', () => {
+    const coverage = priceCoverage(samplePositions);
+    expect(coverage.state).toBe('all');
+    expect(coverage.priced).toBe(3);
+    expect(coverage.missing).toBe(0);
+  });
+
+  it('reads a zero rate as missing, whatever the total says', () => {
+    const rows = samplePositions.map((p) => (p.isSection ? p : { ...p, unitRate: 0 }));
+    expect(priceCoverage(rows).state).toBe('none');
+  });
+
+  it('ignores section header rows on both sides of the count', () => {
+    // A degenerate section row carrying a rate must neither price the LV nor
+    // count against it: sections never carry money.
+    const rows = unpricedRows();
+    rows[0] = { ...rows[0], unitRate: 99 };
+    const coverage = priceCoverage(rows);
+    expect(coverage.state).toBe('none');
+    expect(coverage.items).toBe(3);
+  });
+
+  it('says nothing is priced when the bill is all sections', () => {
+    const coverage = priceCoverage(samplePositions.filter((p) => p.isSection));
+    expect(coverage.state).toBe('none');
+    expect(coverage.items).toBe(0);
+    expect(coverage.missing).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Section derivation for API rows (K-3: ABSCHNITTE tile always read 0)
+// ---------------------------------------------------------------------------
+
+describe('section derivation from API rows', () => {
+  // The positions endpoint serves no `is_section` flag, so the export tab
+  // derives it from the SHARED unit rule. These pin the shapes the API
+  // actually serves: sections arrive with unit "section" (sections endpoint,
+  // server GAEB/Excel imports) or an empty unit (legacy rows).
+  it('recognises server-created section rows by their unit', () => {
+    expect(isSectionRow({ unit: 'section' })).toBe(true);
+    expect(isSectionRow({ unit: '' })).toBe(true);
+    expect(isSectionRow({ unit: '  Section ' })).toBe(true);
+  });
+
+  it('never claims a real line item is a section', () => {
+    expect(isSectionRow({ unit: 'm2' })).toBe(false);
+    expect(isSectionRow({ unit: 'psch' })).toBe(false);
   });
 });

@@ -33,6 +33,22 @@ Usage:
     python scripts/i18n_new_locale.py assemble et
     python scripts/i18n_new_locale.py verify   et
 
+`extract` is a ONE-TIME BOOTSTRAP. It writes the whole batch set fresh, with
+English in every value, so running it again on a locale under translation would
+rewrite finished work back to English - and `assemble` rebuilds the locale file
+from those batches, which is how English reaches the shipped .ts. It therefore
+refuses when any batch already holds a translated value, and `--force` is the
+only way past that. To pick up the next batch, open the batch_NNN.json the first
+extract already wrote; to take on keys that appeared since, use `delta`.
+
+`assemble` is the step that publishes, so it carries the same refusal from the
+other end: it overwrites the shipped .ts from the batches, and once it has, the
+real translation is gone with nothing to resync from. It refuses when a key
+reads as a translation in the file today and would read as its English source
+afterwards. That is deliberately not a threshold on how English the corpus is -
+a locale under translation is assembled repeatedly and legitimately carries
+placeholders, because i18next falls back per key. `--force` is the way past it.
+
 `delta` catches a locale's corpus up when target_keys() has moved since
 extract() ran (new modules landed, or keys reached the shipped locales after
 this locale's own extraction) - writes exactly the new keys to
@@ -355,11 +371,65 @@ def cmd_plan(code: str) -> int:
     return 0
 
 
-def cmd_extract(code: str, batch_size: int) -> int:
+def translated_batch_files(out: Path, sources: dict[str, tuple[str, str]]) -> list[tuple[Path, int]]:
+    """Batch files under `out` that hold work, with how many keys each answers.
+
+    A batch file starts life holding the English source for every key, so a
+    value that still equals its source is a placeholder and a value that
+    differs is somebody's translation. Counting the difference is the only way
+    to tell the two apart: the files are the same shape either way, and their
+    timestamps say when they were written, not whether anyone wrote in them.
+
+    A file that cannot be parsed counts as holding work. A corrupt batch is a
+    reason to stop and look, never a reason to assume it was empty.
+    """
+    carrying: list[tuple[Path, int]] = []
+    for path in sorted(out.glob("batch_*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            carrying.append((path, -1))
+            continue
+        answered = sum(1 for k, v in payload.items() if v and v != sources.get(k, ("", ""))[0])
+        if answered:
+            carrying.append((path, answered))
+    return carrying
+
+
+def cmd_extract(code: str, batch_size: int, force: bool = False) -> int:
     ordered, _ = target_keys(code)
     sources = english_sources()
     out = WORK / code
     out.mkdir(parents=True, exist_ok=True)
+
+    # extract is a one-time bootstrap and the unlink below is unconditional, so
+    # a second run rewrites every batch back to English. That is silent: the
+    # command succeeds and prints a normal-looking batch count, and the damage
+    # only becomes visible at the next assemble, which rebuilds the locale file
+    # FROM these batches and would publish English over a finished translation.
+    #
+    # It has already happened once, to 65 uz batches. It was survivable only
+    # because assemble had not run yet, so the values could be resynced out of
+    # the live uz.ts. Once assemble runs there is nothing left to resync from.
+    #
+    # So refuse, and say what would be lost. Anyone who genuinely wants to
+    # re-bootstrap can pass --force; nobody reaches for that by accident while
+    # looking for the next batch to translate.
+    carrying = translated_batch_files(out, sources)
+    if carrying and not force:
+        answered = sum(n for _, n in carrying if n > 0)
+        unreadable = [p.name for p, n in carrying if n < 0]
+        print(f"REFUSING: {len(carrying)} batch file(s) under {out} already hold work.")
+        if answered:
+            print(f"  {answered} key(s) are translated and this would rewrite them to English.")
+        if unreadable:
+            print(f"  unreadable, treated as holding work: {', '.join(unreadable)}")
+        print("  extract is a one-time bootstrap. To pick up the next batch, open the")
+        print("  batch_NNN.json the first extract already wrote. To catch a moved corpus")
+        print(f"  up to new keys, run: {sys.argv[0]} delta {code}")
+        print("  Pass --force only if you mean to throw this translation away.")
+        return 1
+
     for stale in out.glob("batch_*.json"):
         stale.unlink()
 
@@ -433,7 +503,15 @@ def cmd_delta(code: str) -> int:
     return 0
 
 
-def cmd_assemble(code: str) -> int:
+def shipped_values(code: str) -> dict[str, str]:
+    """What `code`.ts holds today, key -> value. Empty if it does not exist yet."""
+    path = LOCALES / f"{code}.ts"
+    if not path.exists():
+        return {}
+    return {m.group(1): unescape(m.group(3)) for m in KEY_VAL_MULTILINE.finditer(read(path))}
+
+
+def cmd_assemble(code: str, force: bool = False) -> int:
     out = WORK / code
     order = json.loads((out / "_order.json").read_text(encoding="utf-8"))
     merged: dict[str, str] = {}
@@ -455,12 +533,48 @@ def cmd_assemble(code: str) -> int:
     # (the "no English anywhere" keys `plan` names). But a handful of keys are
     # blank in en.ts on purpose, e.g. an unlabelled table column - those must
     # not be forced to have a value that doesn't exist in English either.
-    deliberately_blank = {k for k, (text, origin) in english_sources().items() if origin == "en.ts" and text == ""}
+    sources = english_sources()
+    deliberately_blank = {k for k, (text, origin) in sources.items() if origin == "en.ts" and text == ""}
     untranslated = [k for k in order if not merged[k].strip() and k not in deliberately_blank]
     if untranslated:
         print(f"REFUSED {len(untranslated)} key(s) still have an empty value")
         for k in untranslated[:10]:
             print(f"    {k}")
+        return 1
+
+    # assemble is the step that publishes, and it overwrites the shipped .ts
+    # from whatever the batches hold. Extract's own guard stops the batches
+    # being wiped; this one stops a wiped set being written out over work that
+    # is already in the file, because after that write there is nothing left to
+    # resync from.
+    #
+    # The test is not "how much of this reads as English". A locale under
+    # translation is assembled repeatedly and legitimately carries placeholders
+    # for the batches nobody has reached yet - i18next falls back per key, so
+    # shipping it half done is the working method, not a defect. Nor is it a
+    # count: `delta` adds genuinely new keys as English and must stay allowed.
+    #
+    # What is never legitimate is a key that reads as a translation in the file
+    # today and would read as its English source afterwards. That is the loss
+    # itself, it needs no threshold, and it is zero on every honest assemble.
+    shipped = shipped_values(code)
+    would_lose = [
+        k
+        for k in order
+        if k in shipped
+        and shipped[k].strip()
+        and shipped[k] != sources.get(k, ("",))[0]
+        and merged[k] == sources.get(k, ("",))[0]
+    ]
+    if would_lose and not force:
+        print(f"REFUSED {len(would_lose)} key(s) are translated in {LOCALES / f'{code}.ts'} today")
+        print("  and would be written back to English by these batches.")
+        for k in would_lose[:10]:
+            print(f'    {k}: "{shipped[k]}" -> "{merged[k]}"')
+        print("  The batches are behind the file, which is what a second `extract` leaves.")
+        print("  Recover the values from the file itself before assembling. To take on keys")
+        print(f"  that appeared since, run: {sys.argv[0]} delta {code}")
+        print("  Pass --force only if you mean to throw those translations away.")
         return 1
 
     body = "".join(f'    "{key}": "{escape(merged[key])}",\n' for key in order)
@@ -518,11 +632,11 @@ def main() -> int:
         size = 400
         if "--batch-size" in sys.argv:
             size = int(sys.argv[sys.argv.index("--batch-size") + 1])
-        return cmd_extract(code, size)
+        return cmd_extract(code, size, force="--force" in sys.argv)
     if action == "delta":
         return cmd_delta(code)
     if action == "assemble":
-        return cmd_assemble(code)
+        return cmd_assemble(code, force="--force" in sys.argv)
     if action == "verify":
         return cmd_verify(code)
     print(f"unknown action {action!r}")

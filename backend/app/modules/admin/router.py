@@ -15,7 +15,8 @@ import os
 import time
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
@@ -260,6 +261,64 @@ async def _run_cost_reindex(*, batch_size: int, force: bool, task_id: str | None
         raise
 
 
+def require_vector_backend() -> None:
+    """Refuse a reindex the vector backend cannot actually perform.
+
+    Asked by importing rather than by locating. ``find_spec`` resolves a module
+    without executing it, and lancedb is almost entirely one Rust extension: it
+    can sit on disk, resolve perfectly, and still fail to load. Such a build
+    passed the old probe and then failed inside the reindex, turning a clean
+    503 that names the fault into a 500 that does not. The same blind spot was
+    removed from ``doctor``; this is the copy that answers a user rather than an
+    operator.
+
+    Absent and broken get different codes because they need different fixes.
+    Telling somebody to install a package that is already there sends them
+    round a loop, and in the broken case the load error itself is the part they
+    need to see.
+
+    Deliberately sync, and deliberately not awaited from the handler directly.
+    Loading a Rust extension takes real time and can take a lot of it when the
+    install is damaged, and this server runs single-worker in the desktop
+    sidecar, so an import on the event loop stops every other request for its
+    whole duration. Callers hand it to a worker thread. The cost itself is fine
+    to pay: the reindex pays it a moment later anyway, and only on this route.
+
+    Raises:
+        HTTPException: 503 when lancedb is absent or will not load.
+    """
+    import importlib  # noqa: PLC0415
+    import importlib.util  # noqa: PLC0415
+
+    # repair_hint and not a literal pip string: this route runs inside the
+    # desktop sidecar too, where there is no pip to act on the advice with.
+    # Both branches take the repair wording rather than the no-extra one,
+    # because lancedb is in requirements-desktop.lock, so a bundle without a
+    # working one is damaged rather than merely lean.
+    from app.core.self_upgrade import repair_hint  # noqa: PLC0415
+
+    if importlib.util.find_spec("lancedb") is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "vector_extra_missing",
+                "message": "lancedb not installed. "
+                + repair_hint("Install the [vector] extra: pip install openconstructionerp[vector]."),
+            },
+        )
+    try:
+        importlib.import_module("lancedb")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "vector_extra_broken",
+                "message": f"lancedb is installed but will not load: {type(exc).__name__}: {exc}. "
+                + repair_hint("Reinstall it: pip install --force-reinstall openconstructionerp[vector]."),
+            },
+        ) from exc
+
+
 @router.post(
     "/cost-vector-reindex",
     response_model=CostVectorReindexResponse,
@@ -298,21 +357,12 @@ async def cost_vector_reindex(
             detail={"code": exc.code, "message": exc.message},
         ) from exc
 
-    # Vector backend probe - fail fast if the optional extra is missing
-    # so the operator gets a clear error instead of a silent zero-op.
+    # In a worker thread, never inline: the probe imports a Rust extension, and
+    # this handler is async, so importing here would hold the event loop for
+    # however long that takes. Single-worker deployments answer nothing at all
+    # while it runs, which is the failure this route was already fixed for once.
     try:
-        import importlib.util  # noqa: PLC0415
-
-        if importlib.util.find_spec("lancedb") is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "code": "vector_extra_missing",
-                    "message": (
-                        "lancedb not installed; install the [vector] extra (pip install openconstructionerp[vector])."
-                    ),
-                },
-            )
+        await run_in_threadpool(require_vector_backend)
     except HTTPException:
         raise
     except Exception:
@@ -397,15 +447,53 @@ async def cost_vector_reindex(
 @router.get(
     "/cost-vector-reindex/status/{task_id}",
     summary="Poll status of a background cost-vector reindex task",
+    description=(
+        "Polls a reindex scheduled by POST /cost-vector-reindex. Carries the "
+        "same three gates as the route that schedules it: env "
+        "(QA_RESET_ALLOWED=1), shared-secret token, and hostname check "
+        "(refuses production). The token travels as a query parameter here "
+        "because this is a GET with no body."
+    ),
 )
-async def cost_vector_reindex_status(task_id: str) -> dict[str, object]:
+async def cost_vector_reindex_status(
+    task_id: str,
+    request: Request,
+    confirm_token: str = Query(
+        ...,
+        min_length=1,
+        description="Shared secret matching QA_RESET_TOKEN env.",
+    ),
+) -> dict[str, object]:
     """Return the current status of a previously scheduled reindex.
 
     Returns 404 if the task_id is unknown - the operator typically
     polls this from a script that already has the id from the original
     POST response. The registry is in-memory, so a process restart
     drops history.
+
+    This used to be the one route in this file with no gate at all. An opaque
+    task_id is not a permission: it made the route a capability URL by
+    accident, and it leaked whichever way the id travelled. Its two siblings
+    were triple-gated the whole time; this now asks for the same three.
     """
+    hostname = request.url.hostname
+    try:
+        check_gates(
+            hostname=hostname,
+            confirm_token=confirm_token,
+            tenant="demo",  # tenant is irrelevant here; pass the gate sentinel
+        )
+    except GateError as exc:
+        logger.warning(
+            "cost-vector-reindex status rejected: code=%s host=%s",
+            exc.code,
+            hostname,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+
     async with _REINDEX_TASKS_LOCK:
         entry = _REINDEX_TASKS.get(task_id)
     if entry is None:

@@ -62,10 +62,10 @@ const FORMAT_FILTERS: Array<{
   {
     value: 'revit',
     labelKey: 'rulePacks.format_revit',
-    defaultLabel: 'Revit',
+    defaultLabel: 'Revit®',
     hintKey: 'rulePacks.format_hint_revit',
     hintDefault:
-      'Revit templates select by category (Walls, Rooms, Doors) and check Revit parameters, noting Type, Instance and Shared parameters.',
+      'Revit® templates select by category (Walls, Rooms, Doors) and check Revit parameters, noting Type, Instance and Shared parameters.',
   },
 ];
 
@@ -174,7 +174,7 @@ export function RulePackLibrary({ projectId, testId = 'rule-pack-library' }: Rul
           <IntroRichText
             text={t('rulePacks.intro_more', {
               defaultValue:
-                '**How it is used at import.** When you import a BIM model the platform runs every installed template against it before the model is stored.\n\n1. Each rule selects the elements it applies to, by IFC entity class or Revit category.\n2. It checks that the required property or parameter is present and valid on each matched element.\n3. You get a traffic-light report, pass, warning or error, linked back to the exact element.\n\n**Two flavours, one intent.** Every requirement ships for both formats. IFC templates read Pset property names on IFC entity classes; Revit templates read Revit parameters on Revit categories and note whether each is a Type, Instance or Shared parameter. Pick the format your models arrive in.\n\n**Preview before you install.** Open any template to read its rules in plain language and, when a model is loaded, dry-run it to see exactly what would pass or fail.',
+                '**How it is used at import.** When you import a BIM model the platform runs every installed template against it before the model is stored.\n\n1. Each rule selects the elements it applies to, by IFC entity class or Revit® category.\n2. It checks that the required property or parameter is present and valid on each matched element.\n3. You get a traffic-light report, pass, warning or error, linked back to the exact element.\n\n**Two flavours, one intent.** Every requirement ships for both formats. IFC templates read Pset property names on IFC entity classes; Revit templates read Revit parameters on Revit categories and note whether each is a Type, Instance or Shared parameter. Pick the format your models arrive in.\n\n**Preview before you install.** Open any template to read its rules in plain language and, when a model is loaded, dry-run it to see exactly what would pass or fail.',
             })}
           />
         }

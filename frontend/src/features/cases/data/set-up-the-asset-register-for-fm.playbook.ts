@@ -15,6 +15,7 @@ const playbook: Playbook = {
   order: 270,
   category: "handover",
   companyTypes: ["owner-operator", "developer-client"],
+  roles: ["document-controller", "bim-coordinator", "project-manager"],
   icon: "Boxes",
   titleKey: "cases.set_up_the_asset_register_for_fm.title",
   titleDefault: "Set up the asset register for FM",
@@ -102,7 +103,7 @@ const playbook: Playbook = {
       whyKey: "cases.set_up_the_asset_register_for_fm.step.locate.why",
       whyDefault:
         "When a unit fails, the first question is always where it is and what serves it. A register that answers that in one line saves the maintenance team hours of hunting through plant rooms and ceilings.",
-      moduleLabel: "Quality",
+      moduleLabel: "Quality Management",
       moduleLabelKey: "nav.qms",
       to: "/projects/:projectId/qms",
     },

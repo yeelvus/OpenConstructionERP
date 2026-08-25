@@ -302,6 +302,13 @@ _DIMENSION_FACTORS: Final[dict[str, dict[str, str]]] = {
         "t": "0.001",
         "lb": "2.20462",
         "ton": "0.00110231",
+        # US short ton, the canonical the BOQ normaliser now emits for a
+        # typed "ton" (see boq/units.py).  The defining factor is exact in
+        # the other direction - 1 short ton = 907.18474 kg - but this table
+        # stores the reciprocal, and 1/907.18474 has no finite decimal
+        # expansion, so it is written to the precision Decimal can carry
+        # rather than rounded to match the older neighbours above.
+        "ton_us": "0.0011023113109",
     },
     "count": {
         "pcs": "1",

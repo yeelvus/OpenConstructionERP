@@ -99,6 +99,9 @@ const IMPERIAL_DISPLAY: Record<string, string> = {
   in: 'in',
   in2: 'sq in',
   ton: 'ton',
+  // The short-ton canonical prints as the word a US reader expects; the
+  // "_us" suffix disambiguates the stored token, not the printed label.
+  ton_us: 'ton',
   lft: 'l.ft',
   ac: 'ac',
   gal: 'gal',
@@ -356,6 +359,13 @@ const DIMENSION_FACTORS: Record<string, Record<string, number>> = {
     t: 0.001,
     lb: 2.20462,
     ton: 0.00110231,
+    // US short ton, the canonical the BOQ normaliser emits for a typed
+    // "ton" (backend boq/units.py). The defining factor is exact the other
+    // way round - 1 short ton = 907.18474 kg - but this table stores the
+    // reciprocal, which has no finite decimal expansion, so it carries more
+    // digits than the older neighbours above rather than being rounded to
+    // match them. Kept identical to _DIMENSION_FACTORS in unit_conversion.py.
+    ton_us: 0.0011023113109,
   },
   count: {
     pcs: 1,

@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 1015,
   category: "bim",
   companyTypes: ["cost-consultant", "general-contractor", "bim-consultant"],
+  roles: ["quantity-surveyor", "bim-coordinator", "estimator"],
   icon: "Ruler",
   titleKey: "cases.measure_from_a_point_cloud_survey.title",
   titleDefault: "Measure from a point cloud survey",
@@ -85,7 +86,7 @@ const playbook: Playbook = {
       whyKey: "cases.measure_from_a_point_cloud_survey.step.quantities.why",
       whyDefault:
         "A quantity that traces back to a point on the survey is defensible. When someone questions a figure, you can open the cloud and show the measurement it came from.",
-      moduleLabel: "Quantities",
+      moduleLabel: "Quantity Takeoff",
       moduleLabelKey: "quantities.title",
       to: "/quantities",
     },

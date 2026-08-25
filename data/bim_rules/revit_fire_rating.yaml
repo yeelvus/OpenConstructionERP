@@ -15,7 +15,7 @@ pack:
   id: revit_fire_rating
   name: Interior Wall Fire-Rating Completeness (Revit)
   description: |
-    Validates that every interior Revit wall declares a Fire Rating value
+    Validates that every interior Revit® wall declares a Fire Rating value
     drawn from the DIN 4102-2 / EN 13501-2 vocabulary.
   source: openconstructionerp
   version: "1.0.0"

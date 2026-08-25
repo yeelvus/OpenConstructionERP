@@ -233,7 +233,7 @@ wheels and are independent of the core release cycle.
 | `bimhessen-de` | Germany (Hessen) | EUR | de | DIN 276, GAEB X83/X86, VOB 2023, ISO 19650 CDE, BKI | German BIM consultancy preset |
 | `doker-formwork` | Germany | EUR | de | DIN 18218, formwork-cycle rules | Formwork-supplier vertical |
 | `uk-jct` | United Kingdom | GBP | en-GB | NRM 1 + NRM 2, JCT clauses, BCIS | UK GC preset |
-| `us-rsmeans` | United States | USD | en-US | MasterFormat 2018, AIA A201-2017, US construction cost index | US GC preset |
+| `us-costdata` | United States | USD | en-US | MasterFormat 2020, AIA A201-2017, US city cost index | US GC preset |
 | `aus-nzs` | Australia / NZ | AUD | en-AU | AS 1684, NZS 3604, Rawlinsons, AS 4000 | AU/NZ residential + commercial |
 | `brazil-sinapi` | Brazil | BRL | pt-BR | NBR 12721, RPS PDF, SINAPI | Latam tier-1 |
 | `india-cpwd` | India | INR | en-IN, hi | CPWD, IS standards, DSR | Indian public-works |
@@ -277,7 +277,7 @@ pip install -e packs/india-cpwd
 pip install -e packs/renewables-epc
 pip install -e packs/saudi-vision2030
 pip install -e packs/uk-jct
-pip install -e packs/us-rsmeans
+pip install -e packs/us-costdata
 ```
 
 After `pip install -e packs/<slug>` you can `pip uninstall
@@ -403,7 +403,7 @@ the following rule-pack slugs (from `backend/app/core/validation/rules/`):
 - `boq_quality` — universal
 - `din_276`, `gaeb_x83_x86`, `vob_2023`, `iso_19650_cde`, `bki_benchmarks` — DACH
 - `nrm_1_cost_planning`, `nrm_2_detailed_measurement`, `jct_contract_clauses`, `bcis_benchmarks` — UK
-- `masterformat_2018`, `aia_a201_2017`, `rsmeans_city_index` — US
+- `masterformat_2018`, `aia_a201_2017`, `us_city_cost_index` — US
 - `cpwd`, `is_standards`, `dsr` — IN
 - `nbr_12721`, `rps_pdf`, `sinapi` — BR
 - `as_1684`, `nzs_3604`, `rawlinsons`, `as_4000` — AU/NZ

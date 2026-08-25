@@ -12,23 +12,40 @@ on:
 
 jobs:
   backend-full:
-    name: Backend Full Suite (shard ${{ matrix.shard }}/8)
+    name: Backend Full Suite (shard ${{ matrix.shard }}/32)
     runs-on: ubuntu-latest
-    # Run serially this job never finished. Every nightly since at least
-    # 2026-07-22 ran for exactly 6h00m and was cancelled at the timeout-minutes
-    # ceiling, so the step reported "cancelled" rather than a test result and
-    # the whole tree produced no signal at all. 360 minutes is the GitHub-hosted
-    # job limit, so there was no budget left to buy. pytest-split fans the
-    # collected tree across eight matrix shards, each on its own runner with its
-    # own throwaway PostgreSQL service, which removes the cross-shard database
-    # contention as well. Same mechanism the push gate already uses for the unit
-    # tree; eight rather than six because this tree is the unit tree plus the
-    # integration, module and pg trees.
+    # Run serially this job never finished, so pytest-split fans the collected
+    # tree across matrix shards, each on its own runner with its own throwaway
+    # PostgreSQL service. Same mechanism the push gate uses for the unit tree.
+    #
+    # Eight shards was still not enough, for a reason worth writing down: with
+    # no stored durations pytest-split partitions by test COUNT, and this tree's
+    # per-test cost is not uniform to within an order of magnitude. Measured on
+    # the 2026-08-14 nightly, shard 3 ran 3288 tests in 143 seconds (0.04s each,
+    # all of them tests/unit) while shards 1 and 2 held tests/integration plus
+    # tests/modules and were still running when the 120 minute ceiling cancelled
+    # them - a cancel is an ABSENT result, not a failure, so the nightly had
+    # never once produced a full signal. The database-backed 5875 tests in those
+    # two trees are roughly 22% of the collected count and very nearly 100% of
+    # the wall clock; shard 1 exhausted the service container's 100 connections
+    # outright ("sorry, too many clients already" from 05:16 on).
+    #
+    # 32 spreads that heavy 22% across about seven shards instead of two, which
+    # puts each of them well inside the ceiling with room for the tree to grow.
+    # The cheap unit shards finish in two or three minutes and cost little. Note
+    # the split stays COUNT-based and pathless, so the union of the shards is
+    # still exactly the collected tree - resist the temptation to hand-assign
+    # directories to shards, because tests/benchmarks, tests/eval, tests/perf,
+    # tests/pg and the loose tests/test_*.py files would then silently drop out.
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard:
+          [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+            17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+          ]
     defaults:
       run:
         working-directory: backend
@@ -71,6 +88,14 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://oe:oe@localhost:5432/openconstructionerp_test
           DATABASE_SYNC_URL: postgresql+psycopg2://oe:oe@localhost:5432/openconstructionerp_test
+          # Without this pytest block-buffers stdout when it is not a TTY, and a
+          # shard killed at the job ceiling takes the whole undelivered buffer
+          # with it. That is exactly what happened on 2026-08-14: the two
+          # cancelled shards logged not one test name in two hours, so the only
+          # evidence of where they were came from the PostgreSQL container's own
+          # log. Unbuffered plus -v means whatever a killed shard did reach is on
+          # record, and the last line names the test it was inside.
+          PYTHONUNBUFFERED: "1"
         # A per-test timeout so one hung test can no longer eat the whole
         # budget with the run cancelled and no signal of where it stalled - it
         # becomes a reported failure and the suite carries on. --durations and
@@ -78,10 +103,10 @@ jobs:
         # hours of Postgres logs. 900s is generous: no real unit or
         # integration test should approach 15 minutes. pytest-split partitions
         # the collected tree deterministically, so every test runs in exactly
-        # one shard and the union of the eight shards is the whole tree.
+        # one shard and the union of the 32 shards is the whole tree.
         run: >-
-          pytest -q -ra --durations=50 --timeout=900 --timeout-method=thread
-          --splits 8 --group ${{ matrix.shard }}
+          pytest -v -ra --durations=50 --timeout=900 --timeout-method=thread
+          --splits 32 --group ${{ matrix.shard }}
 
   backend-full-gate:
     name: Backend Full Suite
@@ -141,4 +166,8 @@ jobs:
         # No DATABASE_URL -> conftest boots the embedded pixeltable-pgserver
         # cluster. thread timeout method because signal/SIGALRM is Unix-only and
         # would break the Windows runner.
-        run: pytest -q -ra --durations=50 --timeout=900 --timeout-method=thread
+        env:
+          # Same reason as the sharded job above: keep a killed or timed-out run
+          # from swallowing the output that says where it was.
+          PYTHONUNBUFFERED: "1"
+        run: pytest -v -ra --durations=50 --timeout=900 --timeout-method=thread

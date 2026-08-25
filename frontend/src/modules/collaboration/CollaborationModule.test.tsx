@@ -126,9 +126,10 @@ describe('Collaboration module registration', () => {
     const { MODULE_REGISTRY } = await import('../_registry');
     const mod = MODULE_REGISTRY.find((m) => m.id === 'collaboration');
     expect(mod).toBeDefined();
-    // Module name string in registry includes identity-marker ZWJ/ZWNJ;
-    // assert via prefix match rather than strict equality.
-    expect(mod!.name).toMatch(/^Real-time Collaboration/);
+    // The manifest names itself with an i18n key; the English wording lives in
+    // the locale bundle. That the key resolves in English and German is pinned
+    // in modules/manifestI18n.test.ts.
+    expect(mod!.name).toBe('collab.title');
     expect(mod!.routes[0].path).toBe('/collaboration');
   }, 15000);
 });

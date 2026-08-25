@@ -44,6 +44,7 @@ import {
   type TypedActivityView,
 } from './api';
 import { EVM_WARNING_DEFAULTS, PERCENT_TYPES, pvPercentOfBac, rollupSteps, totalWeight } from './progressRigor';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 interface ActivityLite {
   id: string;
@@ -670,7 +671,7 @@ function StepChecklist({
             </Badge>
           )}
           {t('schedule.rolled_up', { defaultValue: 'Rolled-up' })}:{' '}
-          <span className="font-semibold text-content-primary">{rolled.toFixed(1)}%</span>
+          <span className="font-semibold text-content-primary">{fmtPercent(rolled)}</span>
         </div>
       </div>
     </div>

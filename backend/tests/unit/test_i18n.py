@@ -5,8 +5,11 @@ function including fallback and interpolation behavior.
 """
 
 import json
+import logging
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from app.core.i18n import (
     LOCALE_NAMES,
@@ -23,9 +26,10 @@ from app.core.i18n import (
 
 
 class TestSupportedLocales:
-    def test_21_locales_defined(self):
-        # 20 originals + Mongolian (mn, country-pack wave).
-        assert len(SUPPORTED_LOCALES) == 21
+    def test_28_locales_defined(self):
+        # One entry per JSON file in backend/locales; the equality itself is
+        # asserted by tests/unit/test_backend_locale_catalogue.py.
+        assert len(SUPPORTED_LOCALES) == 28
 
     def test_en_is_first(self):
         assert SUPPORTED_LOCALES[0] == "en"
@@ -127,6 +131,10 @@ class TestTranslationFunction:
             "farewell": "Goodbye",
             "welcome": "Welcome, {name}!",
             "count": "You have {count} items",
+            # A translator or a translation tool can leave either of these
+            # behind. Both have to degrade to the template, not raise.
+            "positional": "Item {0} is broken",
+            "empty_field": "Item {} is broken",
         }
         _translations["de"] = {
             "greeting": "Hallo",
@@ -174,6 +182,20 @@ class TestTranslationFunction:
         result = t("greeting", locale="xx")
         assert result == "Hello"
 
+    def test_positional_placeholder_returns_template(self):
+        """A stray {0} used to raise IndexError straight out of t() and 500 the route."""
+        assert t("positional", locale="en", position="01.02") == "Item {0} is broken"
+
+    def test_empty_placeholder_returns_template(self):
+        """Same for a bare pair of braces, which str.format also reads positionally."""
+        assert t("empty_field", locale="en", position="01.02") == "Item {} is broken"
+
+    def test_failed_interpolation_is_logged(self, caplog):
+        """A silent fallback is indistinguishable from a correct render in production."""
+        with caplog.at_level(logging.WARNING, logger="app.core.i18n"):
+            t("welcome", locale="en", wrong_key="value")
+        assert "welcome" in caplog.text, "the swallowed interpolation failure named no key"
+
 
 # ── load_translations / set_locale / get_locale ──────────────────────────────
 
@@ -195,6 +217,24 @@ class TestLoadTranslations:
         finally:
             _translations.clear()
             _translations.update(saved)
+
+    def test_missing_directory_raises_instead_of_regenerating(self):
+        """A missing locales/ used to be silently refilled from an embedded copy.
+
+        That copy knew 20 of the 28 languages and a much smaller key set, so the
+        recovery succeeded and left the platform serving a catalogue missing most
+        of its strings, with every file present and internally consistent. Losing
+        the directory is now an error the operator sees.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            gone = Path(tmpdir) / "definitely-not-here"
+            with pytest.raises(FileNotFoundError) as excinfo:
+                load_translations(gone)
+
+        message = str(excinfo.value)
+        assert str(gone) in message, "the error did not say which directory was missing"
+        assert "git checkout" in message, "the error did not say how to restore it"
+        assert not gone.exists(), "load_translations created the directory it should have refused"
 
 
 class TestSetAndGetLocale:

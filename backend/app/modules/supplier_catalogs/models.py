@@ -165,7 +165,9 @@ class CatalogItem(Base):
     )
     # GS1 GTIN (global trade item number); 8/12/13/14 digits - string for flexibility
     gtin: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
-    # UNSPSC/eClass commodity code reference (e.g. "30161501" for portland cement)
+    # UNSPSC/eClass commodity code reference (e.g. "30111601" Cement, the
+    # commodity under class 30111600 Cement and lime). Free text, no foreign
+    # key: a value here can name a code the lookup table does not carry.
     commodity_code: Mapped[str | None] = mapped_column(
         String(32),
         nullable=True,
@@ -715,6 +717,16 @@ class Warehouse(Base):
     )
 
 
+# What is known about a balance's average unit cost. The average is money, so
+# it only means anything with an ISO currency attached; these three say whether
+# one is attached and, when it is not, why not. "mixed" and "unknown" are kept
+# apart deliberately: they need different things said to the user, and folding
+# them into a single null would throw that away.
+COST_STATE_SINGLE = "single"  # every receipt so far agreed on one ISO currency
+COST_STATE_MIXED = "mixed"  # receipts disagreed, so no single average exists
+COST_STATE_UNKNOWN = "unknown"  # nothing received yet, or a receipt carried no code
+
+
 class StockBalance(Base):
     """Current on-hand quantity per (warehouse, item, batch)."""
 
@@ -751,10 +763,25 @@ class StockBalance(Base):
         nullable=False,
         default=Decimal("0"),
     )
-    unit_cost_avg: Mapped[Decimal] = mapped_column(
+    # Nullable on purpose. NULL means "there is no single-currency average for
+    # this balance", which is a different fact from an average of zero - zero
+    # is a price, and stock received for nothing would record exactly that.
+    # ``cost_state`` says which of the two non-answers applies.
+    unit_cost_avg: Mapped[Decimal | None] = mapped_column(
         Numeric(18, 4),
+        nullable=True,
+        default=None,
+    )
+    # The ISO currency ``unit_cost_avg`` is denominated in. Set only while
+    # ``cost_state`` is "single"; NULL otherwise, because there is no one
+    # currency to name. Width matches SupplierPurchaseOrder.currency, which is
+    # where the value comes from - narrowing it here would turn an
+    # over-long code upstream into a migration that cannot finish.
+    currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    cost_state: Mapped[str] = mapped_column(
+        String(16),
         nullable=False,
-        default=Decimal("0"),
+        default=COST_STATE_UNKNOWN,
     )
     last_movement_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
@@ -786,11 +813,18 @@ class StockMovement(Base):
         nullable=False,
         default=Decimal("0"),
     )
-    unit_cost: Mapped[Decimal] = mapped_column(
+    # Nullable for the same reason as StockBalance.unit_cost_avg: a movement
+    # out of a balance whose average is not knowable has no unit cost to
+    # record, and zero would read as "issued for nothing".
+    unit_cost: Mapped[Decimal | None] = mapped_column(
         Numeric(18, 4),
-        nullable=False,
-        default=Decimal("0"),
+        nullable=True,
+        default=None,
     )
+    # The ISO currency ``unit_cost`` is denominated in. An inbound movement
+    # takes it from the purchase order being received; an outbound one from
+    # the balance it draws down. Width matches the purchase order's column.
+    currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
     reference_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reference_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     batch_lot: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -811,12 +845,26 @@ class StockMovement(Base):
 
 
 class CommodityCode(Base):
-    """A UN-SPSC or eClass commodity-classification entry.
+    """A UNSPSC, CPV or eClass commodity-classification entry.
 
-    Seeded from public CSVs that ship with the module. Used by:
-        * Vendor master (``categories_json`` keys reference this table's ``code``)
-        * CatalogItem (optional 1:1 FK ``commodity_code_id``)
-        * Spend analytics rollups
+    Seeded on demand from ``data/unspsc_construction.csv`` by
+    ``SupplierCatalogsService.seed_commodity_codes``, whose only caller is the
+    ``POST /commodity-codes/seed`` endpoint - nothing fills this table at
+    startup, in a migration or in demo seeding.
+
+    Nothing in the codebase reads these rows yet. This docstring used to name
+    three consumers and none of them exists, which is worth recording because
+    it is what made the table look load-bearing while its contents went
+    unchecked:
+
+        * ``Vendor.categories_json`` is a JSON *list* of free-text slugs
+          (``["concrete", "rebar"]`` in ``seed.py``, and whatever the caller
+          sends through ``VendorCreate`` otherwise). It has no keys, and no
+          entry is checked against this table.
+        * ``CatalogItem`` has no ``commodity_code_id``. It carries a plain
+          ``commodity_code`` string with no foreign key, so a value there can
+          name a code this table does not have.
+        * The module has no spend analytics rollups.
     """
 
     __tablename__ = "oe_supplier_catalogs_commodity_code"
@@ -861,9 +909,21 @@ class CommodityCode(Base):
 class TolerianceProfile(Base):
     """Configurable per-tenant tolerance bands for 3-way matching.
 
-    Resolved at match time by ``name``: ``default`` is the fallback profile
-    that ships seeded with every installation. Tenants can edit the default
-    or add named profiles (e.g. "strategic-supplier" with tighter bands).
+    Resolved at match time by ``name``. Nothing seeds a row here: no migration
+    inserts one, and ``CatalogService.ensure_default_tolerance_profile`` would
+    but is called from no application code. So on a fresh installation the
+    table is empty, ``get_default()`` finds nothing and
+    ``CatalogService._resolve_profile`` synthesises an in-memory fallback
+    (2% / 0 abs / 0% qty). Tenants create named profiles through the API
+    (e.g. "strategic-supplier" with tighter bands), and a profile is matched
+    to a purchase order by name alone.
+
+    That last point is why ``currency`` exists. A profile is global: the same
+    row is applied to orders priced in every currency the tenant trades in.
+    A percentage band survives that, because a percentage of the order total
+    is denominated in the order's own currency whatever it is. An absolute
+    floor does not - it is a bare number, and it only means anything beside
+    an amount in the currency it was written in.
     """
 
     __tablename__ = "oe_supplier_catalogs_tolerance_profile"
@@ -875,7 +935,10 @@ class TolerianceProfile(Base):
         index=True,
     )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Price tolerance: absolute (currency) AND percentage - both checked
+    # Price tolerance: an absolute floor and a percentage, whichever is wider.
+    # The percentage needs no label. The floor does, and the column below it
+    # is that label - the comment here used to read "absolute (currency)"
+    # while no currency was recorded anywhere.
     price_tolerance_pct: Mapped[Decimal] = mapped_column(
         Numeric(8, 4),
         nullable=False,
@@ -886,6 +949,13 @@ class TolerianceProfile(Base):
         nullable=False,
         default=Decimal("0"),
     )
+    # The ISO code ``price_tolerance_abs`` is written in. NULL means the floor
+    # was never labelled, which is the only thing that can be said about a row
+    # written before this column existed; it does not mean "any currency".
+    # Zero needs no label and is left NULL on purpose: zero is the same amount
+    # of money everywhere, so ``max(pct, 0)`` is the percentage in any
+    # currency and nothing is lost.
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     # Quantity tolerance: percentage
     qty_tolerance_pct: Mapped[Decimal] = mapped_column(
         Numeric(8, 4),
@@ -914,6 +984,20 @@ class TolerianceProfile(Base):
 
     def __repr__(self) -> str:
         return f"<TolerianceProfile {self.name}>"
+
+
+# What became of the profile's absolute floor on one particular match. Reported
+# on MatchResult so that "this invoice was auto-matched" can be read back
+# together with which band actually let it through - the percentage alone, or
+# the percentage widened by a floor.
+# The three "dropped" values are kept apart because each one has a different
+# remedy: label the profile, label the order, or nothing at all - a floor in
+# another currency is the system working, not a fault.
+ABS_TOLERANCE_NOT_SET = "not_set"  # the profile's floor is zero; only the percentage applied
+ABS_TOLERANCE_APPLIED = "applied"  # the floor is labelled, and the label is the order's currency
+ABS_TOLERANCE_DROPPED_UNLABELLED = "dropped_unlabelled"  # nonzero floor, no ISO code on the profile
+ABS_TOLERANCE_DROPPED_ORDER_UNLABELLED = "dropped_order_unlabelled"  # floor labelled, order is not
+ABS_TOLERANCE_DROPPED_MISMATCH = "dropped_currency_mismatch"  # nonzero floor, labelled, other currency
 
 
 # ── KYC documents ───────────────────────────────────────────────────────────

@@ -25,6 +25,8 @@ import { useNavigate } from 'react-router-dom';
 import { CalendarClock, Flag, ArrowRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, InfoHint } from '@/shared/ui';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { usePreferencesStore } from '@/stores/usePreferencesStore';
+import { formatDateWithPreference } from '@/shared/lib/formatters';
 import { scheduleApi, type Activity } from '@/features/schedule/api';
 
 /** How many days before/after "today" a milestone stays worth showing. */
@@ -80,15 +82,16 @@ export function UpcomingMilestonesCard() {
     staleTime: 60 * 1000,
   });
 
-  const dateFormat = useMemo(
-    () =>
-      new Intl.DateTimeFormat(i18n.language || undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      }),
-    [i18n.language],
-  );
+  const datePref = usePreferencesStore((s) => s.dateFormat);
+  const formatDueDate = useMemo(() => {
+    const locale = i18n.language || undefined;
+    const options: Intl.DateTimeFormatOptions = {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    };
+    return (d: Date) => formatDateWithPreference(d, locale, options, datePref);
+  }, [i18n.language, datePref]);
 
   const milestones = useMemo<UpcomingMilestone[]>(() => {
     const activities = ganttQuery.data?.activities ?? [];
@@ -145,7 +148,7 @@ export function UpcomingMilestonesCard() {
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-content-primary">{m.name}</p>
-                <p className="text-xs text-content-tertiary">{dateFormat.format(new Date(m.dueDate))}</p>
+                <p className="text-xs text-content-tertiary">{formatDueDate(new Date(m.dueDate))}</p>
               </div>
               <DueChip days={m.daysFromToday} t={t} />
             </li>

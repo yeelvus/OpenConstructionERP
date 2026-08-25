@@ -31,6 +31,23 @@ Einheitspreis - exactly the shape that used to trip the GAEB validators. Used
 by `tests/unit/test_gaeb_rules.py` to pin that importing the official Pruefdatei
 and running the GAEB rule set scores above 0.9 with no false-positive errors.
 
+## frankfurt_rohbau_x83.x83
+
+Authored in-house (no external provenance): a clean, realistic German X83
+(Angebotsaufforderung / call for bids, unpriced), namespace
+`http://www.gaeb.de/GAEB_DA_XML/DA83/3.3`. Project "Bürogebäude Frankfurt
+Europaviertel", one Gewerk (Rohbau) with five sub-sections
+(Baustelleneinrichtung, Erdarbeiten, Beton- und Stahlbetonarbeiten,
+Mauerwerksarbeiten, Abdichtungsarbeiten), 21 positions with real German
+construction texts, units m2/m3/psch/St/kg and non-round quantities
+(386.500, 57522.500). Carries no prices (UP/IT) and no company names.
+
+Validates against the same 3.3 XSD oracle the exporter tests use. Where the
+BVBS Pruefdatei above deliberately stresses edge cases (embedded graphics,
+Indexpositionen, mixed-case units), this file is the everyday-shaped LV -
+used by `tests/unit/test_gaeb_frankfurt_fixture.py` and the import
+integration tests as the realistic-input companion to the certification file.
+
 ## xsd/
 
 Official GAEB DA XML 3.2 (2012-01) schema set published by the Gemeinsamer

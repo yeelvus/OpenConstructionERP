@@ -35,9 +35,11 @@ import {
   ModuleGuideButton,
   Skeleton,
 } from '@/shared/ui';
+import { getIntlLocale } from '@/shared/lib/formatters';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { DismissibleInfo, IntroRichText } from '@/shared/ui/DismissibleInfo';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 import { useToastStore } from '@/stores/useToastStore';
 
 import {
@@ -50,6 +52,7 @@ import { SnapshotCreateModal } from './SnapshotCreateModal';
 import { SnapshotTimeline } from './SnapshotTimeline';
 import { SnapshotDiffView } from './SnapshotDiffView';
 import { dashboardsGuide } from './dashboardsGuide';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 type DashboardsView = 'list' | 'timeline' | 'diff';
 
@@ -57,12 +60,12 @@ type DashboardsView = 'list' | 'timeline' | 'diff';
 const SNAPSHOTS_PAGE_SIZE = 50;
 
 function formatNumber(n: number): string {
-  return new Intl.NumberFormat('en-US').format(n);
+  return new Intl.NumberFormat(getNumberLocale()).format(n);
 }
 
 function formatDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleString('en-US', {
+    return new Date(iso).toLocaleString(getIntlLocale(), {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -78,7 +81,7 @@ export function SnapshotsPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
   const activeProjectName = useProjectContextStore((s) => s.activeProjectName);
   const toast = useToastStore((s) => s.addToast);
 

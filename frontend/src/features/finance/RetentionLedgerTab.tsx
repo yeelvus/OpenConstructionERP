@@ -10,6 +10,7 @@ import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { ApiError } from '@/shared/lib/api';
 import { getRetentionLedger } from './api';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 /* ── Helpers ────────────────────────────────────────────────────────────── */
 
@@ -41,7 +42,7 @@ function formatPct(value: string | null, naLabel: string): string {
   if (value == null) return naLabel;
   const n = parseFloat(value);
   if (Number.isNaN(n)) return naLabel;
-  return `${n.toFixed(1)}%`;
+  return fmtPercent(n);
 }
 
 /** A labelled money figure used inside a per-total summary card. */

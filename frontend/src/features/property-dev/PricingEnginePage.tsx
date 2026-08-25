@@ -114,6 +114,8 @@ import {
   type Reservation,
   type ReservationStatus,
 } from './api';
+import { formatCurrency } from '@/shared/lib/money';
+import { getIntlLocale } from '@/shared/lib/formatters';
 
 const RULE_TYPES: PricingRuleType[] = [
   'early_bird',
@@ -174,18 +176,21 @@ const CURRENCY_OPTIONS: Array<{ code: string; label: string }> = [
   { code: 'BRL', label: 'BRL - Brazilian Real' },
 ];
 
+// One quote, one number of decimals, decided where the decimals are decided.
+//
+// The formatter this replaces pinned a ceiling of two decimals with no floor,
+// which reads as a claim that every currency a price list can be denominated
+// in has at most two minor units. It does not: a yen line of 1234.50 printed
+// "1.234,5 ¥", and a dinar total lost its third digit - or, on an engine
+// without the ES2023 digit clamping, threw a `RangeError` out of the render
+// because the currency's own floor of three cannot fit under a ceiling of two.
+// `formatCurrency` reads the minor units off the engine per currency and
+// cannot throw, so the waterfall, the chart tooltip and the rule preview all
+// state the same amount the same way.
 function fmtMoney(amount: string | number, currency: string): string {
   const n = typeof amount === 'string' ? Number(amount) : amount;
   if (!Number.isFinite(n)) return String(amount);
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency: currency || 'EUR',
-      maximumFractionDigits: 2,
-    }).format(n);
-  } catch {
-    return `${n.toFixed(2)} ${currency}`;
-  }
+  return formatCurrency(n, currency);
 }
 
 function statusBadge(status: PriceList['status']): JSX.Element {
@@ -1851,7 +1856,7 @@ function SimulatorTab({ devId }: { devId: string }): JSX.Element {
                         key={String(q.computed_at)}
                         value={String(q.computed_at)}
                       >
-                        {new Date(q.computed_at).toLocaleString()} —{' '}
+                        {new Date(q.computed_at).toLocaleString(getIntlLocale())} —{' '}
                         {fmtMoney(q.total, q.currency)}
                       </option>
                     ))}

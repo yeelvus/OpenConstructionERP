@@ -23,12 +23,18 @@ from typing import AsyncIterator
 import pytest
 import pytest_asyncio
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import event_bus
 from app.modules.supplier_catalogs.models import (
+    COST_STATE_MIXED,
+    COST_STATE_SINGLE,
+    COST_STATE_UNKNOWN,
     CatalogItem,
     PurchaseOrder,
+    StockMovement,
+    ThreeWayMatchRecord,
     Vendor,
     Warehouse,
 )
@@ -50,7 +56,11 @@ from app.modules.supplier_catalogs.schemas import (
     VendorInvoiceCreate,
     WarehouseCreate,
 )
-from app.modules.supplier_catalogs.service import SupplierCatalogsService
+from app.modules.supplier_catalogs.service import (
+    SupplierCatalogsService,
+    _fold_receipt_into_cost,
+    _normalise_currency,
+)
 from tests._pg import transactional_session
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -672,6 +682,7 @@ async def _build_po_received(
     svc: SupplierCatalogsService,
     qty: Decimal = Decimal("10"),
     price: Decimal = Decimal("100"),
+    currency: str = "EUR",
 ) -> tuple[PurchaseOrder, Warehouse, Vendor]:
     vendor = await _seed_vendor(svc, f"V-{uuid.uuid4().hex[:5]}")
     item = await _seed_item(svc, f"SKU-{uuid.uuid4().hex[:5]}")
@@ -680,6 +691,7 @@ async def _build_po_received(
         POCreateExt(
             vendor_id=vendor.id,
             project_id=uuid.uuid4(),
+            currency=currency,
             lines=[
                 POLineCreate(
                     catalog_item_id=item.id,
@@ -757,6 +769,105 @@ async def test_match_invoice_price_exception(session, captured_events):
 
 
 @pytest.mark.asyncio
+async def test_match_invoice_refuses_when_currencies_differ(session, captured_events):
+    """A JPY order invoiced in EUR must not produce a variance of any size.
+
+    The failing case is not an inflated invoice, it is an identical number:
+    165000 JPY ordered, 165000 EUR invoiced. Subtracting one from the other
+    gives exactly zero, which is the value that means nothing is wrong, so the
+    invoice used to be auto-approved for payment at roughly 165 times its worth
+    with no human in the path. The Peppol ingest reaches this with
+    ``auto_match`` defaulting to true, so nobody types anything at all.
+
+    The EUR control in the same run is what makes the difference attributable
+    to the currency rather than to the fixture: same numbers, same helper, same
+    session, and it still matches.
+    """
+    svc = SupplierCatalogsService(session)
+
+    # Control: identical numbers, one currency, still auto-matches.
+    eur_po, _wh, eur_vendor = await _build_po_received(
+        svc,
+        qty=Decimal("1650"),
+        price=Decimal("100"),
+    )
+    eur_invoice = await svc.create_invoice(
+        VendorInvoiceCreate(
+            number=f"INV-EUR-{uuid.uuid4().hex[:5]}",
+            vendor_id=eur_vendor.id,
+            po_id=eur_po.id,
+            currency="EUR",
+            subtotal=eur_po.total,
+            tax=Decimal("0"),
+        )
+    )
+    control = await svc.match_invoice(eur_invoice.id)
+    assert control.status == "auto_matched"
+    assert control.price_variance == Decimal("0")
+
+    # The case: same figures, different currencies.
+    jpy_po, _wh2, jpy_vendor = await _build_po_received(
+        svc,
+        qty=Decimal("1650"),
+        price=Decimal("100"),
+        currency="JPY",
+    )
+    assert jpy_po.currency == "JPY"
+    eur_invoice_on_jpy_po = await svc.create_invoice(
+        VendorInvoiceCreate(
+            number=f"INV-JPY-{uuid.uuid4().hex[:5]}",
+            vendor_id=jpy_vendor.id,
+            po_id=jpy_po.id,
+            currency="EUR",
+            subtotal=jpy_po.total,
+            tax=Decimal("0"),
+        )
+    )
+    result = await svc.match_invoice(eur_invoice_on_jpy_po.id)
+
+    # No verdict, and above all no number. Zero here would be the defect.
+    assert result.status == "not_comparable"
+    assert result.price_variance is None
+    assert result.qty_variance is None
+    assert "EUR" in (result.exception_reason or "")
+    assert "JPY" in (result.exception_reason or "")
+
+    refreshed = await svc.invoices.get(eur_invoice_on_jpy_po.id)
+    assert refreshed is not None
+    assert refreshed.three_way_match_status == "not_comparable"
+    # The invoice's own lifecycle must not move: it may be perfectly correct,
+    # so 'disputed' would accuse the supplier of something unestablished.
+    assert refreshed.status == "received"
+
+    names = [n for n, _ in captured_events]
+    assert "supplier_catalogs.invoice.currency_mismatch" in names
+    # The refusal must not masquerade as either real outcome. The control above
+    # published invoice.matched, so assert on this invoice's events only.
+    for name, payload in captured_events:
+        if name in {
+            "supplier_catalogs.invoice.matched",
+            "supplier_catalogs.invoice.exception",
+        }:
+            assert payload.get("invoice_id") != str(eur_invoice_on_jpy_po.id)
+
+    # A match record describes a comparison, and none was performed. Its
+    # price_variance column is NOT NULL defaulting to zero, so any row it could
+    # store here would be the same lie in the audit trail.
+    records = (
+        (
+            await session.execute(
+                select(ThreeWayMatchRecord).where(
+                    ThreeWayMatchRecord.invoice_id == eur_invoice_on_jpy_po.id,
+                ),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert list(records) == []
+
+
+@pytest.mark.asyncio
 async def test_match_invoice_qty_exception_no_gr(session):
     svc = SupplierCatalogsService(session)
     vendor = await _seed_vendor(svc)
@@ -805,6 +916,11 @@ async def test_match_invoice_without_po(session):
     )
     result = await svc.match_invoice(invoice.id)
     assert result.status == "exception"
+    # With no PO there is no second figure, so nothing was subtracted. The
+    # variances must say "not computed" rather than "computed, and zero" - the
+    # same distinction the currency guard makes, in the branch above it.
+    assert result.price_variance is None
+    assert result.qty_variance is None
 
 
 # ── Stock reservation / issue / stocktake ────────────────────────────────────
@@ -1031,7 +1147,11 @@ async def test_list_commodity_codes_filters(session):
 async def test_validate_commodity_code(session):
     svc = SupplierCatalogsService(session)
     await svc.seed_commodity_codes()
-    assert await svc.validate_commodity_code("unspsc", "30161501") is True
+    # Anchored on a code the seed census adjudicated as correct against the
+    # official UNSPSC list, so a later data correction cannot take this test
+    # hostage. It used to assert "30161501", which the census found was not
+    # portland cement at all and which moved to 30111601.
+    assert await svc.validate_commodity_code("unspsc", "81101500") is True
     assert await svc.validate_commodity_code("unspsc", "NOSUCH") is False
 
 
@@ -1855,3 +1975,212 @@ async def test_cross_project_idor_invoice_match(session, monkeypatch, _no_event_
     # Owner can match.
     result = await svc.match_invoice(invoice.id, user_id=owner)
     assert result.status in ("auto_matched", "exception")
+
+
+# ── Stock cost currency ─────────────────────────────────────────────────────
+
+
+def test_fold_receipt_refuses_to_average_across_currencies():
+    """The weighted average is withheld once two currencies meet in one balance.
+
+    Averaging 50 EUR with 70 USD produces a number that is money in neither,
+    and every issue out of the balance afterwards copies that number onto its
+    own movement row, so one blend spreads into the audit trail.
+    """
+    # First receipt into an empty balance takes its currency outright.
+    assert _fold_receipt_into_cost(
+        prev_qty=Decimal("0"),
+        prev_cost=None,
+        prev_currency=None,
+        prev_state=COST_STATE_UNKNOWN,
+        incoming_qty=Decimal("100"),
+        incoming_price=Decimal("50"),
+        incoming_currency="EUR",
+    ) == (Decimal("50"), "EUR", COST_STATE_SINGLE)
+
+    # A second receipt in the same currency still averages, as it always did.
+    assert _fold_receipt_into_cost(
+        prev_qty=Decimal("100"),
+        prev_cost=Decimal("50"),
+        prev_currency="EUR",
+        prev_state=COST_STATE_SINGLE,
+        incoming_qty=Decimal("100"),
+        incoming_price=Decimal("70"),
+        incoming_currency="EUR",
+    ) == (Decimal("60"), "EUR", COST_STATE_SINGLE)
+
+    # A different currency refuses. Note what is not returned: not the old
+    # average, not the incoming price, and not zero.
+    assert _fold_receipt_into_cost(
+        prev_qty=Decimal("100"),
+        prev_cost=Decimal("50"),
+        prev_currency="EUR",
+        prev_state=COST_STATE_SINGLE,
+        incoming_qty=Decimal("100"),
+        incoming_price=Decimal("70"),
+        incoming_currency="USD",
+    ) == (None, None, COST_STATE_MIXED)
+
+    # Mixed stays mixed while the blended stock is still on hand, even when
+    # the new receipt is in the balance's original currency.
+    assert _fold_receipt_into_cost(
+        prev_qty=Decimal("200"),
+        prev_cost=None,
+        prev_currency=None,
+        prev_state=COST_STATE_MIXED,
+        incoming_qty=Decimal("50"),
+        incoming_price=Decimal("50"),
+        incoming_currency="EUR",
+    ) == (None, None, COST_STATE_MIXED)
+
+    # Issued down to nothing, the next receipt repairs the balance: none of
+    # the blended stock is left to be wrong about.
+    assert _fold_receipt_into_cost(
+        prev_qty=Decimal("0"),
+        prev_cost=None,
+        prev_currency=None,
+        prev_state=COST_STATE_MIXED,
+        incoming_qty=Decimal("10"),
+        incoming_price=Decimal("42"),
+        incoming_currency="EUR",
+    ) == (Decimal("42"), "EUR", COST_STATE_SINGLE)
+
+
+def test_fold_receipt_treats_a_blank_currency_as_no_currency():
+    """A blank code must not let two unlabelled receipts agree with each other."""
+    for blank in (None, "", "   "):
+        assert _fold_receipt_into_cost(
+            prev_qty=Decimal("0"),
+            prev_cost=None,
+            prev_currency=None,
+            prev_state=COST_STATE_UNKNOWN,
+            incoming_qty=Decimal("10"),
+            incoming_price=Decimal("5"),
+            incoming_currency=_normalise_currency(blank),
+        ) == (None, None, COST_STATE_UNKNOWN), blank
+
+    # Unknown is sticky while the unlabelled stock is on hand: a later
+    # labelled receipt cannot vouch for what is already there.
+    assert _fold_receipt_into_cost(
+        prev_qty=Decimal("10"),
+        prev_cost=None,
+        prev_currency=None,
+        prev_state=COST_STATE_UNKNOWN,
+        incoming_qty=Decimal("10"),
+        incoming_price=Decimal("5"),
+        incoming_currency="EUR",
+    ) == (None, None, COST_STATE_UNKNOWN)
+
+
+async def _receive_po(
+    svc: SupplierCatalogsService,
+    *,
+    vendor: Vendor,
+    item: CatalogItem,
+    wh: Warehouse,
+    currency: str,
+    price: Decimal,
+    qty: Decimal,
+) -> None:
+    """Order and fully receive ``qty`` of ``item`` at ``price`` in ``currency``."""
+    po = await svc.create_po(
+        POCreateExt(
+            vendor_id=vendor.id,
+            project_id=uuid.uuid4(),
+            currency=currency,
+            lines=[
+                POLineCreate(
+                    catalog_item_id=item.id,
+                    description="cement",
+                    ordered_qty=qty,
+                    unit_price=price,
+                )
+            ],
+        )
+    )
+    await svc.send_po(po.id)
+    await svc.post_goods_receipt(
+        GoodsReceiptCreate(
+            po_id=po.id,
+            warehouse_id=wh.id,
+            lines=[
+                GRLineCreate(
+                    po_line_id=po.lines[0].id,
+                    received_qty=qty,
+                    accepted_qty=qty,
+                    batch_lot="",
+                )
+            ],
+        ),
+        user_id="receiver",
+    )
+
+
+@pytest.mark.asyncio
+async def test_receipts_in_two_currencies_leave_no_blended_average(session):
+    """End to end: two POs, two currencies, one balance, no invented number."""
+    svc = SupplierCatalogsService(session)
+    vendor = await _seed_vendor(svc, code=f"V-{uuid.uuid4().hex[:6]}")
+    item = await _seed_item(svc, f"SKU-{uuid.uuid4().hex[:6]}")
+    wh = await _seed_warehouse(svc)
+
+    await _receive_po(svc, vendor=vendor, item=item, wh=wh, currency="EUR", price=Decimal("50"), qty=Decimal("100"))
+    balance = await svc.stock.get_balance(wh.id, item.id, "")
+    assert balance is not None
+    assert balance.unit_cost_avg == Decimal("50")
+    assert balance.currency == "EUR"
+    assert balance.cost_state == COST_STATE_SINGLE
+
+    await _receive_po(svc, vendor=vendor, item=item, wh=wh, currency="USD", price=Decimal("70"), qty=Decimal("100"))
+    await session.refresh(balance)
+    assert balance.quantity_on_hand == Decimal("200")
+    # The old code stored 60 here: the mean of 50 EUR and 70 USD.
+    assert balance.unit_cost_avg is None
+    assert balance.currency is None
+    assert balance.cost_state == COST_STATE_MIXED
+
+    # Both inbound movements carry the currency they were bought in, which is
+    # what makes the history reconstructible rather than merely recorded.
+    rows = (
+        (
+            await session.execute(
+                select(StockMovement)
+                .where(
+                    StockMovement.catalog_item_id == item.id,
+                    StockMovement.movement_type == "in",
+                )
+                .order_by(StockMovement.performed_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert sorted((str(m.unit_cost), m.currency) for m in rows) == [
+        ("50.0000", "EUR"),
+        ("70.0000", "USD"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_issuing_from_a_mixed_balance_records_no_unit_cost(session):
+    """An issue out of a mixed balance must not stamp a price it does not have."""
+    svc = SupplierCatalogsService(session)
+    vendor = await _seed_vendor(svc, code=f"V-{uuid.uuid4().hex[:6]}")
+    item = await _seed_item(svc, f"SKU-{uuid.uuid4().hex[:6]}")
+    wh = await _seed_warehouse(svc)
+
+    await _receive_po(svc, vendor=vendor, item=item, wh=wh, currency="EUR", price=Decimal("50"), qty=Decimal("100"))
+    await _receive_po(svc, vendor=vendor, item=item, wh=wh, currency="USD", price=Decimal("70"), qty=Decimal("100"))
+
+    movement = await svc.issue_stock(
+        StockIssuePayload(
+            catalog_item_id=item.id,
+            warehouse_id=wh.id,
+            quantity=Decimal("10"),
+        ),
+        user_id="storeman",
+    )
+    # Zero would read as "issued for nothing" and be indistinguishable from
+    # stock that genuinely cost nothing.
+    assert movement.unit_cost is None
+    assert movement.currency is None

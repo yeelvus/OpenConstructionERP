@@ -1,0 +1,113 @@
+{
+  "english_keys": 391,
+  "locales": {
+    "ar": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "bg": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "cs": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "da": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "de": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "es": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "fi": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "fr": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "hi": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "hr": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "id": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "it": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "ja": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "ko": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "nl": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "no": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "pl": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "pt": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "ro": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "ru": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "sv": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "th": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "tr": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "uk": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "uz": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "vi": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    "zh": {
+      "missing": 0,
+      "digest": "e3b0c44298fc1c14"
+    }
+  }
+}

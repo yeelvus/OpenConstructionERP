@@ -19,6 +19,15 @@ Role mapping (R7 audit, 2026-05-24):
     integrations.delete  = MANAGER  - disconnecting an active integration
                                        silently drops notification flow;
                                        only managers+ may sever it
+    integrations.calendar_feed
+                         = VIEWER   - read a project's ICS feed. Same reach as
+                                       any other project read, but it is a
+                                       SEPARATE permission on purpose: the feed
+                                       authenticates by a token in the
+                                       subscription URL, so it is the one route
+                                       an API key must name explicitly before
+                                       it opens (see ``calendar_feed`` in
+                                       router.py)
 
 The platform-wide convention (mirrors finance / costs / contracts R7
 sweeps) is that credential-carrying modules elevate writes to MANAGER
@@ -28,6 +37,13 @@ platform at an arbitrary attacker-controlled URL.
 """
 
 from app.core.permissions import Role, permission_registry
+
+# The scope an API key must name before the ICS feed will answer it. Lives here
+# rather than in router.py so the string that is registered and the string that
+# is checked cannot drift apart: an unregistered permission is "unknown -> deny"
+# for every non-admin role, which would break the feed for exactly the users it
+# is meant to serve while leaving admins working.
+CALENDAR_FEED_PERMISSION = "integrations.calendar_feed"
 
 
 def register_integrations_permissions() -> None:
@@ -39,5 +55,6 @@ def register_integrations_permissions() -> None:
             "integrations.create": Role.MANAGER,
             "integrations.update": Role.MANAGER,
             "integrations.delete": Role.MANAGER,
+            CALENDAR_FEED_PERMISSION: Role.VIEWER,
         },
     )

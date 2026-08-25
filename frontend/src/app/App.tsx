@@ -21,7 +21,7 @@ import { syncCustomUnitsFromServer } from '@/features/boq/boqHelpers';
 import { NlRuleBuilderPanel } from '@/features/compliance';
 import { useModuleRouteElements } from '@/modules/ModuleRoutes';
 import { DatabaseSetupPage } from '@/features/setup';
-import { Logo, ShortcutsDialog, CommandPalette, ToastContainer, BackgroundInstallBanner, ErrorBoundary, NotFoundPage, ProductTour, OfflineBanner, PWAInstallPrompt } from '@/shared/ui';
+import { Logo, ShortcutsDialog, CommandPalette, ToastContainer, DemoReadOnlyDialog, BackgroundInstallBanner, ErrorBoundary, NotFoundPage, ProductTour, OfflineBanner, PWAInstallPrompt } from '@/shared/ui';
 import { AdminOnly } from '@/shared/auth/AdminOnly';
 import GlobalSearchModal from '@/features/search/GlobalSearchModal';
 import { useGlobalSearchStore } from '@/stores/useGlobalSearchStore';
@@ -220,6 +220,11 @@ const InspectionsPage = lazy(() =>
 const NCRPage = lazy(() =>
   import('@/features/ncr/NCRPage').then((m) => ({ default: m.NCRPage }))
 );
+// Post-calculation (backend module oe_postcalc): the estimate reconciled
+// against what the site actually booked and consumed.
+const PostCalcPage = lazy(() =>
+  import('@/features/postcalc/PostCalcPage').then((m) => ({ default: m.PostCalcPage }))
+);
 // Delivery-lifecycle registers (backend modules oe_site_inventory / oe_site_prep /
 // oe_temporary_works / oe_interface_management / oe_defects_liability).
 const SiteInventoryPage = lazy(() =>
@@ -365,6 +370,9 @@ const EquipmentPage = lazy(() =>
   import('@/features/equipment').then((m) => ({ default: m.EquipmentPage }))
 );
 const PayrollPage = lazy(() => import('@/features/payroll/PayrollPage'));
+const CertifiedPayrollPage = lazy(
+  () => import('@/features/certified-payroll/CertifiedPayrollPage')
+);
 const PortalPage = lazy(() =>
   import('@/features/portal').then((m) => ({ default: m.PortalPage }))
 );
@@ -1312,6 +1320,8 @@ export default function App() {
         <Route path="/inspections" element={<P title="Inspections"><InspectionsPage /></P>} />
         <Route path="/projects/:projectId/ncr" element={<P title="NCR"><NCRPage /></P>} />
         <Route path="/ncr" element={<P title="NCR"><NCRPage /></P>} />
+        <Route path="/projects/:projectId/postcalc" element={<P title="Post-calculation"><PostCalcPage /></P>} />
+        <Route path="/postcalc" element={<P title="Post-calculation"><PostCalcPage /></P>} />
         <Route path="/projects/:projectId/site-inventory" element={<P title="Site Inventory"><SiteInventoryPage /></P>} />
         <Route path="/site-inventory" element={<P title="Site Inventory"><SiteInventoryPage /></P>} />
         <Route path="/projects/:projectId/site-prep" element={<P title="Site Mobilisation"><SitePrepPage /></P>} />
@@ -1423,15 +1433,24 @@ export default function App() {
         <Route path="/service" element={<P title="Service & Maintenance"><ServicePage /></P>} />
         <Route path="/projects/:projectId/service" element={<P title="Service & Maintenance"><ServicePage /></P>} />
         <Route path="/equipment" element={<P title="Equipment & Fleet"><EquipmentPage /></P>} />
-        <Route path="/projects/:projectId/equipment" element={<P title="Equipment & Fleet"><EquipmentPage /></P>} />
+        {/* The fleet is a company register, not a project one: only a hire
+            (EquipmentRental) carries a project, the machine itself does not.
+            A route with :projectId in it promised a filter the data cannot
+            express, and the page answered it with the whole register, silently.
+            Redirected rather than deleted so an old link still lands somewhere
+            true. Same for the two registers below. */}
+        <Route path="/projects/:projectId/equipment" element={<Navigate to="/equipment" replace />} />
         <Route path="/payroll" element={<P title="Payroll"><PayrollPage /></P>} />
         <Route path="/projects/:projectId/payroll" element={<P title="Payroll"><PayrollPage /></P>} />
+        <Route path="/certified-payroll" element={<P title="Certified Payroll"><CertifiedPayrollPage /></P>} />
+        <Route path="/projects/:projectId/certified-payroll" element={<P title="Certified Payroll"><CertifiedPayrollPage /></P>} />
         <Route path="/daily-diary" element={<P title="Daily Diary"><DailyDiaryPage /></P>} />
         <Route path="/projects/:projectId/daily-diary" element={<P title="Daily Diary"><DailyDiaryPage /></P>} />
         <Route path="/field-time" element={<P title="Field Time"><FieldTimePage /></P>} />
         <Route path="/projects/:projectId/field-time" element={<P title="Field Time"><FieldTimePage /></P>} />
         <Route path="/portal" element={<P title="Client & Partner Portal"><PortalPage /></P>} />
-        <Route path="/projects/:projectId/portal" element={<P title="Client & Partner Portal"><PortalPage /></P>} />
+        {/* Portal users, access rules and sessions carry no project at all. */}
+        <Route path="/projects/:projectId/portal" element={<Navigate to="/portal" replace />} />
         <Route path="/resources" element={<P title="Resources & Crew"><ResourcesPage /></P>} />
         <Route path="/projects/:projectId/resources" element={<P title="Resources & Crew"><ResourcesPage /></P>} />
         <Route path="/portfolio/capacity" element={<P title="Capacity Planning"><CapacityPlanningPage /></P>} />
@@ -1448,7 +1467,9 @@ export default function App() {
         <Route path="/projects/:projectId/contracts" element={<P title="Contracts"><ContractsPage /></P>} />
         <Route path="/projects/:projectId/contracts/claims/:claimId" element={<P title="Progress Claim"><ProgressClaimDetailPage /></P>} />
         <Route path="/subcontractors" element={<P title="Subcontractors"><SubcontractorsPage /></P>} />
-        <Route path="/projects/:projectId/subcontractors" element={<P title="Subcontractors"><SubcontractorsPage /></P>} />
+        {/* A subcontractor is a company relationship; only the agreement
+            (SubcontractAgreement) is struck against a project. */}
+        <Route path="/projects/:projectId/subcontractors" element={<Navigate to="/subcontractors" replace />} />
         <Route path="/bid-management" element={<P title="Bid Management"><BidManagementPage /></P>} />
         <Route path="/projects/:projectId/bid-management" element={<P title="Bid Management"><BidManagementPage /></P>} />
         <Route path="/crm" element={<P title="CRM"><CRMPage /></P>} />
@@ -1561,6 +1582,12 @@ export default function App() {
         </Route>
       </Routes>
       <ToastContainer />
+      {/* The public demonstration explaining that it will not keep a change,
+          and offering the copy that would. Mounted once at the root because
+          the refusal can arrive from any screen; renders nothing until the
+          server has actually refused a write, so an installed deployment
+          never shows it. */}
+      <DemoReadOnlyDialog />
       {/* Non-blocking progress for a ready-made pack that keeps provisioning
           (cost databases, modules, sample projects) in the background after the
           user has already entered the app from onboarding. Mounted at the root

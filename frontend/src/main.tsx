@@ -5,7 +5,7 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './app/App';
 import { useToastStore } from '@/stores/useToastStore';
 import { notifyQueryError } from '@/shared/lib/queryErrorToast';
-import './app/i18n';
+import { initialLocaleReady } from './app/i18n';
 import './index.css';
 
 (window as unknown as { CESIUM_BASE_URL: string }).CESIUM_BASE_URL = '/cesium/';
@@ -113,12 +113,38 @@ const routerBasename =
     ? '/demo'
     : undefined;
 
-ReactDOM.createRoot(__rootEl).render(
-  <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter basename={routerBasename}>
-        <App />
-      </BrowserRouter>
-    </QueryClientProvider>
-  </React.StrictMode>,
-);
+const renderApp = () => {
+  ReactDOM.createRoot(__rootEl).render(
+    <React.StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter basename={routerBasename}>
+          <App />
+        </BrowserRouter>
+      </QueryClientProvider>
+    </React.StrictMode>,
+  );
+};
+
+// A saved non-English language must be IN the i18next store before the first
+// paint, or that first frame renders through the English fallback — the
+// "English flash" every non-English session used to open with. Waiting here
+// costs one same-origin chunk fetch (~50 KB gzip, usually cached) during a
+// window where the user already sees the plain index.html shell, so nothing
+// visibly changes except the language of the first frame. The cap bounds the
+// wait: if the chunk stalls, mount anyway in English and let the existing
+// re-render-on-arrival path recover. English boots keep today's fully
+// synchronous mount (`initialLocaleReady` is null — no promise, no timer).
+const LOCALE_MOUNT_CAP_MS = 2000;
+if (initialLocaleReady) {
+  let mounted = false;
+  const mountOnce = () => {
+    if (!mounted) {
+      mounted = true;
+      renderApp();
+    }
+  };
+  void initialLocaleReady.then(mountOnce);
+  window.setTimeout(mountOnce, LOCALE_MOUNT_CAP_MS);
+} else {
+  renderApp();
+}

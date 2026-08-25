@@ -165,6 +165,50 @@ async def delete_integration_config(
     await session.flush()
 
 
+def _email_configuration_report() -> TestNotificationResponse:
+    """Report whether the server can actually send mail, and where to change it.
+
+    Outbound email is a server-wide setting, not a per-user connector: the
+    fields on the Email card are persisted but no send path reads them. Both
+    Test buttons used to answer "Test not supported for integration type:
+    email", which left people retyping credentials that could never take
+    effect. Reporting the real state of the server configuration - and naming
+    the settings that carry it - is the only useful answer we can give at the
+    point where someone is looking for it.
+
+    This deliberately does not open a connection. Probing an arbitrary host on
+    demand is an outbound path of its own and is being designed separately.
+    """
+    from app.config import get_settings
+    from app.core.email.service import EMAIL_SETUP_DOC, diagnose_email_config, email_delivery_enabled
+
+    settings = get_settings()
+    problem = diagnose_email_config(settings)
+
+    # A diagnosed contradiction counts as a failure even when a transport and a
+    # host are both present: port 465, for instance, satisfies "configured" and
+    # still cannot deliver a single message. Reporting that as a pass would be
+    # the same green-light-over-silence this whole path exists to remove.
+    if email_delivery_enabled(settings) and problem is None:
+        return TestNotificationResponse(
+            success=True,
+            message=(
+                f"Outbound email is configured on the server: EMAIL_BACKEND=smtp with SMTP_HOST set, "
+                f"sending as {settings.smtp_from}. This checks the settings only - it does not open a "
+                f"connection, so it cannot confirm your provider will accept the message."
+            ),
+        )
+
+    return TestNotificationResponse(
+        success=False,
+        message=problem
+        or (
+            "Outbound email is not configured on this server. It is set with the EMAIL_BACKEND and "
+            f"SMTP_* environment variables rather than on this screen. See {EMAIL_SETUP_DOC}."
+        ),
+    )
+
+
 async def _dispatch_integration_test(itype: str, cfg: dict) -> TestNotificationResponse:
     """Send a test notification for an integration type + ad-hoc config.
 
@@ -267,6 +311,9 @@ async def _dispatch_integration_test(itype: str, cfg: dict) -> TestNotificationR
                 template_language=cfg.get("template_language", "en"),
                 template_params=[message] if message else None,
             )
+
+        elif itype == "email":
+            return _email_configuration_report()
 
         else:
             return TestNotificationResponse(
@@ -430,6 +477,9 @@ async def test_integration_config(
                 template_params=[message] if message else None,
             )
 
+        elif itype == "email":
+            return _email_configuration_report()
+
         else:
             return TestNotificationResponse(
                 success=False,
@@ -590,19 +640,31 @@ def _ical_dt(iso_str: str | None) -> str | None:
 async def calendar_feed(
     project_id: uuid.UUID,
     session: SessionDep,
-    token: str = Query(..., description="User API key for authentication"),
+    token: str = Query(
+        ...,
+        description="API key declaring the integrations.calendar_feed permission",
+    ),
 ):
     """Return an iCalendar (RFC 5545) feed for a project.
 
     Includes milestones, meetings, task due dates, and inspection dates.
     Subscribe in Google Calendar, Outlook, or Apple Calendar.
+
+    The credential travels in the query string because calendar clients cannot
+    send headers, which makes it the most exposed credential the platform
+    issues: it sits in a third-party calendar service's configuration and any
+    intermediary that logs URLs logs it. So this route demands the NARROWEST
+    key we can express - one that names ``integrations.calendar_feed`` outright.
+    A general-purpose key does not open the feed merely by existing.
     """
     import hashlib
 
     from sqlalchemy import select
 
-    from app.dependencies import verify_project_access
-    from app.modules.users.models import APIKey
+    from app.core.permissions import permission_registry
+    from app.dependencies import key_scopes_allow, verify_project_access
+    from app.modules.integrations.permissions import CALENDAR_FEED_PERMISSION
+    from app.modules.users.models import APIKey, User
 
     # Authenticate via the FULL API-key token: compare its SHA-256 hash against
     # APIKey.key_hash. A prefix match alone is NOT sufficient - key_prefix is
@@ -627,7 +689,31 @@ async def calendar_feed(
         if expires_at < datetime.now(UTC):
             raise HTTPException(status_code=401, detail="Invalid or expired token")
 
+    # The key row alone is not the caller: a deactivated account's keys stay in
+    # the table with is_active true, so resolve the owner and check them too.
+    owner = await session.get(User, api_key.user_id)
+    if owner is None or not owner.is_active:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # Effective authority is the intersection of the owner's live permissions
+    # and the key's declared list. Key half first, with require_declared=True:
+    # unlike every other route, an empty list does NOT mean "no narrowing" here,
+    # it means the key never asked for the feed and so cannot have it.
+    if not key_scopes_allow(api_key.permissions, CALENDAR_FEED_PERMISSION, require_declared=True):
+        raise HTTPException(
+            status_code=403,
+            detail=f"API key does not carry permission: {CALENDAR_FEED_PERMISSION}",
+        )
+    owner_role = getattr(owner, "role", "") or ""
+    if not permission_registry.role_has_permission(owner_role, CALENDAR_FEED_PERMISSION):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Missing permission: {CALENDAR_FEED_PERMISSION}",
+        )
+
     # Cross-project IDOR guard: the key owner must be able to read this project.
+    # Project reach stays the owner's - the key carries no project column - so a
+    # narrow permission list is the only thing holding an admin's key back here.
     await verify_project_access(project_id, str(api_key.user_id), session)
 
     # Build iCal content

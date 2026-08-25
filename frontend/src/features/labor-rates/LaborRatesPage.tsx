@@ -20,6 +20,7 @@ import {
   type LaborRateTemplate,
   type CostItemPayload,
 } from './api';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 /** Debounce any value so the live compute does not fire on every keystroke. */
 function useDebounced<T>(value: T, delay: number): T {
@@ -309,7 +310,7 @@ export function LaborRatesPage() {
                 {t('laborRates.burden', { defaultValue: 'Labor burden' })}
               </div>
               <div className="text-xl font-bold text-content-primary">
-                +{burdenPct.toFixed(0)}%
+                +{fmtPercent(burdenPct, 0)}
               </div>
             </div>
           )}
@@ -632,7 +633,7 @@ export function LaborRatesPage() {
                       <div
                         key={`${seg.label}-${i}`}
                         style={{ width: `${pct}%`, backgroundColor: seg.color }}
-                        title={`${seg.label} · ${pct.toFixed(0)}%`}
+                        title={`${seg.label} · ${fmtPercent(pct, 0)}`}
                       />
                     );
                   })}

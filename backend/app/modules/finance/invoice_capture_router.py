@@ -27,6 +27,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 
+from app.core.content_disposition import attachment_disposition
 from app.core.rate_limiter import approval_limiter
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep
 from app.modules.finance.invoice_capture_logic import BookingProposal, Finding, findings_to_dicts
@@ -376,10 +377,13 @@ async def download_document(
     await _require_capture_access(session, capture_id, user_id)
     data, mime, filename = await service.read_document(capture_id)
     safe_name = filename.replace('"', "").replace("\n", " ")[:200] or "invoice"
+    # RFC 6266 pair (ASCII fallback + UTF-8 filename*): the stored upload name
+    # is user-provided and routinely non-ASCII; interpolating it raw would
+    # mangle umlauts and 500 on non-Latin-1 names.
     return Response(
         content=data,
         media_type=mime,
-        headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+        headers={"Content-Disposition": attachment_disposition(safe_name, inline=True)},
     )
 
 

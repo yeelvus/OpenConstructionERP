@@ -64,6 +64,7 @@ import {
   uploadCorrespondenceAttachment,
   downloadCorrespondenceAttachment,
   attachmentDisplayName,
+  CORRESPONDENCE_TYPES,
   type Correspondence,
   type CorrespondenceDirection,
   type CorrespondenceType,
@@ -83,17 +84,22 @@ interface Project {
   name: string;
 }
 
+/* English fallbacks for the `correspondence.type_*` keys, which the register
+   went without entirely until now: every reader saw these four English words
+   whatever their language, because a `defaultValue` renders and looks like a
+   translation nobody got round to. */
 const TYPE_LABELS: Record<CorrespondenceType, string> = {
   letter: 'Letter',
   email: 'Email',
   notice: 'Notice',
   memo: 'Memo',
+  report: 'Report',
 };
 
 /* correspondence_type is a free string column, so demo and imported data can
-   carry values outside TYPE_LABELS (e.g. "report"). Humanize anything unknown
-   ("method_statement" -> "Method Statement") so a missing label never falls
-   through to a raw i18n key in the UI. */
+   carry values outside TYPE_LABELS (e.g. "method_statement"). Humanize
+   anything unknown ("method_statement" -> "Method Statement") so a missing
+   label never falls through to a raw i18n key in the UI. */
 const prettyType = (tp: string): string =>
   tp.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 const correspondenceTypeLabel = (tp: string | null | undefined): string =>
@@ -154,9 +160,8 @@ const TYPE_BADGE_COLORS: Record<CorrespondenceType, string> = {
   email: 'text-blue-600 bg-blue-50 border-blue-200 dark:text-blue-400 dark:bg-blue-950/30 dark:border-blue-800',
   notice: 'text-amber-600 bg-amber-50 border-amber-200 dark:text-amber-400 dark:bg-amber-950/30 dark:border-amber-800',
   memo: 'text-gray-600 bg-gray-50 border-gray-200 dark:text-gray-400 dark:bg-gray-800/50 dark:border-gray-700',
+  report: 'text-teal-600 bg-teal-50 border-teal-200 dark:text-teal-400 dark:bg-teal-950/30 dark:border-teal-800',
 };
-
-const CORR_TYPES_LIST: CorrespondenceType[] = ['letter', 'email', 'notice', 'memo'];
 
 const inputCls =
   'h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue';
@@ -244,6 +249,29 @@ function ContactRef({
 }
 
 /**
+ * Stands in for a party the entry simply does not name.
+ *
+ * The bare em dash used to be printed as ordinary text, and on the From and
+ * To columns it was also copied into the cell's `title`, so hovering an empty
+ * cell produced a tooltip whose entire content was a dash. Read straight, a
+ * dash sitting in the same colour as the real values looks like a value: the
+ * reader cannot tell "no sender was recorded" from "the sender is a dash".
+ * The glyph is now decorative and the meaning is carried by the label, so the
+ * cell announces itself as empty to a screen reader and explains itself on
+ * hover instead of repeating the punctuation.
+ */
+function NoValue({ className }: { className?: string }) {
+  const { t } = useTranslation();
+  const label = t('common.not_set', { defaultValue: 'Not set' });
+  return (
+    <span className={clsx('text-content-quaternary', className)} title={label}>
+      <span aria-hidden="true">{'—'}</span>
+      <span className="sr-only">{label}</span>
+    </span>
+  );
+}
+
+/**
  * Render a comma-joined list of party values (used for the To column,
  * which is a string[]). Each entry resolves independently.
  */
@@ -254,7 +282,7 @@ function ContactRefList({
   values: string[];
   className?: string;
 }) {
-  if (values.length === 0) return <>{'—'}</>;
+  if (values.length === 0) return <NoValue />;
   return (
     <span className={clsx('inline-flex flex-wrap items-center gap-x-1', className)}>
       {values.map((v, i) => (
@@ -454,7 +482,7 @@ function CreateCorrespondenceModal({
   // lists (the section still renders with a "nothing to link yet" note).
   const docsQuery = useQuery({
     queryKey: ['correspondence-link-docs', projectId],
-    queryFn: () => apiGet<PickerDocument[]>(`/v1/documents/?project_id=${projectId}`),
+    queryFn: () => apiGet<Page<PickerDocument>>(`/v1/documents/?project_id=${projectId}`),
     enabled: !!projectId,
     staleTime: 60_000,
   });
@@ -469,15 +497,17 @@ function CreateCorrespondenceModal({
   });
   const rfisQuery = useQuery({
     queryKey: ['correspondence-link-rfis', projectId],
-    queryFn: () => apiGet<PickerRFI[]>(`/v1/rfi/?project_id=${projectId}`),
+    queryFn: () => apiGet<Page<PickerRFI>>(`/v1/rfi/?project_id=${projectId}`),
     enabled: !!projectId,
     staleTime: 60_000,
   });
 
-  const documents = docsQuery.data ?? [];
+  const documentPage = docsQuery.data;
+  const documents = documentPage?.items ?? [];
   const transmittalPage = transmittalsQuery.data;
   const transmittals = transmittalPage?.items ?? [];
-  const rfis = rfisQuery.data ?? [];
+  const rfiPage = rfisQuery.data;
+  const rfis = rfiPage?.items ?? [];
 
   const toggleDocument = (id: string) =>
     setForm((prev) => ({
@@ -592,7 +622,7 @@ function CreateCorrespondenceModal({
             role="radiogroup"
             aria-label={t('correspondence.field_type', { defaultValue: 'Type' })}
           >
-            {CORR_TYPES_LIST.map((tp) => {
+            {CORRESPONDENCE_TYPES.map((tp) => {
               const selected = form.type === tp;
               return (
                 <button
@@ -896,6 +926,9 @@ function CreateCorrespondenceModal({
               </option>
             ))}
           </select>
+          {/* Same reason as the transmittal dropdown above: an RFI past the
+              first page is not in this list and cannot be scrolled to. */}
+          {rfiPage && <TruncationNotice page={rfiPage} className="mt-1.5" />}
         </WideModalField>
 
         <WideModalField
@@ -935,6 +968,9 @@ function CreateCorrespondenceModal({
               })}
             </div>
           )}
+          {/* The picker cannot page, so a document past the first page cannot
+              be linked to this letter and nothing else would say so. */}
+          {documentPage ? <TruncationNotice page={documentPage} className="pt-1" /> : null}
         </WideModalField>
       </WideModalSection>
     </WideModal>
@@ -965,11 +1001,13 @@ const CorrespondenceRow = React.memo(function CorrespondenceRow({
   const [expanded, setExpanded] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
-  const fromLabel = item.from_contact_id || '—';
+  // Undefined rather than a dash: these feed `title`, and a tooltip that
+  // contains only punctuation tells the reader less than no tooltip at all.
+  const fromLabel = item.from_contact_id || undefined;
   const toLabel =
     (item.to_contact_ids ?? []).length > 0
       ? (item.to_contact_ids ?? []).join(', ')
-      : '—';
+      : undefined;
   const docCount = (item.linked_document_ids ?? []).length;
   const attachments = item.attachments ?? [];
 
@@ -1079,7 +1117,7 @@ const CorrespondenceRow = React.memo(function CorrespondenceRow({
           {item.from_contact_id ? (
             <ContactRef value={item.from_contact_id} className="text-xs" />
           ) : (
-            fromLabel
+            <NoValue />
           )}
         </span>
 
@@ -1126,7 +1164,7 @@ const CorrespondenceRow = React.memo(function CorrespondenceRow({
               {item.from_contact_id ? (
                 <ContactRef value={item.from_contact_id} className="text-xs" />
               ) : (
-                '—'
+                <NoValue />
               )}
             </span>
             <span className="inline-flex items-center gap-1">
@@ -1403,7 +1441,7 @@ function ModLink({ to, children }: { to: string; children: React.ReactNode }) {
 
 /**
  * One-glance explainer: what the correspondence register is and how it connects
- * to the rest of the platform. Each letter, notice, email or memo is logged with
+ * to the rest of the platform. Each letter, notice, email, memo or report is logged
  * its source file and linked to the related transmittal, RFI, documents and
  * contacts, so one traceable thread survives for any later claim. Every
  * connected module is a link.
@@ -1416,7 +1454,7 @@ function HowCorrespondenceWorks() {
       icon: <Mail size={14} className="text-oe-blue" />,
       title: t('correspondence.how_step1_title', { defaultValue: 'Log an entry' }),
       desc: t('correspondence.how_step1_desc', {
-        defaultValue: 'Record each letter, notice, email or memo, incoming or outgoing.',
+        defaultValue: 'Record each letter, notice, email, memo or report, incoming or outgoing.',
       }),
     },
     {
@@ -1451,7 +1489,7 @@ function HowCorrespondenceWorks() {
       <p className="text-xs text-content-tertiary">
         {t('correspondence.how_intro', {
           defaultValue:
-            'Log every formal letter, notice, email and memo, attach its source file and link it into one traceable thread you can rely on if a claim arises.',
+            'Log every formal letter, notice, email, memo and report, attach its source file and link it into one traceable thread you can rely on if a claim arises.',
         })}
       </p>
 
@@ -1535,7 +1573,7 @@ export function CorrespondencePage() {
     projects.find((p) => p.id === selectedProjectId)?.name || '';
 
   const {
-    data: items = [],
+    data: page,
     isLoading,
     isError,
     error,
@@ -1551,6 +1589,9 @@ export function CorrespondencePage() {
       }),
     enabled: !!projectId,
   });
+  // Memoised on the page object rather than defaulted inline: a fresh `[]`
+  // on every render would change the identity every dependent useMemo reads.
+  const items = useMemo(() => page?.items ?? [], [page]);
 
   // Client-side search
   const filtered = useMemo(() => {
@@ -1753,7 +1794,7 @@ export function CorrespondencePage() {
       <PageHeader
         srTitle={t('correspondence.title', { defaultValue: 'Correspondence' })}
         subtitle={t('correspondence.subtitle', {
-          defaultValue: 'A contemporaneous register of every formal letter, notice, email, and memo',
+          defaultValue: 'A contemporaneous register of every formal letter, notice, email, memo and report',
         })}
         actions={
           <>
@@ -1812,7 +1853,7 @@ export function CorrespondencePage() {
       >
         {t('correspondence.intro_body', {
           defaultValue:
-            'Keep a contemporaneous register of every formal letter, notice, email and memo exchanged with project parties. Log each entry, attach the source file and link it to the related Transmittals, RFIs, Documents and Contacts so a single thread of communication stays traceable end to end if a dispute arises. Inbound email auto-import is not wired yet, so entries are logged by hand today.',
+            'Keep a contemporaneous register of every formal letter, notice, email, memo and report exchanged with project parties. Log each entry, attach the source file and link it to the related Transmittals, RFIs, Documents and Contacts so a single thread of communication stays traceable end to end if a dispute arises. Inbound email auto-import is not wired yet, so entries are logged by hand today.',
         })}
       </DismissibleInfo>
 
@@ -1977,6 +2018,10 @@ export function CorrespondencePage() {
                 count: filtered.length,
               })}
             </p>
+            {/* The count above is what the search left of the page; this is
+                what the page left of the register. Both have to be said, or a
+                letter that never loaded reads as a letter that never existed. */}
+            {page && <TruncationNotice page={page} className="-mt-2 mb-3" />}
             <Card padding="none" className="overflow-x-auto">
               {/* Table header */}
               <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border-light bg-surface-secondary/30 text-2xs font-medium text-content-tertiary uppercase tracking-wider min-w-[640px]">

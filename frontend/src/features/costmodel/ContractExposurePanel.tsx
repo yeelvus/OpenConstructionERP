@@ -21,7 +21,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Wallet, AlertTriangle, Inbox } from 'lucide-react';
 
 import { Card, Skeleton, EmptyState, Badge } from '@/shared/ui';
-import { fmtCurrency } from '@/shared/lib/formatters';
+import { fmtCurrency, fmtPercent, fmtFixed } from '@/shared/lib/formatters';
 import { getErrorMessage } from '@/shared/lib/api';
 import { costModelApi, type ContractExposureGroup } from './api';
 
@@ -225,7 +225,7 @@ export function ContractExposurePanel({ projectId, currency }: ContractExposureP
                 <div className={`mt-1 text-2xs font-medium ${ratioColor(totalPct)}`}>
                   {t('costmodel.exposure_committed_of_budget', {
                     defaultValue: '{{pct}}% of budget committed',
-                    pct: totalPct.toFixed(0),
+                    pct: fmtFixed(totalPct, 0),
                   })}
                 </div>
               )}
@@ -251,7 +251,7 @@ export function ContractExposurePanel({ projectId, currency }: ContractExposureP
               <span className={`text-xs font-semibold tabular-nums ${ratioColor(totalPct)}`}>
                 {totalPct == null
                   ? t('costmodel.exposure_ratio_na', { defaultValue: 'n/a' })
-                  : `${totalPct.toFixed(0)}%`}
+                  : fmtPercent(totalPct, 0)}
               </span>
             </div>
             <div className="h-2.5 w-full overflow-hidden rounded-full bg-surface-secondary">
@@ -333,7 +333,7 @@ export function ContractExposurePanel({ projectId, currency }: ContractExposureP
                           <span className={`text-2xs font-semibold tabular-nums ${ratioColor(pct)}`}>
                             {pct == null
                               ? t('costmodel.exposure_ratio_na', { defaultValue: 'n/a' })
-                              : `${pct.toFixed(0)}%`}
+                              : fmtPercent(pct, 0)}
                           </span>
                           <div className="h-1.5 w-full max-w-[64px] overflow-hidden rounded-full bg-surface-secondary">
                             <div
@@ -366,7 +366,7 @@ export function ContractExposurePanel({ projectId, currency }: ContractExposureP
                   </td>
                   <td className="py-3.5 px-2 text-center">
                     <span className={`text-2xs font-bold tabular-nums ${ratioColor(totalPct)}`}>
-                      {totalPct == null ? '-' : `${totalPct.toFixed(0)}%`}
+                      {totalPct == null ? '-' : fmtPercent(totalPct, 0)}
                     </span>
                   </td>
                   <td className="py-3.5 pl-4" />

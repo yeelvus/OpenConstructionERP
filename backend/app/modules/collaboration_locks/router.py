@@ -275,7 +275,12 @@ async def _resolve_lock_entity_project_id(
                 )
             ).scalar_one_or_none()
     except Exception:  # noqa: BLE001 - resolution failed; treat as unresolved (fail closed)
-        logger.debug("collab-lock entity resolve failed for %s/%s", entity_type, entity_id)
+        # Failing closed is right and being quiet about it is not. Returning
+        # None here denies access, so a database or import error and a genuinely
+        # unreachable entity produce the same refusal; at debug level the
+        # difference was invisible in production, which is where the two need
+        # telling apart. The traceback is what says which one happened.
+        logger.exception("collab-lock entity resolve failed for %s/%s", entity_type, entity_id)
         return None
     return None
 
@@ -420,13 +425,36 @@ async def list_my_locks(
 # ── WebSocket: presence ────────────────────────────────────────────────────
 
 
+class _AuthenticationUnavailableError(Exception):
+    """The token could not be judged, which is not the same as judging it bad.
+
+    Everything this path is meant to reject arrives as an ``HTTPException``:
+    a malformed, expired or wrong-type token, a subject that is not a UUID, a
+    user who does not exist or is inactive. Measured, that is the whole of it.
+    What reaches the broad clauses below is therefore never an authentication
+    failure - it is the database being unreachable, or a settings object that
+    cannot produce a secret - and answering those with "unauthenticated" tells
+    the caller the one thing that is certainly false.
+
+    It matters more here than it would on an HTTP route because neither
+    frontend client reconnects. A socket that closes stays closed, so a
+    momentary database fault does not degrade the channel, it ends it, and
+    nothing comes back when the database does.
+    """
+
+
 async def _authenticate_ws(token: str | None) -> dict[str, Any] | None:
     """Decode a JWT passed as ``?token=`` on a WebSocket upgrade.
 
-    Returns the payload on success; returns ``None`` on any failure -
-    the caller is responsible for closing the socket with 1008.
+    Returns the payload on success; returns ``None`` when the caller was
+    judged and rejected, which the caller answers with a 1008 policy close.
     BUG-323: payload is re-hydrated against the DB so a forged token
     with a fake UUID cannot open a socket.
+
+    Raises:
+        _AuthenticationUnavailableError: the caller could not be judged at
+            all. Kept distinct from ``None`` so the socket can close 1011
+            instead of blaming the user's credentials for a server fault.
     """
     if not token:
         return None
@@ -434,9 +462,9 @@ async def _authenticate_ws(token: str | None) -> dict[str, Any] | None:
         payload = decode_access_token(token, get_settings())
     except HTTPException:
         return None
-    except Exception:  # noqa: BLE001 - never crash the WS on auth
+    except Exception as exc:  # noqa: BLE001 - stays broad deliberately, see the class above
         logger.exception("WebSocket token decode failed")
-        return None
+        raise _AuthenticationUnavailableError from exc
 
     try:
         from app.core.permissions import permission_registry
@@ -448,9 +476,9 @@ async def _authenticate_ws(token: str | None) -> dict[str, Any] | None:
         return payload
     except HTTPException:
         return None
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - stays broad deliberately, see the class above
         logger.exception("WebSocket user re-hydration failed")
-        return None
+        raise _AuthenticationUnavailableError from exc
 
 
 def _now_iso() -> str:
@@ -475,7 +503,14 @@ async def presence_ws(
         await websocket.close(code=1008, reason="invalid entity_id")
         return
 
-    payload = await _authenticate_ws(token)
+    # 1008 says "we judged you and the answer is no", 1011 says "we could not
+    # judge you". The authorization step further down already draws exactly
+    # this line; this is the same distinction applied one step earlier.
+    try:
+        payload = await _authenticate_ws(token)
+    except _AuthenticationUnavailableError:
+        await websocket.close(code=1011, reason="authentication unavailable")
+        return
     if payload is None:
         await websocket.close(code=1008, reason="unauthenticated")
         return
@@ -522,12 +557,31 @@ async def presence_ws(
 
     # First frame: full roster + current lock holder (if any) so the
     # client can paint without a follow-up REST round-trip.
+    #
+    # ``lock`` on its own cannot say what happens when the read fails. Null
+    # already means nobody holds it, so a failed read borrowing that value
+    # states something false rather than something incomplete, and states it
+    # with exactly the confidence of the truth. ``lock_state`` carries the
+    # third value so a reader can tell a free lock from one we could not read.
+    # That distinction has no consumer today, and the reason to send it anyway
+    # is that the component written to read this field, ``PresenceIndicator``,
+    # derives its holder from a falsy test on ``lock`` - so a failed read and
+    # a genuinely free lock paint the same "nobody is editing" badge. It is
+    # not mounted anywhere yet, which is the only reason this has cost nothing
+    # so far.
+    lock_state = "unknown"
+    current_lock = None
     try:
         async with async_session_factory() as sess:
             svc = CollabLockService(sess)
             current_lock = await svc.get_for_entity(entity_type=entity_type, entity_id=parsed_id)
-    except Exception:
-        current_lock = None
+        lock_state = "held" if current_lock is not None else "free"
+    except Exception:  # noqa: BLE001 - the snapshot may be incomplete, it may not be wrong
+        logger.exception(
+            "presence snapshot could not read the current lock for %s/%s",
+            entity_type,
+            parsed_id,
+        )
 
     try:
         await websocket.send_json(
@@ -535,6 +589,8 @@ async def presence_ws(
                 "event": "presence_snapshot",
                 "users": roster,
                 "lock": (current_lock.model_dump(mode="json") if current_lock is not None else None),
+                # "held" | "free" | "unknown" - see the read above.
+                "lock_state": lock_state,
                 "ts": _now_iso(),
             }
         )
@@ -551,10 +607,17 @@ async def presence_ws(
 
         # Keep the socket open.  We accept incoming text frames as
         # client-side "ping" opportunities but do nothing with them -
-        # all interesting traffic is server-push.
+        # all interesting traffic is server-push. Anything else is ignored,
+        # binary frames included, and that is why this reads the raw message:
+        # ``receive_text()`` raises ``KeyError('text')`` on a binary frame,
+        # which unwound into the handler below and dropped the connection,
+        # taking the caller out of the presence roster. Any client can send
+        # one in a line, so losing a roster to it is the wrong trade.
         while True:
-            msg = await websocket.receive_text()
-            if msg == "ping":
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            if message.get("text") == "ping":
                 await websocket.send_json({"event": "pong", "ts": _now_iso()})
     except WebSocketDisconnect:
         pass

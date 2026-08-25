@@ -37,7 +37,13 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from app.core.pdf_fonts import BODY_FONT, BOLD_FONT, register_pdf_fonts
+from app.core.pdf_fonts import (
+    BODY_FONT,
+    BOLD_FONT,
+    pdf_style_for_text,
+    pdf_table_font_commands,
+    register_pdf_fonts,
+)
 
 register_pdf_fonts()
 
@@ -65,14 +71,33 @@ def _pct(value: Any) -> str:
 
 
 def _txt(value: Any) -> str:
+    """Format a value for a plain string table cell.
+
+    Deliberately does not escape, and the difference from :func:`_safe_para`
+    below is the kind of cell rather than the caller. A plain string in a table
+    cell is drawn straight to the canvas and never parsed as markup, so escaping
+    here does not protect anything, it puts the entity on the page: a party
+    named ``R&D Tower`` printed as ``R&amp;D Tower`` on the certificate. A
+    Paragraph is parsed, which is why the helper that builds one does escape.
+    """
     if value in (None, ""):
         return PLACEHOLDER
-    return html.escape(str(value))
+    return str(value)
 
 
 def _safe_para(text: Any, style: ParagraphStyle) -> Paragraph:
+    """Build a Paragraph cell, escaped and faced for the text it carries.
+
+    The face is chosen from the raw string rather than the escaped one. Escaping
+    only ever adds ASCII, so the two cannot disagree about which face is needed,
+    and asking the raw string keeps the question about what a party wrote.
+
+    This reaches the schedule-of-values cells and nothing above them. The four
+    summary tables are plain strings drawn under their own ``FONTNAME``, which a
+    paragraph style cannot reach at all, so they are faced separately.
+    """
     raw = "" if text is None else str(text)
-    return Paragraph(html.escape(raw), style)
+    return Paragraph(html.escape(raw), pdf_style_for_text(style, raw))
 
 
 def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
@@ -130,6 +155,26 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
             ]
         )
     )
+    # Plain string cells are drawn under the table's own FONTNAME, so the
+    # per-paragraph facing cannot reach them. This adds a command for exactly
+    # the cells whose face cannot draw them and none at all for the rest, so a
+    # Latin table keeps both its bytes and its column widths.
+    #
+    # A second setStyle rather than an edit to the first: reportlab applies
+    # commands in order and a later one wins for the cells it covers, so every
+    # command above survives. Measured rather than taken from the docs, against
+    # the certification table's bold first column, which keeps its weight.
+    #
+    # The base is the body face for the whole table even though some cells here
+    # are drawn in the bold one. pdf_table_font_commands offers header_rows for
+    # that, but these tables carry bold COLUMNS rather than bold header rows,
+    # which the parameter cannot express. Passing one base is safe because the
+    # two faces have identical coverage: compared across 0x20 to 0x2E7F, 11744
+    # codepoints, they agree on every one. So weight cannot change the
+    # escalation decision, and the only commands emitted are escalations to a
+    # CJK face that carries one weight anyway. This reasoning expires if those
+    # two faces ever diverge in coverage.
+    header_tbl.setStyle(TableStyle(pdf_table_font_commands(header_rows, base=BODY_FONT)))
     story.append(header_tbl)
     story.append(Spacer(1, 5 * mm))
 
@@ -161,6 +206,8 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
             ]
         )
     )
+    # Faced per cell, for the reasons given at the header table above.
+    summary_tbl.setStyle(TableStyle(pdf_table_font_commands(summary_rows, base=BODY_FONT)))
     story.append(summary_tbl)
     story.append(Spacer(1, 5 * mm))
 
@@ -185,6 +232,8 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
             ]
         )
     )
+    # Faced per cell, for the reasons given at the header table above.
+    cert_tbl.setStyle(TableStyle(pdf_table_font_commands(cert_rows, base=BODY_FONT)))
     story.append(cert_tbl)
     story.append(Spacer(1, 8 * mm))
 
@@ -268,6 +317,8 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
             ]
         )
     )
+    # Faced per cell, for the reasons given at the header table above.
+    g703_tbl.setStyle(TableStyle(pdf_table_font_commands(data, base=BODY_FONT)))
     story.append(g703_tbl)
 
     doc.build(story)

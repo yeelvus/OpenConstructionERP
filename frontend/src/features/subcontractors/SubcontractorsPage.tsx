@@ -52,6 +52,7 @@ import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { PrequalModal } from './PrequalModal';
+import { RatingStars } from './RatingStars';
 import { ScorecardTile } from './ScorecardTile';
 import { LienWaiverPanel } from './LienWaiverPanel';
 import { AwardEligibilityBanner } from './AwardEligibilityBanner';
@@ -87,6 +88,7 @@ import {
   type CreateSubcontractorPayload,
   type Rating,
 } from './api';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
 
 type DrawerTab = 'scope' | 'payments' | 'ratings' | 'retention';
 
@@ -190,28 +192,6 @@ function InsuranceChip({
       {c.label}
       {expiry && state !== 'green' ? ` · ${expiry}` : ''}
     </Badge>
-  );
-}
-
-function RatingStars({ score }: { score: number | string }) {
-  const num = toNum(score);
-  // rating_score is 0..100; convert to 0..5
-  const stars = Math.round((num / 100) * 5);
-  return (
-    <span className="inline-flex items-center gap-0.5">
-      {[1, 2, 3, 4, 5].map((i) => (
-        <Star
-          key={i}
-          size={12}
-          className={clsx(
-            i <= stars ? 'fill-oe-blue text-oe-blue' : 'text-content-tertiary',
-          )}
-        />
-      ))}
-      <span className="ml-1.5 text-xs text-content-secondary tabular-nums">
-        {num.toFixed(0)}
-      </span>
-    </span>
   );
 }
 
@@ -1300,7 +1280,7 @@ function AgreementRow({ agreement }: { agreement: Agreement }) {
       <div className="mt-2 flex items-center justify-between text-xs text-content-secondary">
         <span>
           {t('subcontractors.retention', { defaultValue: 'Retention' })}:{' '}
-          {toNum(agreement.retention_percent).toFixed(1)}%
+          {fmtPercent(toNum(agreement.retention_percent))}
         </span>
         <span className="font-medium text-content-primary">
           <MoneyDisplay
@@ -1319,7 +1299,7 @@ function AgreementRow({ agreement }: { agreement: Agreement }) {
             >
               <span className="truncate">{wp.name}</span>
               <span className="ml-2 tabular-nums">
-                {toNum(wp.completion_percent).toFixed(0)}%
+                {fmtPercent(toNum(wp.completion_percent), 0)}
               </span>
             </div>
           ))}
@@ -1699,19 +1679,19 @@ function RatingsTab({
             <tr key={r.id} className="border-t border-border-light">
               <td className="px-3 py-2 font-mono">{r.period}</td>
               <td className="px-3 py-2 text-right tabular-nums">
-                {toNum(r.quality_score).toFixed(0)}
+                {fmtFixed(toNum(r.quality_score), 0)}
               </td>
               <td className="px-3 py-2 text-right tabular-nums">
-                {toNum(r.hse_score).toFixed(0)}
+                {fmtFixed(toNum(r.hse_score), 0)}
               </td>
               <td className="px-3 py-2 text-right tabular-nums">
-                {toNum(r.schedule_score).toFixed(0)}
+                {fmtFixed(toNum(r.schedule_score), 0)}
               </td>
               <td className="px-3 py-2 text-right tabular-nums">
-                {toNum(r.cost_score).toFixed(0)}
+                {fmtFixed(toNum(r.cost_score), 0)}
               </td>
               <td className="px-3 py-2 text-right font-semibold tabular-nums">
-                {toNum(r.overall_score).toFixed(0)}
+                {fmtFixed(toNum(r.overall_score), 0)}
               </td>
             </tr>
           ))}

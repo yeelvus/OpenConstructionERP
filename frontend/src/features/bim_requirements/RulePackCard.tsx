@@ -24,7 +24,7 @@ export interface RulePackCardProps {
 
 const FORMAT_LABEL: Record<SeedPackFormat, { key: string; fallback: string }> = {
   ifc: { key: 'rulePacks.format_ifc', fallback: 'IFC' },
-  revit: { key: 'rulePacks.format_revit', fallback: 'Revit' },
+  revit: { key: 'rulePacks.format_revit', fallback: 'Revit®' },
 };
 
 const CATEGORY_COLOR: Record<SeedPackCategory, string> = {

@@ -44,7 +44,8 @@ import {
   LogIn,
   LogOut,
 } from "lucide-react";
-import { Button, Badge } from "@/shared/ui";
+import { Button, Badge, CountryFlag } from "@/shared/ui";
+import { useNearViewport } from "@/shared/hooks/useNearViewport";
 import { projectsApi, type Project } from "@/features/projects/api";
 import { useProjectContextStore } from "@/stores/useProjectContextStore";
 import type { Playbook, PlaybookStep } from "./types";
@@ -64,8 +65,15 @@ import {
   runKey,
   toggleStep,
 } from "./progress";
-import { nextCasesFor, relatedCasesFor } from "./relatedness";
+import { nextCasesFor, relatedCasesFor, moreCasesFor } from "./relatedness";
 import { PLAYBOOKS } from "./playbooks";
+import { useAuthoredCases } from "./useCustomCases";
+import { dealCaseFaces } from "./caseFaces";
+import { CaseArt } from "./CaseArt";
+import { regionDisplayName } from "./regions";
+import { CaseModuleHive } from "./ModuleHive";
+import { FlowGlyph, flowGlyphFor, type FlowGlyphKind } from "./flowGlyphs";
+import { normalizeCaseRoute } from "./playbookModules";
 
 /** Returns true for seeded sample projects (they carry `metadata.demo_id`). */
 function isDemoProject(p: Project): boolean {
@@ -75,6 +83,14 @@ function isDemoProject(p: Project): boolean {
 /** One side (In / Out) of a step's data flow: a titled column of chips. The In
  *  dots are quiet (raw material); the Out dots are green (the payoff), so the
  *  eye reads from what you start with to what you end up with. */
+/** One resolved flow row: the words the reader sees, and the drawing beside
+ *  them. The glyph is chosen upstream from the English label, so it is the same
+ *  picture in every language. */
+export interface FlowRow {
+  text: string;
+  glyph: FlowGlyphKind;
+}
+
 function FlowSide({
   label,
   items,
@@ -82,7 +98,7 @@ function FlowSide({
   hint,
 }: {
   label: string;
-  items: string[];
+  items: FlowRow[];
   tone: "in" | "out";
   hint?: string;
 }): ReactElement {
@@ -101,20 +117,25 @@ function FlowSide({
       {hint ? (
         <p className="mb-2.5 text-2xs leading-relaxed text-content-tertiary">{hint}</p>
       ) : null}
-      <ul className="space-y-1.5">
-        {items.map((text, i) => (
+      {/* One drawing per artefact rather than one bullet per line. A column of
+          identical dots said only "there are four of these"; the glyphs say
+          what the four are, which is the question a reader in front of an
+          unfamiliar step is actually asking. Stroke-only and in the row's own
+          colour, so they are ink and not chrome. */}
+      <ul className="space-y-2">
+        {items.map((item, i) => (
           <li
             key={i}
-            className="flex items-start gap-2 text-sm leading-snug text-content-secondary"
+            className="flex items-start gap-2.5 text-sm leading-snug text-content-secondary"
           >
-            <span
+            <FlowGlyph
+              kind={item.glyph}
               className={clsx(
-                "mt-[6px] h-2 w-2 shrink-0 rounded-full",
-                tone === "in" ? "bg-content-quaternary" : "bg-semantic-success",
+                "mt-[1px]",
+                tone === "in" ? "text-content-tertiary" : "text-semantic-success",
               )}
-              aria-hidden="true"
             />
-            <span className="min-w-0">{text}</span>
+            <span className="min-w-0">{item.text}</span>
           </li>
         ))}
       </ul>
@@ -190,8 +211,8 @@ function StepBlock({
   iconName?: string;
   what: string;
   why: string;
-  inputs: string[];
-  outputs: string[];
+  inputs: FlowRow[];
+  outputs: FlowRow[];
   inputsHint?: string;
   outputsHint?: string;
   scene: ReactElement;
@@ -439,6 +460,201 @@ function CaseLinkCard({
   );
 }
 
+/**
+ * The banded picture every case tile carries - the person the case is written
+ * for on the left, the diagram of the work on the right, meeting through a
+ * soft mask (the catalogue-card treatment, reused at strip size, so opening
+ * a card never swaps the person the reader just clicked; the hero uses the
+ * vertical cut below).
+ * Renders inside a `relative` container that has already reserved the space.
+ * Decorative throughout: the photograph carries alt="" and everything it says
+ * is said in the text beside it.
+ */
+function FaceBandArt({
+  playbook,
+  face,
+}: {
+  playbook: Playbook;
+  face: string | null;
+}): ReactElement {
+  const tint = tintFor(playbook.category);
+  const Icon = iconFor(playbook.icon);
+  const art = (
+    <CaseArt
+      id={playbook.id}
+      category={playbook.category}
+      fallbackIcon={Icon}
+      fallbackClass={tint.text}
+    />
+  );
+  if (!face) return art;
+  return (
+    <>
+      <img
+        src={face}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        width={340}
+        height={480}
+        draggable={false}
+        className={clsx(
+          "absolute inset-y-0 start-0 w-[38%] object-cover object-[50%_22%]",
+          // Opaque through most of its width, then out, so the diagram beside
+          // it starts before the picture has finished. Mirrored under rtl.
+          "[mask-image:linear-gradient(to_right,#000_58%,transparent)]",
+          "rtl:[mask-image:linear-gradient(to_left,#000_58%,transparent)]",
+        )}
+      />
+      <div className="absolute inset-y-0 end-0 w-[62%]">{art}</div>
+    </>
+  );
+}
+
+/**
+ * The hero-format cut of the same pair - person and work diagram - stacked
+ * vertically, because the hero tile is a tall column rather than the
+ * catalogue's wide band. The photo holds the top and fades down into the
+ * diagram, so the tile reads as one picture at whatever height the header
+ * row settles on. Vertical, so no rtl mirror is needed.
+ */
+function FaceColumnArt({
+  playbook,
+  face,
+}: {
+  playbook: Playbook;
+  face: string | null;
+}): ReactElement {
+  const tint = tintFor(playbook.category);
+  const Icon = iconFor(playbook.icon);
+  const art = (
+    <CaseArt
+      id={playbook.id}
+      category={playbook.category}
+      fallbackIcon={Icon}
+      fallbackClass={tint.text}
+    />
+  );
+  if (!face) return art;
+  return (
+    <>
+      <div className="absolute inset-x-0 bottom-0 h-[52%]">{art}</div>
+      <img
+        src={face}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        width={340}
+        height={480}
+        draggable={false}
+        className={clsx(
+          // Opaque through most of its height, then out, so the diagram
+          // below starts before the picture has finished - the vertical
+          // cut of the catalogue card's start-to-end treatment.
+          "absolute inset-x-0 top-0 h-[58%] w-full object-cover object-[50%_22%]",
+          "[mask-image:linear-gradient(to_bottom,#000_55%,transparent)]",
+        )}
+      />
+    </>
+  );
+}
+
+/**
+ * The hero's picture of the case: the SAME photo the catalogue card wears
+ * (dealt by `dealCaseFaces` over the whole catalogue), on the same light
+ * tile, stretched to the height of the hero row so the picture, the text
+ * beside it and the control panel across from it read as blocks of one
+ * height. Mounts its imagery only near the viewport, like every case tile.
+ * Hidden on the narrowest screens, where the hero is already tall and the
+ * text is what matters.
+ */
+function CaseHeroMedia({
+  playbook,
+  face,
+}: {
+  playbook: Playbook;
+  face: string | null;
+}): ReactElement {
+  const { ref, near } = useNearViewport<HTMLDivElement>("400px");
+  return (
+    <div
+      ref={ref}
+      aria-hidden="true"
+      className="relative hidden min-h-44 w-44 shrink-0 overflow-hidden rounded-xl border border-border-light bg-gradient-to-b from-white to-slate-50 shadow-xs ring-1 ring-inset ring-slate-900/[0.04] sm:block md:w-56"
+    >
+      {near && (
+        <div className="absolute inset-0">
+          <FaceColumnArt playbook={playbook} face={face} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One tile in the "Other cases" strip: the case's photo band, its market flag
+ * and its title, sized so a dozen sit in one row that scrolls inside its own
+ * container. A plain button, so click, Enter and Space all open the case and
+ * the focus ring is the standard visible one.
+ */
+function MoreCaseTile({
+  playbook,
+  face,
+  language,
+  onOpen,
+}: {
+  playbook: Playbook;
+  face: string | null;
+  /** Active UI language, for the localized market name. */
+  language: string;
+  onOpen: () => void;
+}): ReactElement {
+  const { t } = useTranslation();
+  const { ref, near } = useNearViewport<HTMLDivElement>("400px");
+  const title = t(playbook.titleKey, { defaultValue: playbook.titleDefault });
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={title}
+      className={clsx(
+        "group w-40 shrink-0 overflow-hidden rounded-xl border border-border-light bg-surface-primary text-left",
+        "shadow-xs transition duration-200 hover:-translate-y-0.5 hover:border-oe-blue/40 hover:shadow-md",
+        "motion-reduce:transition-none motion-reduce:hover:translate-y-0",
+        "focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40",
+      )}
+    >
+      <div
+        ref={ref}
+        className="relative aspect-[16/9] w-full overflow-hidden border-b border-border-light bg-gradient-to-b from-white to-slate-50"
+      >
+        {near ? (
+          <FaceBandArt playbook={playbook} face={face} />
+        ) : (
+          <div className="h-full w-full" aria-hidden="true" />
+        )}
+        {playbook.region && (
+          <span
+            className="absolute left-1.5 top-1.5 inline-flex h-5 items-center gap-1 rounded bg-white/90 px-1 text-[9px] font-semibold text-slate-900 shadow-sm ring-1 ring-inset ring-slate-900/10"
+            title={regionDisplayName(playbook.region, language)}
+            aria-label={regionDisplayName(playbook.region, language)}
+          >
+            <CountryFlag
+              code={playbook.region.toLowerCase()}
+              size={13}
+              className="ring-1 ring-inset ring-black/10"
+            />
+            {playbook.region}
+          </span>
+        )}
+      </div>
+      <span className="line-clamp-2 block px-2 py-1.5 text-2xs font-semibold leading-snug text-content-primary group-hover:text-oe-blue-text">
+        {title}
+      </span>
+    </button>
+  );
+}
+
 export interface PlaybookRunnerProps {
   playbook: Playbook;
   /** Optional handler for the "All cases" back control. */
@@ -446,9 +662,28 @@ export interface PlaybookRunnerProps {
 }
 
 export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const cardRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  // The person on this page must be the person the catalogue card wears, so
+  // the faces are dealt over the SAME whole catalogue the hub deals over -
+  // shipped cases plus any authored ones - with the same function. A shorter
+  // or reordered list would hand this case a different face than the card
+  // the reader just clicked.
+  const { playbooks: authoredPlaybooks } = useAuthoredCases();
+  const allPlaybooks = useMemo(
+    () =>
+      authoredPlaybooks.length > 0
+        ? [...PLAYBOOKS, ...authoredPlaybooks]
+        : PLAYBOOKS,
+    [authoredPlaybooks],
+  );
+  const facesByPlaybook = useMemo(
+    () => dealCaseFaces(allPlaybooks),
+    [allPlaybooks],
+  );
+  const face = facesByPlaybook.get(playbook.id) ?? null;
 
   const toggleStepDone = useCasesStore((s) => s.toggleStepDone);
   const setCurrentStep = useCasesStore((s) => s.setCurrentStep);
@@ -524,6 +759,22 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
 
+  // Activating a hexagon in the module honeycomb goes to the first step that
+  // opens that module, which is the step the cell was named after. It answers
+  // the question the hive raises - this case touches Documents, where? - in
+  // the page the reader is already on, rather than navigating away mid-case.
+  const goToModule = useCallback(
+    (route: string) => {
+      const index = playbook.steps.findIndex(
+        (s) => normalizeCaseRoute(s.to) === route,
+      );
+      if (index < 0) return;
+      selectStep(index);
+      scrollToStep(playbook.steps[index]!.id);
+    },
+    [playbook.steps, selectStep, scrollToStep],
+  );
+
   // Open another case from the journey footer and start it from the top.
   const openCase = useCallback(
     (id: string) => {
@@ -547,6 +798,18 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
         4,
       ),
     [playbook, nextCases],
+  );
+  // The strip at the very foot of the page: the rest of the catalogue, this
+  // case's market first, minus everything the two grids above already show.
+  const moreCases = useMemo(
+    () =>
+      moreCasesFor(
+        playbook,
+        allPlaybooks,
+        new Set([...nextCases, ...relatedCases].map((c) => c.id)),
+        12,
+      ),
+    [playbook, allPlaybooks, nextCases, relatedCases],
   );
 
   const handleGo = useCallback(
@@ -600,10 +863,14 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
 
   // Resolve a flow item list (input / output) to display strings once.
   const resolveFlow = useCallback(
-    (step: PlaybookStep | undefined, side: "inputs" | "outputs"): string[] =>
-      (step?.[side] ?? []).map((it) =>
-        it.labelKey ? t(it.labelKey, { defaultValue: it.label }) : it.label,
-      ),
+    (step: PlaybookStep | undefined, side: "inputs" | "outputs"): FlowRow[] =>
+      (step?.[side] ?? []).map((it) => ({
+        text: it.labelKey ? t(it.labelKey, { defaultValue: it.label }) : it.label,
+        // From `it.label`, the English one, never from the string above it. A
+        // German reader and an English one must get the same picture for the
+        // same artefact.
+        glyph: flowGlyphFor(it.label),
+      })),
     [t],
   );
 
@@ -692,49 +959,74 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
       <header className="rounded-2xl border border-border-light bg-gradient-to-br from-oe-blue/[0.08] via-oe-blue/[0.03] to-transparent p-5 sm:p-6">
         {/* Two columns on wide screens: the case identity and purpose on the
             left, a compact control panel (progress, the primary action, reset
-            and the sample-project picker) on the right. They stack on narrow
-            screens; the panel sits at its natural height, top-aligned. */}
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_19rem] lg:items-start lg:gap-8">
-          {/* Left: what this case is and why */}
-          <div className="min-w-0">
-            <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span
-                className={clsx(
-                  "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-2xs font-medium",
-                  tint.chip,
+            and the sample-project picker) on the right. Both cells stretch to
+            the row's height, so the photo tile, the text and the panel read
+            as blocks of one height. They stack on narrow screens. */}
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_19rem] lg:gap-8">
+          {/* Left: what this case is and why. The catalogue card's photo
+              rides along into the hero, so the person the reader clicked is
+              the person who greets them; the market flag sits in the same
+              meta row as the discipline, on the title's eye-line. */}
+          <div className="flex min-w-0 gap-4 md:gap-5">
+            <CaseHeroMedia playbook={playbook} face={face} />
+            <div className="min-w-0 flex-1">
+              <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span
+                  className={clsx(
+                    "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-2xs font-medium",
+                    tint.chip,
+                  )}
+                >
+                  <PlaybookIcon size={11} strokeWidth={2} aria-hidden="true" />
+                  {t(cat.labelKey, { defaultValue: cat.labelDefault })}
+                </span>
+                {/* Market flag: this case is written for one market's
+                    standards. Same fact the catalogue card states, said in
+                    the same place a reader looks first here - by the title. */}
+                {playbook.region && (
+                  <span
+                    className="inline-flex items-center gap-1.5 rounded-md bg-surface-primary/80 px-2 py-0.5 text-2xs font-medium text-content-secondary ring-1 ring-inset ring-border-light"
+                    title={regionDisplayName(playbook.region, i18n.language)}
+                  >
+                    <CountryFlag
+                      code={playbook.region.toLowerCase()}
+                      size={14}
+                      className="ring-1 ring-inset ring-black/10"
+                    />
+                    {regionDisplayName(playbook.region, i18n.language)}
+                  </span>
                 )}
-              >
-                <PlaybookIcon size={11} strokeWidth={2} aria-hidden="true" />
-                {t(cat.labelKey, { defaultValue: cat.labelDefault })}
-              </span>
-              <span className="inline-flex items-center gap-1 text-2xs font-medium text-content-tertiary">
-                <Clock size={11} aria-hidden="true" />
-                {t("cases.card.minutes", {
-                  defaultValue: "about {{count}} min",
-                  count: playbook.estMinutes,
-                })}
-              </span>
-              <span className="inline-flex items-center gap-1 text-2xs font-medium text-content-tertiary">
-                <ListChecks size={11} aria-hidden="true" />
-                {t("cases.card.steps", { defaultValue: "{{count}} steps", count: total })}
-              </span>
-            </div>
-            <h1 className="text-2xl font-semibold tracking-tight text-content-primary sm:text-3xl">
-              {title}
-            </h1>
-            <p className="mt-2 text-sm leading-relaxed text-content-secondary sm:text-base">
-              {desc}
-            </p>
-            {longDesc && (
-              <p className="mt-2 text-sm leading-relaxed text-content-tertiary">
-                {longDesc}
+                <span className="inline-flex items-center gap-1 text-2xs font-medium text-content-tertiary">
+                  <Clock size={11} aria-hidden="true" />
+                  {t("cases.card.minutes", {
+                    defaultValue: "about {{count}} min",
+                    count: playbook.estMinutes,
+                  })}
+                </span>
+                <span className="inline-flex items-center gap-1 text-2xs font-medium text-content-tertiary">
+                  <ListChecks size={11} aria-hidden="true" />
+                  {t("cases.card.steps", { defaultValue: "{{count}} steps", count: total })}
+                </span>
+              </div>
+              <h1 className="text-2xl font-semibold tracking-tight text-content-primary sm:text-3xl">
+                {title}
+              </h1>
+              <p className="mt-2 text-sm leading-relaxed text-content-secondary sm:text-base">
+                {desc}
               </p>
-            )}
+              {longDesc && (
+                <p className="mt-2 text-sm leading-relaxed text-content-tertiary">
+                  {longDesc}
+                </p>
+              )}
+            </div>
           </div>
 
           {/* Right: a compact control panel - progress, primary action, reset
-              and the sample-project picker, stacked in one tidy card. */}
-          <div className="rounded-xl border border-border-light/70 bg-surface-primary/60 p-4">
+              and the sample-project picker, stacked in one tidy card. The
+              picker sits on the card's floor, so when the row runs taller
+              than the panel's content the slack opens above it, not below. */}
+          <div className="flex flex-col rounded-xl border border-border-light/70 bg-surface-primary/60 p-4">
             <div
               className="flex flex-col gap-1.5"
               role="progressbar"
@@ -760,7 +1052,7 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
                 />
               </div>
             </div>
-            <div className="mt-4 flex flex-col gap-2">
+            <div className="mb-4 mt-4 flex flex-col gap-2">
               <Button
                 variant="primary"
                 size="lg"
@@ -776,7 +1068,7 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
               </Button>
               <div className="flex justify-center">{resetButton}</div>
             </div>
-            <div className="mt-4 border-t border-border-light/70 pt-3">
+            <div className="mt-auto border-t border-border-light/70 pt-3">
               <label
                 htmlFor={selectId}
                 className="block text-2xs font-semibold uppercase tracking-wide text-content-tertiary"
@@ -827,11 +1119,14 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
             })}
           </p>
         </div>
-        {/* Six across from the small breakpoint up so the strip stays a compact
-            journey map (three across on the narrowest screens); more steps just
-            wrap to a second row of six. */}
+        {/* One compact row, always: the strip is the case's journey map (and
+            the camera frame the showcase films), so every step reads left to
+            right on a single line - a seven-step case fits 1920px whole. Each
+            card keeps one fixed compact size; when the viewport is narrower
+            than the row, the ROW scrolls inside this container and the page
+            itself never scrolls sideways. */}
         <ol
-          className="grid grid-cols-3 gap-2 sm:grid-cols-6"
+          className="flex gap-2 overflow-x-auto pb-1"
           aria-label={title}
         >
           {playbook.steps.map((step, i) => {
@@ -839,7 +1134,7 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
             const isCurrent = i === currentIndex;
             const stepTitle = t(step.titleKey, { defaultValue: step.titleDefault });
             return (
-              <li key={step.id} className="min-w-0">
+              <li key={step.id} className="w-36 shrink-0 sm:w-40">
                 <button
                   type="button"
                   ref={(el) => {
@@ -891,6 +1186,14 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
           })}
         </ol>
       </section>
+
+      {/* ── The span of the case: every module it walks through, as one
+          honeycomb. The strip above is the case in TIME, step after step; this
+          is the case in REACH, and it is the only place the whole span is
+          visible at once. Sits between the two so the reader meets the case's
+          shape before its detail. Clicking a hexagon jumps to the step that
+          opens that module. ──────────────────────────────────────────────── */}
+      <CaseModuleHive playbook={playbook} onSelect={goToModule} />
 
       {/* ── Every step, in full, one under the other ─────────────────────── */}
       <div className="space-y-3">
@@ -1009,6 +1312,44 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
               </div>
             </div>
           )}
+        </section>
+      )}
+
+      {/* ── Other cases: the rest of the catalogue as one compact strip, this
+          case's market first, so the detail page ends the way the hub begins -
+          with somewhere to go. Scrolls inside its own container on narrow
+          screens; the page never scrolls sideways. ───────────────────────── */}
+      {moreCases.length > 0 && (
+        <section
+          aria-label={t("cases.more.heading", { defaultValue: "Other cases" })}
+          className="space-y-2.5 border-t border-border-light pt-6"
+        >
+          <div>
+            <h2 className="text-base font-semibold text-content-primary">
+              {t("cases.more.heading", { defaultValue: "Other cases" })}
+            </h2>
+            <p className="mt-0.5 text-xs text-content-tertiary">
+              {playbook.region && moreCases[0]?.region === playbook.region
+                ? t("cases.more.subtitle_market", {
+                    defaultValue:
+                      "More from this market first, then the rest of the catalogue.",
+                  })
+                : t("cases.more.subtitle", {
+                    defaultValue: "More cases from the catalogue.",
+                  })}
+            </p>
+          </div>
+          <div className="flex gap-2.5 overflow-x-auto pb-1.5">
+            {moreCases.map((c) => (
+              <MoreCaseTile
+                key={c.id}
+                playbook={c}
+                face={facesByPlaybook.get(c.id) ?? null}
+                language={i18n.language}
+                onOpen={() => openCase(c.id)}
+              />
+            ))}
+          </div>
         </section>
       )}
     </div>

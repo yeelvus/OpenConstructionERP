@@ -51,19 +51,19 @@ TEMPLATE = DemoTemplate(
     boq_name="Solar PV + BESS EPC - Cost Estimate",
     boq_description=(
         "Detailed turnkey EPC cost estimate for a 50 MWp PV + 20 MWh BESS plant, "
-        "MasterFormat utility divisions (26/33/34/48), EU 2026 price level."
+        "standard utility divisions (26/33/34/48), EU 2026 price level."
     ),
     boq_metadata={
-        "standard": "CSI MasterFormat 2020 (utility/electrical)",
+        "standard": "Division-based classification (utility/electrical)",
         "phase": "EPC Detailed Estimate (FID stage)",
         "base_date": "2026-Q1",
         "price_level": "EU 2026",
     },
     sections=[
-        # -- 01 General Requirements (EPC indirects) ---------------------------
+        # -- 01 Project requirements (EPC indirects) ---------------------------
         (
             "01",
-            "01 - General Requirements / EPC Indirects",
+            "01 - Project requirements / EPC indirects",
             {"masterformat": "01"},
             [
                 ("01.001", "Project management & site supervision (EPC team)", "month", 18, 42000.00, {"masterformat": "01 31 00"}),

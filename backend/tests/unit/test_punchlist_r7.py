@@ -152,7 +152,14 @@ class _StubRepo:
         return [r for r in self.rows.values() if r.project_id == project_id]
 
     async def summary_aggregates(self, project_id: uuid.UUID) -> dict[str, Any]:
-        return {"total": 0, "by_status": {}, "by_priority": {}, "closed_timestamps": []}
+        return {
+            "total": 0,
+            "by_status": {},
+            "by_priority": {},
+            "closed_timestamps": [],
+            "urgent_open": 0,
+            "open_created_at": [],
+        }
 
     async def count_overdue(self, project_id: uuid.UUID) -> int:
         return 0

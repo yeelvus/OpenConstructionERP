@@ -40,6 +40,17 @@ import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useFileTrash, useFileTrashStats, usePurgeTrash, useRestoreFromTrash } from './hooks';
 import { fileTrashGuide } from './fileTrashGuide';
 import type { TrashItem, TrashKind } from './types';
+import { fmtFixed } from '@/shared/lib/formatters';
+
+// English fallbacks for the computed `files.kind.*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const FILES_KIND_LABELS: Record<string, string> = {
+  document: 'Document', photo: 'Photo', sheet: 'Sheet', bim_model: 'BIM model', dwg_drawing: 'DWG drawing',
+  takeoff: 'Takeoff', report: 'Report', markup: 'Markup'
+};
+
 
 const KIND_ICON: Record<TrashKind, typeof FileText> = {
   document: FileText,
@@ -55,9 +66,9 @@ const KIND_ICON: Record<TrashKind, typeof FileText> = {
 function formatBytes(bytes: number): string {
   if (!bytes) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (bytes < 1024 * 1024) return `${fmtFixed(bytes / 1024, 1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${fmtFixed(bytes / (1024 * 1024), 1)} MB`;
+  return `${fmtFixed(bytes / (1024 * 1024 * 1024), 2)} GB`;
 }
 
 function daysUntilExpiry(trashedAt: string, retentionDays: number): number {
@@ -234,7 +245,7 @@ export function TrashPage() {
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-content-tertiary">
                       <span className="capitalize">
                         {t(`files.kind.${item.original_kind}`, {
-                          defaultValue: item.original_kind.replace('_', ' '),
+                          defaultValue: FILES_KIND_LABELS[item.original_kind] ?? item.original_kind.replace('_', ' '),
                         })}
                       </span>
                       <span>{formatBytes(item.file_size)}</span>

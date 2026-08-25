@@ -26,6 +26,7 @@ from app.core.party_names import resolve_party_names
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
 from app.modules.inspections.schemas import (
     InspectionCreate,
+    InspectionListResponse,
     InspectionResponse,
     InspectionUpdate,
 )
@@ -85,7 +86,7 @@ def _to_response(item: object, names: dict[str, str] | None = None) -> Inspectio
     )
 
 
-@router.get("/", response_model=list[InspectionResponse])
+@router.get("/", response_model=InspectionListResponse)
 async def list_inspections(
     session: SessionDep,
     project_id: uuid.UUID = Query(...),
@@ -95,17 +96,27 @@ async def list_inspections(
     type_filter: str | None = Query(default=None, alias="type"),
     status_filter: str | None = Query(default=None, alias="status"),
     service: InspectionService = Depends(_get_service),
-) -> list[InspectionResponse]:
-    """List inspections for a project with optional filters."""
+) -> InspectionListResponse:
+    """List inspections for a project with optional filters.
+
+    The service already counts the whole filtered set to build the page; this
+    returns that count instead of discarding it, so a caller can tell a
+    complete register from a truncated one.
+    """
     await verify_project_access(project_id, user_id, session)
-    inspections, _ = await service.list_inspections(
+    inspections, total = await service.list_inspections(
         project_id,
         offset=offset,
         limit=limit,
         inspection_type=type_filter,
         status_filter=status_filter,
     )
-    return await _to_response_many(session, inspections)
+    return InspectionListResponse(
+        items=await _to_response_many(session, inspections),
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.post("/", response_model=InspectionResponse, status_code=201)

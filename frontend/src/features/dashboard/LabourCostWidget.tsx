@@ -21,11 +21,13 @@ import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { fetchLabourCost } from '@/features/payroll/api';
 import { costModelApi } from '@/features/costmodel/api';
 import { KpiStrip } from './KpiStrip';
+import { fmtFixed } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 function money(value: number, currency?: string): string {
   if (!Number.isFinite(value)) return '-';
   try {
-    return new Intl.NumberFormat(undefined, {
+    return new Intl.NumberFormat(getNumberLocale(), {
       style: currency ? 'currency' : 'decimal',
       currency: currency || undefined,
       maximumFractionDigits: 0,
@@ -111,7 +113,7 @@ export function LabourCostWidget() {
           <p className="mt-2 text-xs text-content-tertiary">
             {t('dashboard.labour_hours', {
               defaultValue: 'over {{hours}} h logged',
-              hours: Number(labour.total_hours).toFixed(0),
+              hours: fmtFixed(Number(labour.total_hours), 0),
             })}
           </p>
         )}

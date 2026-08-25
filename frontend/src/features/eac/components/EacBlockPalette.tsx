@@ -43,7 +43,7 @@ export const DEFAULT_PALETTE_CATALOG: Record<PaletteCategory, PaletteItem[]> = {
       id: 'selector.category',
       color: 'selector',
       label: 'Category',
-      description: 'Match by Revit category',
+      description: 'Match by Revit® category',
       payload: { type: 'category' },
     },
     {

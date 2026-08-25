@@ -43,6 +43,7 @@ import { useThemeStore } from '@/stores/useThemeStore';
 import { aiApi, type AISettings } from '@/features/ai/api';
 import { hasLlmKey } from '@/features/ai-estimator/useAiReadiness';
 import { useFocusTrap } from '@/shared/hooks/useFocusTrap';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { uuid } from '@/shared/lib/browser';
 import { useFloatingChatStore, useIsMobileViewport } from './useFloatingChat';
 import { fetchChatSessions } from './api';
@@ -922,6 +923,9 @@ function SessionsMenu({
 }) {
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  // Cut twice over: the route hands back 20 sessions and this menu keeps 10.
+  // Both cuts are invisible without the server's own count.
+  const [sessionsTotal, setSessionsTotal] = useState(0);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -932,10 +936,12 @@ function SessionsMenu({
       .then((res) => {
         if (cancelled) return;
         setSessions(res.items.slice(0, 10));
+        setSessionsTotal(res.total ?? res.items.length);
       })
       .catch(() => {
         if (cancelled) return;
         setSessions([]);
+        setSessionsTotal(0);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -1044,6 +1050,11 @@ function SessionsMenu({
           {s.title || t('chat.panel.untitled', { defaultValue: '(untitled)' })}
         </button>
       ))}
+      {!loading && sessions.length > 0 && (
+        <div style={{ padding: '4px 12px 8px' }}>
+          <TruncationNotice page={{ items: sessions, total: sessionsTotal }} />
+        </div>
+      )}
     </div>
   );
 }

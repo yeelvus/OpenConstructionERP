@@ -28,25 +28,28 @@ import {
   fetchFieldReportTemplates,
   createFieldReportTemplate,
   deleteFieldReportTemplate,
+  REPORT_TYPES,
+  TEMPLATE_FIELD_TYPES,
   type FieldReportTemplate,
   type TemplateFieldType,
   type ReportType,
 } from './api';
 
-const REPORT_TYPES: ReportType[] = [
-  'daily',
-  'inspection',
-  'safety',
-  'concrete_pour',
-];
-const FIELD_TYPES: TemplateFieldType[] = [
-  'text',
-  'textarea',
-  'number',
-  'select',
-  'date',
-  'checkbox',
-];
+// English wording for the computed `fieldreports.fieldtype_*` keys, so the
+// `defaultValue` reads like every other one in this file rather than handing
+// back the enum token. It does not fire today: en.ts carries all six keys and
+// the other locales reach them through the English fallback. It fires if a key
+// is ever dropped or a seventh field type is added ahead of its translation,
+// which is the moment `textarea` would otherwise appear on screen.
+const FIELDREPORTS_FIELDTYPE_LABELS: Record<string, string> = {
+  text: 'Text',
+  textarea: 'Long text',
+  number: 'Number',
+  select: 'Dropdown',
+  date: 'Date',
+  checkbox: 'Checkbox',
+};
+
 
 const inputCls =
   'w-full rounded-lg border border-border-light bg-surface-primary px-3 py-2 text-sm text-content-primary';
@@ -343,7 +346,7 @@ export function ManageTemplatesModal({
                         type="button"
                         onClick={() => handleDelete(tpl)}
                         disabled={deleteMut.isPending}
-                        className="rounded p-1.5 text-semantic-error/60 hover:bg-semantic-error-bg hover:text-semantic-error disabled:opacity-50"
+                        className="rounded p-1.5 text-content-tertiary hover:bg-semantic-error-bg hover:text-semantic-error disabled:opacity-50"
                         title={t('common.delete', { defaultValue: 'Delete' })}
                         aria-label={t('common.delete', {
                           defaultValue: 'Delete',
@@ -458,10 +461,10 @@ export function ManageTemplatesModal({
                       })}
                       className={`${inputCls} w-32`}
                     >
-                      {FIELD_TYPES.map((ft) => (
+                      {TEMPLATE_FIELD_TYPES.map((ft) => (
                         <option key={ft} value={ft}>
                           {t(`fieldreports.fieldtype_${ft}`, {
-                            defaultValue: ft,
+                            defaultValue: FIELDREPORTS_FIELDTYPE_LABELS[ft] ?? ft,
                           })}
                         </option>
                       ))}
@@ -497,7 +500,7 @@ export function ManageTemplatesModal({
                     <button
                       type="button"
                       onClick={() => handleRemoveField(idx)}
-                      className="rounded p-1 text-semantic-error/60 hover:bg-semantic-error-bg hover:text-semantic-error"
+                      className="rounded p-1 text-content-tertiary hover:bg-semantic-error-bg hover:text-semantic-error"
                       title={t('common.remove', { defaultValue: 'Remove' })}
                       aria-label={t('common.remove', {
                         defaultValue: 'Remove',

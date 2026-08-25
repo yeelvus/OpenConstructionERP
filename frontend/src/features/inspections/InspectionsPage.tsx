@@ -38,6 +38,7 @@ import {
 import { Button, Card, Badge, EmptyState, Breadcrumb, ConfirmDialog, RecoveryCard, SkeletonTable, IntroRichText, ModuleGuideButton, CollapsibleSection } from '@/shared/ui';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
 import { PageHeader } from '@/shared/ui/PageHeader';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { SectionIntro } from '@/features/validation';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
@@ -854,7 +855,10 @@ const InspectionRow = React.memo(function InspectionRow({
         </Badge>
 
         {/* Inspector */}
-        <span className="text-xs text-content-tertiary w-28 truncate shrink-0 hidden md:block">
+        <span
+          className="text-xs text-content-tertiary w-28 truncate shrink-0 hidden md:block"
+          title={inspection.inspector || undefined}
+        >
           {inspection.inspector || '\u2014'}
         </span>
 
@@ -874,7 +878,15 @@ const InspectionRow = React.memo(function InspectionRow({
             })}
           </Badge>
         ) : (
-          <span className="text-xs text-content-tertiary w-16 text-center">{'\u2014'}</span>
+          // A dash in the same weight as the real results reads as a result.
+          // The glyph is decorative; the label says the inspection has none.
+          <span
+            className="text-xs text-content-quaternary w-16 text-center"
+            title={t('common.not_set', { defaultValue: 'Not set' })}
+          >
+            <span aria-hidden="true">{'\u2014'}</span>
+            <span className="sr-only">{t('common.not_set', { defaultValue: 'Not set' })}</span>
+          </span>
         )}
 
         {/* Status badge */}
@@ -1232,7 +1244,7 @@ export function InspectionsPage() {
   const breadcrumbProjectName =
     projects.find((p) => p.id === selectedProjectId)?.name || '';
 
-  const { data: inspections = [], isLoading, isError, error, refetch } = useQuery({
+  const { data: page, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['inspections', projectId, statusFilter, typeFilter],
     queryFn: () =>
       fetchInspections({
@@ -1242,6 +1254,9 @@ export function InspectionsPage() {
       }),
     enabled: !!projectId,
   });
+  // Memoised on the page rather than defaulted inline, so the identity only
+  // changes when the data does and the dependent useMemos below stay stable.
+  const inspections = useMemo(() => page?.items ?? [], [page]);
 
   // Client-side search
   const filtered = useMemo(() => {
@@ -1255,14 +1270,18 @@ export function InspectionsPage() {
     );
   }, [inspections, searchQuery]);
 
-  // Stats
+  // Stats. `total` is the register count the server matched, not the number
+  // of rows this page happens to hold - a tile labelled "Total" that counts
+  // the page reports 50 for a project with 500 inspections. The status tiles
+  // below it are necessarily page-local; the truncation notice on the list is
+  // what tells the reader how far they reach.
   const stats = useMemo(() => {
-    const total = inspections.length;
+    const total = page?.total ?? inspections.length;
     const scheduled = inspections.filter((i) => i.status === 'scheduled').length;
     const passed = inspections.filter((i) => i.result === 'pass').length;
     const failed = inspections.filter((i) => i.result === 'fail').length;
     return { total, scheduled, passed, failed };
-  }, [inspections]);
+  }, [inspections, page]);
 
   // Module Insights - KPIs and charts over the loaded inspections. When the
   // project has none the panel draws nothing rather than inventing rows to fill
@@ -1818,6 +1837,9 @@ export function InspectionsPage() {
                 count: filtered.length,
               })}
             </p>
+            {/* What the search left of the page is said above; this says what
+                the page left of the register. */}
+            {page && <TruncationNotice page={page} className="-mt-2 mb-3" />}
             <Card padding="none" className="overflow-x-auto">
               {/* Table header */}
               <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border-light bg-surface-secondary/30 text-2xs font-medium text-content-tertiary uppercase tracking-wider min-w-[640px]">

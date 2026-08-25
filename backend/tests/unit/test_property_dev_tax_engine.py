@@ -10,13 +10,30 @@ rate-effective-date behaviour, and unsupported-jurisdiction handling.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
+from app.core.provenance import Source
+from app.modules.property_dev import tax_engine
+from app.modules.property_dev.schemas import ContractTaxQuote
 from app.modules.property_dev.tax_engine import (
+    VAT_ABSENCE_KEY,
+    VAT_ABSENCE_VALUES,
+    VAT_ABSENT_BY_LAW,
+    VAT_ABSENT_NOT_MODELLED,
+    VAT_AXIS,
+    VAT_STANDIN_NO_VAT_IN_LAW,
     MissingRegionSubcodeError,
+    NoVatBlockError,
+    RateNotInForceError,
+    TaxEngineError,
     UnknownRateClassError,
     UnsupportedJurisdictionError,
     compute_absd,
@@ -29,6 +46,7 @@ from app.modules.property_dev.tax_engine import (
     gross_from_net,
     net_from_gross,
     supported_jurisdictions,
+    vat_absence,
 )
 
 # ── 0. Smoke ────────────────────────────────────────────────────────────
@@ -249,14 +267,166 @@ def test_late_interest_from_dates() -> None:
 # ── 8. Rate-effective-date behaviour ────────────────────────────────────
 
 
-def test_vat_effective_from_before_band_change_returns_zero() -> None:
-    # GB VAT standard band has effective_from 2011-01-04. A contract
-    # signed before that date should return 0 (no band yet in force).
-    assert compute_vat(
-        Decimal("100000"),
-        "GB",
-        effective_on=date(2010, 12, 31),
-    ) == Decimal("0.00")
+def test_vat_effective_from_before_band_change_refuses_rather_than_returning_zero() -> None:
+    """A date the table cannot price is refused, not answered with zero.
+
+    This test previously asserted the opposite, with the comment "should
+    return 0 (no band yet in force)". The case it covers is right and is kept
+    verbatim; only the expectation is inverted. GB standard VAT carries
+    effective_from 2011-01-04, and on 2010-12-31 the rate actually in force
+    was 17.5 per cent, so zero was not a lenient answer, it was a wrong one
+    that a quote then presented as the whole bill.
+    """
+    with pytest.raises(RateNotInForceError) as exc:
+        compute_vat(Decimal("100000"), "GB", effective_on=date(2010, 12, 31))
+    # The caller has to be able to act on this: either ask about a date inside
+    # the band, or add the historical band to the YAML. Both need the dates.
+    assert exc.value.jurisdiction == "GB"
+    assert exc.value.rate_class == "standard"
+    assert exc.value.effective_on == date(2010, 12, 31)
+    assert exc.value.effective_from == date(2011, 1, 4)
+
+
+def test_a_genuinely_zero_rated_supply_still_returns_zero_and_does_not_raise() -> None:
+    """The control in the other direction: not everything may raise.
+
+    Without this, the change above could be "passed" by refusing every zero,
+    which would break every zero-rated jurisdiction in the table and still
+    show a green suite for the case that motivated the work.
+    """
+    assert compute_vat(Decimal("5000000"), "AE", rate_class="zero_rated") == Decimal("0.00")
+    assert net_from_gross(Decimal("1000.00"), "AE", rate_class="zero_rated") == Decimal("1000.00")
+
+
+# ── 8b. The class axis: no block is not the same as an unknown class ────
+
+# Jurisdictions whose stamp duty needs a subcode. Supplied so that nothing can
+# refuse on an unrelated axis before the call under test is reached; the first
+# version of this measurement used US without one and read MissingRegionSubcodeError
+# from compute_stamp_duty as though it were the answer.
+_SUBCODE = {"US": "TX", "IN": "MH", "DE": "BE", "AU": "NSW"}
+
+
+def _quote_outcome(jurisdiction: str, rate_class: str, price_field: str) -> tuple[str, object]:
+    """What the summariser does, in a form two call shapes can be compared by.
+
+    The second slot carries the VAT provenance source on a successful quote,
+    which puts that field inside this invariant rather than beside it. Step 1
+    and step 2 of the summariser both catch NoVatBlockError on a ``total_value``
+    contract, so a provenance set in the wrong place is exactly the defect this
+    test already exists for, told about a newer field. Comparing only
+    quoted-against-raised would not have seen it.
+    """
+    try:
+        quote = compute_total_taxes_for_contract(
+            {price_field: Decimal("100000"), "currency": "USD"},
+            jurisdiction,
+            vat_rate_class=rate_class,
+            region_subcode=_SUBCODE.get(jurisdiction),
+        )
+        return ("quoted", quote["vat_provenance"].source)
+    except TaxEngineError as exc:
+        return ("raised", type(exc).__name__)
+
+
+def test_no_vat_block_is_a_different_event_from_an_unknown_rate_class() -> None:
+    """Two situations that raised the same error and meant different things.
+
+    US has no vat or gst block at all. RU has one holding exempt and standard,
+    and the caller asked for reduced. The first is a fact about what the table
+    holds, the second is a caller naming something that does not exist.
+    """
+    with pytest.raises(NoVatBlockError) as no_block:
+        compute_vat(Decimal("100000"), "US")
+    assert no_block.value.jurisdiction == "US"
+
+    with pytest.raises(UnknownRateClassError):
+        compute_vat(Decimal("100000"), "RU", rate_class="reduced")
+
+    # The split has to be real rather than nominal. If either were a subclass of
+    # the other, every existing `except` on the parent would still swallow the
+    # child and nothing about the old behaviour would have changed.
+    assert not issubclass(NoVatBlockError, UnknownRateClassError)
+    assert not issubclass(UnknownRateClassError, NoVatBlockError)
+
+
+@pytest.mark.parametrize(
+    ("jurisdiction", "rate_class", "expected"),
+    [
+        ("US", "standard", "quoted"),
+        ("BR", "standard", "quoted"),
+        ("RU", "reduced", "raised"),
+        ("GB", "standard", "quoted"),
+    ],
+    ids=["us-no-block", "br-no-block", "ru-unknown-class", "gb-control"],
+)
+def test_a_quote_answers_alike_whichever_price_field_carries_it(
+    jurisdiction: str, rate_class: str, expected: str
+) -> None:
+    """The same contract must not get two different answers by field name.
+
+    ``net`` and ``total_value`` are two ways of stating the same contract's
+    price. Before this, the summariser guarded its compute_vat call and left its
+    net_from_gross call bare, so a jurisdiction with no rate class answered 200
+    with a silent zero through one field and 422 through the other. The
+    difference was not in the question.
+    """
+    by_net = _quote_outcome(jurisdiction, rate_class, "net")
+    by_gross = _quote_outcome(jurisdiction, rate_class, "total_value")
+
+    assert by_net == by_gross, f"{jurisdiction}/{rate_class} answers {by_net} by net and {by_gross} by total_value"
+    # Asserted against the expected kind as well, because equality alone is
+    # satisfied by refusing everything or by quoting everything, and each of
+    # those breaks one of the four rows here while leaving the other three.
+    assert by_net[0] == expected, f"{jurisdiction}/{rate_class} was expected to be {expected}, got {by_net}"
+
+
+def _outcome(call: Callable[[], Decimal]) -> tuple[str, object]:
+    """What a call did, in a form two calls can be compared by."""
+    try:
+        return ("returned", call())
+    except TaxEngineError as exc:
+        return ("raised", type(exc).__name__)
+
+
+@pytest.mark.parametrize(
+    ("fn", "zero_rated", "no_rate_yet"),
+    [
+        (
+            compute_vat,
+            lambda f: f(Decimal("100000"), "AE", rate_class="zero_rated"),
+            lambda f: f(Decimal("100000"), "GB", effective_on=date(2010, 12, 31)),
+        ),
+        (
+            net_from_gross,
+            lambda f: f(Decimal("100000"), "AE", rate_class="zero_rated"),
+            lambda f: f(Decimal("100000"), "GB", effective_on=date(2010, 12, 31)),
+        ),
+    ],
+    ids=["compute_vat", "net_from_gross"],
+)
+def test_a_zero_rated_supply_and_an_unpriceable_date_cannot_come_back_alike(
+    fn: Callable[..., Decimal],
+    zero_rated: Callable[[Callable[..., Decimal]], Decimal],
+    no_rate_yet: Callable[[Callable[..., Decimal]], Decimal],
+) -> None:
+    """The invariant, asserted on the pair rather than on a number.
+
+    A test that pins a particular return value is blind to the thing that was
+    wrong here, because the wrong answer was a perfectly ordinary zero. What
+    must hold is that these two branches cannot produce the same output: they
+    were once identical down to as_tuple(), so no caller could separate a
+    tax-free sale from one the engine could not price.
+
+    Asserted in both directions, because "they differ" is satisfied by any
+    change that breaks one of them, including making everything raise.
+    """
+    a = _outcome(lambda: zero_rated(fn))
+    b = _outcome(lambda: no_rate_yet(fn))
+
+    assert a[0] == "returned", f"a zero-rated supply must still be priced, got {a}"
+    assert b[0] == "raised", f"a date with no rate in force must be refused, got {b}"
+    assert a != b
 
 
 def test_vat_effective_from_on_or_after_uses_current_rate() -> None:
@@ -271,6 +441,301 @@ def test_vat_effective_from_on_or_after_uses_current_rate() -> None:
         "GB",
         effective_on=date(2025, 6, 1),
     ) == Decimal("20000.00")
+
+
+# ── 8c. Where a missing VAT block lives: in the law, or in this table ───
+
+
+def _blockless_codes() -> list[str]:
+    """Codes in the SHIPPED table that carry no VAT or GST block.
+
+    Asks ``_has_vat_block`` rather than re-deriving the rule inline. An
+    inline copy would be a second home for the one decision this section is
+    about, and if the two ever disagreed this helper would quietly widen or
+    narrow the population it tests while still passing.
+    """
+    table = tax_engine._load_table()
+    return [
+        code
+        for code, jur in (table.get("jurisdictions") or {}).items()
+        if isinstance(jur, dict) and not tax_engine._has_vat_block(jur)
+    ]
+
+
+def _well_formed() -> dict[str, Any]:
+    """The smallest table that passes: one row with a block, one without."""
+    return {
+        "format_version": 1,
+        "jurisdictions": {
+            "GB": {"name": "United Kingdom", "vat": {"standard": {"rate": 0.2}}},
+            "US": {"name": "United States", VAT_ABSENCE_KEY: VAT_ABSENT_BY_LAW},
+        },
+    }
+
+
+@contextmanager
+def _table_on_disk(tmp_path: Path, table: dict[str, Any]) -> Iterator[None]:
+    """Point the engine at a synthetic table, and always put the real one back.
+
+    These tests go through the loader rather than calling
+    ``_validate_vat_absence`` directly, deliberately: a validator that nothing
+    calls would satisfy every assertion below while the shipped table went
+    unchecked. Testing the function alone would prove the rule exists, not
+    that it runs.
+    """
+    path = tmp_path / "tax_rates.yaml"
+    path.write_text(yaml.safe_dump(table), encoding="utf-8")
+    original = tax_engine._TABLE_PATH
+    tax_engine._TABLE_PATH = path
+    try:
+        yield
+    finally:
+        tax_engine._TABLE_PATH = original
+        tax_engine.reload_tax_table()
+
+
+def test_every_jurisdiction_without_a_vat_block_says_where_the_gap_lives() -> None:
+    """The property, rather than the pair that satisfies it today.
+
+    Asserting "US and BR" would be an exact-set detector: it goes red the day
+    a third blockless jurisdiction is added, which teaches whoever added it to
+    edit the test instead of reading it. This asks the question the field
+    exists to answer, so a new row either satisfies it or is the bug.
+    """
+    codes = _blockless_codes()
+    assert codes, "no blockless jurisdiction is left in the table, so this test now asserts nothing"
+    for code in codes:
+        assert vat_absence(code) in VAT_ABSENCE_VALUES
+
+
+def test_the_two_markers_do_not_collapse_onto_one_answer() -> None:
+    """The defect this field repairs, stated as an inequality.
+
+    Each assertion names one jurisdiction rather than the whole set, so a
+    third blockless row does not touch this test.
+    """
+    assert vat_absence("US") == VAT_ABSENT_BY_LAW
+    assert vat_absence("BR") == VAT_ABSENT_NOT_MODELLED
+    assert vat_absence("US") != vat_absence("BR")
+
+
+def test_asking_why_a_block_is_missing_from_a_jurisdiction_that_has_one_raises() -> None:
+    """GB has a VAT block, so the question does not apply to it."""
+    with pytest.raises(TaxEngineError, match="has a VAT/GST block"):
+        vat_absence("GB")
+
+
+def test_a_well_formed_synthetic_table_still_loads(tmp_path: Path) -> None:
+    """The control for the three refusals below.
+
+    Without it, a loader that rejected every table would pass all three and
+    the suite would report a working guard while nothing could load at all.
+    """
+    with _table_on_disk(tmp_path, _well_formed()):
+        tax_engine.reload_tax_table()
+        assert vat_absence("US") == VAT_ABSENT_BY_LAW
+
+
+def test_a_blockless_jurisdiction_that_says_nothing_is_refused_at_load(tmp_path: Path) -> None:
+    """The row somebody adds next year, which is what the guard is for."""
+    table = _well_formed()
+    del table["jurisdictions"]["US"][VAT_ABSENCE_KEY]
+    with _table_on_disk(tmp_path, table), pytest.raises(TaxEngineError, match="does not say why"):
+        tax_engine.reload_tax_table()
+
+
+@pytest.mark.parametrize("value", ["partial", "mostly", "", "BY_LAW", True])
+def test_a_marker_outside_the_permitted_pair_is_refused_at_load(tmp_path: Path, value: object) -> None:
+    """``partial`` is the specific one to keep out, and it is first for a reason.
+
+    It answers a different question from the one the field asks. The field
+    asks where the gap lives, which has two answers; ``partial`` says how
+    completely something is modelled, which is a degree, and no caller can
+    derive a provenance from a degree. ``BY_LAW`` is here because a value that
+    differs only in case is the near-miss a set membership test catches and a
+    truthiness check does not.
+    """
+    table = _well_formed()
+    table["jurisdictions"]["US"][VAT_ABSENCE_KEY] = value
+    with _table_on_disk(tmp_path, table), pytest.raises(TaxEngineError, match="not one of"):
+        tax_engine.reload_tax_table()
+
+
+def test_a_jurisdiction_with_a_block_may_not_also_declare_the_key(tmp_path: Path) -> None:
+    """The contradiction, in the family the provenance type refuses."""
+    table = _well_formed()
+    table["jurisdictions"]["GB"][VAT_ABSENCE_KEY] = VAT_ABSENT_BY_LAW
+    with _table_on_disk(tmp_path, table), pytest.raises(TaxEngineError, match="also declares"):
+        tax_engine.reload_tax_table()
+
+
+def test_a_refused_table_does_not_replace_the_good_one_already_cached(tmp_path: Path) -> None:
+    """The loader validates before it caches, and this is that claim under test.
+
+    A guard that raised *after* assigning would be worse than no guard: it
+    would record the refusal and then leave the refused table behind for the
+    next caller to read as though it had passed. The refusal tests above all
+    end at the exception and would not notice.
+
+    BR is the probe because it is in the shipped table and not in the
+    synthetic one, so a poisoned cache cannot answer for it at all.
+    """
+    table = _well_formed()
+    del table["jurisdictions"]["US"][VAT_ABSENCE_KEY]
+    with _table_on_disk(tmp_path, table):
+        with pytest.raises(TaxEngineError):
+            tax_engine.reload_tax_table()
+        assert vat_absence("BR") == VAT_ABSENT_NOT_MODELLED
+
+
+# ── 8d. The quote says how its VAT figure was arrived at ───────────────
+
+
+def _quote(jurisdiction: str, rate_class: str = "standard") -> dict[str, Any]:
+    """A quote for a 100k contract, with whatever else that jurisdiction needs."""
+    return compute_total_taxes_for_contract(
+        {"net": Decimal("100000"), "currency": "USD"},
+        jurisdiction,
+        vat_rate_class=rate_class,
+        region_subcode=_SUBCODE.get(jurisdiction),
+        emirate="dubai" if jurisdiction == "AE" else None,
+    )
+
+
+def test_three_quotes_with_the_same_vat_amount_do_not_have_the_same_provenance() -> None:
+    """The defect this field exists to close, stated as a test.
+
+    A zero-rated first sale in the UAE, a US quote, and a Brazilian quote all
+    put the same bytes in ``vat``. One is a rate of zero that a real row
+    declared, one is a jurisdiction that levies no VAT at all, and one is a
+    jurisdiction whose indirect taxes this table does not carry. Only the first
+    two are safe to add to a total.
+
+    Both halves are asserted. The amounts being equal is what makes the field
+    necessary, and without that assertion a reader cannot tell whether the
+    sources differ because the situations differ or because the amounts do.
+    """
+    ae = _quote("AE", rate_class="zero_rated")
+    us = _quote("US")
+    br = _quote("BR")
+
+    # The amount cannot discriminate. That is the whole problem.
+    assert ae["vat"] == us["vat"] == br["vat"] == Decimal("0.00")
+
+    sources = [q["vat_provenance"].source for q in (ae, us, br)]
+    # Pairwise distinct, asserted as a set rather than three equality checks:
+    # checking each one against its expected value individually stays green if
+    # two of them later collapse onto a single source, which is the regression
+    # this test is here to catch.
+    assert len(set(sources)) == 3, f"three different situations, sources {sources}"
+    assert sources == [Source.DECLARED, Source.FALLBACK, Source.UNAVAILABLE]
+
+
+def test_the_two_absences_differ_in_whether_the_figure_may_be_used() -> None:
+    """``usable`` is the question a caller summing a total actually has.
+
+    The US zero is an answer: no VAT is levied, so nothing is missing from a
+    total that adds it. The Brazilian zero is the absence of an answer, and a
+    total that adds it understates itself. ``answered`` is False for both,
+    correctly, because neither found a row of its own; that is why it is the
+    wrong field to sum on and ``usable`` is the right one.
+    """
+    us = _quote("US")["vat_provenance"]
+    br = _quote("BR")["vat_provenance"]
+
+    assert us.usable is True
+    assert br.usable is False
+    assert us.answered is False
+    assert br.answered is False
+
+
+def test_the_by_law_token_names_what_answered_and_the_other_names_nothing() -> None:
+    """A stand-in token that would also be true of Brazil would be too weak.
+
+    ``app.core.provenance`` requires the token to name the thing that answered
+    rather than the slot it fills, and rejects one that would be equally true
+    of a different stand-in. ``NO_VAT_IN_LAW`` is false of Brazil, which levies
+    indirect taxes that this table simply does not carry, so it discriminates.
+    A token describing the table rather than the law, which is what the older
+    comment in the summariser said, would have covered both rows.
+
+    Brazil carries no token at all, and that is the type's doing rather than a
+    style choice: an unavailable with a ``used`` value raises, because nothing
+    stood in.
+    """
+    us_quote = _quote("US")
+    us = us_quote["vat_provenance"]
+    br = _quote("BR")["vat_provenance"]
+
+    assert us.axis == br.axis == VAT_AXIS
+    assert us.used == VAT_STANDIN_NO_VAT_IN_LAW
+    assert br.used == ""
+    # The requested side is the jurisdiction as the quote itself reports it, so
+    # the two fields of one response cannot disagree about what was asked.
+    # Both read off the SAME quote. Two separate calls would stay green even if
+    # these two fields were computed from different expressions, which is the
+    # only disagreement worth pinning here.
+    assert us.requested == us_quote["jurisdiction"] == "US"
+
+
+def test_a_jurisdiction_with_a_rate_declares_it() -> None:
+    """The control. Without it the three tests above are satisfied by a
+    function that never returns DECLARED at all."""
+    gb = _quote("GB")["vat_provenance"]
+
+    assert gb.source is Source.DECLARED
+    assert gb.answered is True
+    assert gb.requested == gb.used == "GB"
+
+
+def test_the_provenance_survives_the_response_model_and_its_json() -> None:
+    """The engine emitting it and the endpoint dropping it would both be green.
+
+    The router builds this with ``model_validate`` over the engine's dict, so
+    the field travels only as long as the schema declares it. Asserted through
+    the JSON rather than the model, because that is what a client receives.
+    """
+    payload = ContractTaxQuote.model_validate(_quote("BR")).model_dump(mode="json")
+
+    assert payload["vat_provenance"]["source"] == Source.UNAVAILABLE.value
+    assert payload["vat_provenance"]["axis"] == VAT_AXIS
+    # Two decimal places, not "0": the money serialiser keeps the quantum, so
+    # the placeholder is indistinguishable on the wire from a real zero rate.
+    # That is the point of the field beside it.
+    assert payload["vat"] == "0.00"
+    # The ContractTaxQuote docstring makes this claim about all three zero
+    # paths, so all three are measured. Pinning only the one this test happens
+    # to build would leave the other two thirds of the sentence unchecked.
+    alike = {
+        code: ContractTaxQuote.model_validate(quote).model_dump(mode="json")["vat"]
+        for code, quote in (("AE", _quote("AE", rate_class="zero_rated")), ("US", _quote("US")))
+    }
+    assert alike == {"AE": "0.00", "US": "0.00"}
+    # answered and usable are properties, so they are deliberately NOT on the
+    # wire; a client derives them from source. Pinned because adding them later
+    # would be an API change made by accident.
+    assert "usable" not in payload["vat_provenance"]
+    assert "answered" not in payload["vat_provenance"]
+
+
+def test_grand_total_still_adds_a_vat_it_has_just_called_unusable() -> None:
+    """A known cost, pinned so that changing it is a decision rather than a drift.
+
+    Marking the axis unusable does not stop the arithmetic, and deliberately so:
+    ``usable`` labels the answer, and moving an amount because a label makes it
+    look wrong would be choosing behaviour for a consequence. So a Brazilian
+    grand total is net plus the other taxes plus a placeholder zero.
+
+    That was equally true before this field existed; the field is what makes it
+    visible. Fixing it means deciding what a quote for an unmodelled
+    jurisdiction should say, which is a breakdown question and belongs with the
+    zero-rated line work, not here.
+    """
+    br = _quote("BR")
+
+    assert br["vat_provenance"].usable is False
+    assert br["grand_total"] == br["net"] + br["vat"] + br["subtotal_taxes"]
+    assert br["vat"] == Decimal("0.00")
 
 
 # ── 9. Unsupported jurisdiction handling ────────────────────────────────

@@ -57,6 +57,44 @@ export function unitGlyph(token: string): string {
 }
 
 /**
+ * Locale-specific trade codes that replace the canonical token in dense
+ * cells. German LVs write a lump-sum position as "psch" (pauschal) — the
+ * GAEB-DA short code — so showing the internal "lsum" token reads as a bug
+ * to a Kalkulator. Only display changes: storage stays canonical.
+ */
+const LOCALE_UNIT_CODES: Record<string, Record<string, string>> = {
+  // "Stk" is the trade short form the app's own German strings promise
+  // ("Standard-m, m², m³, kg, Stk"); a raw "pcs" next to German labels
+  // reads as untranslated UI (audit case-2 K-14).
+  de: { lsum: 'psch', ls: 'psch', lump_sum: 'psch', pcs: 'Stk', ea: 'Stk' },
+};
+
+/**
+ * Locale-aware short unit code for dense grid cells and badges.
+ *
+ * Applies the display glyph (`m2` -> `m²`, `m3` -> `m³`) and, on top of it,
+ * the locale's trade spelling for tokens that have one (de: `lsum` ->
+ * `psch`). Unknown tokens pass through unchanged; the stored value is never
+ * modified.
+ *
+ * @param token Canonical unit token as stored (`m2`, `lsum`, …).
+ * @param lang  Active i18next language (e.g. `de`, `de-AT`, `en`).
+ */
+export function localizedUnitCode(token: string, lang: string): string {
+  if (!token) return '';
+  const trimmed = token.trim();
+  // Compound trade units ("100 m2", "10 m3" — common in DACH cost bases):
+  // keep the multiplier, localize the unit part ("100 m2" -> "100 m²").
+  const compound = trimmed.match(/^(\d+(?:[.,]\d+)?)\s*([^\d\s].*)$/);
+  if (compound?.[1] && compound[2]) {
+    return `${compound[1]} ${localizedUnitCode(compound[2], lang)}`;
+  }
+  const localeMap = LOCALE_UNIT_CODES[(lang || '').split('-')[0] ?? ''];
+  const localized = localeMap?.[trimmed.toLowerCase()];
+  return localized ?? getDisplayUnit(trimmed);
+}
+
+/**
  * Friendly, localized label for a unit token, e.g. "m² · Square meter".
  *
  * The glyph is always placed first so that even when a locale has no

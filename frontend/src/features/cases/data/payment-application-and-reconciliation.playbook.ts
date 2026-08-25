@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 110,
   category: "commercial",
   companyTypes: ["general-contractor", "subcontractor", "cost-consultant"],
+  roles: ["quantity-surveyor", "commercial-manager", "accountant"],
   icon: "Receipt",
   titleKey: "cases.payment_application_and_reconciliation.title",
   titleDefault: "Payment application and reconciliation",
@@ -154,7 +155,7 @@ const playbook: Playbook = {
       whyKey: "cases.payment_application_and_reconciliation.step.reconcile.why",
       whyDefault:
         "A few percent shaved off each valuation vanishes quietly and never returns by itself. Reconciling every cycle, while the backup is still to hand, is how that money finds its way home.",
-      moduleLabel: "Reconciliation",
+      moduleLabel: "Event Reconciliation",
       moduleLabelKey: "nav.reconciliation",
       to: "/projects/:projectId/reconciliation",
     },

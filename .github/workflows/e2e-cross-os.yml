@@ -35,7 +35,19 @@ jobs:
   e2e:
     name: ${{ matrix.os }} / ${{ matrix.browser }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # The macOS runners are close enough to this ceiling that the cap, not the
+    # tests, was deciding the result. Measured over the nightlies to 2026-08-14:
+    # macos/webkit took 39m28s, 41m01s and 43m31s on runs that passed, so 2026-08-13
+    # cleared the old 45 minute cap with 89 seconds to spare. When it did not clear
+    # it the job was killed at 45m49s, and on 2026-08-12 all three macOS engines
+    # went together at 45m25s, 45m32s and 45m36s. A timeout is reported as
+    # "cancelled", which is an ABSENT result rather than a pass or a fail, so those
+    # nights the lane said nothing at all about whether the product works on macOS.
+    # Linux and Windows are not close to this: on 2026-08-14 ubuntu/chromium
+    # finished in 22m36s and windows/firefox in 34m23s. The cap only decides when a
+    # hung job is killed and reserves nothing, so a generous one costs a nightly
+    # lane nothing and buys back the signal.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:

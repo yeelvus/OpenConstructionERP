@@ -58,6 +58,11 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, build_provenance_tag, desktop_mode, get_settings
+from app.core.demo_read_only import (
+    DemoReadOnlyError,
+    demo_read_only_guard,
+    read_only_refusal,
+)
 from app.core.deployment_posture import build_data_security_posture
 from app.core.module_loader import module_loader
 from app.core.self_upgrade import (
@@ -65,11 +70,80 @@ from app.core.self_upgrade import (
     claim_upgrade,
     current_upgrade,
     is_frozen_build,
+    repair_hint,
     run_upgrade,
 )
 from app.dependencies import RequireRole, get_current_user_id, rls_request_context
 
 logger = logging.getLogger(__name__)
+
+# (alembic.ini path, head revision) for this process, filled on first use by
+# ``_expected_alembic_head``. The path is part of the key so a test pointed at a
+# different tree is never answered from the previous one.
+_ALEMBIC_HEAD_CACHE: tuple[str, str | None] | None = None
+
+
+def alembic_head_state(expected: str | None, actual: str | None) -> bool | None:
+    """Is the database at the migration head? ``None`` when that cannot be told.
+
+    ``expected`` is the head the installed migration tree declares and ``actual``
+    is the revision recorded in the database. Either can be absent, and absence
+    is not disagreement:
+
+    * ``expected`` is ``None`` where no migration tree shipped. The desktop
+      bundle is the live case: it carries neither ``alembic.ini`` nor the
+      script directory, on purpose (see
+      ``tests/unit/test_desktop_spec_ships_wheel_data.py``).
+    * ``actual`` is ``None`` on a database with no ``alembic_version`` row. That
+      is every install built by ``create_all`` before the boot-time stamp
+      existed, and every install where the stamp could not be written. The
+      columns are physically present and the schema is current; nobody wrote
+      down that it is.
+
+    Comparing the two raw values with ``==`` answers ``False`` for both of those,
+    which is the bug this replaces. A permanent ``False`` on a healthy install is
+    worse than no signal at all, because it is a signal that says the opposite of
+    the truth and consumers act on it. ``None`` says "I could not tell", which is
+    what the caller has to be able to distinguish before it decides anything.
+    """
+    if expected is None or actual is None:
+        return None
+    return expected == actual
+
+
+def _expected_alembic_head(ini_path: os.PathLike[str] | str) -> str | None:
+    """The head revision the installed migration tree declares, parsed once.
+
+    The tree cannot change under a running process: it is installed inside the
+    package next to this file, and a new one only arrives with a new process.
+    Repeating the parse is not cheap either, since
+    ``ScriptDirectory.from_config`` opens and compiles every revision file and
+    there are over three hundred of them.
+
+    That mattered because of who calls it. Health is polled on a timer by the
+    desktop shell, by container healthchecks and by whatever watches the
+    deployment, so this ran on a loop rather than on a rare diagnostic path.
+
+    The database revision it gets compared against is deliberately not cached.
+    That one does change while the process runs, and caching it would turn "has
+    the schema fallen behind" into "was it behind when this process started",
+    which is a different and much less useful question.
+    """
+    global _ALEMBIC_HEAD_CACHE
+
+    key = str(ini_path)
+    cached = _ALEMBIC_HEAD_CACHE
+    if cached is not None and cached[0] == key:
+        return cached[1]
+
+    from alembic.config import Config as _AlembicConfig
+    from alembic.script import ScriptDirectory as _ScriptDir
+
+    head = _ScriptDir.from_config(_AlembicConfig(key)).get_current_head()
+    # Only reached when the parse succeeded. A failure is left uncached so the
+    # next call tries again instead of reporting a permanent unknown.
+    _ALEMBIC_HEAD_CACHE = (key, head)
+    return head
 
 
 def _database_target() -> str:
@@ -211,10 +285,13 @@ def _init_vector_db() -> None:
                 error,
             )
         else:
+            # lancedb is in requirements-desktop.lock, so a bundle whose store
+            # will not start is damaged rather than lean: the default repair
+            # wording, not DESKTOP_NO_EXTRA.
             logger.warning(
-                "LanceDB init failed (%s). Semantic search is disabled. "
-                "Install the embedded vector backend with: pip install openconstructionerp[vector]",
+                "LanceDB init failed (%s). Semantic search is disabled. %s",
                 error,
+                repair_hint("Install the embedded vector backend with: pip install openconstructionerp[vector]"),
             )
     except Exception as exc:  # noqa: BLE001 - intentional: never fatal
         # Includes ImportError (missing optional extras), native crashes
@@ -812,10 +889,10 @@ async def _seed_demo_account() -> None:
         #     project(s) so the workspace reflects the partner's region,
         #     currency and classification - nothing else.
         #
-        #   GENERIC MODE (no pack): seed the rich nine-project showcase - the
-        #     eight country projects in SHOWCASE_DEMO_IDS plus the flagship
-        #     reference project installed further below - so a fresh, vanilla
-        #     install lands a fully worked-out, globe-spanning portfolio.
+        #   GENERIC MODE (no pack): seed the rich showcase - the country
+        #     projects in SHOWCASE_DEMO_IDS plus the flagship reference
+        #     project installed further below - so a fresh, vanilla install
+        #     lands a fully worked-out, globe-spanning portfolio.
         #
         # Both paths install each project in its own try/except so one failure
         # never aborts the rest of the seed.
@@ -865,6 +942,7 @@ async def _seed_demo_account() -> None:
                             logger.warning(
                                 "Failed to install partner-pack demo %s (skipping)",
                                 demo_id,
+                                exc_info=True,
                             )
                 if not pack_ids:
                     logger.info(
@@ -874,8 +952,8 @@ async def _seed_demo_account() -> None:
             else:
                 # GENERIC MODE - seed the rich showcase by default. Tests ask for
                 # a fast startup (OE_TEST_FAST_STARTUP), and operators can opt out
-                # with OE_SKIP_SHOWCASE=1; both skip the eight-project loop. The
-                # flagship below still installs and provides the ninth project.
+                # with OE_SKIP_SHOWCASE=1; both skip the showcase loop. The
+                # flagship below still installs alongside it.
                 _fast_startup = os.environ.get("OE_TEST_FAST_STARTUP", "").lower() in (
                     "1",
                     "true",
@@ -914,9 +992,15 @@ async def _seed_demo_account() -> None:
                                 )
                             except Exception:
                                 await sc_session.rollback()
+                                # ``exc_info`` because this failure is intermittent: a run
+                                # where seven of the twelve skipped left twelve identical
+                                # causeless lines, and the cause had to be reconstructed
+                                # from a second boot. Every other non-fatal skip below
+                                # already logs its traceback.
                                 logger.warning(
                                     "Failed to install showcase demo %s (skipping)",
                                     demo_id,
+                                    exc_info=True,
                                 )
 
         # Flagship "Residential House" reference project - an ORM installer
@@ -1105,7 +1189,11 @@ def create_app() -> FastAPI:
         # tenant-owned tables in PostgreSQL. Anonymous callers bind no tenant.
         # Inert until OE_RLS_ENFORCE is enabled and requests connect through the
         # non-superuser role.
-        dependencies=[Depends(rls_request_context)],
+        # Read-only demo guard first, and deliberately ahead of the RLS context:
+        # a refused request must not pay for token decoding or a tenant lookup,
+        # and an anonymous caller must get the 403 rather than a 401. Inert
+        # unless OE_DEMO_READ_ONLY is on - see app.core.demo_read_only.
+        dependencies=[Depends(demo_read_only_guard), Depends(rls_request_context)],
         # NOTE: do NOT set default_response_class=ORJSONResponse here.
         # FastAPI's own deprecation warning explains why: "FastAPI now
         # serializes data directly to JSON bytes via Pydantic when a
@@ -1117,6 +1205,41 @@ def create_app() -> FastAPI:
         # FastAPI's default Pydantic-direct path; orjson is still used
         # by handlers that explicitly opt in.
     )
+
+    # ── Boot-time schema heal verdict, scoped to this application ────────
+    # Three states, and they are three: ``False`` healed, ``True`` failed,
+    # ``None`` never ran. The last one is not a corner case. The heal lives
+    # inside ``if "postgresql" in settings.database_url`` in the startup below,
+    # so a deployment whose ``DATABASE_URL`` is not PostgreSQL never reaches it
+    # and stays at this value for its whole life. Reporting that as ``False``
+    # says "healed fine" about a heal that never happened, which is exactly the
+    # mistake ``alembic_head_state`` exists to stop making one field away in the
+    # same health payload.
+    #
+    # It is also the value between building the application and startup writing
+    # a verdict. That window is not visible to an HTTP caller - the server does
+    # not accept requests until the lifespan startup returns, and a startup that
+    # raises takes the process down rather than serving - but it is visible to
+    # anything holding the application object directly, an in-process ASGI test
+    # client included.
+    #
+    # The signal exists because the heal is deliberately non-fatal, and a
+    # non-fatal failure that only reaches the log is invisible on the deployment
+    # it actually ruins: an external PostgreSQL whose role has no DDL rights.
+    # There the heal cannot add a single column, the application starts and
+    # looks fine, and the first read of any table that gained a column since
+    # that database was created answers 500 with an undefined-column error.
+    #
+    # ``schema_heal_error`` holds the cause for the boot log and for an operator
+    # with access to this process. It is deliberately NOT published by
+    # ``/api/health``; see that endpoint's docstring for why.
+    #
+    # Both live on ``app.state`` rather than in a module global because a module
+    # global outlives the application it describes: in one process that builds a
+    # second application - which the test suite does routinely - that second one
+    # would inherit the first one's verdict about a database it never opened.
+    app.state.schema_heal_failed = None
+    app.state.schema_heal_error = None
 
     # ── OpenAPI origin extension ─────────────────────────────────────────
     # Stamp an x- vendor extension into info{} so any fork that exposes
@@ -1166,10 +1289,11 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "HEAD", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "Accept", "Accept-Language"],
         # A list route that pages returns the number of matches behind the page
-        # in X-Total-Count. A browser hides every response header a server does
-        # not name here, so without this the count reaches a frontend served
-        # from another origin and cannot be read there.
-        expose_headers=["X-Total-Count"],
+        # in X-Total-Count, and a BCF export returns how many topics went into
+        # the archive in X-BCF-Topic-Count. A browser hides every response
+        # header a server does not name here, so without this the count reaches
+        # a frontend served from another origin and cannot be read there.
+        expose_headers=["X-Total-Count", "X-BCF-Topic-Count"],
     )
 
     # ── API Version header ──────────────────────────────────────────────
@@ -1309,6 +1433,18 @@ def create_app() -> FastAPI:
 
     app.add_middleware(AcceptLanguageMiddleware)
 
+    # ── Response compression ──────────────────────────────────────────────
+    # Every screen pulls a 2.44 MB application bundle and a 2.21 MB locale
+    # chunk before it draws, and both went over the wire uncompressed although
+    # the browser asked for gzip each time. That is the whole of the four
+    # seconds the case audits measured on the snag register and the bill
+    # editor; the endpoints behind those screens answer in under a tenth of a
+    # second. Text only, and only when the length is known, so exports and
+    # photo bytes are passed through rather than re-compressed.
+    from app.middleware.compression import CompressionMiddleware
+
+    app.add_middleware(CompressionMiddleware)
+
     # ── Request-body-size backstop (added last -> outermost -> runs first) ─
     # Coarse global ceiling above every per-endpoint upload cap. Rejects an
     # absurdly large body before any other middleware or endpoint reads it, so
@@ -1325,8 +1461,50 @@ def create_app() -> FastAPI:
 
     from app.middleware.request_id import get_request_id
 
+    # ── Read-only demo: translate a refused write into the 403 contract ──
+    # Layer 1 raises the HTTPException itself; this is for layer 2, which fires
+    # from inside SQLAlchemy's cursor execution. Two handlers, because the
+    # driver may re-raise the error wrapped in a StatementError: the direct one
+    # below catches the plain case, and the global handler further down walks
+    # the __cause__ / __context__ chain for the wrapped one. Both answer with
+    # exactly the same body, so a client cannot tell which layer refused.
+    def _demo_read_only_in_chain(exc: BaseException) -> DemoReadOnlyError | None:
+        seen: set[int] = set()
+        cursor: BaseException | None = exc
+        while cursor is not None and id(cursor) not in seen:
+            if isinstance(cursor, DemoReadOnlyError):
+                return cursor
+            seen.add(id(cursor))
+            cursor = cursor.__cause__ or cursor.__context__
+        return None
+
+    def _demo_read_only_response() -> JSONResponse:
+        refusal = read_only_refusal()
+        return JSONResponse(status_code=refusal.status_code, content={"detail": refusal.detail})
+
+    @app.exception_handler(DemoReadOnlyError)
+    async def demo_read_only_handler(request: Request, exc: DemoReadOnlyError) -> JSONResponse:
+        logger.info(
+            "demo read-only: %s %s refused at the database (%s on %s)",
+            request.method,
+            request.url.path,
+            exc.kind,
+            exc.table or "an unnamed target",
+        )
+        return _demo_read_only_response()
+
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        demo_refusal = _demo_read_only_in_chain(exc)
+        if demo_refusal is not None:
+            logger.info(
+                "demo read-only: %s %s refused at the database (%s on %s)",
+                request.method,
+                request.url.path,
+                demo_refusal.kind,
+                demo_refusal.table or "an unnamed target",
+            )
+            return _demo_read_only_response()
         # Surface the SAME correlation id the RequestIDMiddleware already
         # assigned (and echoed on the X-Request-ID response header) - do NOT
         # mint a new one. A client / support engineer can quote this id and we
@@ -1422,6 +1600,14 @@ def create_app() -> FastAPI:
 
     app.include_router(desktop_auth_router, prefix="/api/v1/auth")
 
+    # The desktop launcher's clean-stop request. Mounted at its full path (no
+    # prefix) because the launcher has to be able to call it without knowing
+    # anything about API versions, and refused for everyone else by the guards
+    # in the module itself - desktop mode, loopback, and the launcher's token.
+    from app.core.desktop_shutdown import router as desktop_shutdown_router
+
+    app.include_router(desktop_shutdown_router)
+
     # Workspace white-label branding. GET is public (the login page reads it
     # before sign-in so invited users see the workspace brand); PUT/DELETE are
     # admin-only. Persisted to a JSON file in the data dir, so no migration.
@@ -1482,6 +1668,26 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health", tags=["System"])
     async def health_check() -> dict[str, Any]:
+        """Whether this process is running and fit to be used.
+
+        This endpoint is UNAUTHENTICATED on purpose. The desktop shell polls it
+        with no Authorization header to decide whether it may attach to a
+        backend that is already running rather than start a second one against
+        the same data directory, and container healthchecks want the same answer
+        on the same terms. So everything here is public, and nothing here may
+        carry text describing the internals of the deployment.
+
+        That is why the schema-heal signal below is a boolean and only a
+        boolean. What it reports is a database exception, and SQLAlchemy DBAPI
+        errors stringify with the statement appended - ``[SQL: ALTER TABLE
+        ...]``, frequently ``[parameters: ...]`` too - so putting the message in
+        this payload would hand an anonymous caller the schema and the statement
+        text of the deployment it can reach. The cause is written in full to the
+        boot log, where the operator of that machine is, and is kept on
+        ``app.state.schema_heal_error``. Should it ever be wanted over HTTP it
+        belongs behind ``RequireRole("admin")``, beside
+        ``/api/system/upgrade/status``, and not here.
+        """
         import os as _os
         from pathlib import Path as _Path
 
@@ -1515,26 +1721,29 @@ def create_app() -> FastAPI:
         # will start raising OperationalError as soon as a request hits a
         # new column. ``None`` if the check itself blew up (no alembic.ini
         # nearby, broken script tree, etc.) - visible but non-fatal.
+        #
+        # Three answers, and they are three: ``true`` at head, ``false``
+        # behind it, ``null`` when this deployment cannot tell. Only a
+        # determinable ``false`` degrades the status. See
+        # :func:`alembic_head_state` for why an unstamped database is not a
+        # mismatch and must never be reported as one.
         try:
-            from alembic.config import Config as _AlembicConfig
             from alembic.runtime.migration import MigrationContext as _MigCtx
-            from alembic.script import ScriptDirectory as _ScriptDir
             from sqlalchemy import text as _text  # noqa: F401
 
             from app.database import engine as _engine
 
             _ini = _Path(__file__).resolve().parent.parent / "alembic.ini"
             if _ini.is_file():
-                _cfg = _AlembicConfig(str(_ini))
-                _script = _ScriptDir.from_config(_cfg)
-                _expected = _script.get_current_head()
+                _expected = _expected_alembic_head(_ini)
 
                 async with _engine.connect() as _conn:
                     _actual = await _conn.run_sync(
                         lambda sync_conn: _MigCtx.configure(sync_conn).get_current_revision()
                     )
-                result["alembic_head_matches"] = _expected == _actual
-                if _expected != _actual:
+                _matches = alembic_head_state(_expected, _actual)
+                result["alembic_head_matches"] = _matches
+                if _matches is False:
                     result["status"] = "degraded"
             else:
                 result["alembic_head_matches"] = None
@@ -1542,45 +1751,100 @@ def create_app() -> FastAPI:
             logger.warning("Alembic head check failed: %s", _exc)
             result["alembic_head_matches"] = None
 
-        # Frontend dist presence - the wheel ships ``app/_frontend_dist/``,
-        # a repo checkout serves ``frontend/dist``; a missing ``index.html``
-        # in BOTH locations means the SPA shell will 404 and users see a
-        # blank page even though /api endpoints work. Mirror the lookup
-        # order of ``cli_static.get_frontend_dir`` so dev mode is not
-        # falsely reported as degraded.
-        try:
-            from app.cli_static import get_frontend_dir
+        # Did the boot-time schema heal finish? This is the one signal an
+        # external-PostgreSQL operator has that their role cannot issue DDL.
+        # Without it that install runs with a schema frozen at whichever release
+        # created the database, and reports itself healthy while every list
+        # endpoint touching a newer column answers 500. The heal is non-fatal on
+        # purpose and stays that way; what changes here is that its failure is
+        # now sayable rather than only loggable.
+        #
+        # Three answers, for the same reason the head check above has three:
+        # ``true`` failed, ``false`` healed, ``null`` never ran - which over
+        # HTTP means a deployment whose database is not PostgreSQL. The key is
+        # always present so a monitor can tell a backend that says "I cannot
+        # tell" from one built before the field existed. Only a determinable
+        # failure degrades the status; ``null`` is not a fault. The polarity is
+        # the inverse of ``alembic_head_matches`` - here ``true`` is the bad
+        # news - which is why this is read with ``is True`` and not as a truth
+        # value. The cause is not published; see this endpoint's docstring.
+        _heal_failed = getattr(app.state, "schema_heal_failed", None)
+        result["schema_heal_failed"] = _heal_failed
+        if _heal_failed is True:
+            result["status"] = "degraded"
 
-            try:
-                get_frontend_dir()
-                result["frontend_dist_present"] = True
-            except FileNotFoundError:
-                result["frontend_dist_present"] = False
+        # Frontend dist presence. The flag must describe what THIS process
+        # serves, not what the disk holds right now: a process that started
+        # while dist was mid-rebuild mounted nothing and 404s every UI route
+        # even after the rebuild lands, and a mounted tree can lose its
+        # index.html to a later rebuild while a live directory probe still
+        # looks green. Fall back to the on-disk probe only in API-only mode,
+        # where "present" can only mean "a servable build exists for the
+        # next start".
+        try:
+            from app.cli_static import get_frontend_dir, mounted_frontend_intact
+
+            _intact = mounted_frontend_intact()
+            if _intact is None:
+                try:
+                    get_frontend_dir()
+                    _intact = True
+                except FileNotFoundError:
+                    _intact = False
+            result["frontend_dist_present"] = _intact
             if not result["frontend_dist_present"]:
                 result["status"] = "degraded"
         except Exception:
             result["frontend_dist_present"] = False
             result["status"] = "degraded"
 
-        # Process memory (RSS) in MB - available on all platforms
+        # Process memory in MB, best-effort. Two different numbers live here and
+        # they are not interchangeable. getrusage reports ru_maxrss, the PEAK
+        # resident set since the process started, which never falls again: a demo
+        # seed pushes it into the gigabytes and it stays there for the life of the
+        # process, so on its own it reads as a gauge that can only climb. Current
+        # RSS is what this field is named after, so it is preferred wherever the
+        # platform will give it, and the peak is reported beside it under its own
+        # name rather than in its place.
+        current_mb = None
+        peak_mb = None
+
         try:
             import resource
 
             rss_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
             # macOS returns bytes, Linux returns KB
             if _os.uname().sysname == "Darwin":
-                result["memory_mb"] = round(rss_bytes / (1024 * 1024), 1)
+                peak_mb = round(rss_bytes / (1024 * 1024), 1)
             else:
-                result["memory_mb"] = round(rss_bytes / 1024, 1)
+                peak_mb = round(rss_bytes / 1024, 1)
+        except Exception:
+            pass  # No getrusage here, so no peak to report
+
+        try:
+            # Linux carries current RSS in /proc/self/statm, second field, in pages.
+            with open("/proc/self/statm") as statm:
+                resident_pages = int(statm.read().split()[1])
+            current_mb = round(resident_pages * _os.sysconf("SC_PAGE_SIZE") / (1024 * 1024), 1)
         except Exception:
             try:
-                # Windows / fallback via psutil if available
+                # Windows, and anywhere without /proc, if psutil happens to be
+                # installed. It is not a declared dependency, hence best-effort.
                 import psutil
 
                 proc = psutil.Process(_os.getpid())
-                result["memory_mb"] = round(proc.memory_info().rss / (1024 * 1024), 1)
+                current_mb = round(proc.memory_info().rss / (1024 * 1024), 1)
             except Exception:
                 pass  # Memory reporting is best-effort
+
+        # Fall back to the peak only when nothing can report the current figure,
+        # so the field keeps its old value rather than disappearing.
+        if current_mb is not None:
+            result["memory_mb"] = current_mb
+        elif peak_mb is not None:
+            result["memory_mb"] = peak_mb
+        if peak_mb is not None:
+            result["memory_peak_mb"] = peak_mb
 
         # Active thread count - best-effort
         try:
@@ -1836,6 +2100,17 @@ def create_app() -> FastAPI:
             out.append(int(num) if num else 0)
         return tuple(out)
 
+    def _same_version(a: str, b: str) -> bool:
+        """Whether two version strings name the same release.
+
+        The shorter side is zero-padded, so ``15.1`` and ``15.1.0`` compare
+        equal. They have to: one of these numbers is written by a git tag and
+        the other by a packaging tool, and neither owes the other its shape.
+        """
+        left, right = _semver_tuple(a), _semver_tuple(b)
+        width = max(len(left), len(right))
+        return left + (0,) * (width - len(left)) == right + (0,) * (width - len(right))
+
     @app.get("/api/system/version-check", tags=["System"])
     async def check_version() -> dict:
         """Return current vs latest published version.
@@ -1846,6 +2121,17 @@ def create_app() -> FastAPI:
         releases if PyPI is unreachable. Both lookups are cached on
         ``app.state`` for 4 hours so the settings panel can poll cheaply
         without burning the unauthenticated GitHub rate limit.
+
+        ``release_notes``, ``release_url``, ``published_at`` and ``assets``
+        are answered only when the GitHub release they were read from names
+        the same version as ``latest_version``. Two sources that can
+        legitimately be a release apart must not be spliced into one sentence.
+
+        ``assets`` lists the published installers as ``{name, url, size}`` so
+        a client can offer the one that fits the machine it is running on.
+        Matching is the caller's job, not this endpoint's: the desktop build
+        answers this route to any browser that reaches it, so the platform
+        this process runs on is not reliably the reader's.
         """
         import httpx
 
@@ -1858,9 +2144,13 @@ def create_app() -> FastAPI:
             return cached["data"]
 
         latest: str | None = None
-        release_url = f"https://github.com/{repo}/releases/latest"
-        release_notes = ""
-        published_at = ""
+        # Held apart from what we will publish until we know the release this
+        # metadata came from is the release we are going to name.
+        gh_tag = ""
+        gh_url = ""
+        gh_notes = ""
+        gh_published = ""
+        gh_assets: list[dict] = []
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -1881,16 +2171,55 @@ def create_app() -> FastAPI:
                 if gh.status_code == 200:
                     release = gh.json()
                     gh_tag = release.get("tag_name", "").lstrip("v")
+                    gh_url = release.get("html_url", "")
+                    gh_notes = (release.get("body") or "")[:500]
+                    gh_published = release.get("published_at", "")
+                    # The installers themselves. A reader on a desktop build
+                    # cannot pip-upgrade and has to fetch one by hand, and the
+                    # release page lists every platform at once, so naming the
+                    # file that fits the machine in front of them is the
+                    # difference between an action and a hunt. Only the three
+                    # fields that decide "which file, how big, from where" are
+                    # carried: the rest of a GitHub asset object is download
+                    # counters and uploader identity, which no caller reads.
+                    for asset in release.get("assets") or []:
+                        name = asset.get("name") or ""
+                        url = asset.get("browser_download_url") or ""
+                        if not name or not url:
+                            continue
+                        gh_assets.append({"name": name, "url": url, "size": int(asset.get("size") or 0)})
                     if not latest:
                         latest = gh_tag
-                    release_url = release.get("html_url", release_url)
-                    release_notes = (release.get("body") or "")[:500]
-                    published_at = release.get("published_at", "")
         except Exception:  # noqa: BLE001
             pass
 
         if not latest:
             latest = current
+
+        # The number and the notes have to describe the same release. PyPI is
+        # the source of truth for the number, and the reason it is - a hotfix
+        # publishes a wheel without a GitHub release object being created - is
+        # exactly the case where the newest release here describes an OLDER
+        # version than the one we are about to name. Pairing them files 15.0.0's
+        # notes under the heading "15.1.0 is available", and on a desktop build
+        # it sends the reader to a page that does not carry the build they were
+        # just told to install. So when they disagree we keep the number, drop
+        # what we cannot stand behind, and point at the release list, which is
+        # somewhere to go rather than somewhere wrong.
+        # The installers are gated here for the same reason and more sharply.
+        # Notes filed under the wrong heading mislead; an installer offered
+        # under the wrong heading is downloaded and run, and the reader ends up
+        # with the version they were just told to move off.
+        if gh_tag and _same_version(gh_tag, latest):
+            release_url = gh_url or f"https://github.com/{repo}/releases/latest"
+            release_notes = gh_notes
+            published_at = gh_published
+            assets = gh_assets
+        else:
+            release_url = f"https://github.com/{repo}/releases"
+            release_notes = ""
+            published_at = ""
+            assets = []
 
         update_available = _semver_tuple(latest) > _semver_tuple(current)
         # A frozen build has no pip to upgrade itself with, so advertising the
@@ -1903,9 +2232,19 @@ def create_app() -> FastAPI:
             "release_url": release_url,
             "release_notes": release_notes,
             "published_at": published_at,
+            # Every installer on the release, unfiltered. Which one fits is a
+            # question about the reader's machine, and this process is not
+            # standing on it: the desktop build serves this API to any browser
+            # that can reach the port, so a server-side match would answer for
+            # the wrong computer. The client picks.
+            "assets": assets,
             "self_upgrade_supported": not frozen,
-            "upgrade_command": (
-                "Download and run the latest installer" if frozen else "pip install --upgrade openconstructionerp"
+            # Both spellings kept exactly as they were; only the decision moves.
+            # This was the second hand-written copy of "which advice does this
+            # install understand", and a copy is how the wording drifts.
+            "upgrade_command": repair_hint(
+                "pip install --upgrade openconstructionerp",
+                "Download and run the latest installer",
             ),
         }
         setattr(app.state, cache_key, {"data": result, "checked_at": time.time()})
@@ -1990,6 +2329,28 @@ def create_app() -> FastAPI:
 
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade", target]
         if force:
+            # ``--force-reinstall`` does not stop at our own package. It
+            # reinstalls the whole dependency set, and that set contains
+            # pixeltable-pgserver, whose ``pginstall/bin/postgres`` binary is
+            # the process serving this very request. Replacing it under a live
+            # postmaster is a torn install on Windows, where the running image
+            # is locked and pip fails halfway, and a mixed one everywhere else.
+            #
+            # The plain upgrade above is left alone: it only moves what changed,
+            # and the ordinary case moves pure Python.
+            from app.core import embedded_pg as _embedded_pg
+
+            if _embedded_pg.is_running():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "A forced reinstall would replace the PostgreSQL binaries this "
+                        "application is currently running from. Stop the application "
+                        "first and run `pip install --force-reinstall --upgrade "
+                        "openconstructionerp` from your shell, or upgrade without the "
+                        "force option, which does not touch them."
+                    ),
+                )
             cmd.insert(-1, "--force-reinstall")
 
         job, started = claim_upgrade(cmd, settings.app_version)
@@ -2561,7 +2922,7 @@ def create_app() -> FastAPI:
             if "localhost" in settings.database_url:
                 logger.warning("DATABASE_URL points to localhost in production")
 
-        # Load translations (24 languages)
+        # Load translations (28 languages)
         _section("i18n")
         from app.core.i18n import load_translations
 
@@ -2666,12 +3027,88 @@ def create_app() -> FastAPI:
 
             from app.core.postgres_migrator import postgres_auto_migrate
 
+            # Nothing in this codebase ever runs ``alembic upgrade``, here or
+            # anywhere else, and that is a decision rather than an oversight.
+            # The schema is moved by the heal below (ADD COLUMN / CREATE INDEX
+            # IF NOT EXISTS) plus create_all (whole missing tables), which
+            # covers additive revisions and covers nothing else: a NOT NULL, a
+            # rename, a type change and a backfill all pass straight through it.
+            #
+            # Running the real upgrade at startup would not fix that, because of
+            # what stamp_head_if_unstamped does further down. Every install this
+            # boot path has ever built is recorded at head the moment create_all
+            # finishes, without the revisions in between having executed - and
+            # several of them say in their own docstrings that they MUST be run
+            # rather than merely stamped (v3237, v3245, v3246, v3247). So
+            # ``alembic upgrade head`` on those databases is a no-op that
+            # replays nothing, which is exactly the population that needs it,
+            # while on the databases it would touch it is an unattended schema
+            # rewrite during startup with no operator watching. It is enabled by
+            # neither default. What is fixed instead is the visibility: the
+            # failure below is now recorded where a human reads it.
+            #
+            # Both exits of this try/except record a verdict, and only these two
+            # do. A run that never gets here because its database is not
+            # PostgreSQL keeps the ``None`` this application was built with,
+            # which is what lets /api/health say "never ran" instead of "healed
+            # fine".
             try:
                 migrated = await postgres_auto_migrate(engine, Base)
                 if migrated:
                     logger.info("PostgreSQL auto-migration: %d schema objects (columns + indexes) added", migrated)
+                app.state.schema_heal_failed = False
+                app.state.schema_heal_error = None
+            except Exception as exc:
+                _heal_error = f"{type(exc).__name__}: {exc}"
+                app.state.schema_heal_failed = True
+                app.state.schema_heal_error = _heal_error
+                # Deliberately louder than the warning this replaces, and it
+                # names the cause inline rather than leaving it in a traceback.
+                # An external database whose role cannot issue DDL fails here
+                # every single boot and nowhere else, and the operator meets the
+                # consequence as an undefined-column 500 in an unrelated module.
+                logger.error(
+                    "PostgreSQL schema heal FAILED (%s). The database is missing columns this "
+                    "release expects and requests touching them will fail. If this role cannot "
+                    "issue DDL, run the schema change as one that can; the application will keep "
+                    "starting either way. /api/health reports schema_heal_failed=true, and this "
+                    "line is where the cause is: that endpoint is unauthenticated and the message "
+                    "carries the failing statement, so it is not published there.",
+                    _heal_error,
+                    exc_info=True,
+                )
+
+            # The heal above adds oe_progress_entry.seq to a pre-v3258 table as
+            # ADD COLUMN ... DEFAULT nextval(...), and PostgreSQL numbers the
+            # existing rows while rewriting the table, so they come out in heap
+            # order - while the Alembic migration numbers them by recorded_at.
+            # "Latest wins" in the progress module leads with seq, so the same
+            # rows answered differently depending on which path built the
+            # schema. Put them back in observation order. Runs AFTER the heal
+            # (takeoff's merge above runs before it) because the column it
+            # repairs is one the heal itself creates - going first would leave
+            # a boot-long window of wrong readings. Idempotent: a single scan
+            # that finds nothing out of order and stops, on every later boot.
+            try:
+                from app.modules.progress.seq_repair import repair_progress_entry_seq
+
+                async with engine.begin() as conn:
+                    await repair_progress_entry_seq(conn)
             except Exception:
-                logger.warning("PostgreSQL auto-migration skipped (non-fatal)", exc_info=True)
+                logger.warning("Progress seq order repair skipped (non-fatal)", exc_info=True)
+
+            # Same shape, different column. classified_at was declared naive
+            # while the service stamped it aware, so every database built before
+            # this version carries a column asyncpg will not write to. The heal
+            # cannot fix it: it adds columns and never retypes them. Idempotent,
+            # and a no-op the moment the reflected type comes back aware.
+            try:
+                from app.modules.project_route.tz_repair import widen_classified_at
+
+                async with engine.begin() as conn:
+                    await widen_classified_at(conn)
+            except Exception:
+                logger.warning("classified_at widening skipped (non-fatal)", exc_info=True)
 
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
@@ -2699,8 +3136,16 @@ def create_app() -> FastAPI:
                     stamped = await conn.run_sync(stamp_head_if_unstamped)
                 if stamped:
                     logger.info("Alembic version stamped to head %s on fresh DB", stamped)
-            except Exception:
-                logger.debug("Alembic head stamp skipped (non-fatal)", exc_info=True)
+            except Exception as exc:
+                # Was logger.debug, which is off in every default configuration.
+                # A stamp that cannot be written is the difference between
+                # /api/health answering "at head" and answering "cannot tell"
+                # for the life of the install, and on an external database it
+                # has the same root cause as the heal failure above: no DDL
+                # rights. An absent alembic.ini does not reach here at all -
+                # stamp_head_if_unstamped returns None for that - so anything
+                # that does is worth a line.
+                logger.warning("Alembic head stamp skipped (non-fatal): %s", exc, exc_info=True)
 
             # Provision multi-tenant row-level security (opt-in). Runs after
             # create_all so every tenant table exists on both fresh and upgraded
@@ -2961,11 +3406,40 @@ def create_app() -> FastAPI:
             # load itself is CPU/IO-blocking, so the task hands it to a
             # worker thread via ``asyncio.to_thread`` - same detached pattern
             # as ``_auto_backfill_vector_collections`` below.
+            # Fetch the encoder weights, if this deployment wants them. Runs on
+            # its own daemon thread, is a no-op on a server deploy, and cannot
+            # raise here - see app/core/embedding_installer.py. Started before
+            # the prime below so a desktop first boot has the download already
+            # moving while the prime decides there is nothing to load yet.
+            try:
+                from app.core.embedding_installer import start_background_download
+
+                if start_background_download():
+                    logger.info("Encoder weights are downloading in the background - startup does not wait for them")
+            except Exception:  # noqa: BLE001 - an optional extra can never break startup
+                logger.debug("Could not start the encoder download", exc_info=True)
+
             async def _prime_embedder_background() -> None:
                 import asyncio as _asyncio_emb
 
                 try:
+                    # Priming a model that is not on disk is itself a download,
+                    # and on a server deploy that is the download the platform
+                    # was told not to do. So the prime runs when the weights are
+                    # already installed (warm start, unchanged behaviour) or
+                    # when this deployment asked for them; otherwise it stands
+                    # down and the first caller that genuinely needs a vector
+                    # loads the model lazily, exactly as it does today.
+                    from app.core.embedding_installer import download_enabled, find_installed_model
                     from app.core.vector import get_embedder as _ge
+
+                    if find_installed_model() is None and not download_enabled():
+                        logger.info(
+                            "Embedder prime skipped: no encoder installed and the background "
+                            "download is off for this deployment (set OE_DOWNLOAD_EMBEDDING_MODEL=1 "
+                            "to fetch it). Semantic search reports its state honestly meanwhile."
+                        )
+                        return
 
                     embedder = await _asyncio_emb.to_thread(_ge)
                     if embedder is not None:
@@ -3050,6 +3524,21 @@ def create_app() -> FastAPI:
                 _ft_register_jobs()
         except Exception:
             logger.exception("file_trash scheduler registration failed")
+
+        # ── Demo upload retention (24-hour interval) ──────────────────
+        # Removes visitor uploads older than the configured window from the
+        # public hosted demo, seeded demo content excluded. The registration
+        # helper returns without starting anything unless this deployment is a
+        # read-only demo AND an operator set a positive retention window, so a
+        # self-hosted install has no loop and nothing that could call the
+        # sweep. See :mod:`app.core.demo_retention`.
+        try:
+            if not _fast_startup:
+                from app.core.demo_retention import register_jobs as _retention_register_jobs
+
+                _retention_register_jobs()
+        except Exception:
+            logger.exception("demo_retention scheduler registration failed")
 
         # ── Cost-DB cache pre-warm (runs once, in background) ──────────
         # The "Add from Database" modal in the BOQ editor calls three

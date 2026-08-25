@@ -15,6 +15,7 @@ const playbook: Playbook = {
   order: 230,
   category: "bim",
   companyTypes: ["designer", "bim-consultant", "project-manager"],
+  roles: ["bim-coordinator", "design-lead"],
   icon: "MessageSquare",
   titleKey: "cases.design_query_from_bim_coordination.title",
   titleDefault: "Raise a design query from BIM coordination",
@@ -103,7 +104,7 @@ const playbook: Playbook = {
       whyDefault:
         "A conflict mentioned in a meeting and never formalised gets forgotten by the next one. A dated, written query is what keeps it moving until it is actually resolved.",
       moduleLabel: "RFIs",
-      moduleLabelKey: "nav.rfi",
+      moduleLabelKey: "rfi.title",
       to: "/projects/:projectId/rfi",
     },
     {

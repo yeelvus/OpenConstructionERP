@@ -158,3 +158,32 @@ export function relatedCasesFor(
 
   return [...explicit, ...scored.map((r) => r.c)].slice(0, limit);
 }
+
+/**
+ * The compact "Other cases" strip at the foot of the detail page: the rest of
+ * the catalogue beyond next/related, so no case is more than one click from
+ * any other. Cases written for the SAME market as `pb` come first (a reader
+ * inside the German workflow is most likely to want the other German cases),
+ * then the remainder; both groups keep the stable lifecycle numbering the
+ * catalogue itself is ordered by. Pass `exclude` (the next/related ids already
+ * shown above the strip) so nothing appears on the page twice.
+ */
+export function moreCasesFor(
+  pb: Playbook,
+  all: Playbook[],
+  exclude: Set<string> = new Set(),
+  limit = 12,
+): Playbook[] {
+  const seen = new Set<string>([pb.id, ...exclude]);
+  const pool = all.filter((c) => !seen.has(c.id));
+  const numbers = buildCaseNumbers(all);
+  const byNumber = (a: Playbook, b: Playbook) =>
+    (numbers.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+    (numbers.get(b.id) ?? Number.MAX_SAFE_INTEGER);
+  const sameMarket = pb.region
+    ? pool.filter((c) => c.region === pb.region).sort(byNumber)
+    : [];
+  const sameIds = new Set(sameMarket.map((c) => c.id));
+  const rest = pool.filter((c) => !sameIds.has(c.id)).sort(byNumber);
+  return [...sameMarket, ...rest].slice(0, limit);
+}

@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 336,
   category: "commercial",
   companyTypes: ["developer-client", "owner-operator", "general-contractor"],
+  roles: ["project-manager", "commercial-manager", "document-controller"],
   icon: "Users",
   titleKey: "cases.give_the_client_a_project_portal.title",
   titleDefault: "Give the client a project portal",
@@ -62,7 +63,7 @@ const playbook: Playbook = {
       whyKey: "cases.give_the_client_a_project_portal.step.portal.why",
       whyDefault:
         "A client with their own live view stops phoning round for updates and stops guessing. Controlling exactly what is shared keeps your cost and internal correspondence private while the job still looks open.",
-      moduleLabel: "Portal",
+      moduleLabel: "Client & Partner Portal",
       moduleLabelKey: "nav.portal",
       to: "/projects/:projectId/portal",
     },

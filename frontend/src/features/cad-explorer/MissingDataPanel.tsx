@@ -25,6 +25,8 @@ import {
 } from './api';
 import { useToastStore } from '@/stores/useToastStore';
 import { copyToClipboard } from '@/shared/lib/browser';
+import { fmtPercent } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 interface MissingDataPanelProps {
   sessionId: string;
@@ -268,12 +270,12 @@ export function MissingDataPanel({ sessionId }: MissingDataPanelProps) {
   const footerLabel = data.sampled
     ? t('explorer.missingness_footer_sampled', {
         defaultValue: 'Showing {{n}} of {{m}} rows (random sample)',
-        n: data.sampled_rows.toLocaleString(),
-        m: data.total_rows.toLocaleString(),
+        n: data.sampled_rows.toLocaleString(getNumberLocale()),
+        m: data.total_rows.toLocaleString(getNumberLocale()),
       })
     : t('explorer.missingness_footer_full', {
         defaultValue: 'Showing all {{n}} rows',
-        n: data.total_rows.toLocaleString(),
+        n: data.total_rows.toLocaleString(getNumberLocale()),
       });
 
   return (
@@ -297,7 +299,7 @@ export function MissingDataPanel({ sessionId }: MissingDataPanelProps) {
                 </option>
                 {(categoryOpts?.values ?? []).map((v) => (
                   <option key={v.value} value={v.value}>
-                    {v.value} ({v.count.toLocaleString()})
+                    {v.value} ({v.count.toLocaleString(getNumberLocale())})
                   </option>
                 ))}
               </select>
@@ -319,7 +321,7 @@ export function MissingDataPanel({ sessionId }: MissingDataPanelProps) {
                 </option>
                 {(typeOpts?.values ?? []).map((v) => (
                   <option key={v.value} value={v.value}>
-                    {v.value} ({v.count.toLocaleString()})
+                    {v.value} ({v.count.toLocaleString(getNumberLocale())})
                   </option>
                 ))}
               </select>
@@ -406,11 +408,11 @@ export function MissingDataPanel({ sessionId }: MissingDataPanelProps) {
               >
                 <div className="font-semibold truncate max-w-[220px]">{hover.column.name}</div>
                 <div className="opacity-80">
-                  {(hover.column.fill_rate * 100).toFixed(1)}%{' '}
+                  {fmtPercent(hover.column.fill_rate * 100)}{' '}
                   {t('explorer.missingness_tooltip_filled', { defaultValue: 'filled' })}
                   {' · '}
-                  {hover.column.non_null_count.toLocaleString()}{' / '}
-                  {data.total_rows.toLocaleString()}
+                  {hover.column.non_null_count.toLocaleString(getNumberLocale())}{' / '}
+                  {data.total_rows.toLocaleString(getNumberLocale())}
                 </div>
                 <div className="opacity-60">
                   {t('explorer.missingness_dtype', { defaultValue: 'type' })}: {hover.column.dtype}

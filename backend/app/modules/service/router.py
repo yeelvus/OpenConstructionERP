@@ -389,6 +389,8 @@ async def list_tickets(
             project_id,
             offset=offset,
             limit=limit,
+            status=status_filter,
+            priority=priority,
         )
     else:
         # No contract/project scope ⇒ tenant-wide dispatcher view. Previously
@@ -532,21 +534,33 @@ async def close_ticket(
 
 @router.get("/work-orders/", response_model=list[WorkOrderResponse])
 async def list_work_orders(
-    _user: CurrentUserId,
+    session: SessionDep,
+    user_id: CurrentUserId,
     _perm: None = Depends(RequirePermission("service.read")),
+    project_id: uuid.UUID | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     technician_id: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     service: ServiceService = Depends(_get_service),
 ) -> list[WorkOrderResponse]:
-    """List work orders."""
-    items, _ = await service.work_order_repo.list_all(
-        offset=offset,
-        limit=limit,
-        status=status_filter,
-        technician_id=technician_id,
-    )
+    """List work orders, tenant-wide or for one project's contracts."""
+    if project_id is not None:
+        await verify_project_access(project_id, user_id, session)
+        items, _ = await service.work_order_repo.list_for_project(
+            project_id,
+            offset=offset,
+            limit=limit,
+            status=status_filter,
+            technician_id=technician_id,
+        )
+    else:
+        items, _ = await service.work_order_repo.list_all(
+            offset=offset,
+            limit=limit,
+            status=status_filter,
+            technician_id=technician_id,
+        )
     return [WorkOrderResponse.model_validate(it) for it in items]
 
 

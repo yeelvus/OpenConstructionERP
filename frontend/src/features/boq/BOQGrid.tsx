@@ -47,6 +47,8 @@ import {
   Link2Off,
   Banknote,
   Variable,
+  Calculator,
+  Activity,
 } from 'lucide-react';
 
 import {
@@ -104,7 +106,7 @@ import {
 import { CURRENCY_GROUPS } from '@/features/projects/CreateProjectPage';
 import { useToastStore } from '@/stores/useToastStore';
 import { useBoqDescDensityStore, BOQ_DESC_ROW_HEIGHT } from '@/stores/useBoqDescDensityStore';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 import { useDisplayQuantity } from '@/shared/hooks/useDisplayQuantity';
 import { VariantPicker } from '@/features/costs/VariantPicker';
 import type { CostVariant, VariantStats } from '@/features/costs/api';
@@ -428,6 +430,21 @@ export interface BOQGridProps {
    */
   onOpenAICopilot?: (positionId: string) => void;
   /**
+   * Open the price analysis (unit-rate build-up, and the German EFB view of
+   * it) for this position. Optional: when omitted the context-menu item is
+   * hidden, same graceful degrade as the copilot above.
+   */
+  onPriceAnalysis?: (positionId: string) => void;
+  /**
+   * Open the position actuals panel: what the estimate said against what has
+   * since been budgeted, committed, contracted, installed and issued from the
+   * store for this position. Optional, and hidden when omitted, same graceful
+   * degrade as the two above. The grid cannot own this one because the
+   * endpoint is project scoped and the grid has no project id; the editor page
+   * reads it off the loaded BOQ and passes the handler down.
+   */
+  onShowPositionActuals?: (positionId: string) => void;
+  /**
    * Position id the AI copilot is currently open on. When set (and the
    * position is visible), a full-width copilot row is injected directly under
    * that position. Null/undefined ⇒ no inline copilot row.
@@ -601,6 +618,8 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   onOpenCostDbForPosition,
   onOpenCatalogForPosition,
   onOpenAICopilot,
+  onPriceAnalysis,
+  onShowPositionActuals,
   aiCopilotPositionId,
   renderInlineCopilot,
   onRepickResourceVariant,
@@ -803,6 +822,10 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
 
   /* ── Expanded resource positions ─────────────────────────────────── */
   const [expandedPositions, setExpandedPositions] = useState<Set<string>>(new Set());
+
+  /** True while an invalid ordinal edit is being reverted in place, so the
+   *  re-entrant cellValueChanged event is ignored (not persisted/undoable). */
+  const revertingOrdinalRef = useRef(false);
 
   const toggleResources = useCallback((positionId: string) => {
     // Stop any active cell editing to prevent ordinal cell staying in edit mode
@@ -1164,7 +1187,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
 
   const fmt = useMemo(
     () =>
-      new Intl.NumberFormat(locale || getIntlLocale(), {
+      new Intl.NumberFormat(locale || getNumberLocale(), {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       }),
@@ -1290,7 +1313,15 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
 
   /* ── Column defs (standard + custom) ─────────────────────────────── */
   const columnDefs = useMemo(() => {
-    const defs = getColumnDefs({ currencySymbol, currencyCode, locale, fmt, t: tRef.current, displayCurrency: displayCurrency ?? null, showResourceSplit, displayQuantity });
+    // Longest ordinal in the loaded rows drives the "Pos." column width so a
+    // full German GAEB OZ ("01.01.0010") is never ellipsised in the default
+    // layout. `positions` is already a dependency of this memo.
+    let maxOrdinalChars = 0;
+    for (const p of positions) {
+      const len = (p.ordinal ?? '').length;
+      if (len > maxOrdinalChars) maxOrdinalChars = len;
+    }
+    const defs = getColumnDefs({ currencySymbol, currencyCode, locale, fmt, t: tRef.current, displayCurrency: displayCurrency ?? null, showResourceSplit, displayQuantity, maxOrdinalChars });
     // Override ordinal column with custom renderer
     const ordinalCol = defs.find((c) => c.field === 'ordinal');
     if (ordinalCol) {
@@ -1959,10 +1990,12 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
     return BOQ_DESC_ROW_HEIGHT[density] ?? 32;
   }, []);
 
-  /* ── Cancel accidental ordinal edits from chevron clicks ─────── */
+  /* ── Editing started: acquire the collaboration row lock ─────── */
   const onCellEditingStarted = useCallback(
     (event: CellEditingStartedEvent) => {
-      // Ordinal column is editable:false — editing triggered via onCellDoubleClicked.
+      // (The ordinal column gates its own edit start: it is editable only
+      // while a blessed gesture - double-click or F2 - has armed it. See
+      // the self-expiring arm in columnDefs.ts.)
 
       // ── Layer-1 collaboration lock ──────────────────────────────
       // Acquire a soft lock on the row (not the cell) the first
@@ -2045,6 +2078,9 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   /* ── Cell value changed → dispatch update ─────────────────────── */
   const onCellValueChanged = useCallback(
     (event: CellValueChangedEvent) => {
+      // Re-entrant event from the ordinal revert below — the value is being
+      // restored, not changed, so it must not be persisted or made undoable.
+      if (revertingOrdinalRef.current) return;
       const { data, colDef, oldValue } = event;
       let { newValue } = event;
       if (!data?.id || data._isFooter) return;
@@ -2103,6 +2139,35 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
 
       if (oldValue === newValue) return;
 
+      // ── Ordnungszahl format guard ─────────────────────────────────
+      // The OZ is the client-issued identity of the line ("Positionsnummern
+      // bleiben Byte für Byte ..."), so an accidental paste of free text
+      // must never reach the server. Accept dot-separated alphanumeric
+      // segments starting with a digit (01.02.0010, 300.1, 0010A); anything
+      // else reverts in place with a toast.
+      if (field === 'ordinal' && !data._isSection) {
+        const raw = String(newValue ?? '').trim();
+        const isValidOz = /^\d[\dA-Za-z]*(\.[\dA-Za-z]+)*$/.test(raw) && raw.length <= 32;
+        if (!isValidOz) {
+          revertingOrdinalRef.current = true;
+          try {
+            event.node.setDataValue('ordinal', oldValue);
+          } finally {
+            revertingOrdinalRef.current = false;
+          }
+          addToast({
+            type: 'warning',
+            title: t('boq.ordinal_invalid_title', { defaultValue: 'Position number not changed' }),
+            message: t('boq.ordinal_invalid', {
+              defaultValue:
+                'Position numbers use digits, dots and letters (e.g. 01.02.0010). The previous value was kept.',
+            }),
+          });
+          return;
+        }
+        newValue = raw;
+      }
+
       const update: UpdatePositionData = { [field]: newValue };
       const old: UpdatePositionData = { [field]: oldValue };
 
@@ -2120,7 +2185,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
 
       onUpdatePosition(data.id, update, old);
     },
-    [onUpdatePosition, onUpdateResourceCustomField],
+    [onUpdatePosition, onUpdateResourceCustomField, addToast, t],
   );
 
   /* ── Row drag end → reorder sections or positions ────────────── */
@@ -2925,7 +2990,14 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
           enableCellTextSelection
           suppressCellFocus={false}
           tooltipShowDelay={400}
-          tooltipInteraction
+          // NO tooltipInteraction. An interactive tooltip is pointer-active
+          // (AG Grid's own CSS gives pointer-events only to
+          // .ag-tooltip-interactive) and it opens UNDER the cursor, covering
+          // its cell and the row below. Because hovering it keeps it alive,
+          // it then swallowed every following click / F2 in that area - the
+          // editor would "open once and never again" while pricing line
+          // after line. Plain tooltips are pointer-transparent and dismiss
+          // on mouse-leave, so they can never shield a cell.
         />
       </div>
 
@@ -2986,6 +3058,24 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                   <CtxItem icon={<Sparkles size={14} className="text-violet-500"/>}
                     label={t('boq.ai_copilot', { defaultValue: 'AI Copilot' })}
                     onClick={() => { onOpenAICopilot(d.id as string); closeContextMenu(); }}
+                  />
+                )}
+                {/* How this rate is built up, plus the German EFB 221/222/223
+                    view a public client asks for with the tender. */}
+                {onPriceAnalysis && (
+                  <CtxItem icon={<Calculator size={14}/>}
+                    label={t('boq.price_analysis', { defaultValue: 'Price analysis' })}
+                    onClick={() => { onPriceAnalysis(d.id as string); closeContextMenu(); }}
+                  />
+                )}
+                {/* What the site has actually recorded against this line since
+                    it was estimated. No defaultValue on the label on purpose:
+                    a key carrying one is invisible to every locale gate we
+                    have, and this key is already in en.ts. */}
+                {onShowPositionActuals && (
+                  <CtxItem icon={<Activity size={14}/>}
+                    label={t('boq.position_actuals')}
+                    onClick={() => { onShowPositionActuals(d.id as string); closeContextMenu(); }}
                   />
                 )}
                 <CtxSeparator />

@@ -26,6 +26,7 @@ import { useMemo, useState, type KeyboardEvent } from 'react';
 import { ChevronRight, ChevronDown, Search } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import type { CategoryTreeNode } from './api';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 const UNSPECIFIED_SENTINEL = '__unspecified__';
 
@@ -194,7 +195,10 @@ function TreeNodeRow({
             )
           ) : null}
         </button>
-        <span className="flex-1 truncate" title={displayName}>
+        {/* Two-line clamp instead of a single-line ellipsis: German category
+            names (Abdichtungsarbeiten in Wasserbauwerken ...) clipped so hard
+            the list was unreadable. The title keeps the full text on hover. */}
+        <span className="flex-1 min-w-0 line-clamp-2 break-words leading-snug" title={displayName}>
           {displayName}
         </span>
         <span
@@ -204,7 +208,7 @@ function TreeNodeRow({
               : 'bg-surface-tertiary text-content-tertiary group-hover:bg-surface-primary'
           }`}
         >
-          {node.count.toLocaleString()}
+          {node.count.toLocaleString(getNumberLocale())}
         </span>
       </div>
       {isExpanded &&

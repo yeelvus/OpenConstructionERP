@@ -6,9 +6,9 @@ Four layers:
     it is consistent, not that it is right.
   * The shipped catalogue - no DB. Every regime is checked against the model's
     own vocabularies and against the rules that will judge it. The one that
-    matters most is that the final date falls after the due date in all eight,
-    since a shipped regime that fails the product's own ERROR rule would make
-    that rule unsatisfiable rather than strict.
+    matters most is that the final date falls after the due date in every
+    regime shipped, since a shipped regime that fails the product's own ERROR
+    rule would make that rule unsatisfiable rather than strict.
   * Service layer against the shared PostgreSQL unit DB with per-test
     transaction isolation (same fixture style as ``test_cases_module.py``).
   * The validation rules, one test per rule, including the one the module
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import get_args
 
@@ -36,7 +36,20 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.payment_clock import clock, schemas, service
-from app.modules.payment_clock.data import PAYMENT_REGIMES, REGIME_CODES, regime_by_code, seed_payment_regimes
+from app.modules.payment_clock import data as payment_clock_data
+from app.modules.payment_clock.data import (
+    NO_REGIME_DIFFERENT_SHAPE,
+    NO_REGIME_HELD,
+    NO_REGIME_NO_STATUTE,
+    NO_REGIME_NOT_MODELLED,
+    NO_REGIME_REASONS,
+    NO_REGIME_VALUES,
+    PAYMENT_REGIMES,
+    REGIME_CODES,
+    no_regime_reason,
+    regime_by_code,
+    seed_payment_regimes,
+)
 from app.modules.payment_clock.models import (
     APPLICATION_STATUSES,
     DATE_BASES,
@@ -224,6 +237,9 @@ class TestRegimeCatalogue:
             "nz_cca_2002",
             "sg_sopa",
             "eu_late_payment",
+            "de_vob_b_abschlag",
+            "de_vob_b_schluss",
+            "de_bgb_632a",
         }
 
     def test_codes_are_unique(self):
@@ -286,6 +302,145 @@ class TestRegimeCatalogue:
 
     def test_regime_by_code_returns_none_for_an_unknown_code(self):
         assert regime_by_code("zz_nowhere") is None
+
+
+class TestNoRegimeReasons:
+    def test_the_shipped_reasons_are_all_within_the_closed_set(self):
+        for code, reason in NO_REGIME_REASONS.items():
+            assert reason in NO_REGIME_VALUES, code
+
+    def test_held_and_reasons_and_covered_are_disjoint_on_the_shipped_data(self):
+        covered = {str(r.get("country_code")) for r in PAYMENT_REGIMES if r.get("country_code")}
+        assert not (set(NO_REGIME_REASONS) & covered)
+        assert not (NO_REGIME_HELD & covered)
+        assert not (set(NO_REGIME_REASONS) & NO_REGIME_HELD)
+
+    def test_the_validator_refuses_a_value_outside_the_closed_set(self, monkeypatch):
+        monkeypatch.setattr(payment_clock_data, "NO_REGIME_REASONS", {"ZZ": "guessed"})
+        with pytest.raises(ValueError, match="not one of"):
+            payment_clock_data._validate_no_regime_reasons()
+
+    def test_the_validator_refuses_a_country_that_has_both_a_row_and_a_reason(self, monkeypatch):
+        # GB has a row (uk_hgcra); declaring a reason for it too is the same
+        # contradiction tax_engine._validate_vat_absence refuses.
+        monkeypatch.setattr(payment_clock_data, "NO_REGIME_REASONS", {"GB": NO_REGIME_NOT_MODELLED})
+        with pytest.raises(ValueError, match="have a row in PAYMENT_REGIMES"):
+            payment_clock_data._validate_no_regime_reasons()
+
+    def test_the_validator_refuses_a_held_country_that_also_has_a_row(self, monkeypatch):
+        # The bug this test exists to catch: a naive validator that only walks
+        # NO_REGIME_REASONS never looks at NO_REGIME_HELD at all, so a held
+        # country that later gains a real row would pass silently and the
+        # probe would go on reporting it as held forever.
+        monkeypatch.setattr(payment_clock_data, "NO_REGIME_HELD", frozenset({"GB"}))
+        with pytest.raises(ValueError, match="have a row in PAYMENT_REGIMES"):
+            payment_clock_data._validate_no_regime_reasons()
+
+    def test_the_validator_refuses_a_country_in_both_reasons_and_held(self, monkeypatch):
+        monkeypatch.setattr(payment_clock_data, "NO_REGIME_REASONS", {"ZZ": NO_REGIME_NO_STATUTE})
+        monkeypatch.setattr(payment_clock_data, "NO_REGIME_HELD", frozenset({"ZZ"}))
+        with pytest.raises(ValueError, match="both resolved and held"):
+            payment_clock_data._validate_no_regime_reasons()
+
+    def test_no_regime_reason_raises_for_a_country_with_a_row(self):
+        with pytest.raises(ValueError, match="not something to explain"):
+            no_regime_reason("GB")
+
+    def test_no_regime_reason_returns_the_declared_value_for_brazil(self):
+        assert no_regime_reason("BR") == NO_REGIME_DIFFERENT_SHAPE
+
+    def test_no_regime_reason_returns_none_for_an_unresearched_country(self):
+        assert no_regime_reason("JP") is None
+
+    def test_no_regime_reason_normalises_case_and_whitespace(self):
+        assert no_regime_reason(" br ") == NO_REGIME_DIFFERENT_SHAPE
+
+
+class TestGermanRegimes:
+    """The § 16 VOB/B and § 632a BGB deadlines, worked out by hand.
+
+    The numbers come from the provisions themselves: an Abschlagsrechnung falls
+    due within 21 calendar days of the client receiving the Aufstellung
+    (§ 16 Abs. 1 Nr. 3 VOB/B), the Schlussrechnung at the latest within 30
+    calendar days of its receipt (§ 16 Abs. 3 Nr. 1 VOB/B), and under a plain
+    BGB contract the client is in default at the latest 30 days after receiving
+    the invoice (§ 286 Abs. 3 BGB). All three run on calendar days and none of
+    them has a statutory notice sequence.
+    """
+
+    def test_an_abschlagsrechnung_runs_twenty_one_calendar_days(self):
+        schedule = clock.compute_schedule(
+            regime_by_code("de_vob_b_abschlag"),
+            application_date=date(2026, 3, 2),  # the day the Aufstellung arrived
+        )
+        assert schedule.due_date == date(2026, 3, 2)
+        assert schedule.final_date == date(2026, 3, 23)  # 21 calendar days
+        # No statutory payment or pay-less notice under the VOB/B.
+        assert schedule.payment_notice_deadline is None
+        assert schedule.pay_less_deadline is None
+
+    def test_the_schlussrechnung_runs_thirty_calendar_days(self):
+        schedule = clock.compute_schedule(
+            regime_by_code("de_vob_b_schluss"),
+            application_date=date(2026, 3, 2),  # the day the Schlussrechnung arrived
+        )
+        assert schedule.final_date == date(2026, 4, 1)  # 30 calendar days
+        assert schedule.payment_notice_deadline is None
+
+    def test_the_bgb_default_limit_runs_thirty_calendar_days(self):
+        schedule = clock.compute_schedule(
+            regime_by_code("de_bgb_632a"),
+            application_date=date(2026, 3, 2),
+        )
+        assert schedule.final_date == date(2026, 4, 1)
+        assert schedule.payment_notice_deadline is None
+
+    def test_the_calendar_count_does_not_skip_weekends(self):
+        # 21 calendar days from a Friday still lands 21 days later, weekend or
+        # not - "binnen 21 Tagen" counts every day.
+        schedule = clock.compute_schedule(
+            regime_by_code("de_vob_b_abschlag"),
+            application_date=date(2026, 3, 6),  # a Friday
+        )
+        assert schedule.final_date == date(2026, 3, 27)
+
+    def test_the_statutory_references_are_exact(self):
+        abschlag = regime_by_code("de_vob_b_abschlag")
+        assert "§ 16 Abs. 1 Nr. 3 VOB/B" in abschlag["statute_reference"]
+        assert "§ 16 Abs. 5 Nr. 3 VOB/B" in abschlag["statute_reference"]
+
+        schluss = regime_by_code("de_vob_b_schluss")
+        assert "§ 16 Abs. 3 Nr. 1 VOB/B" in schluss["statute_reference"]
+        # The 60-day extension and the 28-day Vorbehalt live in the notes: the
+        # model has no column for either, and the notes are where a reader is
+        # told what the clock does not compute.
+        assert "60 days" in schluss["notes"]
+        assert "expressly agreed" in schluss["notes"]
+        assert "28 calendar days" in schluss["notes"]
+
+        bgb = regime_by_code("de_bgb_632a")
+        assert "§ 632a Abs. 1 BGB" in bgb["statute_reference"]
+        assert "§ 286 Abs. 3 BGB" in bgb["statute_reference"]
+
+    def test_german_interest_is_nine_points_over_the_base_rate(self):
+        # § 288 Abs. 2 BGB: nine percentage points over the Basiszinssatz for
+        # commercial debts. Nine, not the Directive's eight - the German
+        # transposition went above the minimum.
+        for code in ("de_vob_b_abschlag", "de_vob_b_schluss", "de_bgb_632a"):
+            regime = regime_by_code(code)
+            assert regime["interest_margin_percent"] == Decimal("9.000"), code
+            text = clock.interest_description(regime)
+            assert "plus 9 percent" in text, code
+            assert "§ 288 Abs. 2 BGB" in text, code
+
+    def test_the_derivation_names_the_german_provision(self):
+        schedule = clock.compute_schedule(
+            regime_by_code("de_vob_b_abschlag"),
+            application_date=date(2026, 3, 2),
+        )
+        joined = " ".join(schedule.derivation)
+        assert "VOB/B § 16 Abs. 1 (Abschlagszahlungen)" in joined
+        assert "21 days after the application date 2026-03-02" in joined
 
 
 # ── Schemas (no DB) ──────────────────────────────────────────────────────────
@@ -449,6 +604,120 @@ class TestSeeding:
         # The same row, so every application still points at its own regime.
         assert again.id == regime_id
 
+    async def test_a_bad_value_in_the_shipped_catalogue_is_refused_at_load(self, session, monkeypatch):
+        """The seeder validates against the schema, not just against itself.
+
+        seed_payment_regimes used to build PaymentRegime(**entry) straight
+        from the dict, so a typo in data.py would have seeded silently and
+        only surfaced downstream, in whichever rule happened to read the bad
+        value. This builds a row exactly the way an editor of data.py could,
+        one letter off a real no_notice_effect value, and checks the load
+        path refuses it rather than absorbing it, and that nothing from the
+        attempt reaches the table.
+        """
+        bad_entry = dict(PAYMENT_REGIMES[0])
+        bad_entry["code"] = "test_bad_regime"
+        bad_entry["no_notice_effect"] = "applied_sum_becomes_notifed_sum"  # missing an "i"
+        monkeypatch.setattr(payment_clock_data, "PAYMENT_REGIMES", (bad_entry,))
+
+        with pytest.raises(ValueError, match="no_notice_effect"):
+            await payment_clock_data.seed_payment_regimes(session)
+
+        total = await session.scalar(select(func.count()).select_from(PaymentRegime))
+        assert total == 0
+
+
+@pytest.mark.asyncio
+class TestGermanDemoSeeding:
+    """The demo clocks the German demo projects install.
+
+    Anchored to a supplied ``today`` rather than the machine clock, because the
+    thing being asserted is the *relationship* between the seeded dates and the
+    installation day: one invoice paid in time, one overdue with interest
+    running, one still inside its 21 days. A seed anchored to a constant would
+    hold that shape for three weeks and then rot.
+    """
+
+    async def test_the_demo_clocks_land_in_the_three_states_the_screen_shows(self, session):
+        from app.modules.payment_clock.demo import DEMO_REGIME_CODE, seed_demo_payment_clocks
+
+        project = await _project(session, name="Bürogebäude Frankfurt Europaviertel")
+        today = date(2026, 8, 12)
+        count = await seed_demo_payment_clocks(session, project_id=project.id, today=today)
+        assert count == 3
+
+        rows = await service.list_applications(session, project_id=project.id)
+        by_ref = {row.reference: row for row in rows}
+        assert set(by_ref) == {"AZ-02", "AZ-03", "AZ-04"}
+
+        regime = await service.get_regime(session, regime_id=rows[0].regime_id)
+        assert regime is not None
+        assert regime.code == DEMO_REGIME_CODE
+        assert {row.regime_id for row in rows} == {regime.id}
+        assert all(row.currency == "EUR" for row in rows)
+        # Round demo money reads as a placeholder; a valuation never is.
+        assert all(row.applied_amount % 1 != 0 for row in rows)
+        # The dates came from the regime arithmetic, not from the seed data.
+        assert all(row.dates_overridden is False for row in rows)
+        assert all(row.final_date == row.application_date + timedelta(days=21) for row in rows)
+
+        paid = by_ref["AZ-02"]
+        assert paid.status == "paid"
+        assert paid.paid_amount == paid.applied_amount
+        assert paid.paid_at is not None
+        assert paid.paid_at <= paid.final_date  # paid inside the 21 days
+
+        overdue = by_ref["AZ-03"]
+        assert overdue.status == "open"
+        assert overdue.final_date < today  # § 16 Abs. 1 Nr. 3 deadline missed
+
+        ticking = by_ref["AZ-04"]
+        assert ticking.status == "open"
+        assert ticking.final_date > today  # the clock the demo watches run
+
+        # The overdue filter picks out exactly the invoice somebody is owed
+        # money on - the paid one is settled and the ticking one is not yet due.
+        overdue_rows = await service.list_applications(session, project_id=project.id, overdue_as_of=today)
+        assert [row.id for row in overdue_rows] == [overdue.id]
+
+    async def test_the_overdue_invoice_reports_german_interest_on_read(self, session):
+        from app.modules.payment_clock.demo import seed_demo_payment_clocks
+
+        project = await _project(session)
+        today = date(2026, 8, 12)
+        await seed_demo_payment_clocks(session, project_id=project.id, today=today)
+        rows = await service.list_applications(session, project_id=project.id)
+        overdue = next(row for row in rows if row.reference == "AZ-03")
+        regime = await service.get_regime(session, regime_id=overdue.regime_id)
+
+        findings = await _findings(session, overdue, regime, as_of=today)
+        assert "payment_clock.notified_sum" not in findings  # no notice sequence to breach
+        finding = findings["payment_clock.statutory_interest"][0]
+        assert "941618.45 EUR" in finding.message
+        assert "plus 9 percent" in finding.message
+        assert finding.details["days_overdue"] == 13  # served 34 days ago, 21-day limit
+
+    async def test_installing_a_german_demo_project_opens_the_clocks(self, session):
+        """The wiring, not the seeder: the installer's DE gate has to fire.
+
+        The seeder tests above call ``seed_demo_payment_clocks`` directly, so
+        they would stay green if the call in ``_seed_module_data`` were deleted
+        or its country gate mistyped. This installs a real German demo project
+        and reads the clocks back off it.
+        """
+        import app.core.demo_packs  # noqa: F401 - registers the pack templates
+        from app.core.demo_projects import install_demo_project
+
+        result = await install_demo_project(session, "office-frankfurt")
+        project_id = uuid.UUID(str(result["project_id"]))
+
+        rows = await service.list_applications(session, project_id=project_id)
+        assert {row.reference for row in rows} == {"AZ-02", "AZ-03", "AZ-04"}
+        assert all(row.currency == "EUR" for row in rows)
+        regime = await service.get_regime(session, regime_id=rows[0].regime_id)
+        assert regime is not None
+        assert regime.code == "de_vob_b_abschlag"
+
 
 @pytest.mark.asyncio
 class TestOpeningAClock:
@@ -523,6 +792,14 @@ class TestNotifiedSum:
         summary = service.notified_sum(application, regime, [], as_of=date(2026, 4, 13))
         assert summary["source"] == "application"
         assert summary["amount"] == Decimal("124000.00")
+        # The sentence is assembled here, in English, because it can only be
+        # assembled in one language. The code and its parameters are how a
+        # screen says the same thing in the reader's - so every value the
+        # sentence interpolates has to travel with it.
+        assert summary["reason"] == "application"
+        assert set(summary["params"]) == {"deadline", "statute", "amount"}
+        for value in summary["params"].values():
+            assert value and value in summary["explanation"]
 
     async def test_a_payment_notice_served_in_time_settles_the_sum(self, session):
         application, regime = await _application(session)
@@ -544,6 +821,10 @@ class TestNotifiedSum:
         summary = service.notified_sum(application, regime, notices, as_of=date(2026, 4, 13))
         assert summary["source"] == "payment_notice"
         assert summary["amount"] == Decimal("118500.00")
+        assert summary["reason"] == "payment_notice"
+        assert set(summary["params"]) == {"issued", "amount"}
+        for value in summary["params"].values():
+            assert value and value in summary["explanation"]
 
     async def test_the_window_being_open_is_not_a_breach(self, session):
         application, regime = await _application(session)
@@ -614,6 +895,81 @@ class TestNotifiedSum:
         # And it is not itself reported as late.
         findings = await _findings(session, application, regime, as_of=date(2026, 4, 15))
         assert "payment_clock.notice_in_time" not in findings
+
+
+@pytest.mark.asyncio
+class TestGermanClock:
+    """A German application through the service layer, end to end.
+
+    The German regimes have no notice sequence, so the rule the module exists
+    for must stay quiet on them forever, while the date arithmetic and the
+    interest rule still work - a deadline under § 16 VOB/B is missed just as
+    hard as one under the UK Act.
+    """
+
+    async def test_the_vob_b_dates_are_computed_and_stored(self, session):
+        application, _ = await _application(
+            session,
+            code="de_vob_b_abschlag",
+            currency="EUR",
+            reference="AZ-03",
+            application_date=date(2026, 3, 2),
+            period_end=date(2026, 2, 27),
+            period_start=date(2026, 2, 1),
+            applied_amount=Decimal("941618.45"),
+        )
+        assert application.due_date == date(2026, 3, 2)
+        assert application.final_date == date(2026, 3, 23)
+        assert application.payment_notice_deadline is None
+        assert application.pay_less_deadline is None
+
+    async def test_silence_is_never_a_breach_under_a_german_regime(self, session):
+        application, regime = await _application(
+            session,
+            code="de_vob_b_abschlag",
+            currency="EUR",
+            application_date=date(2026, 3, 2),
+            period_end=date(2026, 2, 27),
+        )
+        # Long past every date the regime sets, still no notified-sum finding:
+        # there was never a notice whose absence could have a consequence.
+        findings = await _findings(session, application, regime, as_of=date(2026, 6, 30))
+        assert "payment_clock.notified_sum" not in findings
+
+    async def test_the_notified_sum_says_the_regime_has_no_notice_sequence(self, session):
+        application, regime = await _application(
+            session,
+            code="de_vob_b_abschlag",
+            currency="EUR",
+            application_date=date(2026, 3, 2),
+            period_end=date(2026, 2, 27),
+        )
+        summary = service.notified_sum(application, regime, [], as_of=date(2026, 6, 30))
+        assert summary["source"] == "undetermined"
+        assert summary["amount"] is None
+        # Not "the window is still open": there is no window, and promising one
+        # would tell a German reader to wait for a settling event that never
+        # arrives under the VOB/B.
+        assert "no payment notice sequence" in summary["explanation"]
+        assert "window" not in summary["explanation"]
+
+    async def test_unpaid_past_the_vob_b_final_date_accrues_german_interest(self, session):
+        application, regime = await _application(
+            session,
+            code="de_vob_b_abschlag",
+            currency="EUR",
+            application_date=date(2026, 3, 2),
+            period_end=date(2026, 2, 27),
+            applied_amount=Decimal("941618.45"),
+        )
+        # Thirteen days past the final date of 2026-03-23.
+        findings = await _findings(session, application, regime, as_of=date(2026, 4, 5))
+        finding = findings["payment_clock.statutory_interest"][0]
+        assert str(finding.severity) == "warning"
+        assert "941618.45 EUR" in finding.message
+        assert finding.details["days_overdue"] == 13
+        assert "plus 9 percent" in finding.message
+        assert "§ 288 Abs. 2 BGB" in finding.message
 
 
 # ── The remaining rules ──────────────────────────────────────────────────────

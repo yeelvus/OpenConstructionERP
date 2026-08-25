@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 60,
   category: "commercial",
   companyTypes: ["general-contractor", "subcontractor", "cost-consultant"],
+  roles: ["quantity-surveyor", "commercial-manager", "contract-administrator"],
   icon: "FileSignature",
   titleKey: "cases.change_to_paid_variation.title",
   titleDefault: "Turn a change into a paid variation",
@@ -53,7 +54,7 @@ const playbook: Playbook = {
       whyKey: "cases.change_to_paid_variation.step.change.why",
       whyDefault:
         "A change recorded the day it happens is a change you can substantiate and get paid for. The ones the team just gets on with, without a note, are the ones that eat the margin with nothing to show for it.",
-      moduleLabel: "Change orders",
+      moduleLabel: "Change Orders",
       moduleLabelKey: "nav.change_orders",
       to: "/change-orders",
     },

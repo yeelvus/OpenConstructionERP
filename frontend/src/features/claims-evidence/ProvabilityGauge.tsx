@@ -31,9 +31,9 @@ const BAND_VARIANT: Record<ProvabilityBand, BadgeVariant> = {
   weak: 'error',
 };
 
-// Human labels for the engine's signal tokens. Kept here (not on the wire) so a
-// backend token rename is a one-line change and unknown tokens fall back to a
-// humanized form rather than leaking a raw key.
+// English fallbacks for the engine's signal tokens. The rendered label comes
+// from the locale (claims_evidence.signal.*); these keep an unknown or not yet
+// translated token readable rather than leaking a raw key.
 const SIGNAL_LABEL: Record<string, string> = {
   notice_timeliness: 'Notice served on time',
   acknowledgement: 'Acknowledged by the other party',
@@ -48,10 +48,6 @@ function humanize(token: string): string {
     .replace(/[_-]+/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase())
     .trim();
-}
-
-function signalLabel(signal: string): string {
-  return SIGNAL_LABEL[signal] ?? humanize(signal);
 }
 
 /** Ring colour class for the score dial, by band. */
@@ -127,7 +123,7 @@ export function ProvabilityGauge({ projectId, subjectKind, subjectId, className 
             <ScoreDial score={score.score} band={score.band} />
             <div className="space-y-1">
               <Badge variant={BAND_VARIANT[score.band]} dot>
-                {t(`provability.band.${score.band}`, { defaultValue: humanize(score.band) })}
+                {t(`claims_evidence.range.${score.band}`, { defaultValue: humanize(score.band) })}
               </Badge>
               <div className="text-xs text-content-tertiary">
                 {score.entry_count > 0
@@ -154,7 +150,9 @@ export function ProvabilityGauge({ projectId, subjectKind, subjectId, className 
                     <XCircle className="h-4 w-4 shrink-0 text-content-tertiary" />
                   )}
                   <span className={s.present ? 'text-content-secondary' : 'text-content-tertiary'}>
-                    {signalLabel(s.signal)}
+                    {t(`claims_evidence.signal.${s.signal}`, {
+                      defaultValue: SIGNAL_LABEL[s.signal] ?? humanize(s.signal),
+                    })}
                   </span>
                   <span className="ml-auto tabular-nums text-xs text-content-tertiary">
                     {s.earned}/{s.weight}
@@ -174,7 +172,9 @@ export function ProvabilityGauge({ projectId, subjectKind, subjectId, className 
                 {score.weaknesses.map((w) => (
                   <li key={w.token} className="flex items-start gap-2 text-sm text-content-secondary">
                     <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-semantic-warning" />
-                    <span>{w.message}</span>
+                    {/* Translate by the engine's stable token; an unknown token
+                        falls back to the backend's English prose untouched. */}
+                    <span>{t(`claims_evidence.weakness.${w.token}`, { defaultValue: w.message })}</span>
                   </li>
                 ))}
               </ul>

@@ -9,6 +9,7 @@
 
 import type { Measurement } from './takeoff-types';
 import { effectiveQuantity } from './takeoff-quantity';
+import { formatCountQuantity, formatQuantity } from './measurement-format';
 
 /** Tool types that shouldn't be counted in legend totals. */
 export const ANNOTATION_TYPES = new Set([
@@ -30,6 +31,9 @@ export interface GroupSummary {
   total: number;
   /** Most common unit string — used for the summary row label. */
   unit: string;
+  /** True when every quantity contribution came from count-type
+   *  measurements — the total is whole pieces, not a measured figure. */
+  isCount: boolean;
 }
 
 /**
@@ -44,7 +48,13 @@ export function computeGroupSummaries(
 ): GroupSummary[] {
   const byGroup = new Map<
     string,
-    { count: number; total: number; unitCounts: Record<string, number> }
+    {
+      count: number;
+      total: number;
+      unitCounts: Record<string, number>;
+      quantified: number;
+      countTyped: number;
+    }
   >();
 
   for (const m of measurements) {
@@ -53,6 +63,8 @@ export function computeGroupSummaries(
       count: 0,
       total: 0,
       unitCounts: {} as Record<string, number>,
+      quantified: 0,
+      countTyped: 0,
     };
     existing.count += 1;
     // Annotation tools don't contribute a numeric quantity.
@@ -61,6 +73,8 @@ export function computeGroupSummaries(
       // opening-deduction sign (net area = gross - openings), so the legend
       // rolls up the same reported figure the ledger and exports do.
       existing.total += effectiveQuantity(m);
+      existing.quantified += 1;
+      if (m.type === 'count') existing.countTyped += 1;
       if (m.unit) {
         existing.unitCounts[m.unit] = (existing.unitCounts[m.unit] ?? 0) + 1;
       }
@@ -69,7 +83,7 @@ export function computeGroupSummaries(
   }
 
   const summaries: GroupSummary[] = [];
-  for (const [name, { count, total, unitCounts }] of byGroup.entries()) {
+  for (const [name, { count, total, unitCounts, quantified, countTyped }] of byGroup.entries()) {
     // Pick the most-used unit for this group (stable tiebreak: lexicographic).
     const unitEntries = Object.entries(unitCounts);
     unitEntries.sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]));
@@ -80,6 +94,7 @@ export function computeGroupSummaries(
       count,
       total,
       unit,
+      isCount: quantified > 0 && countTyped === quantified,
     });
   }
 
@@ -88,9 +103,18 @@ export function computeGroupSummaries(
   return summaries;
 }
 
-/** Format a group total for the legend row. */
-export function formatGroupTotal(total: number, unit: string): string {
-  const precision = total >= 100 ? 1 : total >= 1 ? 2 : 3;
-  const rounded = Number(total.toFixed(precision));
-  return unit ? `${rounded} ${unit}` : `${rounded}`;
+/** Format a group total for the legend row. Renders through the shared
+ *  quantity formatter so the total and the measurement rows it sums use
+ *  one decimal separator (K-12: the legend read "485.3" directly above
+ *  the "248,5" rows it summed). Count-only groups are whole pieces and
+ *  must not inherit the decimal ladder (K-14: "17,00 pcs" for windows);
+ *  pass `isCount` from the group summary. */
+export function formatGroupTotal(
+  total: number,
+  unit: string,
+  locale?: string,
+  isCount = false,
+): string {
+  const rendered = isCount ? formatCountQuantity(total, locale) : formatQuantity(total, locale);
+  return unit ? `${rendered} ${unit}` : rendered;
 }

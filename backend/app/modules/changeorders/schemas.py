@@ -17,7 +17,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.modules.changeorders.intl import REASON_CATEGORY_PATTERN
+from app.modules.changeorders.intl import REASON_CATEGORY_PATTERN, VARIATION_TYPE_PATTERN
 
 # Bound ints at PostgreSQL INT4 max - anything above is clearly bad input and
 # would overflow the underlying column.
@@ -84,6 +84,15 @@ class ChangeOrderCreate(BaseModel):
         default="client_request",
         pattern=REASON_CATEGORY_PATTERN,
     )
+    # Which instrument this is, as against ``reason_category``, which is why it
+    # exists. Optional and null by default: a change order is often raised
+    # before anyone has decided whether it will be settled as an instructed
+    # change, a signed site record or a claim, and forcing that choice at
+    # creation would make the field a guess rather than a record.
+    variation_type: str | None = Field(
+        default=None,
+        pattern=VARIATION_TYPE_PATTERN,
+    )
     schedule_impact_days: int = Field(default=0, ge=0, le=_INT32_MAX)
     # Empty when the caller does not specify one - the service resolves it
     # from the project's currency. NEVER default to a literal "EUR" here
@@ -126,6 +135,10 @@ class ChangeOrderUpdate(BaseModel):
     reason_category: str | None = Field(
         default=None,
         pattern=REASON_CATEGORY_PATTERN,
+    )
+    variation_type: str | None = Field(
+        default=None,
+        pattern=VARIATION_TYPE_PATTERN,
     )
     schedule_impact_days: int | None = Field(default=None, ge=0, le=_INT32_MAX)
     currency: str | None = Field(default=None, max_length=10)
@@ -199,15 +212,26 @@ class ChangeOrderResponse(BaseModel):
     title: str
     description: str
     reason_category: str
+    #: Null while nobody has decided which instrument settles this order.
+    variation_type: str | None = None
     status: str
     submitted_by: str | None = None
+    #: Who ``submitted_by`` names, when it carries a contact or user id rather
+    #: than a name someone typed. Null when the raw value is already a name,
+    #: when it points at nobody, and when contacts is not installed. A null
+    #: here never means the order was not submitted - the raw column says that.
+    submitted_by_name: str | None = None
     approved_by: str | None = None
+    #: Who ``approved_by`` names - same rule as ``submitted_by_name``.
+    approved_by_name: str | None = None
     # BUG-351: rejection writes its own dedicated columns (never reuses
     # ``approved_*``). Exposing them on the wire lets the UI render an honest
     # "Rejected by X on DATE" card. A CO rejected straight from 'submitted'
     # sets only ``rejected_*`` - without these fields the rejection was
     # invisible to users.
     rejected_by: str | None = None
+    #: Who ``rejected_by`` names - same rule as ``submitted_by_name``.
+    rejected_by_name: str | None = None
     submitted_at: str | None = None
     approved_at: str | None = None
     rejected_at: str | None = None
@@ -329,6 +353,12 @@ class ApprovalAdvanceRequest(BaseModel):
 
     decision: str = Field(..., pattern=r"^(approved|rejected)$")
     comments: str | None = Field(default=None, max_length=2000)
+    #: Bill of quantities the approved scope is written into. Only read on the
+    #: final step, where the chain hands over to the same writeback the
+    #: single-step approval performs. Without it a project holding several
+    #: unlocked bills would refuse the last approver a question they had no
+    #: field to answer.
+    boq_id: UUID | None = Field(default=None)
 
 
 class ApprovalRow(BaseModel):
@@ -453,10 +483,21 @@ class ImpactBOQ(BaseModel):
     sections_added: int = 0
     positions_added: int = 0
     target_boq_name: str | None = None
+    #: More than one unlocked bill exists, so the preview cannot name one.
+    #: Distinct from ``target_boq_name is None``, which means there is no
+    #: unlocked bill at all. A client that treats both as "the project BOQ"
+    #: reproduces the guess this field exists to expose.
+    target_boq_ambiguous: bool = False
 
 
 class SimulateImpactResponse(BaseModel):
-    """Full what-if impact projection for a change order."""
+    """Full what-if impact projection for a change order.
+
+    ``fx_converted`` is about the change order's own cost. ``baseline_fx_missing``
+    is about the project budget it is being compared against: any currency listed
+    there is counted in its own units inside every figure below, so the comparison
+    is between one converted number and one blended one.
+    """
 
     order_id: UUID
     code: str
@@ -466,6 +507,7 @@ class SimulateImpactResponse(BaseModel):
     co_currency: str = ""
     co_cost_base: str = "0"
     fx_converted: bool = True
+    baseline_fx_missing: list[str] = Field(default_factory=list)
     cost: ImpactCost
     schedule: ImpactSchedule
     evm: ImpactEVM

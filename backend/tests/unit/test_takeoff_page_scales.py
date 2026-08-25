@@ -94,3 +94,82 @@ def test_document_page_scales_update_rejects_oversized_bypage() -> None:
     big = {str(i): {"pixelsPerUnit": 100, "unitLabel": "m"} for i in range(5001)}
     with pytest.raises(ValidationError):
         DocumentPageScalesUpdate(page_scales={"byPage": big})
+
+
+def test_document_response_exposes_owning_project() -> None:
+    """The document response carries the document's own ``project_id``.
+
+    The viewer uses it as the fallback identity for measurement persistence
+    when no project is active in the app header - without the field a server
+    document opened from /markups on a clean profile never fetches its
+    measurements. Nullable: a legacy direct upload without a project still
+    serialises (as ``None``) instead of failing validation.
+    """
+    from types import SimpleNamespace
+
+    from app.modules.takeoff.schemas import TakeoffDocumentResponse
+
+    project_id = uuid.uuid4()
+    row = SimpleNamespace(
+        id="doc-1",
+        filename="A-201 Floor Plan.pdf",
+        pages=3,
+        size_bytes=1024,
+        status="analyzed",
+        content_type="application/pdf",
+        created_at=None,
+        pages_without_text=0,
+        pages_without_text_list=[],
+        page_scales=None,
+        project_id=project_id,
+    )
+    assert TakeoffDocumentResponse.model_validate(row).project_id == project_id
+
+    row.project_id = None
+    assert TakeoffDocumentResponse.model_validate(row).project_id is None
+
+
+def test_get_document_route_payload_carries_owning_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The GET /documents/{id} handler itself returns ``project_id``.
+
+    The endpoint declares no ``response_model`` and hand-builds its payload,
+    so a field added to ``TakeoffDocumentResponse`` never reaches the wire on
+    its own - this pins the handler dict, not the schema.
+    """
+    import asyncio
+    from types import SimpleNamespace
+    from typing import cast
+
+    from app.modules.takeoff import router as takeoff_router
+    from app.modules.takeoff.service import TakeoffService
+
+    doc = SimpleNamespace(
+        id="doc-1",
+        filename="A-201 Floor Plan.pdf",
+        pages=1,
+        size_bytes=1024,
+        status="analyzed",
+        extracted_text="",
+        page_data=None,
+        analysis=None,
+        created_at=None,
+        page_scales=None,
+        project_id="0d55dd4e-7d1c-4a4a-9d4e-2f6a3b8c9e01",
+    )
+
+    class _Service:
+        async def get_document(self, doc_id: str) -> SimpleNamespace:
+            return doc
+
+    async def _allow(*_args: object) -> None:
+        return None
+
+    monkeypatch.setattr(takeoff_router, "_verify_takeoff_doc_access", _allow)
+    service = cast(TakeoffService, _Service())
+
+    payload = asyncio.run(takeoff_router.get_document("doc-1", service=service))
+    assert payload["project_id"] == "0d55dd4e-7d1c-4a4a-9d4e-2f6a3b8c9e01"
+
+    doc.project_id = None
+    payload = asyncio.run(takeoff_router.get_document("doc-1", service=service))
+    assert payload["project_id"] is None

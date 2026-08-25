@@ -27,6 +27,7 @@ from fastapi import (
     status,
 )
 
+from app.core.content_disposition import attachment_disposition
 from app.core.email import EmailAttachment, get_email_service
 from app.core.file_signature import (
     ALLOWED_PHOTO_TYPES,
@@ -41,6 +42,7 @@ from app.core.i18n import get_locale
 from app.core.json_merge import merge_metadata
 from app.core.pdf_fonts import BODY_FONT, register_pdf_fonts
 from app.core.sanitize import strip_dangerous_html
+from app.core.storage import module_uploads_dir
 from app.core.validation.messages import translate
 from app.dependencies import CurrentUserPayload, RequirePermission, SessionDep
 from app.modules.portal.dependencies import RequirePortalSession
@@ -1301,8 +1303,10 @@ async def wont_fix_snag(
     return SnagResponse.model_validate(await service.mark_snag_wont_fix(s_id, fix_notes=fix_notes))
 
 
-# Directory where snag photos live on disk. Mirrors punchlist's layout.
-_SNAG_PHOTOS_DIR = Path("uploads/snag/photos")
+# Directory where snag photos live on disk. Mirrors punchlist's layout, and
+# like it is anchored on the platform data dir so the photos do not follow the
+# directory the process was started in.
+_SNAG_PHOTOS_DIR = module_uploads_dir("snag", "photos")
 _snag_logger = logging.getLogger(__name__)
 
 
@@ -1347,12 +1351,14 @@ async def upload_snag_photo(
         )
     _ = mime_for_signature(detected)  # validated; not stored on Snag yet.
 
-    _SNAG_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
     ext = Path(file.filename or "photo.jpg").suffix or ".jpg"
     filename = f"{s_id}_{uuid.uuid4().hex[:8]}{ext}"
     filepath = _SNAG_PHOTOS_DIR / filename
 
+    # mkdir inside the try - it is the call that fails on an unwritable storage
+    # root, and outside it the failure never reached this handler.
     try:
+        _SNAG_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
         filepath.write_bytes(content)
     except Exception:
         _snag_logger.exception("Unable to save snag photo %s", s_id)
@@ -1612,6 +1618,13 @@ async def warranty_claim_pdf(
             media_type="application/pdf",
             headers={
                 "Content-Disposition": (f'attachment; filename="warranty-claim-{w_id}.pdf"'),
+                # The claim sheet is assembled from the English labels a few
+                # lines above and no locale reaches them, so the route declares
+                # English instead of letting the Accept-Language middleware name
+                # the reader's language on it. The buyer's own description is
+                # copied through verbatim, which is a different axis: the labels
+                # are English whatever language the complaint was written in.
+                "Content-Language": "en",
             },
         )
     except Exception:
@@ -1621,6 +1634,10 @@ async def warranty_claim_pdf(
             content=body.encode("utf-8"),
             media_type="text/plain; charset=utf-8",
             headers={
+                # Same text, same labels, so the same declaration. A fallback
+                # that drops the header would make the language of this document
+                # depend on whether reportlab happened to be importable.
+                "Content-Language": "en",
                 "Content-Disposition": (f'attachment; filename="warranty-claim-{w_id}.txt"'),
             },
         )
@@ -2880,6 +2897,7 @@ async def quote_sales_contract_taxes(
 
     from app.modules.property_dev.tax_engine import (
         MissingRegionSubcodeError,
+        RateNotInForceError,
         UnknownRateClassError,
         UnsupportedJurisdictionError,
     )
@@ -2921,6 +2939,30 @@ async def quote_sales_contract_taxes(
             status_code=422,
             detail={
                 "error": "unknown_rate_class",
+                "message": str(exc),
+            },
+        )
+    except RateNotInForceError as exc:
+        # The engine refuses a date it has no rate for rather than quoting zero,
+        # so this is the one place that decides what the caller is told. Both
+        # dates go in the body: knowing that the earliest rate begins
+        # 2011-01-04 is what lets a caller correct the signing date or add the
+        # historical band, where a bare amount of zero left nothing to act on.
+        # effective_on arrives from the contract's own signing_date rather than
+        # from the request body, so a stored contract signed before the band is
+        # what reaches here.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "rate_not_in_force",
+                "jurisdiction": exc.jurisdiction,
+                "rate_class": exc.rate_class,
+                # isoformat rather than the date objects: this detail dict is
+                # rendered by FastAPI's default handler through json.dumps,
+                # which has no encoder for date and would turn the refusal into
+                # a 500. The clauses above pass only strings for the same reason.
+                "effective_on": exc.effective_on.isoformat(),
+                "effective_from": exc.effective_from.isoformat(),
                 "message": str(exc),
             },
         )
@@ -4347,6 +4389,13 @@ async def stream_propdev_document(
             "Content-Disposition": f'attachment; filename="{filename}"',
             "X-Document-Type": doc_type,
             "X-Document-Locale": locale,
+            # ``locale`` has been through _normalise_locale, so it names a
+            # catalogue that exists on disk rather than the one the reader
+            # asked for. Say it in the standard header too: X-Document-Locale
+            # carries the same value but no client is obliged to know it, and
+            # without this the Accept-Language middleware would label an
+            # English deed with whatever language the browser requested.
+            "Content-Language": locale,
         },
     )
 
@@ -4697,7 +4746,12 @@ _DOC_TEMPLATE_CATALOGUE: list[dict[str, Any]] = [
 ]
 
 
-_CUSTOM_TEMPLATES_DIR = Path("uploads/property_dev/custom_templates")
+# Anchored on the platform data dir. Templates record their own location in
+# ``storage_path``, so nothing has to be migrated: rows written before this
+# hold the old working-directory-relative string and keep resolving the way
+# they always did, while new rows hold an absolute path that no longer depends
+# on where the process was started.
+_CUSTOM_TEMPLATES_DIR = module_uploads_dir("property_dev", "custom_templates")
 _CUSTOM_TEMPLATE_MAX_MB = 50
 _CUSTOM_TEMPLATE_MAX_BYTES = _CUSTOM_TEMPLATE_MAX_MB * 1024 * 1024
 _ALLOWED_CUSTOM_TEMPLATE_EXTENSIONS: tuple[str, ...] = (
@@ -5257,13 +5311,15 @@ async def upload_custom_document_template(
             )
         resolved_project_id = first_proj
 
-    _CUSTOM_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
     template_id = uuid.uuid4()
     safe_basename = Path(raw_filename).name
     stored_filename = f"{template_id.hex}_{safe_basename}"
     filepath = _CUSTOM_TEMPLATES_DIR / stored_filename
 
+    # mkdir inside the try - it is the call that fails on an unwritable storage
+    # root, and outside it the failure never reached this handler.
     try:
+        _CUSTOM_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
         filepath.write_bytes(content)
     except Exception:
         _CUSTOM_TEMPLATE_LOG.exception("Unable to save template upload")
@@ -5373,7 +5429,7 @@ async def download_custom_document_template(
         content=data,
         media_type=row.content_type or "application/octet-stream",
         headers={
-            "Content-Disposition": (f'attachment; filename="{row.filename}"'),
+            "Content-Disposition": attachment_disposition(row.filename),
         },
     )
 
@@ -5604,7 +5660,6 @@ async def save_text_custom_document_template(
             ) from exc
 
     # ── Persist file ──
-    _CUSTOM_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
     if existing_row is not None:
         # Reuse stored_path so we don't litter the directory on every save.
         target_path = Path(existing_row.storage_path)
@@ -5626,7 +5681,10 @@ async def save_text_custom_document_template(
         basename = _resolve_safe_text_filename(name, doc_type, content_type)
         target_path = _CUSTOM_TEMPLATES_DIR / f"{template_id.hex}_{basename}"
 
+    # mkdir inside the try - it is the call that fails on an unwritable storage
+    # root, and outside it the failure never reached this handler.
     try:
+        _CUSTOM_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
         target_path.write_text(content_text, encoding="utf-8")
     except Exception:
         _CUSTOM_TEMPLATE_LOG.exception("Unable to save text template")
@@ -6246,6 +6304,17 @@ async def compliance_regulator_report(
             media_type="application/pdf",
             headers={
                 "Content-Disposition": (f'attachment; filename="{report.regulator}_{report.quarter}.pdf"'),
+                # Read off the report rather than assumed, because on this route
+                # the language is a property of the regulator and not of the
+                # reader: the 214-FZ quarterly report is written in Russian and
+                # the other three in English. A literal here would mislabel one
+                # of the four for every reader, and the reader cannot be the
+                # input either, since a Russian filing does not become English
+                # because a London office opened it. The generator is the only
+                # thing that knows, so it says. The payload branch below
+                # deliberately declares nothing: whether a machine submission
+                # carries a language is a separate decision from this one.
+                "Content-Language": report.language,
             },
         )
     if as_ == "payload":
@@ -6264,6 +6333,7 @@ async def compliance_regulator_report(
         quarter=report.quarter,
         generated_at=report.generated_at,
         pdf_base64=base64.b64encode(report.pdf_bytes).decode("ascii"),
+        pdf_language=report.language,
         payload_format=report.payload_format,
         payload_base64=base64.b64encode(report.payload_bytes).decode("ascii"),
         summary=report.summary,

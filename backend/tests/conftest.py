@@ -57,9 +57,41 @@ if _sys.platform == "win32":
 
 #: How recently a data dir may have been touched and still be considered a
 #: candidate for reaping. Only a belt to the braces below: a session that has
-#: just called ``mkdtemp`` but whose postmaster has not yet written its pid file
-#: is indistinguishable from a dead one for a second or two.
+#: just created its data dir but whose postmaster has not yet written its pid
+#: file is indistinguishable from a dead one for a second or two.
 _PG_REAP_MIN_AGE_SECONDS = 3600
+
+
+def _pg_temp_root() -> Path:
+    """Where this session's throwaway cluster lives.
+
+    The system temp dir everywhere except a CI runner, which hands us a scratch
+    directory of its own in ``RUNNER_TEMP`` and is the only place that has to be
+    told apart. On GitHub's ``windows-latest`` the system temp dir is inside the
+    elevated administrator's profile (``C:\\Users\\runneradmin\\AppData\\Local\\
+    Temp``), and every Windows shard of the backend matrix died there before a
+    single test ran: initdb reported ``could not create directory
+    "<parent>": File exists`` for a parent that Python had just created and
+    could still stat. ``RUNNER_TEMP`` on the same runner image works - the
+    cross-OS e2e workflow boots this identical cluster from
+    ``${{ runner.temp }}`` and its three windows-latest jobs are green - so the
+    data dir moves there rather than the failure being chased through Win32.
+
+    Set ``OE_TEST_PG_ROOT`` to override, which is the escape hatch if a machine
+    ever has the same trouble with its own temp dir.
+    """
+    for candidate in (os.environ.get("OE_TEST_PG_ROOT"), os.environ.get("RUNNER_TEMP")):
+        if candidate and candidate.strip():
+            root = Path(candidate.strip())
+            if root.is_dir():
+                return root
+    return Path(tempfile.gettempdir())
+
+
+#: Resolved once, before the reaper runs, because both have to agree on it: a
+#: reaper looking in the system temp dir while the session writes to
+#: ``RUNNER_TEMP`` would silently stop collecting anything on CI.
+_PG_TEMP_ROOT = _pg_temp_root()
 
 
 def _reap_stale_pg_data_dirs() -> None:
@@ -83,7 +115,7 @@ def _reap_stale_pg_data_dirs() -> None:
     import time
     import warnings
 
-    root = Path(tempfile.gettempdir())
+    root = _PG_TEMP_ROOT
     now = time.time()
     removed = 0
     still_running = 0
@@ -113,11 +145,22 @@ def _reap_stale_pg_data_dirs() -> None:
 
 if not os.environ.get("DATABASE_URL", "").strip():
     import atexit
+    import secrets
 
     from app.core import embedded_pg
 
     _reap_stale_pg_data_dirs()
-    _PG_DATA_DIR = Path(tempfile.mkdtemp(prefix="oe-tests-pg-"))
+    # NAMED, NOT CREATED, and deliberately not ``mkdtemp``. ``boot()`` already
+    # does ``mkdir(parents=True, exist_ok=True)`` on ``<dir>/pgdata``, so it
+    # builds this whole chain itself - which is exactly the shape the green
+    # windows-latest e2e jobs use, where OE_DATA_DIR names a directory nothing
+    # has created yet. ``mkdtemp`` differs in creating the parent up front with
+    # mode 0o700, and that parent is the one initdb named in the Windows CI
+    # failure. Do not add a ``mkdir`` back here for safety: it would put the
+    # pre-created parent back and undo half of this fix. The name is random for
+    # the same reason mkdtemp's is - concurrent suites on one machine must not
+    # share a cluster.
+    _PG_DATA_DIR = _PG_TEMP_ROOT / f"oe-tests-pg-{secrets.token_hex(8)}"
     if not embedded_pg.boot(_PG_DATA_DIR):
         raise RuntimeError(
             "could not boot embedded PostgreSQL for the test session; set "
@@ -131,8 +174,8 @@ if not os.environ.get("DATABASE_URL", "").strip():
     def _stop_and_remove_cluster() -> None:
         """Stop the postmaster, then take its data dir with it.
 
-        Stopping is not enough on its own. The dir is ours, we made it with
-        ``mkdtemp``, and nothing else will ever come for it. This does not run
+        Stopping is not enough on its own. The dir is ours, this session named
+        it, and nothing else will ever come for it. This does not run
         when the process is killed outright, which is what the reaper above is
         for: between them, a clean run leaves nothing and a killed run is
         cleared by whichever run comes next.
@@ -459,24 +502,32 @@ def _keep_validation_rules_registered():
     depended on where pytest happened to order it. Measured 2026-07-27 with
     ``tests/unit/test_validation_registry_populated.py``, which saw the registry
     holding ``[]`` at the first test and every built-in set present by the second.
+
+    Both calls used to be guarded by ``"boq_quality" not in list_rule_sets()``,
+    and that sentinel is not a property of the built-in pack alone. Modules
+    register into the same shared set name as an import side effect:
+    ``app.modules.esg.validators`` registers its rule into
+    ``["esg_site", "boq_quality"]`` when the module is imported. In a process
+    that imported it first, the sentinel reads as satisfied while ``din276``,
+    ``gaeb`` and the rest of the built-ins are still absent, so the repair never
+    runs and the engine answers a request for them with an empty ``skipped``
+    report that is indistinguishable from a pass. That is the shape of the
+    2026-08-21 shard failure in ``tests/unit/test_boq_import_validation.py``.
+    Register unconditionally instead. The call is idempotent, it costs 0.1 ms,
+    and it is what the product itself does at all three of its call sites.
     """
     import app.core.validation.engine as _eng
+    from app.core.validation.rules import register_builtin_rules
 
     engine = _eng.validation_engine
     registry = engine.registry
-    if "boq_quality" not in registry.list_rule_sets():
-        from app.core.validation.rules import register_builtin_rules
-
-        register_builtin_rules()
+    register_builtin_rules()
     try:
         yield
     finally:
         _eng.validation_engine = engine
         engine.registry = registry
-        if "boq_quality" not in registry.list_rule_sets():
-            from app.core.validation.rules import register_builtin_rules
-
-            register_builtin_rules()
+        register_builtin_rules()
 
 
 @pytest.fixture

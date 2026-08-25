@@ -3,8 +3,8 @@
 import clsx from 'clsx';
 import { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { usePreferencesStore } from '../../stores/usePreferencesStore';
-import { currencyMinorUnits } from './currencyMinorUnits';
+import { useNumberLocale } from '../../stores/usePreferencesStore';
+import { currencyFractionDigits } from '../lib/money';
 
 export interface MoneyDisplayProps {
   amount: number | string | null | undefined;
@@ -13,6 +13,18 @@ export interface MoneyDisplayProps {
   showCode?: boolean;
   className?: string;
   colorize?: boolean;
+  /**
+   * Sign policy, forwarded to `Intl`. Pass `'always'` on a delta or a movement
+   * so the plus lands where the reader's language puts it, rather than in
+   * front for everyone as a hand-written `+<MoneyDisplay …/>` would be.
+   *
+   * It does not on its own hold the sign to the figure. `+` and a currency
+   * symbol are both prefix-numeric under the Unicode line-breaking algorithm
+   * and only one prefix may open an unbreakable numeric run, so a narrow cell
+   * may break between them however the string was produced. The cell has to
+   * say `whitespace-nowrap` too.
+   */
+  signDisplay?: Intl.NumberFormatOptions['signDisplay'];
 }
 
 /**
@@ -47,14 +59,21 @@ export function MoneyDisplay({
   showCode = false,
   className,
   colorize = false,
+  signDisplay,
 }: MoneyDisplayProps) {
-  // Selector-scoped read for numberLocale — without it the component
-  // re-renders on every unrelated preferences-store mutation (v4.3 audit).
+  // The one resolver, not the raw preference: it reads the number-format
+  // setting when the reader has chosen one and the UI language when they have
+  // not, which is what keeps this component agreeing with every surface that
+  // formats through `getNumberLocale()`, which is now all of them. It is
+  // the hook form of that same resolver, so this component also repaints
+  // when the setting moves. It is selector-scoped inside, so the
+  // component still stays out of the re-render path for unrelated
+  // preferences-store mutations (v4.3 audit).
   // Note: we no longer read `currency` from the prefs store. The
   // user-preferences default (always 'EUR' for a fresh install) was
   // the source of the silent-EUR-fallback bug a Saudi user would hit
   // on every money cell. Caller must supply a `currency` prop.
-  const numberLocale = usePreferencesStore((s) => s.numberLocale);
+  const numberLocale = useNumberLocale();
 
   // Above the early returns below: a hook after them renders a different
   // number of hooks on the null-amount branch alone, which React only
@@ -118,10 +137,20 @@ export function MoneyDisplay({
 
   const safeCurrency = trimmedCurrency;
 
-  // Resolve the ISO-4217 minor-unit count. Falls back to 2 for currencies
-  // we don't have an explicit override for — matching pre-fix behaviour
-  // for the long tail of legacy/local-only currencies.
-  const minorUnits = currencyMinorUnits(safeCurrency);
+  // How many decimals this currency gets, asked of the engine rather than of a
+  // table of our own. On a screen the reader decides, and how many minor units
+  // a currency has is part of what their language considers normal for it: a
+  // Hungarian does not write forints with fillér, so a static ISO 4217 list
+  // that made us print them was arguing with the reader rather than with CLDR.
+  // The opposite rule is the right one for a document and lives with the code
+  // that writes documents, because an invoice declares its amount to a bank
+  // and a tax office, whose authority is ISO 4217 and not the locale of
+  // whoever is looking at a screen.
+  //
+  // This is the same call the bill and every other money surface make, so one
+  // currency cannot carry two decimal counts depending on which page you are
+  // on. Five codes used to do exactly that: COP, HUF, IDR, LBP and PKR.
+  const minorUnits = currencyFractionDigits(safeCurrency);
 
   let formatted: string;
   try {
@@ -131,6 +160,7 @@ export function MoneyDisplay({
         minimumFractionDigits: compact ? 0 : minorUnits,
         maximumFractionDigits: compact ? 1 : minorUnits,
         ...(compact ? { notation: 'compact' as const } : {}),
+        ...(signDisplay ? { signDisplay } : {}),
       });
       formatted = `${numFmt.format(numericValue)} ${safeCurrency}`;
     } else {
@@ -139,6 +169,7 @@ export function MoneyDisplay({
         currency: safeCurrency,
         minimumFractionDigits: compact ? 0 : minorUnits,
         maximumFractionDigits: compact ? 1 : minorUnits,
+        ...(signDisplay ? { signDisplay } : {}),
       };
       if (compact) {
         opts.notation = 'compact';
@@ -149,7 +180,11 @@ export function MoneyDisplay({
     // numericValue is guaranteed numeric (parseFloat above) but be paranoid
     // — Number.isFinite guards against ±Infinity sneaking past the NaN gate.
     const n = Number.isFinite(numericValue) ? numericValue : 0;
-    formatted = `${n.toFixed(minorUnits)} ${safeCurrency}`;
+    // The sign survives the fallback too. A caller asks for it because the
+    // alternative is writing one by hand next to the number, and a path that
+    // drops it hands that problem straight back on whichever host took it.
+    const plus = signDisplay === 'always' && n >= 0 ? '+' : '';
+    formatted = `${plus}${n.toFixed(minorUnits)} ${safeCurrency}`;
   }
 
   const colorClass = colorize

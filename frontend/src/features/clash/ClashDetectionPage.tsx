@@ -118,8 +118,10 @@ import { ClashRuleEditor } from './ClashRuleEditor';
 import { ClashRuleSuggestionBanner } from './ClashRuleSuggestionBanner';
 import { ClashKpiPanel } from './ClashKpiPanel';
 import { ClashSmartIssuesPanel } from './ClashSmartIssuesPanel';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 import { ClashCostImpactColumn } from './ClashCostImpactColumn';
 import { clashGuide } from './clashGuide';
+import { fmtFixed, getIntlLocale } from '@/shared/lib/formatters';
 
 const EMPTY_SET: ClashSelectionSet = {
   disciplines: [],
@@ -3956,12 +3958,12 @@ export function ClashDetectionPage() {
                               </td>
                               <td className="px-3 py-2 text-right tabular-nums text-content-secondary">
                                 {r.clash_type === 'hard'
-                                  ? `${r.penetration_m.toFixed(3)} m`
+                                  ? `${fmtFixed(r.penetration_m, 3)} m`
                                   : '—'}
                               </td>
                               <td className="px-3 py-2 text-right tabular-nums text-content-secondary">
                                 {r.clash_type === 'clearance'
-                                  ? `${r.distance_m.toFixed(3)} m`
+                                  ? `${fmtFixed(r.distance_m, 3)} m`
                                   : '—'}
                               </td>
                               <td className="px-3 py-2">
@@ -5749,7 +5751,7 @@ function ModelCardPicker({
                     </Badge>
                     <span className="inline-flex items-center gap-1 text-2xs text-content-tertiary">
                       <Layers className="h-3 w-3" />
-                      {m.element_count.toLocaleString()}{' '}
+                      {m.element_count.toLocaleString(getNumberLocale())}{' '}
                       {t('clash.ctx_elements', {
                         defaultValue: 'elements',
                       })}
@@ -6328,7 +6330,7 @@ function ClashDetailPanel({
                         </span>
                         <span>·</span>
                         <span className="tabular-nums">
-                          {new Date(h.ts).toLocaleString()}
+                          {new Date(h.ts).toLocaleString(getIntlLocale())}
                         </span>
                       </div>
                       <p className="mt-0.5 break-words text-2xs text-content-primary">
@@ -6530,7 +6532,7 @@ function ClashCommentBubble({
           {comment.author}
         </span>
         <span className="shrink-0 tabular-nums">
-          {new Date(comment.ts).toLocaleString()}
+          {new Date(comment.ts).toLocaleString(getIntlLocale())}
         </span>
       </div>
       <p className="mt-1 whitespace-pre-wrap break-words text-xs text-content-primary">

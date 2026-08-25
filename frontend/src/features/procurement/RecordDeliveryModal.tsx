@@ -21,7 +21,8 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, PackageCheck, Truck } from 'lucide-react';
 import { WideModal, Button } from '@/shared/ui';
-import { apiGet, apiPost, getErrorMessage } from '@/shared/lib/api';
+import { apiGet, apiPost, getErrorMessage, type Page } from '@/shared/lib/api';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useToastStore } from '@/stores/useToastStore';
 
 /* ── Wire types (subset of the backend POResponse / GR contract) ───────── */
@@ -138,16 +139,20 @@ export function RecordDeliveryModal({
   // List receivable POs for the picker. We pull the project's POs and keep
   // only the issued / partially_received ones (the only states the create
   // endpoint accepts).
-  const { data: receivablePOs, isLoading: posLoading } = useQuery({
+  const { data: receivablePage, isLoading: posLoading } = useQuery({
     queryKey: ['procurement-receivable-po', projectId],
     queryFn: () =>
-      apiGet<{ items: POListItem[] }>(
-        `/v1/procurement/?project_id=${projectId}&limit=100`,
-      ).then((res) =>
-        res.items.filter((po) => RECEIVABLE_STATUSES.includes(po.status)),
-      ),
+      apiGet<Page<POListItem>>(`/v1/procurement/?project_id=${projectId}&limit=100`),
     enabled: open && Boolean(projectId),
   });
+  // The status narrowing happens here rather than in the queryFn so the cache
+  // holds the server page and the notice below can say how much of the
+  // project's order book this picker was handed. 100 is the server cap, so a
+  // project past 100 orders has receivable ones this dropdown cannot offer.
+  const receivablePOs = useMemo(
+    () => (receivablePage?.items ?? []).filter((po) => RECEIVABLE_STATUSES.includes(po.status)),
+    [receivablePage],
+  );
 
   // Load the chosen PO's line items so the form can offer a row per item.
   const { data: poDetail, isLoading: detailLoading } = useQuery({
@@ -326,13 +331,17 @@ export function RecordDeliveryModal({
                       defaultValue: 'Select a purchase order',
                     })}
               </option>
-              {(receivablePOs ?? []).map((po) => (
+              {receivablePOs.map((po) => (
                 <option key={po.id} value={po.id}>
                   {po.po_number}
                   {po.vendor_name ? ` - ${po.vendor_name}` : ''}
                 </option>
               ))}
             </select>
+            {/* Counts the order book, not the receivable subset: the dropdown
+                offers what it was handed, and this says how much it was
+                handed. Anything else would compare two different sets. */}
+            {receivablePage && <TruncationNotice page={receivablePage} className="mt-1" />}
           </div>
           <div className="sm:col-span-1">
             <label className="block text-sm font-medium text-content-primary mb-1.5">
@@ -366,7 +375,7 @@ export function RecordDeliveryModal({
         </div>
 
         {/* ── No receivable POs ────────────────────────────────────────── */}
-        {!posLoading && (receivablePOs ?? []).length === 0 && (
+        {!posLoading && receivablePOs.length === 0 && (
           <div className="rounded-lg border border-border-light bg-surface-secondary/40 px-4 py-6 text-center text-sm text-content-tertiary">
             <Truck size={22} className="mx-auto mb-2 opacity-60" />
             {t('procurement.gr_no_receivable_po', {

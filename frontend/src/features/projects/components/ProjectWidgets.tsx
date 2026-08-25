@@ -50,7 +50,7 @@ import {
   Activity as ActivityIcon,
 } from 'lucide-react';
 import { Card, Skeleton, Badge, AuthImage } from '@/shared/ui';
-import { apiGet, ApiError } from '@/shared/lib/api';
+import { apiGet, ApiError, type Page } from '@/shared/lib/api';
 import { getPhotoThumbUrl } from '@/features/documents/api';
 import { useProjectWidgetsRollup } from '../hooks/useProjectWidgetsRollup';
 import type {
@@ -63,6 +63,8 @@ import type {
   ProjectRFIInboxPayload,
   ProjectVariationsPayload,
 } from '@/shared/api/dashboardRollup';
+import { fmtFixed } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Rollup provider ──────────────────────────────────────────────────── */
 
@@ -264,14 +266,20 @@ export function RFIInboxWidget({ projectId }: { projectId: string }) {
   // Fall back to the per-widget query if the provider isn't mounted —
   // some surfaces (storybook, ad-hoc embeds) render the widget standalone.
   const rollup = useRollupSlice('project_rfi_inbox');
-  const fallback = useGracefulQuery<RFIItem[]>(
+  // The route answers with a page envelope. Nothing in TypeScript would have
+  // caught this call reading it as an array: the type argument is written by
+  // hand here, so the compiler believes whatever this line claims.
+  const fallback = useGracefulQuery<Page<RFIItem>>(
     ['proj-widget-rfi', projectId],
     `/v1/rfi/?project_id=${projectId}&status=open&limit=5`,
     !rollup.hasProvider,
   );
+  // No truncation notice: the widget asks for five, is headed "Latest open
+  // requests" and carries a "View all" link to the register. A feed that
+  // names itself a sample is not claiming to be the whole set.
   const data: RFIItem[] | null | undefined = rollup.hasProvider
     ? (rollup.data?.items as RFIItem[] | undefined) ?? null
-    : fallback.data;
+    : fallback.data?.items ?? null;
   const isLoading = rollup.hasProvider ? rollup.isLoadingFromRollup : fallback.isLoading;
 
   const title = t('project.widget.rfi-inbox.title', { defaultValue: 'RFI inbox' });
@@ -336,7 +344,7 @@ function fmtMoney(value: number | string | null | undefined, currency = 'EUR'): 
   if (value == null) return `${currency} 0`;
   const n = typeof value === 'string' ? Number(value) : value;
   if (!Number.isFinite(n)) return `${currency} 0`;
-  return `${currency} ${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  return `${currency} ${n.toLocaleString(getNumberLocale(), { maximumFractionDigits: 0 })}`;
 }
 
 export function ChangeOrdersPulseWidget({
@@ -450,14 +458,16 @@ export function DailyDiaryWidget({ projectId }: { projectId: string }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const rollup = useRollupSlice('project_daily_diary');
-  const fallback = useGracefulQuery<DiaryItem[]>(
+  const fallback = useGracefulQuery<Page<DiaryItem>>(
     ['proj-widget-diary', projectId],
     `/v1/daily-diary/diaries/?project_id=${projectId}&limit=1`,
     !rollup.hasProvider,
   );
+  // No truncation notice here on purpose: the widget asks for one diary and
+  // shows one. It is a deliberate top-of-list, not a list that came up short.
   const data: DiaryItem[] | null | undefined = rollup.hasProvider
     ? (rollup.data?.items as DiaryItem[] | undefined) ?? null
-    : fallback.data;
+    : fallback.data?.items;
   const isLoading = rollup.hasProvider ? rollup.isLoadingFromRollup : fallback.isLoading;
 
   const latest = data?.[0];
@@ -643,14 +653,14 @@ export function VariationsWidget({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const rollup = useRollupSlice('project_variations');
-  const fallback = useGracefulQuery<VariationRequest[]>(
+  const fallback = useGracefulQuery<Page<VariationRequest>>(
     ['proj-widget-var', projectId],
     `/v1/variations/variation-requests/?project_id=${projectId}&limit=50`,
     !rollup.hasProvider,
   );
   const data: VariationRequest[] | null | undefined = rollup.hasProvider
     ? (rollup.data?.items as VariationRequest[] | undefined) ?? null
-    : fallback.data;
+    : fallback.data?.items ?? null;
   const isLoading = rollup.hasProvider ? rollup.isLoadingFromRollup : fallback.isLoading;
 
   const stats = useMemo(() => {
@@ -824,17 +834,21 @@ interface FileItem {
 function fmtBytes(bytes?: number): string {
   if (!bytes) return '—';
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024) return `${fmtFixed(bytes / 1024, 1)} KB`;
+  return `${fmtFixed(bytes / (1024 * 1024), 1)} MB`;
 }
 
 export function RecentFilesWidget({ projectId }: { projectId: string }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { data, isLoading } = useGracefulQuery<FileItem[]>(
+  // Deliberately a "latest five" card, not a register: the page it reads is
+  // sliced to five below and the card carries a "view all" link, so it is the
+  // one shape in this wave that needs no truncation notice.
+  const { data: filePage, isLoading } = useGracefulQuery<Page<FileItem>>(
     ['proj-widget-files', projectId],
     `/v1/documents/?project_id=${projectId}`,
   );
+  const data = filePage?.items ?? null;
 
   const title = t('project.widget.recent-files.title', { defaultValue: 'Recent files' });
   const subtitle = t('project.widget.recent-files.card_subtitle', {
@@ -962,18 +976,18 @@ export function PhotoStripWidget({ projectId }: { projectId: string }) {
   //     field (a ``field`` tag) - see ``isFieldImageDocument``. The twin
   //     ``category === 'photo'`` rows mirrored beside every photo upload are
   //     skipped here so a site photo appears exactly once.
-  const photos = useGracefulQuery<PhotoItem[]>(
+  const photos = useGracefulQuery<Page<PhotoItem>>(
     ['proj-widget-photos', projectId],
     `/v1/documents/photos/?project_id=${projectId}`,
   );
-  const docs = useGracefulQuery<DocImageItem[]>(
+  const docs = useGracefulQuery<Page<DocImageItem>>(
     ['proj-widget-photo-docs', projectId],
     `/v1/documents/?project_id=${projectId}`,
   );
 
   const images = useMemo<StripImage[]>(() => {
     const out: StripImage[] = [];
-    for (const p of photos.data ?? []) {
+    for (const p of photos.data?.items ?? []) {
       out.push({
         key: `photo:${p.id}`,
         // Photo thumbnails are bearer-protected; <AuthImage> fetches them
@@ -983,7 +997,7 @@ export function PhotoStripWidget({ projectId }: { projectId: string }) {
         href: `/projects/${projectId}?tab=photos`,
       });
     }
-    for (const d of docs.data ?? []) {
+    for (const d of docs.data?.items ?? []) {
       // Only field-tagged images (never office renders, never the photo
       // twin rows) join the dedicated site photos above.
       if (!isFieldImageDocument(d)) continue;
@@ -1136,14 +1150,23 @@ export function QualityNCRWidget({ projectId }: { projectId: string }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const rollup = useRollupSlice('project_quality_ncr');
-  const fallback = useGracefulQuery<NCRItem[]>(
+  // The route answers with a page envelope, same as the RFI widget above.
+  const fallback = useGracefulQuery<Page<NCRItem>>(
     ['proj-widget-ncr', projectId],
     `/v1/qms/ncrs?project_id=${projectId}&limit=50`,
     !rollup.hasProvider,
   );
+  // Unlike the RFI feed, this widget does not show the rows it fetched: it
+  // counts them and presents the counts as the project's NCR position. On
+  // the fallback path those counts are therefore taken over 50 rows and not
+  // over the register, so a project with more than 50 reports too few open
+  // and too few major. The rollup path does not have the problem, because
+  // the provider counts server side. Fixing the fallback needs a sentence
+  // that says a number was computed over part of the set, which is not a
+  // string this codebase has yet, so it is reported rather than invented.
   const data: NCRItem[] | null | undefined = rollup.hasProvider
     ? (rollup.data?.items as NCRItem[] | undefined) ?? null
-    : fallback.data;
+    : fallback.data?.items ?? null;
   const isLoading = rollup.hasProvider ? rollup.isLoadingFromRollup : fallback.isLoading;
 
   const counts = useMemo(() => {
@@ -1507,7 +1530,7 @@ export function ScheduleStripWidget({ projectId }: { projectId: string }) {
         <div className="space-y-2">
           <div className="flex items-center gap-3">
             <span className="text-2xl font-bold tabular-nums text-content-primary leading-none">
-              {Number.isFinite(pct) ? pct.toFixed(0) : 0}%
+              {Number.isFinite(pct) ? fmtFixed(pct, 0) : 0}%
             </span>
             <div className="flex-1 h-2 bg-surface-secondary rounded-full overflow-hidden">
               <div

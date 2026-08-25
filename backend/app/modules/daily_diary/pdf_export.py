@@ -17,6 +17,13 @@ conventions). The layout is:
 - Footer: author / supervisor line plus a generated-at timestamp and a
   page number on every page.
 
+Localization: every fixed string comes from the module-local catalog in
+:mod:`app.modules.daily_diary.pdf_translations` (English default plus
+German), selected by the ``locale`` argument of
+:func:`generate_diary_pdf`. Dates follow the locale's format and the
+``weather_summary`` snapshot renders as a human sentence fragment
+("20 °C, clear" / "20 °C, klar"), never as raw dictionary keys.
+
 Security note (mirrors BUG-PDF01 / BUG-PDF02 in ``boq/pdf_export.py``):
     ReportLab's ``Paragraph`` parses a subset of HTML. Any string that
     originates outside the application (entry titles, descriptions,
@@ -51,7 +58,25 @@ from reportlab.platypus import (
 )
 
 from app.core.pdf_branding import branded_cover_brand, branded_doc_metadata, branded_header_logo
-from app.core.pdf_fonts import BODY_FONT, BOLD_FONT, register_pdf_fonts
+from app.core.pdf_fonts import (
+    BODY_FONT,
+    BOLD_FONT,
+    pdf_font_for_text,
+    pdf_style_for_text,
+    register_pdf_fonts,
+)
+from app.modules.daily_diary.pdf_translations import (
+    DEFAULT_PDF_LOCALE,
+    entry_type_label,
+    format_iso_date,
+    normalize_pdf_locale,
+    status_label,
+    tr,
+    weather_summary_text,
+)
+from app.modules.daily_diary.pdf_translations import (
+    fmt_number as _fmt_number,
+)
 
 # Register the bundled Unicode (DejaVu) faces so Cyrillic / Greek / accented
 # Latin text renders as glyphs rather than tofu boxes. Idempotent and safe.
@@ -65,18 +90,8 @@ MARGIN_TOP = 22 * mm
 MARGIN_BOTTOM = 18 * mm
 USABLE_WIDTH = PAGE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT
 
-# Human-readable labels for the diary entry types declared in schemas.py.
-_ENTRY_TYPE_LABELS: dict[str, str] = {
-    "visitor": "Visitors",
-    "event": "Events",
-    "delivery": "Materials delivered",
-    "completion": "Work performed",
-    "incident_summary": "Safety and incidents",
-    "inspection_summary": "Inspections",
-    "photo_note": "Photo notes",
-    "general": "General notes",
-}
 # Display order for the entry sections (work first, housekeeping last).
+# The per-locale section labels live in pdf_translations.entry_type_label.
 _ENTRY_TYPE_ORDER: tuple[str, ...] = (
     "completion",
     "event",
@@ -97,6 +112,10 @@ def _safe_para(text: Any, style: ParagraphStyle) -> Paragraph:
     becomes an empty string; other non-string values are coerced through
     ``str`` before escaping.
 
+    The face is chosen here too, for the same reason the escaping is: this is
+    the one place the diary's user-written strings pass through. A site diary
+    kept on a Chinese job is written in Chinese.
+
     Args:
         text: The value to render. May be ``None`` or any type.
         style: The paragraph style to apply.
@@ -110,29 +129,7 @@ def _safe_para(text: Any, style: ParagraphStyle) -> Paragraph:
         rendered = text
     else:
         rendered = str(text)
-    return Paragraph(html.escape(rendered, quote=True), style)
-
-
-def _fmt_number(value: Any, decimals: int = 1) -> str:
-    """Format a numeric value (int / float / Decimal) for display.
-
-    Args:
-        value: The value to format. ``None`` renders as a dash.
-        decimals: Number of decimal places to keep.
-
-    Returns:
-        A formatted string, or ``"-"`` when the value is missing or not
-        numeric.
-    """
-    if value is None:
-        return "-"
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return "-"
-    if number == int(number):
-        return str(int(number))
-    return f"{number:.{decimals}f}"
+    return Paragraph(html.escape(rendered, quote=True), pdf_style_for_text(style, rendered))
 
 
 def _build_styles() -> dict[str, ParagraphStyle]:
@@ -219,12 +216,13 @@ def _build_styles() -> dict[str, ParagraphStyle]:
     }
 
 
-def _make_footer(author_line: str, generated_date: str) -> Any:
+def _make_footer(author_line: str, generated_date: str, locale: str) -> Any:
     """Return an ``onPage`` callback drawing the footer on every page.
 
     Args:
         author_line: Pre-escaped, plain-text author / supervisor line.
         generated_date: The generated-at timestamp string.
+        locale: PDF locale for the fixed footer strings.
 
     Returns:
         A ``func(canvas, doc)`` callable for a reportlab PageTemplate.
@@ -235,15 +233,21 @@ def _make_footer(author_line: str, generated_date: str) -> Any:
         canvas.setStrokeColor(colors.HexColor("#cccccc"))
         canvas.setLineWidth(0.5)
         canvas.line(MARGIN_LEFT, 13 * mm, PAGE_WIDTH - MARGIN_RIGHT, 13 * mm)
-        canvas.setFont(BODY_FONT, 7)
         canvas.setFillColor(colors.HexColor("#999999"))
         # Footer carries the workspace brand (issue #284) plus the supervisor
         # line; the brand falls back to the default name when none is set.
         brand = branded_cover_brand()
-        left_text = author_line or brand
-        canvas.drawString(MARGIN_LEFT, 9 * mm, left_text[:120])
-        canvas.drawString(MARGIN_LEFT, 6 * mm, f"{brand}  |  Generated: {generated_date}")
-        canvas.drawRightString(PAGE_WIDTH - MARGIN_RIGHT, 9 * mm, f"Page {doc.page}")
+        left_text = (author_line or brand)[:120]
+        # The supervisor's name and a white-labelled brand are both user data.
+        canvas.setFont(pdf_font_for_text(left_text), 7)
+        canvas.drawString(MARGIN_LEFT, 9 * mm, left_text)
+        generated_line = tr(locale, "footer_generated", timestamp=generated_date)
+        brand_line = f"{brand}  |  {generated_line}"
+        canvas.setFont(pdf_font_for_text(brand_line), 7)
+        canvas.drawString(MARGIN_LEFT, 6 * mm, brand_line)
+        page_line = tr(locale, "footer_page", page=doc.page)
+        canvas.setFont(pdf_font_for_text(page_line), 7)
+        canvas.drawRightString(PAGE_WIDTH - MARGIN_RIGHT, 9 * mm, page_line)
         canvas.restoreState()
         # The uploaded white-label logo (if any) appears top-right in the header
         # margin on every page; the dark title band stays inside the content
@@ -258,16 +262,22 @@ def _build_header(
     diary_date: str,
     status: str,
     styles: dict[str, ParagraphStyle],
+    locale: str,
 ) -> list[Any]:
     """Build the dark header band with project, date and status."""
+    doc_title = tr(locale, "doc_title")
+    status_text = status_label(status, locale).upper()
     header = Table(
         [
             [
-                _safe_para(project_name or "Daily Site Diary", styles["brand"]),
-                Paragraph(html.escape((status or "open").upper(), quote=True), styles["status"]),
+                _safe_para(project_name or doc_title, styles["brand"]),
+                Paragraph(html.escape(status_text, quote=True), pdf_style_for_text(styles["status"], status_text)),
             ],
             [
-                Paragraph(f"Daily Site Diary &nbsp;&middot;&nbsp; {html.escape(diary_date)}", styles["header_date"]),
+                Paragraph(
+                    f"{html.escape(doc_title)} &nbsp;&middot;&nbsp; {html.escape(diary_date)}",
+                    pdf_style_for_text(styles["header_date"], doc_title),
+                ),
                 "",
             ],
         ],
@@ -294,6 +304,7 @@ def _build_overview(
     supervisor_name: str | None,
     completeness: Decimal | float | None,
     styles: dict[str, ParagraphStyle],
+    locale: str,
 ) -> list[Any]:
     """Build the overview block (supervisor, labour, equipment, score)."""
     completeness_text = "-"
@@ -305,15 +316,15 @@ def _build_overview(
 
     rows = [
         [
-            Paragraph("Site supervisor", styles["label"]),
-            _safe_para(supervisor_name or "Not recorded", styles["value"]),
-            Paragraph("Labour on site", styles["label"]),
+            Paragraph(tr(locale, "site_supervisor"), styles["label"]),
+            _safe_para(supervisor_name or tr(locale, "not_recorded"), styles["value"]),
+            Paragraph(tr(locale, "labour_on_site"), styles["label"]),
             Paragraph(str(getattr(diary, "labour_count", 0) or 0), styles["value"]),
         ],
         [
-            Paragraph("Completeness", styles["label"]),
+            Paragraph(tr(locale, "completeness"), styles["label"]),
             Paragraph(completeness_text, styles["value"]),
-            Paragraph("Equipment on site", styles["label"]),
+            Paragraph(tr(locale, "equipment_on_site"), styles["label"]),
             Paragraph(str(getattr(diary, "equipment_count", 0) or 0), styles["value"]),
         ],
     ]
@@ -333,30 +344,32 @@ def _build_overview(
             ]
         )
     )
-    return [Paragraph("Overview", styles["section"]), table]
+    return [Paragraph(tr(locale, "overview"), styles["section"]), table]
 
 
 def _build_weather(
     diary: Any,
     weather_records: list[Any],
     styles: dict[str, ParagraphStyle],
+    locale: str,
 ) -> list[Any]:
     """Build the weather section.
 
     Prefers granular ``WeatherRecord`` rows. When none exist, falls back
-    to the diary's ``weather_summary`` JSON snapshot, and finally to an
+    to the diary's ``weather_summary`` JSON snapshot rendered as a human
+    sentence fragment (never raw dictionary keys), and finally to an
     empty-state line.
     """
-    flow: list[Any] = [Paragraph("Weather", styles["section"])]
+    flow: list[Any] = [Paragraph(tr(locale, "weather"), styles["section"])]
 
     if weather_records:
         header = [
-            Paragraph("Time", styles["cell_head"]),
-            Paragraph("Source", styles["cell_head"]),
-            Paragraph("Temp (C)", styles["cell_head"]),
-            Paragraph("Wind (km/h)", styles["cell_head"]),
-            Paragraph("Precip (mm)", styles["cell_head"]),
-            Paragraph("Conditions", styles["cell_head"]),
+            Paragraph(tr(locale, "weather_time"), styles["cell_head"]),
+            Paragraph(tr(locale, "weather_source"), styles["cell_head"]),
+            Paragraph(tr(locale, "weather_temp"), styles["cell_head"]),
+            Paragraph(tr(locale, "weather_wind"), styles["cell_head"]),
+            Paragraph(tr(locale, "weather_precip"), styles["cell_head"]),
+            Paragraph(tr(locale, "weather_conditions"), styles["cell_head"]),
         ]
         data: list[list[Any]] = [header]
         for rec in weather_records:
@@ -402,23 +415,24 @@ def _build_weather(
         return flow
 
     summary = getattr(diary, "weather_summary", None) or {}
-    if isinstance(summary, dict) and summary:
-        parts = [f"{html.escape(str(k))}: {html.escape(str(v))}" for k, v in summary.items()]
-        flow.append(Paragraph(" &nbsp;&middot;&nbsp; ".join(parts), styles["body"]))
+    summary_line = weather_summary_text(summary, locale) if isinstance(summary, dict) else ""
+    if summary_line:
+        flow.append(Paragraph(html.escape(summary_line, quote=True), pdf_style_for_text(styles["body"], summary_line)))
     else:
-        flow.append(Paragraph("No weather recorded for this day.", styles["empty"]))
+        flow.append(Paragraph(tr(locale, "weather_empty"), styles["empty"]))
     return flow
 
 
 def _build_entries(
     entries: list[Any],
     styles: dict[str, ParagraphStyle],
+    locale: str,
 ) -> list[Any]:
     """Build the grouped diary-entry sections (work, deliveries, etc.)."""
-    flow: list[Any] = [Paragraph("Site record", styles["section"])]
+    flow: list[Any] = [Paragraph(tr(locale, "site_record"), styles["section"])]
 
     if not entries:
-        flow.append(Paragraph("No entries recorded for this diary.", styles["empty"]))
+        flow.append(Paragraph(tr(locale, "entries_empty"), styles["empty"]))
         return flow
 
     grouped: dict[str, list[Any]] = {}
@@ -434,7 +448,7 @@ def _build_entries(
             grouped[entry_type],
             key=lambda e: getattr(e, "entry_time", None) or datetime.min.replace(tzinfo=UTC),
         )
-        label = _ENTRY_TYPE_LABELS.get(entry_type, entry_type.replace("_", " ").title())
+        label = entry_type_label(entry_type, locale)
         block: list[Any] = [
             Paragraph(
                 f"<b>{html.escape(label)}</b> ({len(bucket)})",
@@ -457,7 +471,9 @@ def _build_entries(
             rows.append(
                 [
                     Paragraph(html.escape(time_text), styles["cell"]),
-                    Paragraph(detail, styles["cell"]),
+                    # The face comes from the unescaped source strings, which
+                    # is what the entry was actually written in.
+                    Paragraph(detail, pdf_style_for_text(styles["cell"], f"{title}{description}")),
                 ]
             )
         table = Table(rows, colWidths=[USABLE_WIDTH * 0.12, USABLE_WIDTH * 0.88])
@@ -480,16 +496,16 @@ def _build_entries(
     return flow
 
 
-def _build_notes(diary: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
+def _build_notes(diary: Any, styles: dict[str, ParagraphStyle], locale: str) -> list[Any]:
     """Build the free-text notes block."""
     notes = (getattr(diary, "notes", None) or "").strip()
-    flow: list[Any] = [Paragraph("Notes", styles["section"])]
+    flow: list[Any] = [Paragraph(tr(locale, "notes"), styles["section"])]
     if notes:
         # Preserve author line breaks as <br/> after escaping.
         escaped = html.escape(notes).replace("\n", "<br/>")
-        flow.append(Paragraph(escaped, styles["body"]))
+        flow.append(Paragraph(escaped, pdf_style_for_text(styles["body"], notes)))
     else:
-        flow.append(Paragraph("No additional notes.", styles["empty"]))
+        flow.append(Paragraph(tr(locale, "notes_empty"), styles["empty"]))
     return flow
 
 
@@ -501,6 +517,7 @@ def generate_diary_pdf(
     weather_records: list[Any] | None = None,
     supervisor_name: str | None = None,
     completeness: Decimal | float | None = None,
+    locale: str = DEFAULT_PDF_LOCALE,
 ) -> bytes:
     """Render a single daily site diary into PDF bytes.
 
@@ -514,6 +531,9 @@ def generate_diary_pdf(
             falls back to ``diary.weather_summary`` when empty.
         supervisor_name: Display name of the site supervisor. Optional.
         completeness: Completeness score in the range ``0.0`` to ``1.0``.
+        locale: Language for the document's fixed strings and date
+            formats (``"en"`` / ``"de"``); region subtags are stripped
+            and unsupported values fall back to English.
 
     Returns:
         The rendered PDF document as bytes (starts with ``b"%PDF"``).
@@ -521,12 +541,17 @@ def generate_diary_pdf(
     entries = entries or []
     weather_records = weather_records or []
     styles = _build_styles()
+    locale = normalize_pdf_locale(locale)
 
-    diary_date = str(getattr(diary, "diary_date", "") or "")
+    diary_date = format_iso_date(str(getattr(diary, "diary_date", "") or ""), locale)
     status_text = str(getattr(diary, "status", "open") or "open")
-    generated_date = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
+    generated_date = datetime.now(tz=UTC).strftime(tr(locale, "datetime_format"))
 
-    author_line = f"Supervisor: {supervisor_name}" if supervisor_name else "Site supervisor: not recorded"
+    author_line = (
+        tr(locale, "footer_supervisor", name=supervisor_name)
+        if supervisor_name
+        else tr(locale, "footer_supervisor_missing")
+    )
 
     buffer = io.BytesIO()
     frame = Frame(
@@ -539,7 +564,7 @@ def generate_diary_pdf(
     template = PageTemplate(
         id="body",
         frames=[frame],
-        onPage=_make_footer(author_line, generated_date),
+        onPage=_make_footer(author_line, generated_date, locale),
     )
     doc = BaseDocTemplate(
         buffer,
@@ -548,9 +573,9 @@ def generate_diary_pdf(
         rightMargin=MARGIN_RIGHT,
         topMargin=MARGIN_TOP,
         bottomMargin=MARGIN_BOTTOM,
-        title=f"Daily Site Diary - {diary_date}",
+        title=f"{tr(locale, 'doc_title')} - {diary_date}",
         author=branded_doc_metadata()["author"],
-        subject="Daily Site Diary",
+        subject=tr(locale, "doc_title"),
         creator=branded_doc_metadata()["creator"],
         producer=branded_doc_metadata()["producer"],
         keywords=branded_doc_metadata()["keywords"],
@@ -558,11 +583,11 @@ def generate_diary_pdf(
     doc.addPageTemplates([template])
 
     flowables: list[Any] = []
-    flowables.extend(_build_header(project_name, diary_date, status_text, styles))
-    flowables.extend(_build_overview(diary, supervisor_name, completeness, styles))
-    flowables.extend(_build_weather(diary, weather_records, styles))
-    flowables.extend(_build_entries(entries, styles))
-    flowables.extend(_build_notes(diary, styles))
+    flowables.extend(_build_header(project_name, diary_date, status_text, styles, locale))
+    flowables.extend(_build_overview(diary, supervisor_name, completeness, styles, locale))
+    flowables.extend(_build_weather(diary, weather_records, styles, locale))
+    flowables.extend(_build_entries(entries, styles, locale))
+    flowables.extend(_build_notes(diary, styles, locale))
 
     doc.build(flowables)
     pdf_bytes = buffer.getvalue()

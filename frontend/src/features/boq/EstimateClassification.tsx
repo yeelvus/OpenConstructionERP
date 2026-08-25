@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronUp, Info } from 'lucide-react';
 import { boqApi } from './api';
 import { ApiError } from '@/shared/lib/api';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 /* ── Class color & style mapping ──────────────────────────────────────── */
 
@@ -184,7 +185,7 @@ function MetricRow({
           />
         </div>
         <span className="w-10 text-right font-mono text-content-primary tabular-nums">
-          {pct.toFixed(0)}%
+          {fmtPercent(pct, 0)}
         </span>
       </div>
     </div>
@@ -247,7 +248,9 @@ export function EstimateClassification({ boqId }: { boqId: string }) {
                 {classification.estimate_class}
               </h3>
               <span className={`text-xs font-medium ${style.text}`}>
-                {classification.class_label}
+                {t(`estimateBasis.class.label.${classification.estimate_class}`, {
+                  defaultValue: classification.class_label,
+                })}
               </span>
             </div>
             <p className="text-xs text-content-tertiary mt-0.5">

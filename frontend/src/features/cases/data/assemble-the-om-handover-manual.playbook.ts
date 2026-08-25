@@ -15,6 +15,7 @@ const playbook: Playbook = {
   order: 269,
   category: "handover",
   companyTypes: ["general-contractor", "project-manager", "owner-operator"],
+  roles: ["document-controller", "project-manager", "site-manager"],
   icon: "BookOpen",
   titleKey: "cases.assemble_the_om_handover_manual.title",
   titleDefault: "Assemble the O&M handover manual",
@@ -107,7 +108,7 @@ const playbook: Playbook = {
       whyKey: "cases.assemble_the_om_handover_manual.step.certificates.why",
       whyDefault:
         "These certificates are the proof that the systems were tested and left working, and the warranties are what the client leans on when something fails. A missing certificate at handover often blocks occupation.",
-      moduleLabel: "Quality",
+      moduleLabel: "Quality Management",
       moduleLabelKey: "nav.qms",
       to: "/projects/:projectId/qms",
     },

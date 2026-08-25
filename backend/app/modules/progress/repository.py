@@ -47,6 +47,30 @@ def _latest_first() -> tuple:
     )
 
 
+def _oldest_first() -> tuple:
+    """Return the ORDER BY the paginated register reads in, oldest first.
+
+    The mirror of :func:`_latest_first`, and total for the same reason. The
+    register is read a page at a time with OFFSET/LIMIT, and OFFSET is only
+    meaningful against a total order: ``recorded_at`` defaults to the DB's
+    ``now()``, which in PostgreSQL is the TRANSACTION timestamp, so every
+    entry one write appends shares it, and a bulk field import appends many.
+    Ordered by the timestamp alone the database may arrange the tied rows
+    differently for each OFFSET it serves, so a walk through the pages can
+    return one entry twice and never return another, with each page looking
+    correct on its own.
+
+    ``seq`` is NOT NULL and unique per INSERT, so ending on it makes the
+    order total. That is the property this tuple exists to hold, and the one
+    ``test_progress_entry_page_walk`` asserts: the last key must be a column
+    that cannot tie.
+    """
+    return (
+        ProgressEntry.recorded_at.asc(),
+        ProgressEntry.seq.asc(),
+    )
+
+
 class ProgressRepository:
     """Data access for ProgressEntry and ProgressPlan models."""
 
@@ -73,13 +97,16 @@ class ProgressRepository:
         offset: int = 0,
         limit: int = 100,
     ) -> list[ProgressEntry]:
-        """Return progress entries, optionally filtered by position or period."""
+        """Return progress entries, optionally filtered by position or period.
+
+        Paginated, so the order has to be total; see :func:`_oldest_first`.
+        """
         stmt = select(ProgressEntry).where(ProgressEntry.project_id == project_id)
         if boq_position_id is not None:
             stmt = stmt.where(ProgressEntry.boq_position_id == boq_position_id)
         if period_label is not None:
             stmt = stmt.where(ProgressEntry.period_label == period_label)
-        stmt = stmt.order_by(ProgressEntry.recorded_at.asc()).offset(offset).limit(limit)
+        stmt = stmt.order_by(*_oldest_first()).offset(offset).limit(limit)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -177,6 +204,12 @@ class ProgressRepository:
         when no observation has been recorded yet (the bridge then skips that
         line). Scoped by ``project_id`` so a position id from another project
         can never leak an observation across the tenant boundary.
+
+        Ordered by :func:`_latest_first`, like every other "latest wins" read
+        here. Ordering by ``recorded_at`` alone was not a total order: two
+        readings sharing a timestamp - a correction typed in the same
+        transaction as the reading it corrects, or a bulk import - left the
+        winner to the planner.
         """
         stmt = (
             select(ProgressEntry)
@@ -184,7 +217,7 @@ class ProgressRepository:
                 ProgressEntry.project_id == project_id,
                 ProgressEntry.boq_position_id == boq_position_id,
             )
-            .order_by(ProgressEntry.recorded_at.desc())
+            .order_by(*_latest_first())
             .limit(1)
         )
         result = await self.session.execute(stmt)
@@ -200,6 +233,10 @@ class ProgressRepository:
         progress report. Returns ``None`` when no project-level entry has
         been recorded yet (the reporting layer then falls back to the
         cumulative series).
+
+        Ordered by :func:`_latest_first`: this is the headline percentage on
+        the report, so it has to be the same winner the rest of the module
+        would pick, not whichever row a coarse timestamp happened to favour.
         """
         stmt = (
             select(ProgressEntry)
@@ -207,7 +244,7 @@ class ProgressRepository:
                 ProgressEntry.project_id == project_id,
                 ProgressEntry.boq_position_id.is_(None),
             )
-            .order_by(ProgressEntry.recorded_at.desc())
+            .order_by(*_latest_first())
             .limit(1)
         )
         result = await self.session.execute(stmt)
@@ -223,6 +260,11 @@ class ProgressRepository:
         Used by the reporting module to summarise a reporting window
         (e.g. ``2026-W22``) on the progress report: the number of
         observations and the latest reading inside that window.
+
+        "Newest first" is :func:`_latest_first`, not ``recorded_at`` alone.
+        The caller reads the window's headline percentage off element 0, so
+        the first row has to be the same winner the rest of the module would
+        pick; the count it takes alongside does not depend on the order.
         """
         stmt = (
             select(ProgressEntry)
@@ -230,7 +272,7 @@ class ProgressRepository:
                 ProgressEntry.project_id == project_id,
                 ProgressEntry.period_label == period_label,
             )
-            .order_by(ProgressEntry.recorded_at.desc())
+            .order_by(*_latest_first())
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

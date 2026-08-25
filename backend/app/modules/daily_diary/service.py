@@ -985,6 +985,27 @@ class DailyDiaryService:
         await self.get_diary(diary_id)
         return await self.entry_repo.list_for_diary(diary_id, entry_type=entry_type)
 
+    async def page_entries(
+        self,
+        diary_id: uuid.UUID,
+        *,
+        entry_type: str | None = None,
+        offset: int = 0,
+        limit: int = 500,
+    ) -> tuple[list[DiaryEntry], int]:
+        """One page of a diary's entries plus the count that matched.
+
+        Kept apart from :meth:`list_entries` rather than replacing it: that
+        one feeds the PDF and the completeness maths, which need every row.
+        """
+        await self.get_diary(diary_id)
+        return await self.entry_repo.page_for_diary(
+            diary_id,
+            entry_type=entry_type,
+            offset=offset,
+            limit=limit,
+        )
+
     async def get_entry(self, entry_id: uuid.UUID) -> DiaryEntry:
         entry = await self.entry_repo.get_by_id(entry_id)
         if entry is None:
@@ -1289,7 +1310,7 @@ class DailyDiaryService:
             },
         }
 
-    async def generate_diary_pdf(self, diary_id: uuid.UUID) -> tuple[bytes, str]:
+    async def generate_diary_pdf(self, diary_id: uuid.UUID, *, locale: str = "en") -> tuple[bytes, str]:
         """Render a daily diary into a PDF document.
 
         Gathers the diary header, its entries, the day's weather readings,
@@ -1298,6 +1319,9 @@ class DailyDiaryService:
 
         Args:
             diary_id: The diary to export.
+            locale: Language for the document's fixed strings and date
+                formats (``"en"`` / ``"de"``); unsupported values fall
+                back to English.
 
         Returns:
             A ``(pdf_bytes, diary_date)`` tuple. ``pdf_bytes`` starts with
@@ -1324,18 +1348,24 @@ class DailyDiaryService:
             weather_records=list(weather_records),
             supervisor_name=supervisor_name,
             completeness=completeness,
+            locale=locale,
         )
         return pdf_bytes, diary.diary_date
 
     async def _project_name(self, project_id: uuid.UUID) -> str:
-        """Best-effort project-name lookup for report headers."""
+        """Best-effort project-name lookup for report headers.
+
+        Returns an empty string when the project cannot be resolved; the
+        PDF renderer then falls back to the localized document title
+        instead of a hardcoded English one.
+        """
         try:
             from app.modules.projects.repository import ProjectRepository
 
             project = await ProjectRepository(self.session).get_by_id(project_id)
         except Exception:  # pragma: no cover - defensive cross-module guard
-            return "Daily Site Diary"
-        return (getattr(project, "name", None) or "Daily Site Diary") if project else "Daily Site Diary"
+            return ""
+        return (getattr(project, "name", None) or "") if project else ""
 
     async def _user_display_name(self, user_id: uuid.UUID | None) -> str | None:
         """Best-effort user display-name lookup (full name, else email)."""

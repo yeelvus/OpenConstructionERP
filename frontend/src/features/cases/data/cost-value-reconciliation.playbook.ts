@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 180,
   category: "commercial",
   companyTypes: ["general-contractor", "cost-consultant", "project-manager"],
+  roles: ["commercial-manager", "quantity-surveyor", "finance-manager"],
   icon: "Scale",
   titleKey: "cases.cost_value_reconciliation.title",
   titleDefault: "Run the cost-value reconciliation",
@@ -88,7 +89,7 @@ const playbook: Playbook = {
       whyKey: "cases.cost_value_reconciliation.step.value.why",
       whyDefault:
         "Cost and value only tell the truth when they are cut on the exact same date. Value the work straight, and the margin you read is one you can stand behind, not a number you have to explain away.",
-      moduleLabel: "Value",
+      moduleLabel: "Value Realized",
       moduleLabelKey: "nav.value",
       to: "/projects/:projectId/value",
     },

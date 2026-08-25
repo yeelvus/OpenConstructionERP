@@ -12,7 +12,8 @@ import { Button, Badge, EmptyState, Breadcrumb, RecoveryCard, ViewInBIMButton, M
 import { RequiresProject } from '@/shared/auth/RequiresProject';
 import SimilarItemsPanel from '@/shared/ui/SimilarItemsPanel';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
-import { apiGet, apiDelete, apiPatch } from '@/shared/lib/api';
+import { apiGet, apiDelete, apiPatch, isTruncated, type Page } from '@/shared/lib/api';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { uuid } from '@/shared/lib/browser';
 import { useToastStore } from '@/stores/useToastStore';
 import { useAuthStore } from '@/stores/useAuthStore';
@@ -24,6 +25,8 @@ import { fetchBIMModels } from '../bim/api';
 import { fetchDrawings } from '../dwg-takeoff/api';
 import { takeoffApi } from '../takeoff/api';
 import { documentsGuide } from './documentsGuide';
+import { fmtFixed } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Types ───────────────────────────────────────────────────────────── */
 
@@ -93,9 +96,9 @@ function cdeTransitionErrorKey(message: string): string | null {
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (bytes < 1024 * 1024) return `${fmtFixed(bytes / 1024, 1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${fmtFixed(bytes / (1024 * 1024), 1)} MB`;
+  return `${fmtFixed(bytes / (1024 * 1024 * 1024), 2)} GB`;
 }
 
 /**
@@ -529,17 +532,21 @@ export function DocumentsPage() {
 
   /* ── Data fetching ──────────────────────────────────────────────────── */
 
-  const { data: documents, isLoading, isError, error, refetch } = useQuery({
+  const { data: documentPage, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['documents', projectId, category, debouncedQuery],
     queryFn: () => {
       const params = new URLSearchParams();
       if (projectId) params.set('project_id', projectId);
       if (category !== 'all') params.set('category', category);
       if (debouncedQuery.trim()) params.set('search', debouncedQuery.trim());
-      return apiGet<DocItem[]>(`/v1/documents/?${params.toString()}`);
+      return apiGet<Page<DocItem>>(`/v1/documents/?${params.toString()}`);
     },
     enabled: !!projectId,
   });
+  // The server page. Everything below reads the rows; the register itself
+  // reads `documentPage` so the count it prints is the register's, not the
+  // page's.
+  const documents = documentPage?.items;
 
   // Open the deep-linked document in the preview modal as soon as it
   // appears in the list.  We clear the `?id=` query param immediately
@@ -655,9 +662,13 @@ export function DocumentsPage() {
 
   const stats = useMemo(() => {
     const docs = documents ?? [];
+    // `count` is the register's, from the server. `totalSize` can only be
+    // summed over the rows we hold, so it is rendered only when this page is
+    // the whole register - a byte total that silently means "of the first 50"
+    // is worse than no byte total.
     const totalSize = docs.reduce((sum, d) => sum + d.file_size, 0);
-    return { count: docs.length, totalSize };
-  }, [documents]);
+    return { count: documentPage?.total ?? docs.length, totalSize };
+  }, [documents, documentPage]);
 
   /* ── Delete mutation ────────────────────────────────────────────────── */
 
@@ -916,16 +927,18 @@ export function DocumentsPage() {
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
-          {!isLoading && documents && documents.length > 0 && (
+          {!isLoading && documentPage && documentPage.items.length > 0 && (
             <div className="hidden sm:flex items-center gap-3 text-xs text-content-tertiary">
               <span className="flex items-center gap-1.5">
                 <FileText size={13} />
                 {t('documents.total_count', { defaultValue: '{{count}} documents', count: stats.count })}
               </span>
-              <span className="flex items-center gap-1.5">
-                <HardDrive size={13} />
-                {t('documents.total_size', { defaultValue: '{{size}} total', size: formatSize(stats.totalSize) })}
-              </span>
+              {!isTruncated(documentPage) && (
+                <span className="flex items-center gap-1.5">
+                  <HardDrive size={13} />
+                  {t('documents.total_size', { defaultValue: '{{size}} total', size: formatSize(stats.totalSize) })}
+                </span>
+              )}
             </div>
           )}
           <input
@@ -997,11 +1010,11 @@ export function DocumentsPage() {
           {t('documents.supported_types', { defaultValue: 'PDF, images, Excel, DWG, IFC - any file type' })}
         </p>
         <div className="flex items-center justify-center gap-2 mt-3">
-          <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-red-500/8 text-red-500 border border-red-500/15 font-semibold">.pdf</span>
-          <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-emerald-500/8 text-emerald-600 border border-emerald-500/15 font-semibold">.img</span>
-          <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-green-500/8 text-green-600 border border-green-500/15 font-semibold">.xlsx</span>
-          <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-orange-500/8 text-orange-500 border border-orange-500/15 font-semibold">.dwg</span>
-          <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-blue-500/8 text-blue-500 border border-blue-500/15 font-semibold">.ifc</span>
+          <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-red-500/10 text-red-500 border border-red-500/15 font-semibold">.pdf</span>
+          <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-600 border border-emerald-500/15 font-semibold">.img</span>
+          <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-green-500/10 text-green-600 border border-green-500/15 font-semibold">.xlsx</span>
+          <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-orange-500/10 text-orange-500 border border-orange-500/15 font-semibold">.dwg</span>
+          <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-blue-500/10 text-blue-500 border border-blue-500/15 font-semibold">.ifc</span>
         </div>
         <button
           type="button"
@@ -1142,12 +1155,12 @@ export function DocumentsPage() {
                       <p className="text-sm font-medium text-content-primary truncate" title={s.display_name}>{s.display_name}</p>
                       <p className="text-[11px] text-content-tertiary mt-1 flex items-center gap-1.5">
                         <span className={`px-1.5 py-0.5 rounded font-mono text-[10px] font-semibold ${fmtColor[fmt] || 'bg-surface-secondary text-content-tertiary'}`}>{fmt || '—'}</span>
-                        <span>{s.element_count.toLocaleString()} elements</span>
+                        <span>{s.element_count.toLocaleString(getNumberLocale())} elements</span>
                       </p>
                     </div>
                   </div>
                   <div className="mt-3 pt-2.5 border-t border-border-light/60 flex items-center justify-between text-[10px] text-content-quaternary">
-                    <span>{s.extraction_time.toFixed(1)}s</span>
+                    <span>{fmtFixed(s.extraction_time, 1)}s</span>
                     {s.created_at && <span><DateDisplay value={s.created_at} /></span>}
                     {s.is_permanent ? (
                       <Badge variant="success" size="sm">{t('documents.saved', { defaultValue: 'Saved' })}</Badge>
@@ -1190,7 +1203,7 @@ export function DocumentsPage() {
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-medium text-content-primary truncate">{m.name}</p>
                     <p className="text-[10px] text-content-tertiary">
-                      {(m.model_format || m.format || 'BIM').toUpperCase()} &middot; {(m.element_count ?? 0).toLocaleString()} elem
+                      {(m.model_format || m.format || 'BIM').toUpperCase()} &middot; {(m.element_count ?? 0).toLocaleString(getNumberLocale())} elem
                     </p>
                   </div>
                 </div>
@@ -1240,6 +1253,16 @@ export function DocumentsPage() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* How much of the register is on screen. Gated on the server page, not
+          on the cards below: those are grouped by name so one card can stand
+          for several rows, and a count taken from them would be true of
+          neither the screen nor the register. Rendered outside the branch
+          below on purpose - a filter that matches nothing is exactly when the
+          reader has to be told only part of the register was searched. */}
+      {!isLoading && !isError && documentPage && (
+        <TruncationNotice page={documentPage} />
       )}
 
       {/* ── Documents grid ──────────────────────────────────────────────── */}

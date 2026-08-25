@@ -25,7 +25,7 @@ import {
 import { apiGet } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
-import { usePreferencesStore } from '@/stores/usePreferencesStore';
+import { useNumberLocale } from '@/stores/usePreferencesStore';
 import { projectsApi, type Project } from '@/features/projects/api';
 import {
   runSimulation,
@@ -35,6 +35,8 @@ import {
   type DistributionType,
   type BOQPositionForRisk,
 } from './data/montecarlo';
+import { fmtPercent } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 // ---------------------------------------------------------------------------
 // Money formatting
@@ -51,7 +53,7 @@ import {
  * strict no-silent-fallback policy.
  */
 function useCompactMoney(currency: string | undefined): (n: number) => string {
-  const numberLocale = usePreferencesStore((s) => s.numberLocale);
+  const numberLocale = useNumberLocale();
   return useCallback(
     (n: number): string => {
       const trimmed = typeof currency === 'string' ? currency.trim() : currency;
@@ -161,7 +163,7 @@ function Histogram({
               <div
                 key={`${bin.binStart}-${bin.binEnd}`}
                 className="flex-1 flex flex-col justify-end"
-                title={`${fmtMoney(bin.binStart)} – ${fmtMoney(bin.binEnd)}: ${bin.count} (${(bin.frequency * 100).toFixed(1)}%)`}
+                title={`${fmtMoney(bin.binStart)} – ${fmtMoney(bin.binEnd)}: ${bin.count} (${fmtPercent(bin.frequency * 100)})`}
               >
                 <div
                   className={`w-full rounded-t-sm transition-colors ${barColor}`}
@@ -278,7 +280,7 @@ function RiskDriversTable({
                       />
                     </div>
                     <span className="tabular-nums font-medium text-content-secondary w-12 text-right">
-                      {driver.contributionPct.toFixed(1)}%
+                      {fmtPercent(driver.contributionPct)}
                     </span>
                   </div>
                 </td>
@@ -813,7 +815,7 @@ export default function RiskAnalysisModule() {
                   <span className="text-content-quaternary">|</span>
                   <span>
                     {t('risk.iterations', { defaultValue: 'Iterations' })}:{' '}
-                    <span className="font-semibold text-content-primary">{result.iterations.toLocaleString()}</span>
+                    <span className="font-semibold text-content-primary">{result.iterations.toLocaleString(getNumberLocale())}</span>
                   </span>
                   <span className="text-content-quaternary">|</span>
                   <span>
@@ -845,7 +847,7 @@ export default function RiskAnalysisModule() {
                       </div>
                       <div className="text-lg font-bold text-blue-700 dark:text-blue-400 tabular-nums mt-0.5">
                         <MoneyDisplay amount={result.contingency} currency={projectCurrency} compact />{' '}
-                        <span className="text-sm font-medium text-blue-600/70">({result.contingencyPct.toFixed(1)}%)</span>
+                        <span className="text-sm font-medium text-blue-600/70">({fmtPercent(result.contingencyPct)})</span>
                       </div>
                     </div>
                     <div className="text-right">

@@ -439,13 +439,21 @@ class TestListStatusFilter:
             open_resp = await client.get(f"/v1/correspondence/?project_id={project_id}&status=open")
             closed_resp = await client.get(f"/v1/correspondence/?project_id={project_id}&status=closed")
         assert all_resp.status_code == 200, all_resp.text
-        assert len(all_resp.json()) == 3
+        all_page = all_resp.json()
+        assert len(all_page["items"]) == 3
+        # `total` counts what the filter matched, not what the page holds, so
+        # it has to move with the filter rather than with the page size.
+        assert all_page["total"] == 3
         assert open_resp.status_code == 200, open_resp.text
-        open_rows = open_resp.json()
+        open_page = open_resp.json()
+        open_rows = open_page["items"]
         assert len(open_rows) == 2
+        assert open_page["total"] == 2
         assert {r["status"] for r in open_rows} == {"open"}
-        closed_rows = closed_resp.json()
+        closed_page = closed_resp.json()
+        closed_rows = closed_page["items"]
         assert len(closed_rows) == 1
+        assert closed_page["total"] == 1
         assert closed_rows[0]["status"] == "closed"
 
     @pytest.mark.asyncio

@@ -17,6 +17,7 @@ import {
   type CohortRetentionRow,
 } from '../api';
 import { DashboardEmpty, DashboardSkeleton, num } from './_shared';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
 
 interface CohortRetentionWidgetProps {
   since?: string;
@@ -161,7 +162,7 @@ export function CohortRetentionWidget({
                           defaultValue:
                             'Cohort {{cohort}}: {{pct}}% retained at {{offset}}',
                           cohort: c.cohort_month,
-                          pct: pct.toFixed(1),
+                          pct: fmtFixed(pct, 1),
                           offset: o.label,
                         },
                       )}
@@ -170,7 +171,7 @@ export function CohortRetentionWidget({
                         className="inline-block min-w-[3rem] rounded px-1.5 py-0.5 text-2xs font-medium text-white"
                         style={{ backgroundColor: retentionColour(pct) }}
                       >
-                        {pct.toFixed(0)}%
+                        {fmtPercent(pct, 0)}
                       </span>
                     </td>
                   );

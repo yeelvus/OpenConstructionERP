@@ -69,13 +69,13 @@ TEMPLATE = DemoTemplate(
         "lng": 54.3897,
     },
     validation_rule_sets=["masterformat", "boq_quality"],
-    boq_name="Detailed Cost Estimate - Mixed-Use Tower (MasterFormat)",
+    boq_name="Detailed Cost Estimate - Mixed-Use Tower (division-based)",
     boq_description=(
-        "Detailed cost estimate for the Al Maryah mixed-use tower per CSI "
-        "MasterFormat, divisions 03 to 33. Direct costs in AED, before 5% VAT."
+        "Detailed cost estimate for the Al Maryah mixed-use tower by standard "
+        "division, 03 to 33. Direct costs in AED, before 5% VAT."
     ),
     boq_metadata={
-        "standard": "CSI MasterFormat 2018",
+        "standard": "Division-based work-results classification",
         "phase": "Detailed Estimate / Design Development",
         "base_date": "2026-Q2",
         "price_level": "Abu Dhabi 2026",

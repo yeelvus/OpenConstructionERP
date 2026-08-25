@@ -205,3 +205,105 @@ def test_ws_two_users_see_each_others_join(
             # ...and Alice receives a ``presence_join`` event for Bob.
             join = alice_ws.receive_json()
             assert join["event"] == "presence_join"
+
+
+def test_ws_survives_a_binary_frame(ws_client: TestClient) -> None:
+    """A binary frame must not take a working connection down.
+
+    The keep-alive loop used to read with ``receive_text()``, which raises
+    ``KeyError('text')`` when the frame carries ``bytes`` rather than text.
+    That unwound into the handler's catch-all, logged "presence websocket
+    crashed" and dropped the socket, taking the caller out of the presence
+    roster and every peer's view of them with it. Any client can send one in
+    a line, and several browser keep-alive helpers do, so the channel ignores
+    what it does not understand instead of closing on it.
+
+    The ping afterwards is the assertion: it is answered only if the socket
+    survived the binary frame. Measured against the unfixed handler, this test
+    does not fail fast - it STALLS. The handler returned without closing, so no
+    close frame ever reached the client and the receive below waited forever.
+    It is the per-test timeout that turns that into a red test, so do not read
+    a hang here as a flake; it is this defect coming back.
+    """
+    token, _ = _register_and_login(ws_client, "binaryframe")
+    _, entity_id = _seed_boq_position(ws_client, token)
+    path = f"/api/v1/collaboration_locks/presence/?entity_type=boq_position&entity_id={entity_id}&token={token}"
+
+    with ws_client.websocket_connect(path) as ws:
+        assert ws.receive_json()["event"] == "presence_snapshot"
+
+        ws.send_bytes(b"\x00\x01\x02 not text")
+        ws.send_text("still here?")
+        ws.send_text("ping")
+        assert ws.receive_json()["event"] == "pong"
+
+
+def _presence_path(entity_id: str, token: str) -> str:
+    return f"/api/v1/collaboration_locks/presence/?entity_type=boq_position&entity_id={entity_id}&token={token}"
+
+
+def test_snapshot_reports_a_free_lock_as_free(ws_client: TestClient) -> None:
+    """Nobody holds it, and the frame says so in the field that can be sure."""
+    token, _ = _register_and_login(ws_client, "lockfree")
+    _, entity_id = _seed_boq_position(ws_client, token)
+
+    with ws_client.websocket_connect(_presence_path(entity_id, token)) as ws:
+        snapshot = ws.receive_json()
+        assert snapshot["event"] == "presence_snapshot"
+        assert snapshot["lock"] is None
+        assert snapshot["lock_state"] == "free"
+
+
+def test_snapshot_reports_a_held_lock_as_held(ws_client: TestClient) -> None:
+    """Somebody holds it before the socket opens, so the first frame carries it."""
+    token, _ = _register_and_login(ws_client, "lockheld")
+    _, entity_id = _seed_boq_position(ws_client, token)
+    acquired = ws_client.post(
+        "/api/v1/collaboration_locks/",
+        json={"entity_type": "boq_position", "entity_id": entity_id, "ttl_seconds": 60},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert acquired.status_code == 201, acquired.text
+
+    with ws_client.websocket_connect(_presence_path(entity_id, token)) as ws:
+        snapshot = ws.receive_json()
+        assert snapshot["event"] == "presence_snapshot"
+        assert snapshot["lock"] is not None
+        assert snapshot["lock_state"] == "held"
+
+
+def test_snapshot_says_unknown_rather_than_free_when_the_lock_cannot_be_read(
+    ws_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lock the server could not read must not arrive looking like a free one.
+
+    ``lock`` is ``None`` in both cases and always was, which is the whole
+    defect: null already means nobody holds it, so a failed read borrowing
+    that value states something false with the confidence of the truth. The
+    assertion is therefore on the field that carries the difference, and the
+    two tests above are not decoration - without a case that expects ``free``,
+    this one passes just as well against a handler that answers ``unknown``
+    every time, which would be the same defect with the polarity flipped.
+    """
+    token, _ = _register_and_login(ws_client, "lockunknown")
+    _, entity_id = _seed_boq_position(ws_client, token)
+
+    from app.modules.collaboration_locks.service import CollabLockService
+
+    async def _boom(self, **kwargs):  # noqa: ANN001, ANN003 - stands in for a real read
+        raise RuntimeError("simulated failure reading the current lock")
+
+    monkeypatch.setattr(CollabLockService, "get_for_entity", _boom)
+
+    with ws_client.websocket_connect(_presence_path(entity_id, token)) as ws:
+        snapshot = ws.receive_json()
+        assert snapshot["event"] == "presence_snapshot"
+        assert snapshot["lock"] is None
+        assert snapshot["lock_state"] == "unknown", (
+            f"a lock that could not be read arrived as a free lock: lock_state was {snapshot['lock_state']!r}"
+        )
+        # The socket still works: a failed lock read degrades the frame, it
+        # does not end the connection, because the roster half is still true.
+        ws.send_text("ping")
+        assert ws.receive_json()["event"] == "pong"

@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 1017,
   category: "site",
   companyTypes: ["general-contractor", "subcontractor", "project-manager"],
+  roles: ["foreman", "site-manager", "procurement-buyer"],
   icon: "Truck",
   titleKey: "cases.receive_and_reconcile_material_deliveries.title",
   titleDefault: "Receive and reconcile material deliveries",
@@ -44,7 +45,7 @@ const playbook: Playbook = {
       whyDefault:
         "A delivery not recorded at the gate is a delivery you cannot prove arrived or dispute if it did not. The booking is the record everything downstream leans on.",
       moduleLabel: "Site Inventory",
-      moduleLabelKey: "nav.site_inventory",
+      moduleLabelKey: "site_inventory.title",
       to: "/projects/:projectId/site-inventory",
     },
     {
@@ -66,7 +67,7 @@ const playbook: Playbook = {
       whyDefault:
         "Signing for a load clean and finding it short later leaves you carrying the loss. Flagging the problem at the gate, in the record, is what keeps the supplier on the hook.",
       moduleLabel: "Site Inventory",
-      moduleLabelKey: "nav.site_inventory",
+      moduleLabelKey: "site_inventory.title",
       to: "/projects/:projectId/site-inventory",
     },
     {
@@ -109,7 +110,7 @@ const playbook: Playbook = {
       whyDefault:
         "Knowing what is on the ground stops double ordering and the panic buy at premium price. Live stock is also what lets you protect against theft and over-delivery of perishables.",
       moduleLabel: "Site Inventory",
-      moduleLabelKey: "nav.site_inventory",
+      moduleLabelKey: "site_inventory.title",
       to: "/projects/:projectId/site-inventory",
     },
   ],

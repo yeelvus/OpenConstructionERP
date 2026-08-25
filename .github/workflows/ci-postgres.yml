@@ -42,6 +42,27 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,server]"
+      # The desktop sidecar's hidden imports. First thing after the install,
+      # ahead of every step that needs a database: it needs none, it takes
+      # about three seconds, and a step that fails skips every step below it,
+      # so a guard placed last only runs on the days nothing else is broken.
+      #
+      # It is here at all because tests/unit runs in no lane that blocks a
+      # merge, and because what it guards is otherwise observable only on a tag
+      # build, by which point the artefact is published. The sidecar build for
+      # 15.4.0 printed 167 lines of "ERROR: Hidden import
+      # 'app.modules.<name>.<layer>' not found", every one of them a name
+      # desktop/pyinstaller.spec invented for a file that was never on disk. A
+      # dependency genuinely absent from the frozen bundle reports itself on
+      # the same channel in the same words, so the line worth reading would
+      # have arrived as one of 168 and been read by nobody - a broken install
+      # on a user's machine with a build log that could not warn us. The spec
+      # now asks the disk before it names a layer; this holds that open and
+      # fails on the first name it cannot back. It executes the spec with
+      # PyInstaller's symbols stubbed out and stats what the spec declares, so
+      # it runs anywhere the suite is collected and never builds anything.
+      - name: Run the desktop sidecar hidden-import guard
+        run: pytest tests/unit/test_desktop_hidden_imports_resolve.py -q -p no:cacheprovider
       - name: Run dedicated PostgreSQL dialect suite (embedded PG, no Docker)
         # A per-test ceiling so a lock that never gets released names the test
         # that hung instead of killing the job anonymously at the wall clock.
@@ -80,6 +101,14 @@ jobs:
       # than three incidents. It also covers the other half of a demo register
       # being useful: that it is not seeded entirely closed, and that two
       # projects do not render the same rows.
+      # Contact domains join for the same reason as the firm names two entries
+      # up, and from the other side of the same data: the German packs name
+      # their firms properly, umlauts and all, and the addresses were written
+      # to match. A domain label cannot carry an umlaut on the wire, so twenty
+      # of them across four files were unreachable as written and read on
+      # screen as typos. The name keeps its umlauts and the domain does not,
+      # which is a distinction only a check that reads the two spans separately
+      # can make, and nothing in the tree was making it.
       # The file after it stops naming modules one at a time. It reads the
       # vocabulary out of every module's schemas and checks every seeded record
       # against the module that owns it, which is how the fourth instance was
@@ -87,6 +116,15 @@ jobs:
       # endpoint nor the picker offers. The four named files above stay because
       # they check things a source scan cannot: values a generator computes,
       # dates that have to agree with arithmetic, and text.
+      # The last file is arithmetic of that kind and the reason it is here is
+      # that no source scan could have found it. Every demo position carries a
+      # resource buildup, and a buildup that does not add up to the rate printed
+      # beside it is a shipped estimate that argues with itself. Hourly leaf
+      # quantities were rounded to two places, so the small ones rounded to zero
+      # and priced nothing at all, and 274 of 4174 positions across 34 templates
+      # reconciled. The check runs over all 4174 rather than a sample, and it
+      # asserts a floor on the population it swept, because the failure this
+      # class produces is a smaller population rather than a red test.
       - name: Run demo seed and import consistency tests
         run: >-
           pytest tests/unit/test_demo_contact_types.py
@@ -98,8 +136,13 @@ jobs:
           tests/unit/test_demo_seed_text_has_no_scaffolding_words.py
           tests/unit/test_demo_insight_dimensions.py
           tests/unit/test_demo_seed_has_no_real_firm_names.py
+          tests/unit/test_demo_contact_domains.py
+          tests/unit/test_demo_bid_line_items.py
+          tests/unit/test_tender_package_scope.py
           tests/unit/test_demo_safety_vocabulary.py
           tests/unit/test_demo_seed_speaks_module_vocabularies.py
+          tests/unit/test_demo_progress_periods.py
+          tests/unit/test_demo_resource_leaves_add_up_to_the_position_rate.py
           -q -p no:cacheprovider
       # The region to currency table. Attached for the same reason as the suites
       # around it, which is that tests/unit runs in no lane that blocks a merge.
@@ -180,6 +223,52 @@ jobs:
       # admin-authenticated test still green. About thirty seconds.
       - name: Run payment clock module tests
         run: pytest tests/unit/test_payment_clock_module.py -q -p no:cacheprovider
+      # Documents that declare what language they are written in. The defect
+      # class is a header stating something the bytes contradict, which is worse
+      # than a missing translation because a receiver acts on it: an English
+      # sales contract served to a reader who sent Accept-Language fr-CA arrived
+      # labelled French, and a Brazilian invoice that is Portuguese by
+      # construction arrived labelled with whatever the reader asked for. The
+      # cause is the same in both, a route that declares nothing while the
+      # Accept-Language middleware supplies the request's language as the answer.
+      # Nothing else in the tree reads a response header on a document route.
+      # The integration file is the one that carries the weight. The unit files
+      # gate that each route sets the header; only that file boots the real
+      # application, so it is the only place the middleware is actually in the
+      # path and therefore the only one that can tell "the route said so" from
+      # "something downstream happened to say the same thing". Removing the fix
+      # turns it into assert 'fr' == 'en', the defect verbatim.
+      # These are named one at a time for the reason the steps above are:
+      # tests/unit is classified as running whole, and the job that runs it whole
+      # is the one that is red often enough that a failure there stops nothing.
+      # tests/unit/test_ci_lane_coverage.py says so about itself, that PUSH_FULL
+      # must not be read as a break turning something red that anybody acts on.
+      # Naming the files is what makes the split a written decision rather than
+      # an accident of which paths got typed in.
+      # The skip guard is not decoration here either. The integration file opens
+      # with a module-level importorskip for pypdf, so a missing dependency takes
+      # the whole file out rather than one test, and the step would go green
+      # having proved nothing. pypdf is a base dependency today and the guard
+      # does not fire, which is exactly the state worth pinning before it drifts.
+      # Measured at 125 passed, 0 skipped. The five unit files are fifteen
+      # seconds and need no database; the integration file boots the application
+      # against the service container this job already provides, so it costs
+      # less here than the three minutes it takes locally, where most of the
+      # time is a PostgreSQL cluster this job does not have to start.
+      - name: Run document language declaration tests
+        run: |
+          set -o pipefail
+          pytest tests/unit/test_document_locale.py \
+            tests/unit/test_accept_language.py \
+            tests/unit/test_daily_diary_pdf_locale.py \
+            tests/unit/test_einvoice_pdf_locale.py \
+            tests/unit/test_brazil_invoice_pdf.py \
+            tests/integration/test_property_dev_document_templates.py \
+            -q -p no:cacheprovider --timeout=300 --timeout-method=thread | tee doclang.log
+          if grep -qE '[0-9]+ skipped' doclang.log; then
+            echo "::error::A document language test skipped instead of running. This step proved nothing about the headers it is here to gate." >&2
+            exit 1
+          fi
       # The DWG parser. Attached for the same reason as the two suites either side
       # of it: tests/unit is in no lane that blocks a merge, and this is the parser
       # whose vertex re-scan shipped quadratic in every release from 3.0.2 to 14.1.0
@@ -434,7 +523,13 @@ jobs:
       # request, so a sweep that matches on path found nothing, removed nothing
       # and reported success while every endpoint of the disabled module kept
       # answering. The tests ask through the door rather than through the route
-      # table, so they hold on either version. The state file gates the rule
+      # table, so they hold on either version. The served-routes file is their
+      # complement and deliberately does the opposite: it reads the route table
+      # directly, so it is version-sensitive, which is why it catches what asking
+      # through the door cannot. A websocket-only module came back with an empty
+      # path from FastAPI's own flattening on the version this lane installs, so
+      # the loader read it as not mounted and mounted it again on every enable.
+      # Neither file covers the other. The state file gates the rule
       # that core modules cannot be switched off, which was being applied in
       # both directions and refused to switch one on.
       - name: Run module builder and permission registry tests
@@ -444,6 +539,7 @@ jobs:
           tests/unit/test_permission_registry.py
           tests/unit/test_module_state.py
           tests/unit/test_module_loader_routes.py
+          tests/unit/test_module_loader_served_routes.py
           -q -p no:cacheprovider
       # Every endpoint here spends the operator's money with an LLM provider, so
       # the rate limit is the only thing between a stolen session and a bill.
@@ -451,8 +547,37 @@ jobs:
       # still attached, which is the right way to ask and also the reason it
       # went red on its own when FastAPI changed how a mounted router is
       # recorded. It was in no lane, so nothing said so.
+      # The isolation file beside it is GHSA-wfpw-cv5v-64j5: the Ollama / vLLM
+      # endpoint a user saved was written into a module-global table, so it
+      # became the endpoint of every user sharing the worker process and their
+      # prompts went to whatever host was saved last. It is bound per
+      # resolution now, and the shape of that bug - shared mutable state that
+      # reads as configuration - returns the moment a second writer appears.
       - name: Run AI endpoint security tests
-        run: pytest tests/modules/test_ai_security.py -q -p no:cacheprovider
+        run: >-
+          pytest tests/modules/test_ai_security.py
+          tests/unit/test_ai_self_hosted_endpoint_isolation.py
+          -q -p no:cacheprovider
+      # A punch list row printed the assigned_to column as it stood, and that
+      # column holds a contact id as often as a name, so a German demo read
+      # "ZUGEWIESEN AN 3f2b8c1e-9a44-..." on every row of the list, on every
+      # kanban card, in the drawer and along the axis of the insights chart.
+      # The names are resolved in two queries per page now, one against the
+      # contacts register and one against the user list, because the seeder
+      # writes a contact id where the assignment control writes a user id.
+      # Three things here are worth a gate rather than a review: that the cost
+      # is fixed per page rather than per row, on the slowest screen the module
+      # has; that free text is
+      # never sent to the database, because a typed-in name is already the
+      # answer; and that an id which resolves to nothing does not come back as
+      # "Unassigned", which would tell a site manager to hand out work that
+      # already has an owner.
+      - name: Run punch list assignee resolution tests
+        run: >-
+          pytest tests/unit/test_punch_assignee_names.py
+          tests/unit/test_punchlist.py
+          tests/unit/test_punchlist_polish.py
+          -q -p no:cacheprovider
       # The literal string bim did not appear anywhere in this file, so 30 unit
       # files and 528 tests, including the ones covering all 28 BIM validation
       # rules, were enforced by nothing. Those rules are reachable in production:
@@ -647,6 +772,131 @@ jobs:
       # exists at all.
       - name: Run tenant isolation
         run: pytest tests/integration/test_tenant_isolation.py -q -p no:cacheprovider
+      # Registers that answer with a page envelope, checked end to end. The
+      # pagination waves moved these endpoints from a bare array to {items,
+      # total, offset, limit} and moved every caller with them, and nothing
+      # that blocks a merge collected any of it. These are integration tests,
+      # and tests/integration is reached by exactly one filtered step, in the
+      # CI workflow, which is red often enough that a failure there stops
+      # nobody. The lane coverage guard still records that tree as
+      # PUSH_FILTERED, because it ranks by continue-on-error rather than by
+      # whether anyone acts on the result, so the classification is true on
+      # paper and buys nothing. Worth knowing before reading this step as
+      # redundant with it, and worth knowing that adding these names cannot
+      # improve that recorded class either: naming files ranks below filtering
+      # a tree, so the guard keeps reporting the number the red lane supplies.
+      #
+      # Here rather than on backend-postgres, which is where it was written
+      # first and where it does not fit. Summing the costs those step comments
+      # state gives about 21 minutes against a 30 minute ceiling, and two of
+      # its steps state no cost at all, so the true figure is higher than that
+      # and unknown. This job was measured at 10.3 minutes against the same
+      # ceiling. That makes the job name narrower than its contents, which is
+      # the price of the move and is cheaper than the alternatives: crowding a
+      # lane already near its ceiling, or paying a fresh install and cluster
+      # boot for three files. One of the three is test_folder_permissions.py,
+      # so the fit is not as poor as the heading suggests.
+      #
+      # The 21 minutes is worth someone's attention on its own. That job's
+      # ceiling comment still reasons from "the suite finishes in about ten",
+      # which was true of tests/pg alone and has not been true of the job for
+      # a while. Nothing tracks that, and the failure mode when it arrives is
+      # an anonymous kill at the wall clock rather than a named test.
+      #
+      # Cost, measured rather than guessed, and measured badly. 29 tests, 0
+      # failed and 0 skipped in 636 seconds under OE_TEST_DB=pg on a Windows
+      # box that had two other sessions running pytest at the same time. Nearly
+      # all of that is fixture setup rather than test bodies: 137 seconds for
+      # the first cluster boot and about 18 for each per-test database clone
+      # after it, which is a property of the conftest every file in this job
+      # shares. So the number describes this box, not these files, and the
+      # runner cost is unmeasured. For shape, this job was observed doing 502
+      # tests in 10.3 minutes, near 1.2 seconds a test against the 18 here.
+      # That ratio belongs to contention and to Windows filesystem behaviour,
+      # so do not divide the local figure by it and record the result as a
+      # measurement.
+      #
+      # test_critical_flows.py was a candidate and was dropped rather than
+      # deferred. It asserts on envelope keys in seven places, which is what put
+      # it on the list, but it is a platform smoke suite rather than a register
+      # test, and it carries 50 of the 79 tests the four would have cost. Worst
+      # fit for the rule and most of the bill is enough to drop it; the rule is
+      # that a file belongs here when it exercises a register this programme
+      # moved to the envelope.
+      #
+      # This is a patch and not the fix. Counted with a glob on 2026-08-17,
+      # tests/integration holds 203 files directly and 221 including its six
+      # subdirectories; 23 were named by a blocking step before this and these
+      # three make 26. Everything else there still runs nowhere that stops a
+      # merge. The fix is a nightly run of the whole tree that is allowed to
+      # finish, together with a status check that fails closed when no result
+      # arrives, and neither exists yet. Naming files one at a time is how this
+      # file already works and it plainly does not scale to the remainder; it
+      # is chosen here because the alternative is waiting for the nightly while
+      # the registers ship uncovered.
+      #
+      # The failing-closed half is the part that is easy to leave for later and
+      # is the reason a nightly on its own would not be enough. A cancelled
+      # shard reports exactly what a shard that ran and had nothing to say
+      # reports: no annotations, no failures, a green summary. So a nightly
+      # cancelled every night of a quiet week reads identically to a week with
+      # no regressions, and which one it was gets settled by the regression
+      # shipping.
+      - name: Run paged register integration tests
+        run: >-
+          pytest tests/integration/test_documents_remediation_backlog.py
+          tests/integration/test_documents_search_and_activity.py
+          tests/integration/test_folder_permissions.py
+          -q -p no:cacheprovider --timeout=300 --timeout-method=thread
+      # The read-only public demo, proved by a row census of every table rather
+      # than by the status codes the API returned. Here because it was added
+      # red and nothing noticed: tests/integration is reached by one filtered
+      # step in the CI workflow, which is red often enough that a failure there
+      # stops nobody, so this file gated nothing at all while the release notes
+      # told operators every write is refused.
+      #
+      # Read the file's own walk_routes() before touching this. The census
+      # inside it enumerated five endpoints out of roughly five thousand on
+      # this lane and three thousand locally, because FastAPI 0.141 stopped
+      # copying included routes into app.routes and this lane installs fresh
+      # against fastapi>=0.116,<1 while the local virtualenvs sit on 0.136.
+      # It passed either way and said nothing. That is why the sweep now
+      # asserts a floor and cross-checks itself against the published schema,
+      # and it is the reason this step is worth having rather than a formality:
+      # a security census that silently returns five is indistinguishable from
+      # one that returns three thousand, and both are green.
+      #
+      # The constraint is not that this runs alone, it is that nothing sharing
+      # the process may leave a collaboration lock behind. The census counts
+      # every table, so a neighbour that leaves one turns this red when the
+      # sweeper reaps it, which is a true observation about a background worker
+      # and a very confusing way to learn it. The socket file was checked
+      # against that before being added here and takes no lock: it connects the
+      # presence socket, which reads the current lock rather than acquiring
+      # one. Anything added to this step has to be checked the same way.
+      #
+      # The socket file carries the half of the guarantee the census cannot
+      # reach. A WebSocket has no method, so no count of mutating routes
+      # includes it, and the database tripwire only speaks once a query is
+      # already on its way, by which point the connection is established. It
+      # asserts the handshake itself is refused for a socket the allowlist does
+      # not name, in both directions: accepted with the flag off, closed 1008
+      # with it on. Named in the same step as the census so that neither can be
+      # dropped while the other keeps reporting green.
+      #
+      # Cost, measured rather than guessed: 25 tests together, 0 failed, 248
+      # seconds on 0.141.1 and 223 on 0.136.3, on a contended local Windows
+      # box. Both versions are measured because the desktop lock pins 0.136.3,
+      # so one figure would describe neither the lane nor what we ship. Nearly
+      # all of it is one application build plus the cluster boot this job
+      # already pays for, which is why the socket file adds about seven seconds
+      # here against sixty-eight when it runs alone. Local seconds do not
+      # convert to runner cost; see the note above the paged register step.
+      - name: Run demo read-only guard tests
+        run: >-
+          pytest tests/integration/test_demo_read_only.py
+          tests/integration/test_demo_read_only_sockets.py
+          -q -p no:cacheprovider --timeout=600 --timeout-method=thread
 
   frontend-tests:
     name: Frontend tests that block a merge
@@ -665,20 +915,46 @@ jobs:
     # token check and the IDOR job. The conclusion is unchanged, the cause is
     # not, and a wrong cause invites somebody to "fix the OOM" and expect this
     # job to become redundant.
-    # Counted 2026-08-07: the include in vite.config.ts is
-    # src/**/*.test.{ts,tsx} plus tests/**/*.test.{ts,tsx}, which collects 534
-    # files under src and 2 under frontend/tests/pwa, so 536 in all. 21 are
-    # named below, so 515 of them gate nothing. Recount rather than trust that
+    # Recounted 2026-08-17 out of the commit: the include in vite.config.ts is
+    # src/**/*.test.{ts,tsx} plus tests/**/*.test.{ts,tsx}, which collects 587
+    # files under src and 2 under frontend/tests/pwa, so 589 in all. 34 are
+    # named below, so 555 of them gate nothing. Recount rather than trust that
     # sentence, and recount against that include rather than against the vitest
     # default: the default would also sweep up the Playwright specs, which this
     # job does not run and which were never part of this number.
     #
+    # Count it out of the commit rather than out of a checkout. The 592 written
+    # here earlier the same day was measured on a working tree carrying nine
+    # test files that no commit held, and this job checks out a ref: it can run
+    # only what was committed. A number taken off a dirty tree reads as growth
+    # in the suite when it is really uncommitted work sitting on a disk, and it
+    # cannot be reproduced by the next person unless their tree is dirty in the
+    # same way.
+    #
+    # The previous recount said 536 files and 21 named, on 2026-08-07. Both
+    # halves had drifted: the suite grew by 56 files and the list below had
+    # quietly reached 28 without the sentence being touched. A count written
+    # into prose stops being true the moment somebody adds a line and does not
+    # scroll up, which is the argument for recounting rather than for writing a
+    # better sentence.
+    #
+    # That is not a hypothetical. Between writing "30" and writing "31" here,
+    # two parallel sessions each added an entry, and the true figure was 32.
+    # Parse the list and count it, do not add one to the number above. Parse it
+    # as YAML and split the value, rather than matching indented lines with a
+    # regex: the block scalar ends at "steps:", which is itself an indented
+    # non-empty line, so a line-shaped pattern reads it as a thirty-fifth test
+    # file and overstates the list by one. That is how the figure above was
+    # briefly written as 35.
+    #
     # Named files rather than the whole suite, and that is a measurement rather
     # than a preference. The whole suite came to somewhere between 55 and 95
     # minutes when it was last timed, depending on how the workers saturate,
-    # and that does not belong in front of every merge. The twenty-one named
-    # here run 322 tests in 29 seconds against 12 logical cores with a warm
-    # cache, measured 2026-08-07. An earlier note in this file recorded 118 seconds
+    # and that does not belong in front of every merge. Twenty-one of the names
+    # below ran 322 tests in 29 seconds against 12 logical cores with a warm
+    # cache, measured 2026-08-07; the list has grown to 32 since and that figure
+    # was not re-timed, so read it as the shape and not as the current cost. An
+    # earlier note in this file recorded 118 seconds
     # for eleven files and that could not be reproduced, so take neither figure
     # as the cost on the runner: it has four cores and installs cold. What the
     # numbers do support is the shape, a named list rather than the suite. This
@@ -718,9 +994,12 @@ jobs:
       run:
         working-directory: frontend
     env:
-      # Nine of the twenty-one files below are jsdom component tests, which are
-      # the expensive kind, and this runner has four cores rather than the
-      # twelve the local measurement was taken on. The whole-program type check
+      # Eleven of the thirty-five files below are jsdom component tests, which
+      # are the expensive kind, and this runner has four cores rather than the
+      # twelve the local measurement was taken on. Both figures are counted by
+      # parsing this list, never by adding one to what the comment said: it read
+      # "nine of twenty-one" while the list held thirty-four, because parallel
+      # sessions each appended an entry without recounting. The whole-program type check
       # and the build in the other workflow already need this ceiling and are
       # skipped on macOS because a 9 GB heap does not fit that runner at all.
       # Running the tests under the default heap would be betting the gate on
@@ -730,9 +1009,16 @@ jobs:
       # the run disagree about what is covered, which is the failure this guard
       # exists to prevent in the first place.
       FRONTEND_TEST_FILES: >-
+        src/app/__tests__/clashTriageVocabulary.test.ts
+        src/app/layout/Header.titleKeys.test.ts
+        src/app/layout/navCatalog.test.ts
         src/features/assemblies/__tests__/preview-totals-no-blended-scalar.test.tsx
         src/features/bim/BIMConverterVerifyGate.test.tsx
+        src/features/cases/caseVocabulary.test.ts
+        src/features/cases/cases.test.ts
         src/features/cases/casesProjectContext.test.tsx
+        src/features/cases/chipConsistency.test.ts
+        src/features/cases/roles.test.ts
         src/features/contracts/ContractAnalyticsPanels.test.tsx
         src/features/contracts/ContractDetailDrawerDelete.test.tsx
         src/features/contracts/ContractSecuritiesPanel.test.tsx
@@ -744,12 +1030,19 @@ jobs:
         src/features/dwg-takeoff/lib/__tests__/issue-426-render.test.ts
         src/features/dwg-takeoff/lib/__tests__/text-display-store.test.ts
         src/features/dwg-takeoff/lib/__tests__/viewport.test.ts
+        src/features/field-time/workingTime.test.ts
         src/features/file-manager/SheetsIndexPage.test.tsx
         src/features/file-manager/sheetsInsights.test.ts
         src/features/integrations/calendarFeed.test.ts
         src/features/module-builder/api.test.ts
         src/features/module-builder/draft.test.ts
         src/features/module-builder/fields.test.ts
+        src/features/punchlist/assignee.test.tsx
+        src/features/punchlist/punchlistInsights.test.ts
+        src/features/schedule/ScheduleResourcePanel.test.tsx
+        src/shared/lib/__tests__/formatCompactCurrency.test.ts
+        src/shared/lib/__tests__/formattersReadTheLocalePerCall.test.ts
+        src/shared/lib/apiHelpers.fetchAllPages.test.ts
         src/shared/lib/i18nInterpolatedKeys.test.ts
     steps:
       - uses: actions/checkout@v7
@@ -795,3 +1088,152 @@ jobs:
             echo "::error::vitest ran ${ran:-no} test files but $expected were named. A renamed or mistyped filter matches nothing and would otherwise leave this job green."
             exit 1
           fi
+
+
+  # ── The upgrade nobody was testing ─────────────────────────────────────────
+  # Every other lane in this repository, and in every other workflow file,
+  # starts from an empty database. So the only thing any of them has ever
+  # tested is a fresh install, while almost every real user is upgrading.
+  #
+  # That gap is not theoretical. Nothing in this codebase calls
+  # ``alembic upgrade``; the schema moves at boot through a helper that issues
+  # ADD COLUMN and CREATE INDEX IF NOT EXISTS, plus create_all for tables that
+  # are wholly absent. A revision made of nullable columns survives that. A
+  # NOT NULL, a rename, a type change or a backfill does not, and until this
+  # job existed nothing anywhere would have said so.
+  #
+  # The trap this job is written to avoid: an EMPTY database plus
+  # ``alembic upgrade head`` runs NOTHING. ``alembic/env.py`` short-circuits a
+  # blank database to create_all followed by a stamp at head (env.py:285-297),
+  # so a lane that creates an empty database, stamps it and reports success is
+  # a green gate that has tested nothing at all. The only honest shape is to
+  # build the database with the PREVIOUS release's own code first.
+  #
+  # Which is also why the previous release is installed from PyPI into its own
+  # virtualenv and BOOTED rather than migrated. Wheels before 15.4.0 ship no
+  # alembic.ini and no revision tree at all, so there is no migration entry
+  # point in that interpreter to call - and booting is what a real install of
+  # that release does anyway.
+  #
+  # What this job can see, and what it cannot. It compares the tables and
+  # columns the current metadata declares against the ones the aged database
+  # has, plus their nullability - so it catches an absent table, an absent
+  # column, and a NOT NULL that was quietly added nullable. It does NOT
+  # compare types, it cannot tell a rename from an addition (the new name is
+  # added, the old one keeps the data, and the comparison goes green), and a
+  # revision whose work is a data backfill produces no schema signal at all.
+  # Those three shapes still need a test of their own.
+  #
+  # Runs in parallel with the three jobs above, so it adds no wall-clock time
+  # to this workflow as long as it stays inside their runtime.
+  upgrade-from-previous-release:
+    name: Upgrade from the previous release
+    runs-on: ubuntu-latest
+    # Two dependency installs, two application boots and a schema comparison.
+    # The two boots were measured at six to seven minutes each on a developer
+    # Windows machine against an embedded cluster; on a Linux runner with a
+    # postgres service container they are unmeasured and expected to be
+    # faster. The ceiling is deliberately generous, and is there so a database
+    # that never becomes ready fails in minutes instead of inheriting the six
+    # hour default and blocking merges for the rest of the day. If this job
+    # ever does become the slowest in the workflow, the lever is seeding fewer
+    # rows in the aging half, not seeding none: an empty table would let the
+    # one change this job exists to catch pass straight through.
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: backend
+    # A real external PostgreSQL rather than the embedded cluster, because two
+    # different interpreters have to reach the same database in turn, and
+    # because an operator-supplied database is the population where a failed
+    # schema heal does the most damage.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: oe
+          POSTGRES_PASSWORD: oe
+          POSTGRES_DB: openconstructionerp_upgrade
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U oe -d openconstructionerp_upgrade"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # The release the database is aged to. Deliberately the last patch of the
+      # PREVIOUS minor rather than the newest release: a user who upgrades has
+      # almost always skipped patches, and the newest release is frequently
+      # identical in schema to the working tree. Measured, at the time this job
+      # was written: v15.4.0..HEAD adds zero migration revisions and changes
+      # zero model files, so a pin at 15.4.0 would leave this job with nothing
+      # at all to heal. From 15.3.1 there are eight columns across six tables.
+      #
+      # Moving this pin BACKWARDS is always safe; it only widens what is
+      # covered. Moving it FORWARDS has two failure modes, and both are loud
+      # rather than silent:
+      #   * No schema difference left, and the verifier fails on its first
+      #     check rather than passing vacuously.
+      #   * A pin at 15.4.0 or later will make the alembic_head_matches check
+      #     read false, and that is a finding about the product rather than a
+      #     bug in this job. Wheels before 15.4.0 ship no alembic.ini, so a
+      #     real install of one records no revision at all and the current
+      #     code's stamp_head_if_unstamped lands it at head. From 15.4.0 the
+      #     wheel does ship the tree, the database arrives already stamped at
+      #     that older revision, the stamp helper returns early because a
+      #     revision is present, and nothing ever advances it. Read that red as
+      #     "the stamp does not move on upgrade", which is true.
+      OE_UPGRADE_FROM_VERSION: "15.3.1"
+      OE_UPGRADE_AGED_STATE: ${{ github.workspace }}/aged-database-state.json
+      DATABASE_URL: postgresql+asyncpg://oe:oe@localhost:5432/openconstructionerp_upgrade
+      DATABASE_SYNC_URL: postgresql+psycopg2://oe:oe@localhost:5432/openconstructionerp_upgrade
+      # github.workspace and not runner.temp: the runner context is not
+      # available in a job-level env block, and naming it there makes the
+      # whole file invalid to GitHub, which then runs NO job from it at all.
+      # That failure is silent in the worst way - the run is named after the
+      # file, carries zero jobs, and a required lane simply stops existing
+      # rather than going red.
+      OE_DATA_DIR: ${{ github.workspace }}/oe-data
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Create empty frontend dist (hatchling force-include)
+        run: |
+          mkdir -p ../frontend/dist
+          touch ../frontend/dist/.gitkeep
+      - name: Install the previous release into a virtualenv of its own
+        # Its own interpreter, with no path into this working tree. The aging
+        # script asserts that ``app`` resolves outside the repository before it
+        # touches the database, because an ``app`` that resolved back here
+        # would build the CURRENT schema and every check below would pass on a
+        # database that was never old.
+        #
+        # Full dependencies on purpose. ``alembic/env.py`` and the boot path
+        # both swallow a per-module import failure, so a thin install produces
+        # FEWER tables rather than an error - and the current code's create_all
+        # would then quietly supply the difference, turning an upgrade test
+        # into a fresh install. The aging script's table floor is the backstop.
+        run: |
+          python -m venv "$RUNNER_TEMP/venv-previous"
+          "$RUNNER_TEMP/venv-previous/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/venv-previous/bin/python" -m pip install "openconstructionerp==$OE_UPGRADE_FROM_VERSION"
+      - name: Install the current code
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server]"
+      - name: Build the database with the previous release, and put rows in it
+        # The rows are load-bearing. PostgreSQL accepts
+        # ADD COLUMN ... NOT NULL with no default on an EMPTY table and rejects
+        # it only once rows exist, so an unseeded database would let the exact
+        # change the heal cannot perform pass straight through this job.
+        run: |
+          "$RUNNER_TEMP/venv-previous/bin/python" scripts/age_database_to_previous_release.py
+      - name: Run the current code against the aged database
+        # Proves five things, and fails loudly rather than vacuously on each:
+        # the database really was old, it was at an older revision than the
+        # code, the schema moved, /api/health agrees that it moved, and an
+        # authenticated read of the affected register answers 200.
+        run: python scripts/verify_upgrade_from_previous_release.py

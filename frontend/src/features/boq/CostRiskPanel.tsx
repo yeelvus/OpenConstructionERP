@@ -10,6 +10,8 @@ import {
   type CostRiskDriver,
   type CostRiskCdfPoint,
 } from './api';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
@@ -30,7 +32,7 @@ function num(v: number | string | undefined | null): number {
 function fmtCurrency(n: number, fmt: Intl.NumberFormat): string {
   const abs = Math.abs(n);
   if (abs >= 1_000_000) {
-    return `${n < 0 ? '-' : ''}${(abs / 1_000_000).toFixed(2)}M`;
+    return `${n < 0 ? '-' : ''}${fmtFixed(abs / 1_000_000, 2)}M`;
   }
   if (abs >= 10_000) {
     return `${n < 0 ? '-' : ''}${fmt.format(Math.round(abs / 1_000))}K`;
@@ -124,12 +126,12 @@ function ConvergenceBadge({
       className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-2xs font-medium ${cfg.cls}`}
       title={t('boq.cost_risk_convergence_hint', {
         defaultValue: 'Split-half stability of the P80 estimate ({{margin}}% of P50). Lower is better.',
-        margin: marginPct.toFixed(2),
+        margin: fmtFixed(marginPct, 2),
       })}
     >
       <Icon size={11} strokeWidth={2} />
       {cfg.label}
-      {marginPct > 0 && <span className="tabular-nums opacity-70">±{marginPct.toFixed(1)}%</span>}
+      {marginPct > 0 && <span className="tabular-nums opacity-70">±{fmtPercent(marginPct)}</span>}
     </span>
   );
 }
@@ -214,7 +216,7 @@ function ContingencyCard({
           <div className="text-lg font-bold text-blue-700 dark:text-blue-400 tabular-nums mt-0.5">
             {fmtCurrency(contingency, fmt)}{' '}
             <span className="text-sm font-medium text-blue-600/70 dark:text-blue-400/70">
-              (+{contingencyPct.toFixed(1)}%)
+              (+{fmtPercent(contingencyPct)})
             </span>
           </div>
         </div>
@@ -232,7 +234,7 @@ function ContingencyCard({
           defaultValue:
             'Budgeting at P{{p}} gives {{p}}% confidence the final cost will not exceed this amount. There is a {{base}}% chance it lands at or below the deterministic base estimate.',
           p: targetConfidence,
-          base: probWithinBase.toFixed(0),
+          base: fmtFixed(probWithinBase, 0),
         })}
       </p>
     </div>
@@ -446,7 +448,7 @@ function RiskDriversTable({
                       />
                     </div>
                     <span className="tabular-nums font-medium text-content-secondary w-12 text-right">
-                      {driver.contribution_pct.toFixed(1)}%
+                      {fmtPercent(driver.contribution_pct)}
                     </span>
                   </div>
                 </td>
@@ -464,13 +466,16 @@ function RiskDriversTable({
 export function CostRiskPanel({ boqId, locale = 'de-DE' }: { boqId: string; locale?: string }) {
   const { t } = useTranslation();
   const fmt = useMemo(() => createCRFormatter(locale), [locale]);
-  const [collapsed, setCollapsed] = useState(false);
+  // Collapsed by default and simulated on expand: the Monte Carlo run is a
+  // heavy call consumed only inside this panel, so it must not be part of
+  // the editor's first-paint request burst (see SensitivityChart).
+  const [collapsed, setCollapsed] = useState(true);
   const [correlation, setCorrelation] = useState(0.2);
 
   const { data, isLoading, isError, isFetching } = useQuery({
     queryKey: ['boq-cost-risk', boqId, correlation],
     queryFn: () => boqApi.getCostRisk(boqId, correlation),
-    enabled: !!boqId,
+    enabled: !!boqId && !collapsed,
     placeholderData: keepPreviousData,
   });
 
@@ -499,7 +504,7 @@ export function CostRiskPanel({ boqId, locale = 'de-DE' }: { boqId: string; loca
           </span>
           {hasData && (
             <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-surface-secondary px-1.5 text-2xs font-medium text-content-secondary tabular-nums">
-              {data.iterations.toLocaleString()} {t('boq.cost_risk_iterations_label', { defaultValue: 'iter.' })}
+              {data.iterations.toLocaleString(getNumberLocale())} {t('boq.cost_risk_iterations_label', { defaultValue: 'iter.' })}
             </span>
           )}
           {hasData && data.convergence_status && (
@@ -588,12 +593,12 @@ export function CostRiskPanel({ boqId, locale = 'de-DE' }: { boqId: string; loca
                   />
                   <StatTile
                     label={t('boq.cost_risk_cv', { defaultValue: 'Variability (CV)' })}
-                    value={`${(data.cv_pct ?? 0).toFixed(1)}%`}
+                    value={fmtPercent(data.cv_pct ?? 0)}
                     hint={cvLabel(data.cv_pct ?? 0)}
                   />
                   <StatTile
                     label={t('boq.cost_risk_prob_base', { defaultValue: 'Chance <= base' })}
-                    value={`${(data.prob_within_base ?? 0).toFixed(0)}%`}
+                    value={fmtPercent(data.prob_within_base ?? 0, 0)}
                   />
                 </div>
               )}

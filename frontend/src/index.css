@@ -44,6 +44,24 @@
      hex values above/below. */
   --oe-blue-ch: 0 113 227;
 
+  /* Purple — the status palette ran out of hues before it ran out of states.
+     Seven invoice states share five badge variants, and the pair that had to
+     come apart is approved (blue) against sent: on the finance list they sit
+     in the same column, one row apart, and one colour for both reads as one
+     state. Blue keeps approved, which has the longer history in the UI.
+     Deliberately purple rather than the existing semantic-info cyan, which is
+     close enough to brand blue that the split would not survive a glance.
+     Measured against the surfaces it lands on:
+       Light  #6b21a8 -> 8.72:1 on #fff, 8.13:1 on the #faf5ff pill
+     Note that hue is a weak channel on its own: purple sits next to blue for
+     a red-blind reader, so the badge label stays the thing that carries the
+     meaning and this is the second cue, not the only one. */
+  --oe-purple: #9333ea;
+  --oe-purple-subtle: #faf5ff;
+  --oe-purple-text: #6b21a8;
+  /* Channel triplet for alpha modifiers - see the blue comment above. */
+  --oe-purple-ch: 147 51 234;
+
   /* Surfaces */
   --oe-bg: #ffffff;
   --oe-bg-secondary: #f5f5f7;
@@ -112,6 +130,25 @@
   --oe-error-bg: #fef2f2;
   --oe-info: #0369a1;
   --oe-info-bg: #eff9fe;
+  /* Channel triplets for Tailwind alpha modifiers - same mechanism and the
+     same reason as `--oe-blue-ch` above, which see. Added 2026-08-18 after
+     the identical trap was found a second time: the semantic palette was
+     still declared as plain var() strings in tailwind.config.js, so every
+     alpha-modified semantic utility was silently DROPPED from the build.
+     479 call sites across 156 files painted nothing at all - the error,
+     warning and success tints that tell a reader a record failed. MUST stay
+     in sync with the hex values directly above.
+     Only the four base hues get a triplet. The `-bg` tints deliberately do
+     NOT, because their dark-mode values are themselves rgba() washes: a
+     triplet there would make `bg-semantic-error-bg/40` render at 0.40 alpha
+     against a base token that is only 0.12, so the modifier would come out
+     STRONGER than the unmodified class. Same call, and the same reasoning,
+     as `blue-subtle` and `purple-subtle`. Want a translucent error tint?
+     Use `bg-semantic-error/10`. */
+  --oe-success-ch: 29 122 58;
+  --oe-warning-ch: 180 83 9;
+  --oe-error-ch: 196 30 16;
+  --oe-info-ch: 3 105 161;
   /* Solid-brand variants retained for callers that need the original
      Apple-saturation hue on dark/coloured backgrounds (dots, solid
      buttons, gradient fills). Use sparingly — prefer the AA-compliant
@@ -190,6 +227,17 @@
   /* Channel triplet - see the light-mode comment. Keep in sync. */
   --oe-blue-ch: 59 130 246;
 
+  /* Purple — see the light-mode comment for why this family exists. Same
+     shape as the blue pair: the tint becomes a translucent wash so it lifts
+     with whatever surface it sits on, and the text goes brighter so one class
+     clears AA in both themes. Worst case is the elevated surface:
+       Dark   #d8b4fe -> 9.03:1 on #1e2130, 7.58:1 on the flattened pill */
+  --oe-purple: #a855f7;
+  --oe-purple-subtle: rgba(168, 85, 247, 0.15);
+  --oe-purple-text: #d8b4fe;
+  /* Channel triplet - see the light-mode comment. Keep in sync. */
+  --oe-purple-ch: 168 85 247;
+
   /* Surfaces — deep blue-gray palette */
   --oe-bg: #0f1117;
   --oe-bg-secondary: #161822;
@@ -239,6 +287,13 @@
   --oe-error-bg: rgba(239, 68, 68, 0.12);
   --oe-info: #7dd3fc;
   --oe-info-bg: rgba(56, 189, 248, 0.12);
+  /* Channel triplets - see the light-mode comment. Keep in sync with the
+     four hexes directly above. The `-bg` washes are rgba() here, which is
+     exactly why they get no triplet. */
+  --oe-success-ch: 74 222 128;
+  --oe-warning-ch: 251 191 36;
+  --oe-error-ch: 248 113 113;
+  --oe-info-ch: 125 211 252;
   /* Solid-brand variants for dark — kept brighter for use as dots /
      solid buttons / accent strips where the surface underneath is the
      base bg, not a tinted pill. */
@@ -601,6 +656,19 @@ h4 {
 .ag-theme-quartz .ag-cell .ag-cell-value {
   width: 100%;
   flex: 1 1 auto;
+}
+
+/* ── Visible inline-edit affordance ─────────────────────────────────────
+   Entering cell-edit mode must be unmistakable: without this, an inline
+   editor opened by a stray click is indistinguishable from a selected
+   cell, and typing silently rewrites the value (an Ordnungszahl was once
+   overwritten exactly this way). The editing cell gets a solid accent
+   outline and a shadow so "you are now editing" is visible at a glance. */
+.ag-theme-quartz .ag-cell.ag-cell-inline-editing {
+  outline: 2px solid var(--oe-blue);
+  outline-offset: -2px;
+  border-radius: 4px;
+  box-shadow: 0 1px 6px rgb(0 0 0 / 0.18);
 }
 
 /* ── AG Grid drag handle column ───────────────────────────────────────── */

@@ -1,7 +1,7 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 //
-// ContractAnalyticsPanels — the "Analytics & close-out" grouping on the
+// ContractAnalyticsPanels - the "Analytics & close-out" grouping on the
 // contract detail drawer. It surfaces seven read-only backend endpoints that had
 // no frontend consumer:
 //
@@ -64,6 +64,7 @@ import {
   type FinalAccountCheckItem,
   type MilestoneScheduleItem,
 } from './api';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 /* ── Semantic tie-out colours (mirror ComplianceGate.tsx) ─────────────── */
 
@@ -83,7 +84,7 @@ function toNum(v: number | string | null | undefined): number {
 }
 
 function fmtPct(v: number | string | null | undefined): string {
-  return `${toNum(v).toFixed(1)}%`;
+  return fmtPercent(toNum(v));
 }
 
 /** Narrow a thrown ApiError to a 403 without importing the class. */
@@ -318,7 +319,7 @@ function SovStatusPanel({
                         pctColor,
                       )}
                     >
-                      {pct.toFixed(1)}%
+                      {fmtPercent(pct)}
                     </td>
                   </tr>
                 );

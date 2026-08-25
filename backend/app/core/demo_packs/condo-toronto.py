@@ -58,24 +58,24 @@ TEMPLATE = DemoTemplate(
         "lng": -79.4019,
     },
     validation_rule_sets=["masterformat", "boq_quality", "project_completeness"],
-    boq_name="Detailed Estimate - MasterFormat 2020",
+    boq_name="Detailed Estimate - division-based trade breakdown",
     boq_description=(
-        "Class B elemental/trade estimate to MasterFormat 2020, divisions "
+        "Class B elemental/trade estimate to standard division numbering, divisions "
         "03 through 32. Direct costs in CAD, Toronto 2026 price level, "
         "before HST."
     ),
     boq_metadata={
-        "standard": "MasterFormat 2020",
+        "standard": "Division-based work-results classification",
         "phase": "Class B estimate / Design Development (DD)",
         "base_date": "2026-Q1",
         "price_level": "Toronto 2026",
         "cost_region": "CA_TORONTO",
     },
     sections=[
-        # ── Division 31 - Earthwork & Shoring ──────────────────────────
+        # ── Division 31 - Excavation & shoring ──────────────────────────
         (
             "31",
-            "Division 31 - Earthwork & Shoring",
+            "Division 31 - Excavation & shoring",
             {"masterformat": "31 00 00"},
             [
                 ("31.1", "Site clearing and grubbing", "lsum", 1, 165000.00, {"masterformat": "31 10 00"}),
@@ -92,10 +92,10 @@ TEMPLATE = DemoTemplate(
                 ("31.12", "Geotechnical investigation and instrumentation", "lsum", 1, 78000.00, {"masterformat": "31 09 00"}),
             ],
         ),
-        # ── Division 03 - Concrete ─────────────────────────────────────
+        # ── Division 03 - Cast-in-place and precast concrete work ──────
         (
             "03",
-            "Division 03 - Concrete",
+            "Division 03 - Cast-in-place and precast concrete work",
             {"masterformat": "03 00 00"},
             [
                 ("03.1", "Blinding concrete, 15 MPa", "m3", 980, 225.00, {"masterformat": "03 30 00"}),
@@ -117,10 +117,10 @@ TEMPLATE = DemoTemplate(
                 ("03.17", "Concrete cure and seal", "m2", 210000, 4.20, {"masterformat": "03 39 00"}),
             ],
         ),
-        # ── Division 04 - Masonry ──────────────────────────────────────
+        # ── Division 04 - Brick, block and stone work ──────────────────
         (
             "04",
-            "Division 04 - Masonry",
+            "Division 04 - Brick, block and stone work",
             {"masterformat": "04 00 00"},
             [
                 ("04.1", "Concrete block 190 mm, stair and service shafts", "m2", 14800, 158.00, {"masterformat": "04 22 00"}),
@@ -131,10 +131,10 @@ TEMPLATE = DemoTemplate(
                 ("04.6", "Precast lintels and sills", "m", 920, 98.00, {"masterformat": "04 05 00"}),
             ],
         ),
-        # ── Division 05 - Metals ───────────────────────────────────────
+        # ── Division 05 - Structural and miscellaneous metal work ──────
         (
             "05",
-            "Division 05 - Metals",
+            "Division 05 - Structural and miscellaneous metal work",
             {"masterformat": "05 00 00"},
             [
                 ("05.1", "Structural steel, podium retail and canopy framing", "t", 320, 5400.00, {"masterformat": "05 12 00"}),
@@ -150,7 +150,7 @@ TEMPLATE = DemoTemplate(
         # ── Division 07 - Thermal & Moisture / Window-Wall ─────────────
         (
             "07",
-            "Division 07 - Thermal & Moisture Protection",
+            "Division 07 - Roofing, waterproofing and insulation",
             {"masterformat": "07 00 00"},
             [
                 ("07.1", "Bentonite waterproofing, below-grade walls", "m2", 11200, 62.00, {"masterformat": "07 13 00"}),
@@ -168,10 +168,10 @@ TEMPLATE = DemoTemplate(
                 ("07.13", "Spray fireproofing, transfer level steel", "m2", 4200, 19.50, {"masterformat": "07 81 00"}),
             ],
         ),
-        # ── Division 08 - Openings (incl. Window-Wall) ─────────────────
+        # ── Division 08 - Doors, windows and glazed assemblies (incl. Window-Wall) ─
         (
             "08",
-            "Division 08 - Openings",
+            "Division 08 - Doors, windows and glazed assemblies",
             {"masterformat": "08 00 00"},
             [
                 ("08.1", "Window-wall system, tower (slab-edge, operable vent)", "m2", 34000, 565.00, {"masterformat": "08 43 00"}),
@@ -188,10 +188,10 @@ TEMPLATE = DemoTemplate(
                 ("08.12", "Overhead coiling doors, parking and loading", "pcs", 6, 12500.00, {"masterformat": "08 33 00"}),
             ],
         ),
-        # ── Division 09 - Finishes ─────────────────────────────────────
+        # ── Division 09 - Interior finishing: drywall, flooring, painting ─
         (
             "09",
-            "Division 09 - Finishes",
+            "Division 09 - Interior finishing: drywall, flooring, painting",
             {"masterformat": "09 00 00"},
             [
                 ("09.1", "Metal stud framing, suite partitions", "m2", 96000, 36.00, {"masterformat": "09 22 16"}),
@@ -213,10 +213,10 @@ TEMPLATE = DemoTemplate(
                 ("09.17", "Suite appliance package, ENERGY STAR", "suite", 412, 6800.00, {"masterformat": "11 31 00"}),
             ],
         ),
-        # ── Division 14 - Conveying Systems (Elevators) ────────────────
+        # ── Division 14 - Elevators, escalators and lifts (Elevators) ──
         (
             "14",
-            "Division 14 - Conveying Systems",
+            "Division 14 - Elevators, escalators and lifts",
             {"masterformat": "14 00 00"},
             [
                 ("14.1", "Gearless MRL passenger elevator, 1600 kg, high-rise", "pcs", 5, 425000.00, {"masterformat": "14 21 00"}),
@@ -226,10 +226,10 @@ TEMPLATE = DemoTemplate(
                 ("14.5", "Destination-dispatch control and group supervisory", "lsum", 1, 185000.00, {"masterformat": "14 28 00"}),
             ],
         ),
-        # ── Division 21 - Fire Suppression ─────────────────────────────
+        # ── Division 21 - Sprinkler and fire-suppression systems ───────
         (
             "21",
-            "Division 21 - Fire Suppression",
+            "Division 21 - Sprinkler and fire-suppression systems",
             {"masterformat": "21 00 00"},
             [
                 ("21.1", "Automatic wet sprinkler system, full building", "m2", 52800, 26.50, {"masterformat": "21 13 00"}),
@@ -238,10 +238,10 @@ TEMPLATE = DemoTemplate(
                 ("21.4", "Portable extinguishers and hose cabinets", "pcs", 240, 480.00, {"masterformat": "21 10 00"}),
             ],
         ),
-        # ── Division 22 - Plumbing ─────────────────────────────────────
+        # ── Division 22 - Piping systems and sanitary fixtures ─────────
         (
             "22",
-            "Division 22 - Plumbing",
+            "Division 22 - Piping systems and sanitary fixtures",
             {"masterformat": "22 00 00"},
             [
                 ("22.1", "Sanitary and venting risers/branches, suites", "m", 9600, 76.00, {"masterformat": "22 13 00"}),
@@ -256,10 +256,10 @@ TEMPLATE = DemoTemplate(
                 ("22.10", "Pipe insulation", "m", 14800, 18.00, {"masterformat": "22 07 00"}),
             ],
         ),
-        # ── Division 23 - HVAC ─────────────────────────────────────────
+        # ── Division 23 - Heating, cooling and ventilation systems ─────
         (
             "23",
-            "Division 23 - Heating, Ventilation & Air Conditioning",
+            "Division 23 - Heating, cooling and ventilation systems",
             {"masterformat": "23 00 00"},
             [
                 ("23.1", "Suite heat-pump / fan-coil units, four-pipe", "suite", 412, 7800.00, {"masterformat": "23 82 19"}),
@@ -277,10 +277,10 @@ TEMPLATE = DemoTemplate(
                 ("23.13", "Testing, balancing and commissioning", "lsum", 1, 285000.00, {"masterformat": "23 05 93"}),
             ],
         ),
-        # ── Division 26 - Electrical ───────────────────────────────────
+        # ── Division 26 - Power distribution and lighting systems ──────
         (
             "26",
-            "Division 26 - Electrical",
+            "Division 26 - Power distribution and lighting systems",
             {"masterformat": "26 00 00"},
             [
                 ("26.1", "Main electrical service, 4000 A, 600 V", "lsum", 1, 485000.00, {"masterformat": "26 24 00"}),
@@ -300,10 +300,10 @@ TEMPLATE = DemoTemplate(
                 ("26.15", "Structured cabling, security and intercom", "lsum", 1, 385000.00, {"masterformat": "27 10 00"}),
             ],
         ),
-        # ── Division 32 - Exterior Improvements (Sitework) ─────────────
+        # ── Division 32 - Paving, landscaping and site amenities (Sitework) ─
         (
             "32",
-            "Division 32 - Exterior Improvements",
+            "Division 32 - Paving, landscaping and site amenities",
             {"masterformat": "32 00 00"},
             [
                 ("32.1", "Reinforced-concrete parking ramp and apron", "m2", 1600, 285.00, {"masterformat": "03 30 00"}),
@@ -331,6 +331,8 @@ TEMPLATE = DemoTemplate(
         ("HarrowLane Corporation", "bids@harrowlane.example", 0.99),
         ("Norvane Constructors Canada Inc.", "estimating@norvane.example", 1.03),
         ("Velmara Inc.", "tenders@velmara.example", 0.97),
+        ("Brackenmoor Construction Ltd.", "estimating@brackenmoor.example", 1.08),
+        ("Kestrelaine Builders Inc.", "bids@kestrelaine.example", 1.01),
     ],
     project_metadata={
         "address": "85 Bathurst Street, Toronto, ON M5V 0L9",
@@ -376,6 +378,8 @@ TEMPLATE = DemoTemplate(
                 ("HarrowLane Corporation", "bids@harrowlane.example", 0.99),
                 ("Norvane Constructors Canada Inc.", "estimating@norvane.example", 1.03),
                 ("Velmara Inc.", "tenders@velmara.example", 0.97),
+                ("Brackenmoor Construction Ltd.", "estimating@brackenmoor.example", 1.08),
+                ("Kestrelaine Builders Inc.", "bids@kestrelaine.example", 1.01),
             ],
         ),
         (
@@ -428,7 +432,7 @@ TEMPLATE = DemoTemplate(
             ],
         ),
     ],
-    budget_boq_name="Detailed Estimate - MasterFormat 2020",
+    budget_boq_name="Detailed Estimate - division-based trade breakdown",
     planned_budget=228000000.0,
     actual_spend_ratio=0.42,
     spi_override=0.97,

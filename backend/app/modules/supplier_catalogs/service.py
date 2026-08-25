@@ -26,6 +26,14 @@ from app.core.i18n import get_locale
 from app.core.validation.messages import translate
 from app.modules.supplier_catalogs import events as ev
 from app.modules.supplier_catalogs.models import (
+    ABS_TOLERANCE_APPLIED,
+    ABS_TOLERANCE_DROPPED_MISMATCH,
+    ABS_TOLERANCE_DROPPED_ORDER_UNLABELLED,
+    ABS_TOLERANCE_DROPPED_UNLABELLED,
+    ABS_TOLERANCE_NOT_SET,
+    COST_STATE_MIXED,
+    COST_STATE_SINGLE,
+    COST_STATE_UNKNOWN,
     CatalogEntry,
     CatalogItem,
     CommodityCode,
@@ -90,6 +98,7 @@ from app.modules.supplier_catalogs.schemas import (
     VendorInvoiceCreate,
     VendorUpdate,
     WarehouseCreate,
+    normalise_floor_currency,
 )
 
 logger = logging.getLogger(__name__)
@@ -143,6 +152,131 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         return Decimal(default)
+
+
+def _normalise_currency(code: str | None) -> str | None:
+    """Return an ISO code in upper case, or None when there is not one.
+
+    The empty string is not a currency. Treating a blank as a real code would
+    let two unlabelled receipts agree with each other and roll forward an
+    average denominated in nothing.
+    """
+    if code is None:
+        return None
+    cleaned = code.strip().upper()
+    return cleaned or None
+
+
+def _fold_receipt_into_cost(
+    *,
+    prev_qty: Decimal,
+    prev_cost: Decimal | None,
+    prev_currency: str | None,
+    prev_state: str,
+    incoming_qty: Decimal,
+    incoming_price: Decimal,
+    incoming_currency: str | None,
+) -> tuple[Decimal | None, str | None, str]:
+    """Fold one goods receipt into a balance's average cost.
+
+    Returns ``(unit_cost_avg, currency, cost_state)``.
+
+    The weighted average is only computed while every receipt into this
+    balance has carried the same ISO currency. The moment two disagree the
+    average is withheld rather than blended: averaging prices denominated in
+    different currencies yields a figure that is not money in either of them,
+    and because every issue, reservation and stocktake copies this number onto
+    its own movement row, one blend spreads to the whole audit trail.
+
+    Args:
+        prev_qty: Quantity on hand before this receipt.
+        prev_cost: The balance's average cost, or None if it has none.
+        prev_currency: ISO code ``prev_cost`` is denominated in, if any.
+        prev_state: The balance's current ``cost_state``.
+        incoming_qty: Accepted quantity on this receipt.
+        incoming_price: Unit price from the purchase-order line.
+        incoming_currency: ISO code of the purchase order, if it has one.
+
+    Returns:
+        The new average, its currency, and the new cost state.
+    """
+    # An unlabelled receipt cannot be averaged with anything, including with
+    # another unlabelled one: with no ISO code there is nothing to say what
+    # the resulting number would be denominated in.
+    if incoming_currency is None:
+        return None, None, COST_STATE_UNKNOWN
+
+    # No stock on hand means no earlier price to disagree with, so the balance
+    # simply takes this receipt's currency. This is also the repair path: a
+    # balance that went mixed becomes single again once it has been issued
+    # down to nothing and restocked, because none of the blended stock is left.
+    if prev_qty <= 0:
+        return incoming_price, incoming_currency, COST_STATE_SINGLE
+
+    # Part of the stock on hand has no known denomination, so no single
+    # currency can be claimed for the whole of it.
+    if prev_state == COST_STATE_UNKNOWN:
+        return None, None, COST_STATE_UNKNOWN
+
+    if prev_state == COST_STATE_MIXED or prev_currency != incoming_currency:
+        return None, None, COST_STATE_MIXED
+
+    # State says single but no average was stored. Our own bookkeeping is
+    # inconsistent, so the honest answer is that we cannot say.
+    if prev_cost is None:
+        return None, None, COST_STATE_UNKNOWN
+
+    new_qty = prev_qty + incoming_qty
+    if new_qty <= 0:
+        return incoming_price, incoming_currency, COST_STATE_SINGLE
+    blended = ((prev_qty * prev_cost) + (incoming_qty * incoming_price)) / new_qty
+    return blended, incoming_currency, COST_STATE_SINGLE
+
+
+def _resolve_absolute_floor(
+    profile: TolerianceProfile,
+    order_currency: str | None,
+) -> tuple[Decimal, str]:
+    """Decide whether a profile's absolute floor may widen this order's band.
+
+    The band applied to a price variance is the wider of a percentage of the
+    order total and the profile's absolute floor. The percentage is safe in
+    any currency, because a percentage of the order is already denominated in
+    the order's own currency. The floor is not: it is one number on a profile
+    that is selected by name and applied to orders priced in whatever the
+    tenant trades in.
+
+    Getting that wrong is not symmetrical. A floor that is too small relative
+    to the order's currency simply never wins the ``max`` and nothing happens.
+    A floor that is too large silently widens the band, and the invoice is
+    auto-matched and approved for payment - so the failure that costs money is
+    the one that produces no exception and no message.
+
+    This is a different question from the invoice-versus-order currency guard
+    further down ``match_invoice``. That one compares two documents to each
+    other and refuses when they disagree. An order and its invoice can agree
+    perfectly and still be measured against a floor written in a third
+    currency, which that guard never looks at.
+
+    Returns ``(floor, state)``. When the floor must not apply the floor
+    returned is ``Decimal("0")``, so the caller's ``max`` is untouched and the
+    percentage governs alone. Dropping it narrows the band, which produces an
+    exception a human reviews rather than an approval nobody sees.
+    """
+    floor = profile.price_tolerance_abs or Decimal("0")
+    if floor <= 0:
+        # Zero is the same amount of money in every currency, so an unlabelled
+        # zero is not a gap and does not need reporting as one.
+        return Decimal("0"), ABS_TOLERANCE_NOT_SET
+
+    profile_currency = _normalise_currency(profile.currency)
+    if profile_currency is None:
+        return Decimal("0"), ABS_TOLERANCE_DROPPED_UNLABELLED
+    if not order_currency:
+        return Decimal("0"), ABS_TOLERANCE_DROPPED_ORDER_UNLABELLED
+    if profile_currency != order_currency:
+        return Decimal("0"), ABS_TOLERANCE_DROPPED_MISMATCH
+    return floor, ABS_TOLERANCE_APPLIED
 
 
 class SupplierCatalogsService:
@@ -1009,7 +1143,9 @@ class SupplierCatalogsService:
         Side effects:
             - POLine.received_qty advanced by accepted_qty
             - PO status advances to ``partial`` or ``received``
-            - StockBalance.quantity_on_hand updated (FIFO unit_cost_avg)
+            - StockBalance.quantity_on_hand updated, and unit_cost_avg rolled
+              forward as a weighted average within a single ISO currency
+              (never FIFO, and never across two currencies)
             - StockMovement IN row recorded per (item, batch)
         """
         po = await self.pos.get(data.po_id)
@@ -1109,18 +1245,28 @@ class SupplierCatalogsService:
                         catalog_item_id=po_line.catalog_item_id,
                         batch_lot=batch,
                     )
-                    # Weighted-average cost
+                    # Weighted-average cost, within one ISO currency only. See
+                    # _fold_receipt_into_cost: when this receipt's currency
+                    # disagrees with the stock already on hand, the average is
+                    # withheld instead of blended.
                     prev_qty = balance.quantity_on_hand
-                    prev_cost = balance.unit_cost_avg
                     new_qty = prev_qty + accepted
-                    if new_qty > 0:
-                        new_cost = ((prev_qty * prev_cost) + (accepted * po_line.unit_price)) / new_qty
-                    else:
-                        new_cost = po_line.unit_price
+                    po_currency = _normalise_currency(po.currency)
+                    new_cost, new_currency, new_state = _fold_receipt_into_cost(
+                        prev_qty=prev_qty,
+                        prev_cost=balance.unit_cost_avg,
+                        prev_currency=balance.currency,
+                        prev_state=balance.cost_state,
+                        incoming_qty=accepted,
+                        incoming_price=po_line.unit_price,
+                        incoming_currency=po_currency,
+                    )
                     await self.stock.update_balance(
                         balance.id,
                         quantity_on_hand=new_qty,
                         unit_cost_avg=new_cost,
+                        currency=new_currency,
+                        cost_state=new_state,
                         last_movement_at=_now_iso(),
                     )
                     # Movement audit
@@ -1131,6 +1277,7 @@ class SupplierCatalogsService:
                             movement_type="in",
                             quantity=accepted,
                             unit_cost=po_line.unit_price,
+                            currency=po_currency,
                             reference_type="gr",
                             reference_id=str(gr.id),
                             batch_lot=batch or None,
@@ -1295,9 +1442,19 @@ class SupplierCatalogsService:
             return MatchResult(
                 invoice_id=invoice_id,
                 status="exception",
-                price_variance=Decimal("0"),
-                qty_variance=Decimal("0"),
+                # No PO means no second figure to compare against, so nothing
+                # was subtracted here either. This is the same refusal as the
+                # currency guard below, in miniature, and it gets the same
+                # answer: None for a comparison that did not happen. Zero is
+                # the one value that reads as "checked, nothing wrong".
+                price_variance=None,
+                qty_variance=None,
                 tolerance_used_pct=tolerance_pct or Decimal("2.0"),
+                # No profile has been resolved yet on this path, so there is no
+                # floor to have applied or dropped. None, for the same reason
+                # the variances above are None.
+                tolerance_used_abs=None,
+                absolute_tolerance_state=None,
                 exception_reason="No PO linked to invoice",
                 tolerance_profile_name=tolerance_profile_name or "default",
                 line_results=[],
@@ -1323,11 +1480,90 @@ class SupplierCatalogsService:
             override_pct=tolerance_pct,
         )
 
+        # ── The two sides must be priced in the same currency ──────
+        #
+        # Every comparison below subtracts an invoice figure from a PO figure.
+        # ``VendorInvoice.currency`` and ``SupplierPurchaseOrder.currency`` are
+        # independent columns, so those two figures are not necessarily counts
+        # of the same thing, and subtracting them produces a number that means
+        # nothing. The frontend already carries this ruling for the cheaper
+        # decision - ``SupplierCatalogsPage.tsx`` will not pick a single
+        # cheapest row unless every compared row shares one currency, because a
+        # raw comparison would crown 100 JPY over 5 EUR.
+        #
+        # Refuse rather than convert. Converting would move the answer's
+        # correctness onto an FX table that may hold no rate for the day, which
+        # trades a loud wrong answer for a quiet one; and this module does not
+        # reference the fx module at all. Refusing is what the tax engine does
+        # with a date it has no rate for, and what ``formwork`` does with a
+        # label it cannot name honestly.
+        #
+        # Only a genuine disagreement refuses. A blank on either side is a
+        # different question - it means one side never recorded a currency, not
+        # that the two are known to differ - and refusing on it would strand
+        # legacy rows that match correctly today.
+        invoice_currency = (invoice.currency or "").strip().upper()
+        po_currency = (po.currency or "").strip().upper()
+        if invoice_currency and po_currency and invoice_currency != po_currency:
+            reason = (
+                f"Invoice is in {invoice_currency} and purchase order "
+                f"{po.number} is in {po_currency}; the three-way match was "
+                f"not performed"
+            )
+            await self.invoices.update(
+                invoice_id,
+                three_way_match_status="not_comparable",
+                exception_reason=reason,
+            )
+            # ``invoice.status`` deliberately does not move. ``disputed`` would
+            # accuse a supplier whose invoice may be entirely correct, and
+            # ``approved`` is obviously wrong. Declining to compute and
+            # declining to record a verdict are the same decision.
+            #
+            # No ThreeWayMatchRecord either: that table records a comparison,
+            # and its ``price_variance`` is NOT NULL defaulting to zero, so the
+            # only row it can store here is the very lie this branch exists to
+            # refuse.
+            await _safe_publish(
+                ev.INVOICE_CURRENCY_MISMATCH,
+                {
+                    "invoice_id": str(invoice_id),
+                    "po_id": str(invoice.po_id),
+                    "invoice_currency": invoice_currency,
+                    "po_currency": po_currency,
+                    "matched_by": user_id,
+                },
+            )
+            return MatchResult(
+                invoice_id=invoice_id,
+                status="not_comparable",
+                price_variance=None,
+                qty_variance=None,
+                tolerance_used_pct=profile.price_tolerance_pct,
+                # A profile was resolved, but no variance was computed, so no
+                # band of any kind was brought to bear. Reporting "not_set"
+                # here would be a claim about the profile's floor, and this
+                # branch never looked at it.
+                tolerance_used_abs=None,
+                absolute_tolerance_state=None,
+                exception_reason=reason,
+                tolerance_profile_name=profile.name,
+                line_results=[],
+            )
+
         # ── Header-level price variance ────────────────────────────
+        # Resolved once and reused for the line level below, so both bands are
+        # decided by the same rule and the reported state describes both.
+        abs_floor, abs_state = _resolve_absolute_floor(profile, po_currency)
         price_var = invoice.total - po.total
         price_tol_pct = po.total * profile.price_tolerance_pct / Decimal("100")
-        price_tol = max(price_tol_pct, profile.price_tolerance_abs)
+        price_tol = max(price_tol_pct, abs_floor)
         price_exception = abs(price_var) > price_tol
+        # What actually widened the band, if anything. The floor only counts as
+        # used when it beat the percentage; a floor smaller than the percentage
+        # band changed no outcome and saying it was "used" would misdescribe
+        # the match.
+        floor_used = abs_floor if abs_floor > 0 and abs_floor > price_tol_pct else None
 
         # ── Quantity variance ──────────────────────────────────────
         total_ordered = sum(
@@ -1388,7 +1624,7 @@ class SupplierCatalogsService:
                     line_price_var = il.unit_price - po_line.unit_price
                     line_qty_var = il.quantity - po_line.received_qty
                     pl_tol_pct = po_line.unit_price * profile.price_tolerance_pct / Decimal("100")
-                    pl_tol = max(pl_tol_pct, profile.price_tolerance_abs)
+                    pl_tol = max(pl_tol_pct, abs_floor)
                     status_str = "ok" if abs(line_price_var) <= pl_tol else "price_variance"
                 line_results.append(
                     {
@@ -1408,8 +1644,18 @@ class SupplierCatalogsService:
         if price_exception or qty_exception or period_exception:
             reasons = []
             if price_exception:
+                # The band is named by what set it. This used to print the
+                # band and annotate it "(2.0%)" unconditionally, so on the one
+                # occasion the number came from the absolute floor instead,
+                # the message credited it to a percentage it had nothing to do
+                # with.
+                basis = (
+                    f"absolute floor {floor_used} {po_currency or ''}".rstrip()
+                    if floor_used is not None
+                    else f"{profile.price_tolerance_pct}%"
+                )
                 reasons.append(
-                    f"price variance {price_var} exceeds tolerance {price_tol} ({profile.price_tolerance_pct}%)",
+                    f"price variance {price_var} exceeds tolerance {price_tol} ({basis})",
                 )
             if qty_exception:
                 reasons.append(
@@ -1460,6 +1706,8 @@ class SupplierCatalogsService:
                 price_variance=price_var,
                 qty_variance=qty_var,
                 tolerance_used_pct=profile.price_tolerance_pct,
+                tolerance_used_abs=floor_used,
+                absolute_tolerance_state=abs_state,
                 exception_reason=reason,
                 tolerance_profile_name=profile.name,
                 line_results=line_results,
@@ -1505,6 +1753,11 @@ class SupplierCatalogsService:
             price_variance=price_var,
             qty_variance=qty_var,
             tolerance_used_pct=profile.price_tolerance_pct,
+            # The one that matters. An auto-match is an approval for payment
+            # that no human reads, so the record of why it passed has to say
+            # whether the percentage carried it or a floor widened the band.
+            tolerance_used_abs=floor_used,
+            absolute_tolerance_state=abs_state,
             tolerance_profile_name=profile.name,
             line_results=line_results,
         )
@@ -1587,7 +1840,11 @@ class SupplierCatalogsService:
                 catalog_item_id=data.catalog_item_id,
                 movement_type="reservation",
                 quantity=data.quantity,
+                # Both are None when the balance has no single-currency
+                # average. An unpriced movement is the correct record of
+                # drawing on stock whose cost we cannot state.
                 unit_cost=balance.unit_cost_avg,
+                currency=balance.currency,
                 reference_type="reservation",
                 reference_id=str(data.project_id) if data.project_id else None,
                 batch_lot=data.batch_lot,
@@ -1649,6 +1906,7 @@ class SupplierCatalogsService:
                 movement_type="out",
                 quantity=data.quantity,
                 unit_cost=balance.unit_cost_avg,
+                currency=balance.currency,
                 reference_type="issue",
                 reference_id=(str(data.to_project_id) if data.to_project_id else None),
                 batch_lot=data.batch_lot,
@@ -1704,6 +1962,7 @@ class SupplierCatalogsService:
                     movement_type="adjust",
                     quantity=delta,
                     unit_cost=balance.unit_cost_avg,
+                    currency=balance.currency,
                     reference_type="stocktake",
                     reference_id=None,
                     batch_lot=count.batch_lot,
@@ -1843,6 +2102,9 @@ class SupplierCatalogsService:
             description=data.description,
             price_tolerance_pct=data.price_tolerance_pct,
             price_tolerance_abs=data.price_tolerance_abs,
+            # Already validated and upper-cased by the schema, which refuses a
+            # nonzero floor with no code at all.
+            currency=data.currency,
             qty_tolerance_pct=data.qty_tolerance_pct,
             period_tolerance_days=data.period_tolerance_days,
             require_gr=data.require_gr,
@@ -1859,6 +2121,29 @@ class SupplierCatalogsService:
         if existing is None:
             raise HTTPException(status_code=404, detail="Profile not found")
         updates = data.model_dump(exclude_unset=True)
+        # A partial update has to be judged on the row it produces, not on the
+        # fields it happens to carry. Raising the floor on a profile that
+        # already names a currency is fine; sending the same floor to a
+        # profile whose currency is NULL creates the unlabelled amount the
+        # create path refuses, and so does clearing the currency out from
+        # under a floor that is already there. Either way the row would be
+        # written after the migration that counted these, so the count would
+        # never see it.
+        # ``exclude_unset=True`` above is what makes these two reads correct: a
+        # key is present only if the caller sent it, so an explicit
+        # ``"currency": null`` reads back as None and trips the guard, while an
+        # omitted currency falls through to the stored one.
+        resulting_abs = updates.get("price_tolerance_abs", existing.price_tolerance_abs)
+        resulting_currency = updates.get("currency", existing.currency)
+        try:
+            normalised = normalise_floor_currency(resulting_abs, resulting_currency)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+        if "currency" in updates:
+            updates["currency"] = normalised
         if updates.get("is_default") is True:
             current = await self.tolerance_profiles.get_default()
             if current is not None and current.id != profile_id:
@@ -1873,7 +2158,16 @@ class SupplierCatalogsService:
         return refreshed
 
     async def ensure_default_tolerance_profile(self) -> TolerianceProfile:
-        """Idempotently ensure the ``default`` profile exists. Called on boot."""
+        """Idempotently ensure the ``default`` profile exists.
+
+        This said "called on boot" and no application code calls it; the only
+        callers are tests. A fresh installation therefore has no profile row
+        at all and matching falls back to the in-memory profile built in
+        ``_resolve_profile``. Left in place because it is the right thing for
+        a tenant bootstrap to call, and noted here so the absence is not read
+        as an accident. No currency is set because the floor is zero, which
+        is the same amount in every currency.
+        """
         existing = await self.tolerance_profiles.get_by_name("default")
         if existing is not None:
             return existing

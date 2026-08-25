@@ -41,7 +41,7 @@ import {
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
 import { useToastStore } from '@/stores/useToastStore';
-import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 import { getErrorMessage } from '@/shared/lib/api';
 import { projectsApi } from '@/features/projects/api';
 import { LineOfBalanceView } from './LineOfBalanceView';
@@ -75,7 +75,7 @@ export function TaktSchedulePage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
 
   const [projectId, setProjectId] = useState('');
   const [masterId, setMasterId] = useState('');

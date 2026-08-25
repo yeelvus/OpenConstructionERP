@@ -15,7 +15,7 @@
 // catalogue is `navGroups` itself rather than a copy of it, so a screen added
 // to the menu appears here with no second edit.
 //
-// Two things sit above the catalogue on purpose. The screens our own 144 cases
+// Two things sit above the catalogue on purpose. The screens our own shipped cases
 // walk are offered first, because a case being written is usually a variation
 // on one of them. And a free path stays possible at the bottom, for a screen
 // no shipped case visits - the editor's job is to say "not one of ours" as

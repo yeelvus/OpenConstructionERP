@@ -66,10 +66,31 @@
     "direct_cost": "प्रत्यक्ष लागत",
     "net_total": "नेट कुल",
     "gross_total": "सकल कुल",
-    "vat": "VAT",
+    "vat": "वैट",
     "add_markups": "मार्कअप जोड़ें",
     "validate": "मान्य करें",
-    "export": "निर्यात"
+    "export": "निर्यात",
+    "mvp": {
+      "title": "सामग्री चुनें",
+      "subtitle_one": "{{count}} संसाधन के लिए चयन आवश्यक है",
+      "subtitle_other": "{{count}} संसाधनों के लिए चयन आवश्यक है",
+      "bulk_label": "त्वरित भरण:",
+      "bulk_median": "सभी के लिए माध्यिका",
+      "bulk_mean": "सभी के लिए औसत",
+      "bulk_cheapest": "सभी के लिए सबसे सस्ता",
+      "bulk_priciest": "सभी के लिए सबसे महंगा",
+      "slot_variant_count": "{{n}} विकल्प",
+      "selected_label": "चयनित:",
+      "default_mean": "औसत दर",
+      "default_median": "माध्यिका दर",
+      "row_median": "माध्यिका दर · {{price}}",
+      "row_mean": "औसत दर · {{price}}",
+      "subtotal_label": "मद दर",
+      "apply": "लागू करें और BOQ में जोड़ें",
+      "batch_progress": "मद {{current}} / {{total}}",
+      "toast_applied_one": "{{count}} विकल्प चुना गया",
+      "toast_applied_other": "{{count}} विकल्प चुने गए"
+    }
   },
   "costs": {
     "title": "लागत डेटाबेस",
@@ -175,10 +196,10 @@
     "m3": "m³",
     "kg": "kg",
     "t": "t",
-    "pcs": "pcs",
-    "lsum": "lump sum",
-    "h": "h",
-    "set": "set"
+    "pcs": "नग",
+    "lsum": "एकमुश्त",
+    "h": "घंटा",
+    "set": "सेट"
   },
   "contacts": {
     "title": "संपर्क निर्देशिका",
@@ -255,7 +276,7 @@
     "purchase_orders": "खरीद आदेश",
     "goods_receipts": "माल रसीदें",
     "new_po": "नया PO",
-    "po_number": "PO #",
+    "po_number": "क्रय आदेश सं.",
     "vendor": "विक्रेता",
     "issue": "जारी करें",
     "confirm": "रसीद की पुष्टि करें"

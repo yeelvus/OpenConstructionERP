@@ -12,6 +12,7 @@ Endpoints (P1 - set/option CRUD, attach-model, generate/pricing):
     POST   /sets/{set_id}/baseline/            - mark an option as the baseline
     DELETE /sets/{set_id}                       - delete a set (and its options)
     POST   /options/{option_id}/attach-model/  - link a BIM model or a document
+    POST   /options/{option_id}/link/          - link a BOQ, schedule or carbon inventory
     POST   /options/{option_id}/generate/      - preview (dry run) or price an option
     DELETE /options/{option_id}                 - delete a single option
 
@@ -37,6 +38,7 @@ from app.modules.design_options.schemas import (
     DesignOptionCreate,
     DesignOptionGenerateRequest,
     DesignOptionGenerateResponse,
+    DesignOptionLinkRequest,
     DesignOptionResponse,
     DesignOptionSetCreate,
     DesignOptionSetResponse,
@@ -172,6 +174,30 @@ async def attach_model(
     return DesignOptionResponse.model_validate(updated)
 
 
+@router.post("/options/{option_id}/link/", response_model=DesignOptionResponse)
+async def link_references(
+    option_id: uuid.UUID,
+    data: DesignOptionLinkRequest,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: DesignOptionsService = Depends(_get_service),
+) -> DesignOptionResponse:
+    """Point an option at a bill, a schedule and a carbon inventory it already has.
+
+    A design option is a whole alternative, so the estimate that prices it, the
+    programme that dates it and the inventory that weighs it usually already exist
+    in the project. This links them rather than asking for another upload. Only
+    the fields present in the body change; a field sent as ``null`` clears that
+    reference. Linking a bill prices the option immediately, with no model
+    required. Each referenced record is checked against the option's own project,
+    so one from another tenant reads 404.
+    """
+    option = await service.get_option(option_id)
+    await verify_project_access(option.project_id, user_id, session)
+    updated = await service.link_references(option, data)
+    return DesignOptionResponse.model_validate(updated)
+
+
 @router.post("/options/{option_id}/generate/", response_model=DesignOptionGenerateResponse)
 async def generate_option(
     option_id: uuid.UUID,
@@ -247,7 +273,7 @@ import io
 
 from fastapi.responses import StreamingResponse
 
-from app.core.http_headers import content_disposition_attachment
+from app.core.content_disposition import attachment_disposition
 from app.modules.design_options.exporters import (
     XLSX_MEDIA_TYPE,
     build_option_appraisal_workbook,
@@ -280,7 +306,7 @@ async def export_comparison_xlsx(
         io.BytesIO(blob),
         media_type=XLSX_MEDIA_TYPE,
         headers={
-            "Content-Disposition": content_disposition_attachment(filename),
+            "Content-Disposition": attachment_disposition(filename),
             "Content-Length": str(len(blob)),
         },
     )

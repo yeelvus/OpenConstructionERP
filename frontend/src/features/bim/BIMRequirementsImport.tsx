@@ -190,7 +190,7 @@ export default function BIMRequirementsImport() {
               </span>
               <span className="text-xs text-zinc-400">
                 {t('bim.requirements.formats', {
-                  defaultValue: 'IDS XML, COBie Excel, Excel/CSV, Revit SP (.txt), BIMQ JSON',
+                  defaultValue: 'IDS XML, COBie Excel, Excel/CSV, RVT shared-parameter (.txt), BIMQ JSON',
                 })}
               </span>
             </div>
@@ -253,7 +253,7 @@ export default function BIMRequirementsImport() {
             <p className="mt-1 text-xs text-zinc-400">
               {t('bim_requirements.noSetsHint', {
                 defaultValue:
-                  'Import an IDS, COBie, Excel/CSV, Revit SP or BIMQ file above, then export it or validate a BIM model against it here.',
+                  'Import an IDS, COBie, Excel/CSV, RVT shared-parameter or BIMQ file above, then export it or validate a BIM model against it here.',
               })}
             </p>
           </div>

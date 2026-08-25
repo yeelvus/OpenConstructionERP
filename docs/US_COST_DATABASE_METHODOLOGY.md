@@ -52,12 +52,12 @@ We produced the pilot batch of 12 sitework cost items for Nashville, TN, by foll
 
 We took the TCG Brentwood Sitework project scope as our starting point and pulled out 12 items spread across four categories:
 
-| Category | Items | MasterFormat Division |
-|----------|-------|----------------------|
-| Demolition | 4 (house, garage, concrete, asphalt) | 02, Existing Conditions |
-| Excavation and Grading | 4 (bulk, trench, grading, fill) | 31, Earthwork |
-| Stormwater | 2 (French drain, infiltration pit) | 33, Utilities |
-| Utilities | 2 (water, sewer service lines) | 33, Utilities |
+| Category | Items | Division |
+|----------|-------|----------|
+| Demolition | 4 (house, garage, concrete, asphalt) | 02 |
+| Excavation and Grading | 4 (bulk, trench, grading, fill) | 31 |
+| Stormwater | 2 (French drain, infiltration pit) | 33 |
+| Utilities | 2 (water, sewer service lines) | 33 |
 
 Every item received a readable code (such as `DEM-HSE-01` or `EXC-BLK-01`) plus a unit of measure that matches how the trade conventionally measures that kind of work.
 
@@ -205,7 +205,7 @@ backend/app/modules/catalog/
 | `unit` | `String(20)` | NO | - | Measurement unit: `SF`, `CY`, `LF`, `EA`, `hr`, `m`, `m2`, `m3`, `kg`, `pcs` |
 | `rate` | `String(50)` | NO | - | Unit rate stored as a string for SQLite compatibility |
 | `currency` | `String(10)` | NO | `""` | ISO 4217 code. Resolved from region if left empty |
-| `source` | `String(50)` | NO | `"cwicr"` | Data provenance: `cwicr`, `rsmeans`, `manual`, `file_import`, `custom` |
+| `source` | `String(50)` | NO | `"cwicr"` | Data provenance: `cwicr`, `commercial`, `manual`, `file_import`, `custom` |
 | `classification` | `JSON` | NO | `{}` | Multi-standard: `{"masterformat": "03 30 00", "din276": "330"}` |
 | `components` | `JSON` | NO | `[]` | Resource breakdown: `[{type, name, quantity, unit_rate, cost, unit}]` |
 | `tags` | `JSON` | NO | `[]` | Searchable: `["demolition", "sitework", "nashville"]` |
@@ -247,7 +247,7 @@ The `classification` field carries one or more classification standard codes:
 {
   "division": "02",
   "section": "4100",
-  "category": "Selective Demolition",
+  "category": "Demolition of selected structures",
   "masterformat": "02 41 00",
   "uniformat": "G2020"
 }
@@ -371,7 +371,7 @@ rate = $28.00/LF = 2.05 + 2.28 + 2.25 + 4.88 + 1.23 + 3.68 + 3.60 + 5.10 + 1.05 
 
 **Begin from the project scope of work, not from whatever data sources happen to be on hand.**
 
-1. **Identify the project type.** Sitework, building, highway, utility? Each maps onto a particular set of CSI MasterFormat divisions.
+1. **Identify the project type.** Sitework, building, highway, utility? Each maps onto a particular set of specification divisions.
 
 2. **List the work items from the scope.**
    - Sitework: demolition, earthwork, stormwater, utilities.
@@ -380,17 +380,19 @@ rate = $28.00/LF = 2.05 + 2.28 + 2.25 + 4.88 + 1.23 + 3.68 + 3.60 + 5.10 + 1.05 
 
 3. **Map each work item to a cost item code,** drawing on the project specification or the estimator's work breakdown structure.
 
-4. **Validate coverage.** For every MasterFormat division in the project, confirm the cost database covers 80% or more of the estimated value.
+4. **Validate coverage.** For every specification division in the project, confirm the cost database covers 80% or more of the estimated value.
 
-### 6.2 MasterFormat Division Coverage for Sitework
+### 6.2 Division Coverage for Sitework
 
-| Division | Name | Key Items |
-|----------|------|-----------|
-| 02 | Existing Conditions | Demolition, site assessment, hazardous material survey |
-| 31 | Earthwork | Excavation, fill, grading, compaction, dewatering |
-| 32 | Exterior Improvements | Paving, landscaping, fencing, irrigation |
-| 33 | Utilities | Water, sewer, storm drain, gas, electric, communications |
-| 34 | Transportation | Roadways, bridges, rail, signage |
+Division numbers are cited as interoperability facts; the work descriptions are our own. The official division and section titles are proprietary and are deliberately not reproduced here - licence holders can import the official tables into the classification module themselves.
+
+| Division | Key Items |
+|----------|-----------|
+| 02 | Demolition, site assessment, hazardous material survey |
+| 31 | Excavation, fill, grading, compaction, dewatering |
+| 32 | Paving, landscaping, fencing, irrigation |
+| 33 | Water, sewer, storm drain, gas, electric, communications |
+| 34 | Roadways, bridges, rail, signage |
 
 ### 6.3 Project-Type Templates
 
@@ -398,26 +400,26 @@ When you spin up a new regional database, start from a project-type template:
 
 **Sitework (Residential Subdivision, 20 items):**
 ```
-02 41 00 - Demolition (4): house, garage, concrete, asphalt removal
-31 23 00 - Excavation (4): bulk, trench, grading, fill
-33 46 00 - Stormwater (2): French drain, infiltration pit
-33 11 00 - Water utility (1): water service line
-33 30 00 - Sewer utility (1): sewer service line
-31 25 00 - Erosion control (4): silt fence, construction entrance, stabilization, mulch
-32 12 00 - Paving (2): asphalt base, asphalt surface
-32 31 00 - Fencing (2): chain-link fence, temporary construction fence
+Demolition (4): house, garage, concrete, asphalt removal      -> 02 41 00
+Excavation (4): bulk, trench, grading, fill                   -> 31 23 00
+Stormwater (2): French drain, infiltration pit                -> 33 46 00
+Water utility (1): water service line                         -> 33 11 00
+Sewer utility (1): sewer service line                         -> 33 30 00
+Erosion control (4): silt fence, entrance, stabilization      -> 31 25 00
+Paving (2): asphalt base, asphalt surface                     -> 32 12 00
+Fencing (2): chain-link fence, temporary construction fence   -> 32 31 00
 ```
 
 **Heavy Highway (30 or more items):**
 - Division 31 items for cut, fill, and haul.
-- TDOT or CALTRANS standard bid items for paving, drainage, and striping.
+- State DOT standard bid items for paving, drainage, and striping.
 - Additional items for utility relocation.
 
 ### 6.4 Coverage Analysis Method
 
 Once a region's cost database is built, check coverage across four angles:
 
-1. **By division.** Does the database hold items for every MasterFormat division that applies?
+1. **By division.** Does the database hold items for every specification division that applies?
 2. **By value.** Do the top 20 items by estimated project value all have cost entries?
 3. **By bid item.** Can 80% or more of the project's bid items be mapped onto cost entries?
 4. **By source.** Are all components (labor, material, equipment) drawn from current data?
@@ -548,7 +550,7 @@ source unit           -> unit
 source bare cost      -> rate
 source city index     -> metadata.city_cost_index
 source crew details   -> components (labor, material, equipment)
-source CSI division    -> classification.masterformat
+source division        -> classification.masterformat
 ```
 
 **Limitation:** commercial cost data is copyrighted and *cannot be redistributed freely*. For OCERP it can ship as a premium data connector that users subscribe to separately, or serve as a reference and benchmarking source during development.
@@ -628,7 +630,7 @@ source classification       -> classification (transformed to standard keys)
 source labor/equip/material -> components (resource-based decomposition)
 source metadata             -> metadata (provenance, effective dates, source URLs)
 source tags                 -> tags
-source identifier           -> source field ("usace", "bls_oews", "rsmeans", etc.)
+source identifier           -> source field ("usace", "bls_oews", "commercial", etc.)
 ```
 
 ### 8.2 Per-Source Mapping Details
@@ -717,12 +719,12 @@ Bid prices are **composite rates** (labor plus material plus equipment plus over
 
 ```json
 {
-  "code": "RSM-312313.10-0400",
+  "code": "COM-312313.10-0400",
   "description": "Excavation, trench, common earth, 0-4 ft deep, machine",
   "unit": "CY",
   "rate": 18.50,
   "currency": "USD",
-  "source": "rsmeans",
+  "source": "commercial",
   "region": "USA_USD",
   "classification": {"masterformat": "31 23 13.10", "uniformat": "G10"},
   "components": [
@@ -730,8 +732,8 @@ Bid prices are **composite rates** (labor plus material plus equipment plus over
     {"type": "equipment", "name": "Hydraulic excavator 3/4 CY", "quantity": 0.35, "unit_rate": 25.49, "cost": 8.92, "unit": "hr"},
     {"type": "material", "name": "No material", "quantity": 0, "unit_rate": 0, "cost": 0, "unit": "CY"}
   ],
-  "tags": ["excavation", "trench", "earthwork", "rsmeans"],
-  "metadata": {"city_cost_index": 1.0, "rsmeans_line": "312313.10-0400"}
+  "tags": ["excavation", "trench", "earthwork", "commercial"],
+  "metadata": {"city_cost_index": 1.0, "source_line": "312313.10-0400"}
 }
 ```
 
@@ -749,7 +751,7 @@ Apply these `source` field values consistently:
 | `caltrans_bid` | California DOT contract cost data |
 | `fdot_bid` | Florida DOT historical item average cost |
 | `dot_bid` | Generic state DOT bid prices |
-| `rsmeans` | Commercial unit-cost database import |
+| `commercial` | Commercial unit-cost database import |
 | `craftsman_nce` | Commercial estimator handbook |
 | `enr_index` | Published construction cost index / material prices |
 | `marshall_swift` | Replacement-cost valuation data |
@@ -766,18 +768,18 @@ Apply these `source` field values consistently:
 
 ### 9.1 MasterFormat (CSI)
 
-This is the primary classification standard for US construction cost data: 50 divisions (00 to 49), each carrying hierarchical section numbers.
+This is the primary classification standard for US construction cost data. Divisions are numbered in the 00 to 49 band, of which 35 are assigned and the rest stay reserved, and each carries hierarchical section numbers.
 
-**The sitework divisions OCERP leans on:**
+**The sitework divisions OCERP leans on** (numbers are interoperability facts; the work descriptions are our own - the official division titles are proprietary and are not reproduced in this repository):
 
-| Division | Name | Typical Items |
-|----------|------|---------------|
-| 01 | General Requirements | Project management, temporary facilities |
-| 02 | Existing Conditions | Demolition, site assessment, environmental remediation |
-| 31 | Earthwork | Excavation, fill, grading, compaction, dewatering |
-| 32 | Exterior Improvements | Paving, landscaping, fencing, irrigation |
-| 33 | Utilities | Water, sewer, storm drain, gas, electric, communications |
-| 34 | Transportation | Roadways, bridges, rail, signage, markings |
+| Division | Typical Items |
+|----------|---------------|
+| 01 | Project management, temporary facilities |
+| 02 | Demolition, site assessment, environmental remediation |
+| 31 | Excavation, fill, grading, compaction, dewatering |
+| 32 | Paving, landscaping, fencing, irrigation |
+| 33 | Water, sewer, storm drain, gas, electric, communications |
+| 34 | Roadways, bridges, rail, signage, markings |
 
 **In the `classification` dict this reads as:**
 
@@ -785,9 +787,9 @@ This is the primary classification standard for US construction cost data: 50 di
 {"masterformat": "31 23 13"}
 ```
 
-### 9.2 UniFormat (CSI)
+### 9.2 Elemental classification (UNIFORMAT II)
 
-An assembly-level classification aimed at early-stage estimating, built from letter-based elements with numeric subdivisions.
+An assembly-level classification aimed at early-stage estimating, built from letter-based elements with numeric subdivisions. Element names below follow the public-domain elemental classification published by NIST (SP 841, 1992); the letter designators (G10-G40) follow the later federal publication NISTIR 6389. No proprietary edition is reproduced.
 
 **The sitework elements you will use:**
 
@@ -812,7 +814,7 @@ OCERP's `classification` dict can hold several standards at once:
 {
   "division": "02",
   "section": "4100",
-  "category": "Selective Demolition",
+  "category": "Demolition of selected structures",
   "masterformat": "02 41 00",
   "uniformat": "G10"
 }
@@ -828,7 +830,7 @@ The CWICR import relies on `collection`, `department`, `section`, and `subsectio
 
 1. Pick the region (for example `USA_COLORADO`, `USA_SEATTLE`, `CA_TORONTO`).
 2. Decide the project type (sitework, building, highway, utility).
-3. List the MasterFormat divisions to cover.
+3. List the specification divisions to cover.
 4. Estimate the item count (12 to 30 makes a reasonable pilot).
 
 ### 10.2 Gather Source Data

@@ -60,8 +60,9 @@ import { RequiresProject } from '@/shared/auth/RequiresProject';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { useToastStore } from '@/stores/useToastStore';
-import { useProjectContextStore } from '@/stores/useProjectContextStore';
-import { apiGet, getErrorMessage } from '@/shared/lib/api';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
+import { apiGet, getErrorMessage, type Page } from '@/shared/lib/api';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { todayLocalISO, isoDateFromLocal, nowLocalISO } from '@/shared/lib/dates';
 import { projectsApi } from '@/features/projects/api';
 import {
@@ -108,6 +109,7 @@ import { dailyDiaryGuide } from './dailyDiaryGuide';
 import { VoiceEntry, getField } from '@/features/voice';
 import { Panorama360Viewer } from './Panorama360Viewer';
 import { is360Photo, panoramaImageUrl } from './panorama360';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 // Real file upload + "choose from already-uploaded" picker reuse the
 // documents/photo APIs. A diary photo only stores a URL, so we upload the
 // binary through the photo endpoint first (which classifies it as a field
@@ -238,7 +240,7 @@ export function DailyDiaryPage() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('diaries');
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
   const [projectId, setProjectId] = useState<string>('');
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
@@ -319,7 +321,7 @@ export function DailyDiaryPage() {
 
   const activeDiary: DailyDiary | undefined = activeDiaryId
     ? selectedDiaryQ.data
-    : todayDiariesQ.data?.[0];
+    : todayDiariesQ.data?.items[0];
   const activeLoading = activeDiaryId
     ? selectedDiaryQ.isLoading
     : todayDiariesQ.isLoading;
@@ -346,7 +348,7 @@ export function DailyDiaryPage() {
   // has no early return) so the hook order stays stable.
   const insights = useModuleInsights('daily-diary', { defaultOpen: true });
   const { datasets: insightDatasets, builtins: insightBuiltins } = useMemo(
-    () => buildDailyDiaryInsights(diariesQ.data ?? [], '', t),
+    () => buildDailyDiaryInsights(diariesQ.data?.items ?? [], '', t),
     [diariesQ.data, t],
   );
 
@@ -541,7 +543,7 @@ export function DailyDiaryPage() {
           </Card>
         ) : (
           <DiariesCalendar
-            diaries={diariesQ.data ?? []}
+            diaries={diariesQ.data?.items ?? []}
             loading={diariesQ.isLoading}
             year={year}
             month={month}
@@ -604,10 +606,13 @@ export function DailyDiaryPage() {
           />
         </Card>
       ) : (
-        <ArchiveTab
-          diaries={archiveQ.data ?? []}
-          loading={archiveQ.isLoading}
-        />
+        <>
+          <ArchiveTab
+            diaries={archiveQ.data?.items ?? []}
+            loading={archiveQ.isLoading}
+          />
+          {archiveQ.data && <TruncationNotice page={archiveQ.data} className="mt-3" />}
+        </>
       )}
 
       {createOpen && projectId && (
@@ -1489,11 +1494,12 @@ function TodayTab({
       <EntriesTimeline projectId={projectId} diaryId={diary.id} sealed={sealed} />
 
       <PhotoGrid
-        photos={photosQ.data ?? []}
+        photos={photosQ.data?.items ?? []}
         loading={photosQ.isLoading}
         sealed={sealed}
         onUpload={() => setPhotoOpen(true)}
       />
+      {photosQ.data && <TruncationNotice page={photosQ.data} className="-mt-2" />}
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <DroneSection
@@ -1893,10 +1899,10 @@ function EntriesTimeline({
   const inspectionsQ = useQuery({
     queryKey: ['daily-diary', 'src-inspections', projectId],
     queryFn: async () => {
-      const rows = await apiGet<Record<string, unknown>[]>(
+      const page = await apiGet<Page<Record<string, unknown>>>(
         `/v1/inspections/?project_id=${encodeURIComponent(projectId)}`,
       );
-      return rows.map((r) => ({
+      return page.items.map((r) => ({
         id: String(r.id),
         label: [r.inspection_number, r.title]
           .filter(Boolean)
@@ -1971,7 +1977,7 @@ function EntriesTimeline({
     onError: (err) => addToast({ type: 'error', title: getErrorMessage(err) }),
   });
 
-  const entries = entriesQ.data ?? [];
+  const entries = entriesQ.data?.items ?? [];
 
   return (
     <Card padding="md">
@@ -2168,6 +2174,7 @@ function EntriesTimeline({
           ))}
         </ul>
       )}
+      {entriesQ.data && <TruncationNotice page={entriesQ.data} className="mt-2" />}
     </Card>
   );
 }
@@ -2381,7 +2388,7 @@ function DroneSection({
                 const a = q.convert(Number(s.area_m2), 'm²');
                 return (
                   <p className="mt-0.5 text-xs text-content-secondary">
-                    {Number.isFinite(a.value) ? a.value.toLocaleString() : String(s.area_m2)} {a.unit}
+                    {Number.isFinite(a.value) ? a.value.toLocaleString(getNumberLocale()) : String(s.area_m2)} {a.unit}
                   </p>
                 );
               })()}
@@ -2460,7 +2467,7 @@ function RealitySection({
               </div>
               {c.point_count_estimate && (
                 <p className="mt-0.5 text-xs text-content-secondary">
-                  {c.point_count_estimate.toLocaleString()} pts
+                  {c.point_count_estimate.toLocaleString(getNumberLocale())} pts
                 </p>
               )}
             </li>
@@ -3128,7 +3135,7 @@ function ExistingFilePicker({
   const assets = useMemo<ExistingAsset[]>(() => {
     const out: ExistingAsset[] = [];
     const seen = new Set<string>();
-    for (const p of (photosQ.data ?? []) as SitePhoto[]) {
+    for (const p of (photosQ.data?.items ?? []) as SitePhoto[]) {
       out.push({
         key: `photo:${p.id}`,
         file_url: getPhotoFileUrl(p.id),
@@ -3140,7 +3147,7 @@ function ExistingFilePicker({
       // it below so the same image isn't offered twice.
       if (p.document_id) seen.add(p.document_id);
     }
-    for (const d of (docsQ.data ?? []) as DocumentItem[]) {
+    for (const d of (docsQ.data?.items ?? []) as DocumentItem[]) {
       if (seen.has(d.id)) continue;
       if ((d.category ?? '').toLowerCase() === 'photo') continue; // twin row
       const isImage =
@@ -3162,6 +3169,19 @@ function ExistingFilePicker({
     if (!q) return assets;
     return assets.filter((a) => a.label.toLowerCase().includes(q));
   }, [assets, search]);
+
+  // The picker draws from two registers, photos and documents, and offers a
+  // page of each. The notice is built from what the SERVER returned, not from
+  // the thumbnails below: those are the image rows that survived the twin-row
+  // and extension filters, and a count taken from them would describe neither
+  // register. The search box is client-side over the same two pages.
+  const sourcePage = useMemo(
+    () => ({
+      items: [...(photosQ.data?.items ?? []), ...(docsQ.data?.items ?? [])],
+      total: (photosQ.data?.total ?? 0) + (docsQ.data?.total ?? 0),
+    }),
+    [photosQ.data, docsQ.data],
+  );
 
   const loading = photosQ.isLoading || docsQ.isLoading;
   const selectedList = Object.values(selected);
@@ -3192,6 +3212,8 @@ function ExistingFilePicker({
           className={clsx(inputCls, 'pl-9')}
         />
       </div>
+
+      {!loading && <TruncationNotice page={sourcePage} />}
 
       {loading ? (
         <SkeletonTable rows={2} columns={4} />

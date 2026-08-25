@@ -13,6 +13,7 @@ const playbook: Playbook = {
   order: 274,
   category: "handover",
   companyTypes: ["owner-operator"],
+  roles: ["contract-administrator", "site-manager"],
   stage: "operate",
   icon: "ShieldCheck",
   titleKey: "cases.raise_and_close_a_warranty_claim.title",
@@ -60,7 +61,7 @@ const playbook: Playbook = {
       whyKey: "cases.raise_and_close_a_warranty_claim.step.asset.why",
       whyDefault:
         "Raising a claim on an asset that is out of cover just wastes everyone's time. Checking the record first tells you in seconds whether the maker owes you a fix or whether this one is on you.",
-      moduleLabel: "Assets",
+      moduleLabel: "Building Assets (FM)",
       moduleLabelKey: "nav.assets",
       to: "/assets",
     },
@@ -99,7 +100,7 @@ const playbook: Playbook = {
       whyKey: "cases.raise_and_close_a_warranty_claim.step.claim.why",
       whyDefault:
         "A claim with the evidence and the reference attached is one the maker cannot bounce back for more detail. Logging it against the asset also keeps the failure in that unit's history for the next time.",
-      moduleLabel: "Service",
+      moduleLabel: "Service & Maintenance",
       moduleLabelKey: "nav.service",
       to: "/projects/:projectId/service",
     },

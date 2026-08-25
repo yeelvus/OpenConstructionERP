@@ -30,6 +30,7 @@ Escrow data is read live from :class:`EscrowAccount` +
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -78,6 +79,15 @@ class RegulatorReport:
         payload_format: ``"json"`` or ``"xml"`` - content type of
             ``payload_bytes``.
         payload_bytes: Machine-readable submission payload.
+        language: BCP-47 primary subtag the PDF prose is written in. This is a
+            property of the regulator rather than of the reader: the 214-FZ
+            quarterly report is drafted in Russian because that is the language
+            the filing is made in, and the other three are drafted in English
+            for the same reason. It travels beside the bytes rather than being
+            guessed at the route, because the generator is the only thing that
+            knows which prose it used, and it is deliberately required rather
+            than defaulted so that adding a fifth regulator forces the question
+            to be answered instead of quietly inheriting English.
         summary: Compact dict the API returns alongside the artefact bytes.
     """
 
@@ -88,6 +98,7 @@ class RegulatorReport:
     pdf_bytes: bytes
     payload_format: str
     payload_bytes: bytes
+    language: str
     summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -320,6 +331,16 @@ async def _load_aggregates(
 # ── PDF rendering ───────────────────────────────────────────────────────
 
 
+def _esc(value: object) -> str:
+    """Escape a value for interpolation into reportlab paragraph markup.
+
+    A paragraph takes a small HTML-like markup, so a raw regulator or
+    development name is parsed rather than printed and the report is altered
+    without anything raising.
+    """
+    return html.escape(str(value))
+
+
 def _render_pdf(
     *,
     title: str,
@@ -374,16 +395,18 @@ def _render_pdf(
     styles["Heading3"].fontName = BOLD_FONT
     styles["BodyText"].fontName = BODY_FONT
     story: list[Any] = [
-        Paragraph(title, styles["Title"]),
-        Paragraph(subtitle, styles["Heading2"]),
+        # Report title, section headings and the token all carry regulator
+        # and development names, which a paragraph would parse as markup.
+        Paragraph(_esc(title), styles["Title"]),
+        Paragraph(_esc(subtitle), styles["Heading2"]),
         Paragraph(
-            f"Generated {datetime.now(UTC).isoformat(timespec='seconds')} UTC",
+            f"Generated {_esc(datetime.now(UTC).isoformat(timespec='seconds'))} UTC",
             styles["BodyText"],
         ),
         Spacer(1, 0.5 * cm),
     ]
     for heading, rows in sections:
-        story.append(Paragraph(heading, styles["Heading3"]))
+        story.append(Paragraph(_esc(heading), styles["Heading3"]))
         if not rows:
             story.append(Paragraph("(no data)", styles["BodyText"]))
             story.append(Spacer(1, 0.3 * cm))
@@ -432,7 +455,7 @@ def _render_pdf(
     story.append(Spacer(1, 0.4 * cm))
     story.append(
         Paragraph(
-            f"Regulator verification token (QR stub): {qr_payload}",
+            f"Regulator verification token (QR stub): {_esc(qr_payload)}",
             styles["BodyText"],
         )
     )
@@ -548,6 +571,8 @@ async def generate_regulator_report_rera(
         pdf_bytes=pdf_bytes,
         payload_format="json",
         payload_bytes=payload_bytes,
+        # English: the Dubai disclosure is drafted in English.
+        language="en",
         summary={
             "total_units": plots["total"],
             "sold_units": plots["sold"],
@@ -672,6 +697,8 @@ async def generate_regulator_report_maharera(
         pdf_bytes=pdf_bytes,
         payload_format="xml",
         payload_bytes=payload_bytes,
+        # English: the Form 5 progress report is drafted in English.
+        language="en",
         summary={
             "total_units": plots["total"],
             "carpet_area_m2": str(carpet_total.quantize(Decimal("0.01"))),
@@ -816,6 +843,12 @@ async def generate_regulator_report_214fz(
         pdf_bytes=pdf_bytes,
         payload_format="xml",
         payload_bytes=payload_bytes,
+        # Russian, and this is the case the field exists for. The
+        # 214-FZ report is drafted in Russian because that is the
+        # language of the filing, so a route that assumed English here
+        # would be labelling a Russian document English for every
+        # reader, including the Russian one it was written for.
+        language="ru",
         summary={
             "total_units": plots["total"],
             "total_area_m2": str(total_area.quantize(Decimal("0.01"))),
@@ -932,6 +965,13 @@ async def generate_regulator_report_cma(
         pdf_bytes=pdf_bytes,
         payload_format="json",
         payload_bytes=payload_bytes,
+        # English. The module docstring calls this disclosure bilingual, and
+        # the PDF is not: there is no Arabic prose anywhere in this file, so
+        # every label on the rendered page is English. The field records what
+        # the generator writes rather than what the header of this module
+        # says it writes, and the difference between those two is the reason
+        # a route cannot be left to infer the language for itself.
+        language="en",
         summary={
             "total_units": plots["total"],
             "sold_units": plots["sold"],

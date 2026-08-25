@@ -184,10 +184,28 @@ export default defineConfig({
         globPatterns: ['**/*.{js,mjs,css,html,svg,woff2,ico}'],
         // Skip huge prerendered marketing assets (handled by the static
         // host) and stats.html (visualizer output).
-        globIgnores: ['stats.html', '**/*.map'],
+        //
+        // The locale chunks are excluded deliberately, and not because
+        // they are merely large. Precaching them means every visitor
+        // downloads all 43 languages to read one: the chunks run past
+        // 5 MB each, so the manifest was asking for well over 200 MB
+        // before anyone saw a screen. They already have their own
+        // ``oce-i18n-locales`` StaleWhileRevalidate lane below, which
+        // caches the one locale a reader actually loads and refreshes it
+        // in the background, so precaching them was never doing work the
+        // runtime lane does not already do better.
+        //
+        // Leaving them in is also what broke the build rather than merely
+        // bloating it: workbox fails ``generateSW`` outright once a
+        // precache entry exceeds the ceiling, so every locale that grew
+        // past it took the desktop build down with it. Excluding them
+        // takes the growing file out of the manifest entirely, which is
+        // the fix that does not need revisiting the next time a
+        // translation lands.
+        globIgnores: ['stats.html', '**/*.map', '**/i18n-*.js'],
         // Allow large lazy-loaded chunks (vendor-three, vendor-maplibre)
-        // to be runtime-cached on first visit. 5 MB ceiling matches
-        // workbox's default but is set explicitly for clarity.
+        // to be precached on first visit. Workbox's own default is 2 MiB;
+        // this raises it, it does not restate it.
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         navigateFallback: '/index.html',
         // Don't try to fall back to /index.html for API routes or for
@@ -233,7 +251,10 @@ export default defineConfig({
             // are ``i18n-<code>``.  StaleWhileRevalidate keeps the
             // active locale instant-on while still pulling fresh keys
             // in the background.
-            urlPattern: ({ url }) => /\/assets\/i18n-[a-z]{2}-.*\.js$/.test(url.pathname),
+            // Regional codes carry a hyphen and a country, so the code half
+            // has to allow one or this lane silently skips en-US and the
+            // four Spanish and Portuguese variants.
+            urlPattern: ({ url }) => /\/assets\/i18n-[a-z]{2,3}(?:-[A-Z]{2})?-.*\.js$/.test(url.pathname),
             handler: 'StaleWhileRevalidate',
             options: {
               cacheName: 'oce-i18n-locales',
@@ -391,7 +412,17 @@ export default defineConfig({
           // keys survive minor unrelated edits.  Checked first because
           // these are source files, not node_modules (the guard below
           // would otherwise skip them).
-          const localeMatch = id.match(/[\\/]src[\\/]app[\\/]locales[\\/]([a-z]{2})\.ts$/);
+          // The code is not always two letters.  Six catalogues are named
+          // otherwise - en-US, es-MX, es-CL, es-CO, pt-BR, fil - and a
+          // two-letter pattern left every one of them unnamed here.  They
+          // still got a chunk each, because the dynamic import splits them
+          // either way, so nothing about the build looked wrong.  What they
+          // lost was the ``i18n-`` prefix, which is what ``globIgnores`` and
+          // the runtime cache lane below both key on.  Measured on the
+          // 15.0.0 build that put 15.6 MB of locale catalogues into the
+          // precache manifest, which is precisely what the comment above
+          // ``globIgnores`` says must never happen again.
+          const localeMatch = id.match(/[\\/]src[\\/]app[\\/]locales[\\/]([a-z]{2,3}(?:-[A-Z]{2})?)\.ts$/);
           if (localeMatch) return `i18n-${localeMatch[1]}`;
           // Vite's module-preload helper (`__vitePreload`) is a virtual module
           // ("\0vite/preload-helper.js"). Left unassigned, Rollup folds it into

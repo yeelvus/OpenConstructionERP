@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 235,
   category: "commercial",
   companyTypes: ["developer-client", "project-manager", "cost-consultant"],
+  roles: ["quantity-surveyor", "project-manager", "finance-manager"],
   icon: "Flag",
   titleKey: "cases.milestone_progress_before_drawdown.title",
   titleDefault: "Check milestone progress before a valuation is approved",
@@ -66,7 +67,7 @@ const playbook: Playbook = {
       whyKey: "cases.milestone_progress_before_drawdown.step.milestones.why",
       whyDefault:
         "A milestone claimed a week early and paid against is money released for work not yet done, and it is awkward to claw back.",
-      moduleLabel: "Schedule",
+      moduleLabel: "4D Schedule",
       moduleLabelKey: "schedule.title",
       to: "/schedule",
     },
@@ -118,7 +119,7 @@ const playbook: Playbook = {
       whyKey: "cases.milestone_progress_before_drawdown.step.earned.why",
       whyDefault:
         "A milestone can look reached on the programme while the cost and earned-value picture tells a different story. Reading both together is what catches an inconsistency before it is paid.",
-      moduleLabel: "Value",
+      moduleLabel: "Value Realized",
       moduleLabelKey: "nav.value",
       to: "/projects/:projectId/value",
     },

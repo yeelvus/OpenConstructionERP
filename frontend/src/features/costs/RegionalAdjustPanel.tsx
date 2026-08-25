@@ -14,6 +14,7 @@ import clsx from 'clsx';
 
 import { Card } from '@/shared/ui';
 import { previewRegionalAdjust, type RegionalAdjustResponse } from './api';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
 
 /** Seed regions populated by ``app.scripts.seed_regional_indices``.  Match
  *  the seed pipeline so the picker never points at an empty region. */
@@ -163,7 +164,7 @@ export function RegionalAdjustPanel({
                 ? '…'
                 : isError || !data
                   ? '—'
-                  : Number(data.adjusted_rate).toFixed(2)}
+                  : fmtFixed(Number(data.adjusted_rate), 2)}
             </div>
           </div>
         </div>
@@ -173,7 +174,7 @@ export function RegionalAdjustPanel({
             <div className="text-2xs text-content-tertiary">
               {t('costs.regional_adjust.factor', { defaultValue: 'Factor' })}
               {' × '}
-              <span className="font-mono tabular-nums">{Number(data.factor_applied).toFixed(4)}</span>
+              <span className="font-mono tabular-nums">{fmtFixed(Number(data.factor_applied), 4)}</span>
             </div>
             <div
               className={clsx(
@@ -186,7 +187,7 @@ export function RegionalAdjustPanel({
               )}
             >
               {deltaPct >= 0 ? '+' : ''}
-              {deltaPct.toFixed(1)}%
+              {fmtPercent(deltaPct)}
             </div>
           </div>
         )}

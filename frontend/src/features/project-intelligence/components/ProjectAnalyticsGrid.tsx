@@ -32,6 +32,7 @@ import {
 } from 'recharts';
 import { apiGet, apiPost } from '@/shared/lib/api';
 import { buildPareto, type ParetoInput } from './ParetoHelper';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 export const PI_QUERY_STALE_MS = 60_000;
 
@@ -462,7 +463,7 @@ export function ProjectAnalyticsGrid({ projectId }: ProjectAnalyticsGridProps) {
             }`}
             data-testid="pi-scope-coverage-pct"
           >
-            {coverage.pct.toFixed(0)}%
+            {fmtPercent(coverage.pct, 0)}
           </div>
           <div className="text-2xs text-content-tertiary mt-1">
             {t('project_intelligence.analytics.scope_coverage_ratio', {

@@ -34,11 +34,12 @@ from collections.abc import Iterable
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.content_disposition import attachment_disposition
 from app.core.file_signature import (
     SIGNATURE_BYTES_REQUIRED,
     FileSignatureMismatch,
@@ -110,6 +111,7 @@ from app.modules.finance.schemas import (
     TrialBalanceRow,
 )
 from app.modules.finance.service import FinanceService
+from app.modules.finance.variance import budget_variance
 
 router = APIRouter(tags=["finance"])
 logger = logging.getLogger(__name__)
@@ -646,30 +648,34 @@ async def export_invoice_br_pdf(
         project=project_dict or None,
     )
 
-    # Sanitise invoice_number before embedding in a quoted Content-Disposition
-    # header.  invoice_number is a user-controlled DB value - it can contain
-    # characters that would break the RFC 6266 quoted-string or inject
-    # additional headers (CRLF injection).  Strip every character that is not
-    # ASCII printable, remove double-quotes (which terminate the quoted-string
-    # token) and forward-slashes (already done historically), and cap length.
+    # Normalise invoice_number before embedding it in the download filename.
+    # invoice_number is a user-controlled DB value - it can contain characters
+    # that would break the RFC 6266 quoted-string or inject additional headers
+    # (CRLF injection). Strip CR/LF, swap double-quotes and forward-slashes
+    # (as historically), and cap length. Non-ASCII stays: the header is built
+    # by attachment_disposition, which emits the RFC 6266 ASCII fallback plus
+    # UTF-8 ``filename*`` pair so accented invoice numbers survive intact.
     _raw_num = invoice.invoice_number or "invoice"
-    _safe_num = (
-        (
-            _raw_num.encode("ascii", errors="replace")  # non-ASCII → b'?'
-            .decode("ascii")
-            .replace("\r", "")
-            .replace("\n", "")
-            .replace('"', "'")
-            .replace("/", "-")
-            .strip()
-        )[:80]
-        or "invoice"
-    )
+    _safe_num = (_raw_num.replace("\r", "").replace("\n", "").replace('"', "'").replace("/", "-").strip())[
+        :80
+    ] or "invoice"
     filename = f"RPS_{_safe_num}.pdf"
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": attachment_disposition(filename),
+            # A literal, because there is nothing to resolve: an RPS is a
+            # Brazilian fiscal document and br_invoice_pdf writes it in
+            # Portuguese unconditionally, with no locale input anywhere.
+            # Without this the Accept-Language middleware labels those
+            # Portuguese bytes with whatever the reader happened to ask for,
+            # so a German reader receives a document declared German. Note
+            # this is deliberately a region tag: the document is Brazilian
+            # rather than European Portuguese, and no resolver is involved
+            # here to truncate it to a primary subtag.
+            "Content-Language": "pt-BR",
+        },
     )
 
 
@@ -775,6 +781,13 @@ async def export_invoice_einvoice(
     fmt: str = Query(default="xrechnung", alias="format"),
     dry_run: bool = Query(default=False),
     embed: bool = Query(default=False),
+    locale: str | None = Query(
+        default=None,
+        max_length=10,
+        description="Language of the readable page in the hybrid PDF (e.g. 'de'). "
+        "Overrides Accept-Language. The XML is locale-independent.",
+    ),
+    accept_language: str | None = Header(default=None, alias="accept-language"),
     user_id: CurrentUserId = None,  # type: ignore[assignment]
     _perm: None = Depends(RequirePermission("finance.read")),
     service: FinanceService = Depends(_get_service),
@@ -788,6 +801,7 @@ async def export_invoice_einvoice(
         violations_for,
     )
     from app.modules.einvoice.cii import EInvoiceError
+    from app.modules.einvoice.pdf_translations import resolve_pdf_locale
 
     profile = (fmt or "xrechnung").strip().lower()
     if profile not in SUPPORTED_PROFILES:
@@ -842,18 +856,41 @@ async def export_invoice_einvoice(
             "valid": not problems,
             "problems": problems,
             "violations": [
-                {"rule_id": v.rule_id, "severity": v.severity, "message": v.message, "term": v.term} for v in found
+                {
+                    "rule_id": v.rule_id,
+                    "severity": v.severity,
+                    "message": v.message,
+                    "term": v.term,
+                    # The values the message interpolates, so a screen showing
+                    # the finding in another language can name the same line
+                    # and quote the same amount instead of falling back to the
+                    # English sentence to keep them.
+                    "params": v.params,
+                }
+                for v in found
             ],
         }
 
-    render = render_einvoice_pdf if embed else render_einvoice
+    pdf_locale: str | None = None
     try:
-        filename, media_type, body = render(
-            invoice=invoice_dict,
-            line_items=line_items,
-            profile=profile,
-            defaults=defaults,
-        )
+        if embed:
+            # The readable page follows the reader's language, the same
+            # resolution the daily-diary PDF uses; the embedded XML does not.
+            pdf_locale = resolve_pdf_locale(locale, accept_language)
+            filename, media_type, body = render_einvoice_pdf(
+                invoice=invoice_dict,
+                line_items=line_items,
+                profile=profile,
+                defaults=defaults,
+                locale=pdf_locale,
+            )
+        else:
+            filename, media_type, body = render_einvoice(
+                invoice=invoice_dict,
+                line_items=line_items,
+                profile=profile,
+                defaults=defaults,
+            )
     except EInvoiceError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -866,11 +903,23 @@ async def export_invoice_einvoice(
             ),
         ) from exc
 
-    # ``filename`` is already ASCII-sanitised by the service (_safe_token).
+    # ``filename`` is single-line-sanitised by the service (_safe_token) and
+    # may carry non-ASCII; attachment_disposition derives the RFC 6266 pair.
+    headers = {"Content-Disposition": attachment_disposition(filename)}
+    if pdf_locale is not None:
+        # The readable page declares what was rendered rather than what was
+        # requested: the invoice catalogue holds fewer languages than the
+        # interface, so an English page reaching a reader who asked for French
+        # must say so instead of being labelled French by the Accept-Language
+        # middleware. The bare XML branch sets nothing here and therefore still
+        # carries that request-derived header - the CII holds no prose we could
+        # speak for, and giving a machine document a language is a separate
+        # decision from this one.
+        headers["Content-Language"] = pdf_locale
     return StreamingResponse(
         io.BytesIO(body),
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=headers,
     )
 
 
@@ -1932,7 +1981,15 @@ async def export_budgets(
         committed = _bd(b.committed)
         actual = _bd(b.actual)
         forecast = _bd(b.forecast_final)
-        variance = revised - actual
+        # The same rule the table on screen uses. A workbook that disagreed
+        # with the page it was exported from would be the more expensive of
+        # the two, because it travels.
+        variance = budget_variance(
+            revised_budget=revised,
+            forecast_final=forecast,
+            committed=committed,
+            actual=actual,
+        )
 
         ws.cell(row=row_idx, column=3, value=original)
         ws.cell(row=row_idx, column=4, value=revised)

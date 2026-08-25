@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 170,
   category: "planning",
   companyTypes: ["general-contractor", "project-manager", "developer-client"],
+  roles: ["project-manager", "planner", "site-manager"],
   icon: "FileBarChart",
   titleKey: "cases.compile_weekly_progress_report.title",
   titleDefault: "Compile the weekly progress report",
@@ -56,7 +57,7 @@ const playbook: Playbook = {
       whyKey: "cases.compile_weekly_progress_report.step.actuals.why",
       whyDefault:
         "A report built on wishful percentages fools nobody for long and destroys your credibility when the truth lands. Honest actuals now are what make the finish date you quote believable.",
-      moduleLabel: "Schedule",
+      moduleLabel: "4D Schedule",
       moduleLabelKey: "nav.schedule",
       to: "/schedule",
     },

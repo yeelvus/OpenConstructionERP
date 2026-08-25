@@ -147,10 +147,10 @@ def _build_berlin_positions(boq_id: uuid.UUID) -> list[Position]:
             "KG 300 \u2014 Bauwerk \u2014 Baukonstruktionen",
             {"din276": "300"},
             [
-                ("300.1", "Baugrube und Erdbau (Excavation)", "m3", 4200, 18.50, {"din276": "300"}),
-                ("300.2", "Gr\u00fcndung Bodenplatte C30/37 (Foundation slab)", "m3", 680, 285.00, {"din276": "300"}),
-                ("300.3", "Abdichtung Bodenplatte (Waterproofing)", "m2", 2800, 42.00, {"din276": "300"}),
-                ("300.4", "Drainage und Entw\u00e4sserung (Drainage)", "m", 320, 65.00, {"din276": "300"}),
+                ("300.1", "Baugrube und Erdbau", "m3", 4200, 18.50, {"din276": "300"}),
+                ("300.2", "Gr\u00fcndung Bodenplatte C30/37", "m3", 680, 285.00, {"din276": "300"}),
+                ("300.3", "Abdichtung Bodenplatte", "m2", 2800, 42.00, {"din276": "300"}),
+                ("300.4", "Drainage und Entw\u00e4sserung", "m", 320, 65.00, {"din276": "300"}),
             ],
         ),
         # 2. KG 310 - Baugrube / Erdbau
@@ -159,9 +159,9 @@ def _build_berlin_positions(boq_id: uuid.UUID) -> list[Position]:
             "KG 310 \u2014 Baugrube / Erdbau",
             {"din276": "310"},
             [
-                ("310.1", "Aushub Baugrube (Pit excavation)", "m3", 6500, 12.80, {"din276": "310"}),
-                ("310.2", "Verbau und Sicherung (Shoring)", "m2", 1200, 95.00, {"din276": "310"}),
-                ("310.3", "Abtransport Erdreich (Soil removal)", "m3", 5800, 22.00, {"din276": "310"}),
+                ("310.1", "Aushub Baugrube", "m3", 6500, 12.80, {"din276": "310"}),
+                ("310.2", "Verbau und Sicherung", "m2", 1200, 95.00, {"din276": "310"}),
+                ("310.3", "Abtransport Erdreich", "m3", 5800, 22.00, {"din276": "310"}),
             ],
         ),
         # 3. KG 330 - Außenwände
@@ -170,11 +170,11 @@ def _build_berlin_positions(boq_id: uuid.UUID) -> list[Position]:
             "KG 330 \u2014 Au\u00dfenw\u00e4nde",
             {"din276": "330"},
             [
-                ("330.1", "Stahlbetonw\u00e4nde C30/37, 25cm (RC walls)", "m3", 420, 380.00, {"din276": "330"}),
-                ("330.2", "Mauerwerk KS 2DF 20cm (Masonry)", "m2", 3200, 85.00, {"din276": "330"}),
-                ("330.3", "WDVS 160mm EPS (ETICS insulation)", "m2", 4800, 95.00, {"din276": "330"}),
-                ("330.4", "Fassadenputz Silikonharz (Facade render)", "m2", 4800, 35.00, {"din276": "330"}),
-                ("330.5", "Sockeld\u00e4mmung XPS 120mm (Base insulation)", "m2", 480, 68.00, {"din276": "330"}),
+                ("330.1", "Stahlbetonw\u00e4nde C30/37, 25cm", "m3", 420, 380.00, {"din276": "330"}),
+                ("330.2", "Mauerwerk KS 2DF 20cm", "m2", 3200, 85.00, {"din276": "330"}),
+                ("330.3", "WDVS 160mm EPS", "m2", 4800, 95.00, {"din276": "330"}),
+                ("330.4", "Fassadenputz Silikonharz", "m2", 4800, 35.00, {"din276": "330"}),
+                ("330.5", "Sockeld\u00e4mmung XPS 120mm", "m2", 480, 68.00, {"din276": "330"}),
             ],
         ),
         # 4. KG 340 - Innenwände
@@ -183,9 +183,9 @@ def _build_berlin_positions(boq_id: uuid.UUID) -> list[Position]:
             "KG 340 \u2014 Innenw\u00e4nde",
             {"din276": "340"},
             [
-                ("340.1", "Trennw\u00e4nde Mauerwerk 11,5cm (Partition masonry)", "m2", 5600, 52.00, {"din276": "340"}),
-                ("340.2", "Trockenbauwa\u0308nde Doppelst\u00e4nder (Drywall)", "m2", 3200, 78.00, {"din276": "340"}),
-                ("340.3", "Brandschutzw\u00e4nde F90 (Fire walls)", "m2", 800, 125.00, {"din276": "340"}),
+                ("340.1", "Trennw\u00e4nde Mauerwerk 11,5cm", "m2", 5600, 52.00, {"din276": "340"}),
+                ("340.2", "Trockenbauwa\u0308nde Doppelst\u00e4nder", "m2", 3200, 78.00, {"din276": "340"}),
+                ("340.3", "Brandschutzw\u00e4nde F90", "m2", 800, 125.00, {"din276": "340"}),
             ],
         ),
         # 5. KG 350 - Decken
@@ -194,10 +194,10 @@ def _build_berlin_positions(boq_id: uuid.UUID) -> list[Position]:
             "KG 350 \u2014 Decken",
             {"din276": "350"},
             [
-                ("350.1", "Stahlbetondecke C30/37, 22cm (RC slab)", "m3", 1560, 320.00, {"din276": "350"}),
-                ("350.2", "Trittschalld\u00e4mmung 30mm (Impact insulation)", "m2", 5200, 18.00, {"din276": "350"}),
-                ("350.3", "Zementestrich 65mm CT-C30-F5 (Screed)", "m2", 5200, 28.00, {"din276": "350"}),
-                ("350.4", "Flie\u00dfestrich Anhydrit (Anhydrite screed)", "m2", 2600, 32.00, {"din276": "350"}),
+                ("350.1", "Stahlbetondecke C30/37, 22cm", "m3", 1560, 320.00, {"din276": "350"}),
+                ("350.2", "Trittschalld\u00e4mmung 30mm", "m2", 5200, 18.00, {"din276": "350"}),
+                ("350.3", "Zementestrich 65mm CT-C30-F5", "m2", 5200, 28.00, {"din276": "350"}),
+                ("350.4", "Flie\u00dfestrich Anhydrit", "m2", 2600, 32.00, {"din276": "350"}),
             ],
         ),
         # 6. KG 360 - Dächer
@@ -206,18 +206,18 @@ def _build_berlin_positions(boq_id: uuid.UUID) -> list[Position]:
             "KG 360 \u2014 D\u00e4cher",
             {"din276": "360"},
             [
-                ("360.1", "Flachdachabdichtung 2-lagig (Flat roof membrane)", "m2", 1400, 85.00, {"din276": "360"}),
+                ("360.1", "Flachdachabdichtung 2-lagig", "m2", 1400, 85.00, {"din276": "360"}),
                 (
                     "360.2",
-                    "Gef\u00e4lled\u00e4mmung EPS 120-200mm (Tapered insulation)",
+                    "Gef\u00e4lled\u00e4mmung EPS 120-200mm",
                     "m2",
                     1400,
                     55.00,
                     {"din276": "360"},
                 ),
-                ("360.3", "Attika Verblechung (Parapet capping)", "m", 260, 95.00, {"din276": "360"}),
-                ("360.4", "Extensivbegr\u00fcnung (Green roof)", "m2", 800, 48.00, {"din276": "360"}),
-                ("360.5", "Dachentwässerung (Roof drainage)", "pcs", 24, 380.00, {"din276": "360"}),
+                ("360.3", "Attika Verblechung", "m", 260, 95.00, {"din276": "360"}),
+                ("360.4", "Extensivbegr\u00fcnung", "m2", 800, 48.00, {"din276": "360"}),
+                ("360.5", "Dachentwässerung", "pcs", 24, 380.00, {"din276": "360"}),
             ],
         ),
         # 7. KG 370 - Baukonstruktive Einbauten
@@ -226,9 +226,9 @@ def _build_berlin_positions(boq_id: uuid.UUID) -> list[Position]:
             "KG 370 \u2014 Baukonstruktive Einbauten",
             {"din276": "370"},
             [
-                ("370.1", "Treppen Stahlbeton (RC stairs)", "pcs", 12, 4200.00, {"din276": "370"}),
-                ("370.2", "Balkone Stahlbeton (Balconies)", "m2", 960, 285.00, {"din276": "370"}),
-                ("370.3", "Aufzugsschacht (Elevator shaft)", "pcs", 3, 18000.00, {"din276": "370"}),
+                ("370.1", "Treppen Stahlbeton", "pcs", 12, 4200.00, {"din276": "370"}),
+                ("370.2", "Balkone Stahlbeton", "m2", 960, 285.00, {"din276": "370"}),
+                ("370.3", "Aufzugsschacht", "pcs", 3, 18000.00, {"din276": "370"}),
             ],
         ),
         # 8. KG 410 - Abwasser, Wasser (Plumbing)
@@ -237,9 +237,9 @@ def _build_berlin_positions(boq_id: uuid.UUID) -> list[Position]:
             "KG 410 \u2014 Abwasser, Wasser",
             {"din276": "410"},
             [
-                ("410.1", "Abwasserleitungen KG DN110-160 (Drainage pipes)", "m", 2400, 45.00, {"din276": "410"}),
-                ("410.2", "Trinkwasserleitung Kupfer/PE-X (Water supply)", "m", 3600, 38.00, {"din276": "410"}),
-                ("410.3", "Sanit\u00e4robjekte komplett (Sanitary fixtures)", "pcs", 192, 1850.00, {"din276": "410"}),
+                ("410.1", "Abwasserleitungen KG DN110-160", "m", 2400, 45.00, {"din276": "410"}),
+                ("410.2", "Trinkwasserleitung Kupfer/PE-X", "m", 3600, 38.00, {"din276": "410"}),
+                ("410.3", "Sanit\u00e4robjekte komplett", "pcs", 192, 1850.00, {"din276": "410"}),
             ],
         ),
         # 9. KG 420 - Wärmeversorgung (Heating)
@@ -248,10 +248,10 @@ def _build_berlin_positions(boq_id: uuid.UUID) -> list[Position]:
             "KG 420 \u2014 W\u00e4rmeversorgung",
             {"din276": "420"},
             [
-                ("420.1", "Fu\u00dfbodenheizung (Floor heating)", "m2", 4800, 48.00, {"din276": "420"}),
-                ("420.2", "Heizk\u00f6rper Typ 22 (Radiators)", "pcs", 96, 420.00, {"din276": "420"}),
-                ("420.3", "W\u00e4rmepumpe Sole/Wasser (Heat pump)", "pcs", 2, 28000.00, {"din276": "420"}),
-                ("420.4", "Pufferspeicher 1000L (Buffer tank)", "pcs", 2, 3200.00, {"din276": "420"}),
+                ("420.1", "Fu\u00dfbodenheizung", "m2", 4800, 48.00, {"din276": "420"}),
+                ("420.2", "Heizk\u00f6rper Typ 22", "pcs", 96, 420.00, {"din276": "420"}),
+                ("420.3", "W\u00e4rmepumpe Sole/Wasser", "pcs", 2, 28000.00, {"din276": "420"}),
+                ("420.4", "Pufferspeicher 1000L", "pcs", 2, 3200.00, {"din276": "420"}),
             ],
         ),
         # 10. KG 440 - Elektrotechnik (Electrical)
@@ -260,10 +260,10 @@ def _build_berlin_positions(boq_id: uuid.UUID) -> list[Position]:
             "KG 440 \u2014 Elektrotechnik",
             {"din276": "440"},
             [
-                ("440.1", "Elektroinstallation je WE (Per apartment)", "pcs", 48, 4200.00, {"din276": "440"}),
-                ("440.2", "Hauptverteilung + UV (Main distribution)", "pcs", 4, 8500.00, {"din276": "440"}),
-                ("440.3", "Aufzugsanlage komplett (Elevator)", "pcs", 3, 85000.00, {"din276": "440"}),
-                ("440.4", "Sprechanlagen/Klingel (Intercom)", "pcs", 48, 380.00, {"din276": "440"}),
+                ("440.1", "Elektroinstallation je WE", "pcs", 48, 4200.00, {"din276": "440"}),
+                ("440.2", "Hauptverteilung + UV", "pcs", 4, 8500.00, {"din276": "440"}),
+                ("440.3", "Aufzugsanlage komplett", "pcs", 3, 85000.00, {"din276": "440"}),
+                ("440.4", "Sprechanlagen/Klingel", "pcs", 48, 380.00, {"din276": "440"}),
             ],
         ),
         # 11. KG 540 - Technische Anlagen Außenanlagen
@@ -272,8 +272,8 @@ def _build_berlin_positions(boq_id: uuid.UUID) -> list[Position]:
             "KG 540 \u2014 Technische Anlagen Au\u00dfenanlagen",
             {"din276": "540"},
             [
-                ("540.1", "Beleuchtung Au\u00dfenanlagen (External lighting)", "pcs", 45, 850.00, {"din276": "540"}),
-                ("540.2", "Tiefgarage Beleuchtung (Garage lighting)", "m2", 1200, 28.00, {"din276": "540"}),
+                ("540.1", "Beleuchtung Au\u00dfenanlagen", "pcs", 45, 850.00, {"din276": "540"}),
+                ("540.2", "Tiefgarage Beleuchtung", "m2", 1200, 28.00, {"din276": "540"}),
             ],
         ),
         # 12. KG 500 - Außenanlagen
@@ -282,10 +282,10 @@ def _build_berlin_positions(boq_id: uuid.UUID) -> list[Position]:
             "KG 500 \u2014 Au\u00dfenanlagen",
             {"din276": "500"},
             [
-                ("500.1", "Pflasterung Wege (Paving paths)", "m2", 1600, 68.00, {"din276": "500"}),
-                ("500.2", "Bepflanzung und Rasen (Planting)", "m2", 2400, 25.00, {"din276": "500"}),
-                ("500.3", "Spielplatz komplett (Playground)", "lsum", 1, 45000.00, {"din276": "500"}),
-                ("500.4", "M\u00fcllstandplatz (Waste area)", "pcs", 2, 8500.00, {"din276": "500"}),
+                ("500.1", "Pflasterung Wege", "m2", 1600, 68.00, {"din276": "500"}),
+                ("500.2", "Bepflanzung und Rasen", "m2", 2400, 25.00, {"din276": "500"}),
+                ("500.3", "Spielplatz komplett", "lsum", 1, 45000.00, {"din276": "500"}),
+                ("500.4", "M\u00fcllstandplatz", "pcs", 2, 8500.00, {"din276": "500"}),
             ],
         ),
     ]
@@ -324,21 +324,21 @@ def _build_berlin_markups(boq_id: uuid.UUID) -> list[BOQMarkup]:
     return [
         _make_markup(
             boq_id=boq_id,
-            name="BGK (Baustellengemeinkosten)",
+            name="BGK",
             percentage=8.0,
             category="overhead",
             sort_order=1,
         ),
         _make_markup(
             boq_id=boq_id,
-            name="AGK (Allgemeine Gesch\u00e4ftskosten)",
+            name="AGK",
             percentage=5.0,
             category="overhead",
             sort_order=2,
         ),
         _make_markup(
             boq_id=boq_id,
-            name="W&G (Wagnis und Gewinn)",
+            name="W&G",
             percentage=3.0,
             category="profit",
             sort_order=3,

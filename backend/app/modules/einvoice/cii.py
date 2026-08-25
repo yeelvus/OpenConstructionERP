@@ -75,7 +75,14 @@ _UNECE_BY_UNIT = {
     "l": "LTR",
     "kg": "KGM",
     "t": "TNE",
+    # "ton" keeps the metric code it has always had: rows stored before the
+    # BOQ normaliser started reading a typed "ton" as the short ton carry
+    # this string meaning the tonne, and an invoice must not restate what
+    # was already billed.  New input normalises to "ton_us" (STN) or "t".
     "ton": "TNE",
+    "ton_us": "STN",
+    "lb": "LBR",
+    "lbs": "LBR",
     "g": "GRM",
     "h": "HUR",
     "hr": "HUR",
@@ -153,6 +160,11 @@ class TaxSubtotal:
     rate: Decimal
     basis: Decimal  # BT-116
     tax_amount: Decimal  # BT-117
+    # BT-120 / BT-121: why no VAT is charged. Mandatory for the exempting
+    # categories (E, AE, K, G, O) and forbidden for S and Z - the BR-x-10 rule
+    # family in ``rules`` polices both directions.
+    exemption_reason: str | None = None  # BT-120
+    exemption_reason_code: str | None = None  # BT-121
 
 
 @dataclass
@@ -189,6 +201,12 @@ class EInvoice:
     payee_iban: str | None = None  # BT-84 (payment account identifier)
     payee_account_name: str | None = None  # BT-85
     payee_bic: str | None = None  # BT-86 (payment service provider identifier)
+    # Provenance, not document content: False when the builder had no VAT
+    # information anywhere (no rate, no category, zero tax amount) and fell
+    # back to 0% / category Z. OCE-VAT-01 reads it to say that the zero-rating
+    # is an inference rather than a statement. Defaults to True so a
+    # hand-assembled invoice is taken at its word.
+    vat_declared: bool = True
 
 
 # --- formatting helpers ---------------------------------------------------
@@ -433,8 +451,14 @@ def build_cii_xml(inv: EInvoice, *, strict: bool = True) -> bytes:
         tax = _sub(stl, "ram", "ApplicableTradeTax")
         _sub(tax, "ram", "CalculatedAmount", _money(grp.tax_amount, inv.currency))
         _sub(tax, "ram", "TypeCode", "VAT")
+        # BT-120 / BT-121, in the D16B element order: ExemptionReason precedes
+        # BasisAmount and ExemptionReasonCode follows CategoryCode.
+        if grp.exemption_reason:
+            _sub(tax, "ram", "ExemptionReason", grp.exemption_reason)
         _sub(tax, "ram", "BasisAmount", _money(grp.basis, inv.currency))
         _sub(tax, "ram", "CategoryCode", grp.category)
+        if grp.exemption_reason_code:
+            _sub(tax, "ram", "ExemptionReasonCode", grp.exemption_reason_code)
         _sub(tax, "ram", "RateApplicablePercent", _pct(grp.rate))
 
     if inv.due_date or inv.payment_terms:

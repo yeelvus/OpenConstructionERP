@@ -26,8 +26,19 @@ export type POStatus =
   | 'received'
   | 'closed'
   | 'cancelled';
-export type InvoiceStatus = 'received' | 'matched' | 'exception' | 'approved' | 'paid';
-export type MatchStatus = 'pending' | 'auto_matched' | 'exception';
+// Both unions below described columns they had never matched, and survived
+// because nothing branches on either of them - they are each referenced once,
+// at the field they annotate. Corrected against what the service actually
+// writes rather than extended on top of the errors.
+//   'matched' was listed here and is never written to VendorInvoice.status; it
+//   belongs to three_way_match_status. 'disputed' was missing and IS written,
+//   by the three-way match on a price or quantity exception.
+export type InvoiceStatus = 'received' | 'exception' | 'disputed' | 'approved' | 'paid';
+//   'auto_matched' was listed here and is never written to the column either;
+//   it is the value of MatchResult.status, a different field on a different
+//   response. The column takes 'matched'.
+//   'not_comparable' means the match could not run - see match_invoice.
+export type MatchStatus = 'pending' | 'matched' | 'exception' | 'not_comparable';
 
 export interface Vendor {
   id: string;
@@ -188,7 +199,11 @@ export interface StockBalance {
   batch_lot: string;
   quantity_on_hand: number | string;
   quantity_reserved: number | string;
-  unit_cost_avg: number | string;
+  /** null when no single-currency average exists; see cost_state for which case. */
+  unit_cost_avg: number | string | null;
+  /** ISO code for unit_cost_avg, set only when cost_state is 'single'. */
+  currency: string | null;
+  cost_state: 'single' | 'mixed' | 'unknown';
   last_movement_at: string | null;
 }
 
@@ -383,9 +398,21 @@ export function listWarehouseBalances(warehouseId: string): Promise<StockBalance
 export interface MatchResult {
   invoice_id: string;
   status: string;
-  price_variance: number | string;
-  qty_variance: number | string;
+  /* null when no comparison was performed: no PO linked, or the invoice and
+     the order are priced in different currencies. Never 0 for that case. */
+  price_variance: number | string | null;
+  qty_variance: number | string | null;
+  /* The profile's percentage, and only that. The band actually applied is the
+     wider of this and the absolute floor below, so this alone does not explain
+     why an invoice passed. */
   tolerance_used_pct: number | string;
+  /* The absolute floor that actually widened the band, in the order's
+     currency; null when none applied. */
+  tolerance_used_abs?: number | string | null;
+  /* not_set | applied | dropped_unlabelled | dropped_order_unlabelled |
+     dropped_currency_mismatch, or null when nothing was compared. A profile's
+     floor is dropped unless it can be shown to be in the order's currency. */
+  absolute_tolerance_state?: string | null;
   exception_reason: string | null;
   tolerance_profile_name?: string;
   line_results?: Array<Record<string, unknown>>;
@@ -446,6 +473,9 @@ export interface TolerianceProfile {
   description: string | null;
   price_tolerance_pct: number | string;
   price_tolerance_abs: number | string;
+  /* ISO code price_tolerance_abs is written in. null when the floor is 0, and
+     on rows written before the label existed - not "any currency" either way. */
+  currency?: string | null;
   qty_tolerance_pct: number | string;
   period_tolerance_days: number;
   require_gr: boolean;
@@ -457,6 +487,9 @@ export interface CreateToleranceProfilePayload {
   description?: string;
   price_tolerance_pct?: number;
   price_tolerance_abs?: number;
+  /* Required by the API as soon as price_tolerance_abs is above 0: an amount
+     of money with no currency cannot be compared against an order. */
+  currency?: string;
   qty_tolerance_pct?: number;
   period_tolerance_days?: number;
   require_gr?: boolean;

@@ -13,6 +13,7 @@ import { Check, X, AlertTriangle, TrendingDown, TrendingUp, CheckCheck } from 'l
 import { Button } from '@/shared/ui';
 import { fmtWithCurrency } from './boqHelpers';
 import type { Position } from './api';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 interface AnomalyEntry {
   severity: string;
@@ -144,7 +145,7 @@ export function PriceReviewPanel({
                 {/* Diff */}
                 <div className={`flex items-center gap-0.5 text-2xs font-bold ${item.diff < 0 ? 'text-emerald-600' : 'text-red-500'}`}>
                   {item.diff < 0 ? <TrendingDown size={12} /> : <TrendingUp size={12} />}
-                  {item.diffPct > 0 ? '+' : ''}{item.diffPct.toFixed(0)}%
+                  {item.diffPct > 0 ? '+' : ''}{fmtPercent(item.diffPct, 0)}
                 </div>
               </div>
             </div>

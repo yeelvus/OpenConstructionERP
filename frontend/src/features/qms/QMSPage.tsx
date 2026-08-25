@@ -45,10 +45,11 @@ import { RequiresProject } from '@/shared/auth/RequiresProject';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { SectionIntro } from '@/features/validation';
 import { apiGet, getAuthToken, getErrorMessage, triggerDownload } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
-import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 import {
   listITPPlans,
   listInspections,
@@ -290,7 +291,7 @@ export function QMSPage() {
   // When raising an NCR straight from a failed inspection (CONN-64) we seed the
   // create modal's linked_inspection_id so the quality chain stays connected.
   const [ncrPrefillInspectionId, setNcrPrefillInspectionId] = useState<string | null>(null);
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
 
   const { data: projects = [] } = useQuery({
     queryKey: ['projects'],
@@ -351,31 +352,41 @@ export function QMSPage() {
   });
   const insights = useModuleInsights('qms', { defaultOpen: true });
   const { datasets: insightDatasets, builtins: insightBuiltins } = useMemo(
-    () => buildQMSInsights(insightsPunchQ.data ?? [], '', t),
+    () => buildQMSInsights(insightsPunchQ.data?.items ?? [], '', t),
     [insightsPunchQ.data, t],
   );
 
   const filteredItp = useMemo(
-    () => filterByText(itpQ.data ?? [], search, (r) => `${r.name} ${r.work_type} ${r.wbs_ref ?? ''}`),
+    () => filterByText(itpQ.data?.items ?? [], search, (r) => `${r.name} ${r.work_type} ${r.wbs_ref ?? ''}`),
     [itpQ.data, search],
   );
   const filteredInsp = useMemo(
-    () => filterByText(inspQ.data ?? [], search, (r) => `${r.location_ref ?? ''} ${r.notes ?? ''}`),
+    () => filterByText(inspQ.data?.items ?? [], search, (r) => `${r.location_ref ?? ''} ${r.notes ?? ''}`),
     [inspQ.data, search],
   );
   const filteredNcrs = useMemo(
-    () => filterByText(ncrQ.data ?? [], search, (r) => `${r.title} ${r.description}`),
+    () => filterByText(ncrQ.data?.items ?? [], search, (r) => `${r.title} ${r.description}`),
     [ncrQ.data, search],
   );
   const filteredPunch = useMemo(() => {
-    const base = punchQ.data ?? [];
+    const base = punchQ.data?.items ?? [];
     const list = categoryFilter ? base.filter((p) => p.category === categoryFilter) : base;
     return filterByText(list, search, (r) => `${r.title} ${r.description ?? ''} ${r.room_ref ?? ''}`);
   }, [punchQ.data, search, categoryFilter]);
   const filteredAudits = useMemo(
-    () => filterByText(auditQ.data ?? [], search, (r) => `${r.audit_type} ${r.audit_scope ?? ''} ${r.standard_ref ?? ''}`),
+    () => filterByText(auditQ.data?.items ?? [], search, (r) => `${r.audit_type} ${r.audit_scope ?? ''} ${r.standard_ref ?? ''}`),
     [auditQ.data, search],
   );
+
+  /* Category only appears on the punch tab, and switching tabs resets all
+     three below, so a set category cannot outlive the tab that offers it and
+     needs no tab test here. */
+  const filtersActive = Boolean(search.trim() || statusFilter || categoryFilter);
+  const clearFilters = () => {
+    setSearch('');
+    setStatusFilter('');
+    setCategoryFilter('');
+  };
 
   const isLoading =
     (tab === 'itp' && itpQ.isLoading) ||
@@ -476,9 +487,7 @@ export function QMSPage() {
                 type="button"
                 onClick={() => {
                   setTab(it.id);
-                  setStatusFilter('');
-                  setSearch('');
-                  setCategoryFilter('');
+                  clearFilters();
                 }}
                 className={clsx(
                   'flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap',
@@ -571,6 +580,15 @@ export function QMSPage() {
         )}
       </div>
 
+      {/* Bound to activeQuery, so it always describes the register the open
+          tab is showing rather than whichever one happens to be cached. It
+          stays up while a search or a status filter is applied, on purpose:
+          the filtering below runs over the rows that arrived, so a search
+          that finds nothing on a truncated register has not searched the
+          rest of it, and this line is the only thing on the page that says
+          so. */}
+      {activeQuery.data && <TruncationNotice page={activeQuery.data} className="mb-2" />}
+
       <Card padding="none">
         {!projectId ? (
           <RequiresProject
@@ -583,23 +601,47 @@ export function QMSPage() {
         ) : loadError ? (
           <RecoveryCard error={loadError} onRetry={() => activeQuery.refetch()} />
         ) : tab === 'itp' ? (
+          /* `activeQuery` is this tab's own query, so its envelope total is the
+             size of the register the table is showing. The tables need it to
+             tell an empty register apart from a search that matched none of
+             the page, which is the same distinction the notice above draws. */
           <ITPTable
             rows={filteredItp}
+            registerTotal={activeQuery.data?.total ?? 0}
+            onClearFilters={filtersActive ? clearFilters : undefined}
             onAction={() => setCreateOpen(true)}
             onSelect={(id) => setSelectedPlanId(id)}
           />
         ) : tab === 'inspections' ? (
           <InspectionTable
             rows={filteredInsp}
+            registerTotal={activeQuery.data?.total ?? 0}
+            onClearFilters={filtersActive ? clearFilters : undefined}
             onSelect={(id) => setSelectedInspectionId(id)}
             onAction={() => setCreateOpen(true)}
           />
         ) : tab === 'ncrs' ? (
-          <NCRTable rows={filteredNcrs} onSelect={(id) => setSelectedNcrId(id)} onAction={() => setCreateOpen(true)} />
+          <NCRTable
+            rows={filteredNcrs}
+            registerTotal={activeQuery.data?.total ?? 0}
+            onClearFilters={filtersActive ? clearFilters : undefined}
+            onSelect={(id) => setSelectedNcrId(id)}
+            onAction={() => setCreateOpen(true)}
+          />
         ) : tab === 'punch' ? (
-          <PunchTable rows={filteredPunch} onAction={() => setCreateOpen(true)} />
+          <PunchTable
+            rows={filteredPunch}
+            registerTotal={activeQuery.data?.total ?? 0}
+            onClearFilters={filtersActive ? clearFilters : undefined}
+            onAction={() => setCreateOpen(true)}
+          />
         ) : (
-          <AuditTable rows={filteredAudits} onAction={() => setCreateOpen(true)} />
+          <AuditTable
+            rows={filteredAudits}
+            registerTotal={activeQuery.data?.total ?? 0}
+            onClearFilters={filtersActive ? clearFilters : undefined}
+            onAction={() => setCreateOpen(true)}
+          />
         )}
       </Card>
 
@@ -607,8 +649,8 @@ export function QMSPage() {
         <CreateModal
           kind={tab}
           projectId={projectId}
-          itpPlans={itpQ.data ?? []}
-          inspections={inspQ.data ?? []}
+          itpPlans={itpQ.data?.items ?? []}
+          inspections={inspQ.data?.items ?? []}
           prefillInspectionId={ncrPrefillInspectionId}
           onClose={() => {
             setCreateOpen(false);
@@ -620,7 +662,7 @@ export function QMSPage() {
       {selectedNcrId && (
         <NCRDrawer
           id={selectedNcrId}
-          ncrs={ncrQ.data ?? []}
+          ncrs={ncrQ.data?.items ?? []}
           onClose={() => setSelectedNcrId(null)}
         />
       )}
@@ -628,7 +670,7 @@ export function QMSPage() {
       {selectedInspectionId && (
         <InspectionDrawer
           id={selectedInspectionId}
-          inspections={inspQ.data ?? []}
+          inspections={inspQ.data?.items ?? []}
           onClose={() => setSelectedInspectionId(null)}
           onRaiseNcr={(inspectionId) => {
             setSelectedInspectionId(null);
@@ -645,7 +687,7 @@ export function QMSPage() {
       {selectedPlanId && (
         <ITPPlanDrawer
           planId={selectedPlanId}
-          plan={(itpQ.data ?? []).find((p) => p.id === selectedPlanId) ?? null}
+          plan={(itpQ.data?.items ?? []).find((p) => p.id === selectedPlanId) ?? null}
           projectId={projectId}
           onClose={() => setSelectedPlanId(null)}
         />
@@ -789,10 +831,18 @@ function KvBlock({ label, value }: { label: React.ReactNode; value: React.ReactN
 
 function ITPTable({
   rows,
+  registerTotal,
+  onClearFilters,
   onAction,
   onSelect,
 }: {
   rows: ITPPlan[];
+  /** What the register holds, from the page envelope, not what survived the search box. */
+  registerTotal: number;
+  /** Set only while a filter narrows the list, and clears every one of them.
+      Its presence is also the signal that `registerTotal` counts a filtered
+      query rather than the register, so it cannot be read as a denial. */
+  onClearFilters?: () => void;
   onAction: () => void;
   onSelect: (id: string) => void;
 }) {
@@ -808,6 +858,26 @@ function ITPTable({
     onError: (e) => addToast({ type: 'error', title: getErrorMessage(e) }),
   });
   if (rows.length === 0) {
+    // Whether the register is empty is answered by the register, not by what
+    // is left after the search box has narrowed the loaded page. Reading it
+    // off `rows` prints "No ITP plans yet" directly under a notice saying how
+    // many the register holds, and offers to create the first one.
+    if (registerTotal > 0 || onClearFilters) {
+      return (
+        <EmptyState
+          icon={<FileCheck size={22} />}
+          title={t('common.no_results', { defaultValue: 'No results found' })}
+          action={
+            onClearFilters
+              ? {
+                  label: t('common.clear_filters', { defaultValue: 'Clear filters' }),
+                  onClick: onClearFilters,
+                }
+              : undefined
+          }
+        />
+      );
+    }
     return (
       <EmptyState
         icon={<FileCheck size={22} />}
@@ -873,15 +943,39 @@ function ITPTable({
 
 function InspectionTable({
   rows,
+  registerTotal,
+  onClearFilters,
   onSelect,
   onAction,
 }: {
   rows: Inspection[];
+  /** What the register holds, from the page envelope, not what survived the search box. */
+  registerTotal: number;
+  /** Set only while a filter narrows the list, and clears every one of them.
+      Its presence is also the signal that `registerTotal` counts a filtered
+      query rather than the register, so it cannot be read as a denial. */
+  onClearFilters?: () => void;
   onSelect: (id: string) => void;
   onAction: () => void;
 }) {
   const { t } = useTranslation();
   if (rows.length === 0) {
+    if (registerTotal > 0 || onClearFilters) {
+      return (
+        <EmptyState
+          icon={<ClipboardCheck size={22} />}
+          title={t('common.no_results', { defaultValue: 'No results found' })}
+          action={
+            onClearFilters
+              ? {
+                  label: t('common.clear_filters', { defaultValue: 'Clear filters' }),
+                  onClick: onClearFilters,
+                }
+              : undefined
+          }
+        />
+      );
+    }
     return (
       <EmptyState
         icon={<ClipboardCheck size={22} />}
@@ -935,15 +1029,39 @@ function InspectionTable({
 
 function NCRTable({
   rows,
+  registerTotal,
+  onClearFilters,
   onSelect,
   onAction,
 }: {
   rows: NCR[];
+  /** What the register holds, from the page envelope, not what survived the search box. */
+  registerTotal: number;
+  /** Set only while a filter narrows the list, and clears every one of them.
+      Its presence is also the signal that `registerTotal` counts a filtered
+      query rather than the register, so it cannot be read as a denial. */
+  onClearFilters?: () => void;
   onSelect: (id: string) => void;
   onAction: () => void;
 }) {
   const { t } = useTranslation();
   if (rows.length === 0) {
+    if (registerTotal > 0 || onClearFilters) {
+      return (
+        <EmptyState
+          icon={<AlertOctagon size={22} />}
+          title={t('common.no_results', { defaultValue: 'No results found' })}
+          action={
+            onClearFilters
+              ? {
+                  label: t('common.clear_filters', { defaultValue: 'Clear filters' }),
+                  onClick: onClearFilters,
+                }
+              : undefined
+          }
+        />
+      );
+    }
     return (
       <EmptyState
         icon={<AlertOctagon size={22} />}
@@ -1004,7 +1122,21 @@ function NCRTable({
   );
 }
 
-function PunchTable({ rows, onAction }: { rows: PunchItem[]; onAction: () => void }) {
+function PunchTable({
+  rows,
+  registerTotal,
+  onClearFilters,
+  onAction,
+}: {
+  rows: PunchItem[];
+  /** What the register holds, from the page envelope, not what survived the search box. */
+  registerTotal: number;
+  /** Set only while a filter narrows the list, and clears every one of them.
+      Its presence is also the signal that `registerTotal` counts a filtered
+      query rather than the register, so it cannot be read as a denial. */
+  onClearFilters?: () => void;
+  onAction: () => void;
+}) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
@@ -1017,6 +1149,22 @@ function PunchTable({ rows, onAction }: { rows: PunchItem[]; onAction: () => voi
     onError: (e) => addToast({ type: 'error', title: getErrorMessage(e) }),
   });
   if (rows.length === 0) {
+    if (registerTotal > 0 || onClearFilters) {
+      return (
+        <EmptyState
+          icon={<ListChecks size={22} />}
+          title={t('common.no_results', { defaultValue: 'No results found' })}
+          action={
+            onClearFilters
+              ? {
+                  label: t('common.clear_filters', { defaultValue: 'Clear filters' }),
+                  onClick: onClearFilters,
+                }
+              : undefined
+          }
+        />
+      );
+    }
     return (
       <EmptyState
         icon={<ListChecks size={22} />}
@@ -1077,7 +1225,21 @@ function PunchTable({ rows, onAction }: { rows: PunchItem[]; onAction: () => voi
   );
 }
 
-function AuditTable({ rows, onAction }: { rows: Audit[]; onAction: () => void }) {
+function AuditTable({
+  rows,
+  registerTotal,
+  onClearFilters,
+  onAction,
+}: {
+  rows: Audit[];
+  /** What the register holds, from the page envelope, not what survived the search box. */
+  registerTotal: number;
+  /** Set only while a filter narrows the list, and clears every one of them.
+      Its presence is also the signal that `registerTotal` counts a filtered
+      query rather than the register, so it cannot be read as a denial. */
+  onClearFilters?: () => void;
+  onAction: () => void;
+}) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
@@ -1090,6 +1252,22 @@ function AuditTable({ rows, onAction }: { rows: Audit[]; onAction: () => void })
     onError: (e) => addToast({ type: 'error', title: getErrorMessage(e) }),
   });
   if (rows.length === 0) {
+    if (registerTotal > 0 || onClearFilters) {
+      return (
+        <EmptyState
+          icon={<Award size={22} />}
+          title={t('common.no_results', { defaultValue: 'No results found' })}
+          action={
+            onClearFilters
+              ? {
+                  label: t('common.clear_filters', { defaultValue: 'Clear filters' }),
+                  onClick: onClearFilters,
+                }
+              : undefined
+          }
+        />
+      );
+    }
     return (
       <EmptyState
         icon={<Award size={22} />}
@@ -1185,11 +1363,16 @@ function NCRDrawer({
     queryFn: () => listNCRActions(id),
   });
 
+  // The route caps at 200 and defaults to 50. This picker sent no limit,
+  // so a project past its fiftieth variation order silently stopped
+  // offering the rest and an NCR could not be escalated against them.
+  const VO_PICKER_LIMIT = 200;
+
   // Open variation orders the NCR can be escalated against. The QMS module
   // never fabricates a variation, so escalation is gated on a real VO id.
   const variationsQ = useQuery({
     queryKey: ['qms', 'ncr-variations', ncr?.project_id],
-    queryFn: () => listVariationOrders({ project_id: ncr!.project_id }),
+    queryFn: () => listVariationOrders({ project_id: ncr!.project_id, limit: VO_PICKER_LIMIT }),
     enabled: !!ncr?.project_id,
   });
 
@@ -1246,7 +1429,7 @@ function NCRDrawer({
 
   if (!ncr) return null;
 
-  const actions = actionsQ.data ?? [];
+  const actions = actionsQ.data?.items ?? [];
   const canEscalate = ncr.status !== 'closed' && ncr.status !== 'cancelled';
 
   return (
@@ -1401,13 +1584,13 @@ function NCRDrawer({
                   <option value="">
                     {t('qms.select_variation', { defaultValue: 'Select a variation order…' })}
                   </option>
-                  {(variationsQ.data ?? []).map((vo) => (
+                  {(variationsQ.data?.items ?? []).map((vo) => (
                     <option key={vo.id} value={vo.id}>
                       {vo.code} — {vo.title}
                     </option>
                   ))}
                 </select>
-                {(variationsQ.data ?? []).length === 0 && !variationsQ.isLoading && (
+                {(variationsQ.data?.items ?? []).length === 0 && !variationsQ.isLoading && (
                   <p className="text-2xs text-content-tertiary">
                     {t('qms.no_variations', {
                       defaultValue: 'No variation orders exist for this project yet. Create one in Variations first.',
@@ -1507,7 +1690,7 @@ function ITPPlanDrawer({
 
   useEscapeToClose(onClose);
 
-  const items = itemsQ.data ?? [];
+  const items = itemsQ.data?.items ?? [];
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
@@ -1563,7 +1746,7 @@ function ITPPlanDrawer({
                 {t('common.loading', { defaultValue: 'Loading…' })}
               </div>
             ) : (
-              <HoldPointDependencyTree items={items} inspections={inspQ.data ?? []} />
+              <HoldPointDependencyTree items={items} inspections={inspQ.data?.items ?? []} />
             )}
           </div>
 
@@ -2296,7 +2479,7 @@ function CreateModal({
                     ? t('common.loading', { defaultValue: 'Loading…' })
                     : '—'}
               </option>
-              {(itpItemsQ.data ?? []).map((it: ITPItem) => (
+              {(itpItemsQ.data?.items ?? []).map((it: ITPItem) => (
                 <option key={it.id} value={it.id}>
                   {it.sequence}. {it.control_point_name}
                   {it.signatories_required > 1

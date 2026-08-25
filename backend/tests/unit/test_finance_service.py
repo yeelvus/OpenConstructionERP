@@ -41,6 +41,19 @@ class _StubSession:
     async def get(self, *args: Any, **kwargs: Any) -> Any:
         return None
 
+    async def refresh(self, *args: Any, **kwargs: Any) -> None:
+        """No-op: there is no database here to read a row back from.
+
+        ``create_budget`` refreshes the row it just wrote so the response
+        carries the stored form of every money column rather than the
+        caller's own. That is a property of the column type and of the
+        database, so it can only be asserted where both are real, and it is,
+        in ``tests/integration/test_critical_flows.py``. What this stub owes
+        the service is that the method exists: a stub missing a method the
+        service calls raises an AttributeError from inside the service, which
+        reads as a defect in the code under test rather than in the stub.
+        """
+
 
 def _make_service() -> FinanceService:
     service = FinanceService.__new__(FinanceService)
@@ -181,15 +194,20 @@ class _StubBudgetRepo:
     ) -> dict[str, Any]:
         # EVM zero-input fallback path (service.create_evm_snapshot) calls
         # this when any of BAC/PV/EV/AC is "0". Mirror the production repo's
-        # per-currency dict shape (original/revised/committed/actual_by_currency
-        # + currency) so the service's _convert_to_base() path works. Empty
-        # dicts keep derived values at zero, so these tests assert the
-        # divide-by-zero / clamp guards, not the fallback math.
+        # per-currency dict shape (original/revised/committed/actual/outturn
+        # _by_currency + currency) so the service's _convert_to_base() path
+        # works. Empty dicts keep derived values at zero, so these tests assert
+        # the divide-by-zero / clamp guards, not the fallback math. Every key
+        # the repository returns belongs here even when this path does not read
+        # it: a stub that carries a subset of the real shape passes until the
+        # day a caller reads the missing key, and then fails as a KeyError far
+        # from the stub that caused it.
         return {
             "original_by_currency": {},
             "revised_by_currency": {},
             "committed_by_currency": {},
             "actual_by_currency": {},
+            "outturn_by_currency": {},
             "currency": "",
         }
 
@@ -468,11 +486,16 @@ async def test_get_dashboard_returns_invoices_and_budgets() -> None:
     async def _budget_agg(
         *, project_id: uuid.UUID | None = None, project_ids: set[uuid.UUID] | None = None
     ) -> dict[str, Any]:
+        # Outturn is what the job is now expected to finish at, summed per row
+        # by the repository rather than derived here: spend that has happened
+        # plus money already on order. 30k actual and 40k committed give 70k,
+        # which is what the dashboard now measures the warning level against.
         return {
             "original_by_currency": {"EUR": 100_000.0},
             "revised_by_currency": {"EUR": 110_000.0},
             "committed_by_currency": {"EUR": 40_000.0},
             "actual_by_currency": {"EUR": 30_000.0},
+            "outturn_by_currency": {"EUR": 70_000.0},
             "currency": "EUR",
         }
 

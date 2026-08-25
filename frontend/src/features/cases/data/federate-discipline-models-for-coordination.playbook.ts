@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 1013,
   category: "bim",
   companyTypes: ["bim-consultant", "general-contractor", "designer"],
+  roles: ["bim-coordinator", "design-lead", "document-controller"],
   icon: "Network",
   titleKey: "cases.federate_discipline_models_for_coordination.title",
   titleDefault: "Federate discipline models for coordination",
@@ -85,7 +86,7 @@ const playbook: Playbook = {
       whyKey: "cases.federate_discipline_models_for_coordination.step.review.why",
       whyDefault:
         "The coordination review is where trades meet before the concrete does. An hour around the federated model saves the rework of a duct that has nowhere to go once the slab is poured.",
-      moduleLabel: "Coordination",
+      moduleLabel: "Coordination Hub",
       moduleLabelKey: "nav.coordination_hub",
       to: "/coordination",
     },

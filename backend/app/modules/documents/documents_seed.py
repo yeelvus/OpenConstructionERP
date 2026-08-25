@@ -59,6 +59,12 @@ _SEED_SOURCE = "documents_demo_seed"
 _ASSET_DIR = Path(__file__).resolve().parents[2] / "scripts" / "flagship_assets"
 _PLAN_SET = "house_plans.pdf"
 _STANDARDS = "housing_standards.pdf"
+# Two issues of one German sheet, rendered from the same geometry module by
+# app/scripts/generate_grundriss_pdf.py - the pair that lets a revision chain
+# show a change instead of the same page twice.
+_GRUNDRISS_A = "grundriss_erdgeschoss.pdf"
+_GRUNDRISS_B = "grundriss_erdgeschoss_index_b.pdf"
+_GRUNDRISS_SHEET = "A-2.01"
 
 _PDF_MIME = "application/pdf"
 
@@ -92,7 +98,9 @@ class _DocSpec:
 
 # The register. Ten documents across five folders, with one drawing carried
 # through a full revision: the superseded issue is archived and flagged as no
-# longer current, and the current issue points back at it.
+# longer current, and the current issue points back at it. On the German
+# showcase projects that chain is the Grundriss pair below, whose two issues
+# are different drawings rather than one file filed twice.
 _REGISTER: tuple[_DocSpec, ...] = (
     _DocSpec(
         key="ga-p01",
@@ -306,6 +314,82 @@ _REGISTER: tuple[_DocSpec, ...] = (
 )
 
 
+#: The German showcase projects, matched by name because a demo install mints
+#: random project ids (the takeoff seeder routes its sheets the same way).
+_GERMAN_SHOWCASE_PROJECTS = frozenset(
+    {
+        "Bürogebäude Frankfurt Europaviertel",
+        "Lebensmittelmarkt Heilbronn",
+        "Lebensmittelmarkt Heidelberg",
+    }
+)
+
+#: The English general-arrangement pair, which the German chain replaces on
+#: those projects rather than sitting beside it as a second chain.
+_ENGLISH_CHAIN_KEYS = frozenset({"ga-p01", "ga-c01"})
+
+#: The sheet that pair files under. A written row does not carry the spec key
+#: that named it, so retiring the pair on an install seeded before the German
+#: chain matches on the sheet number instead. Derived from the register rather
+#: than typed again, so it cannot drift away from the specs it has to match.
+_ENGLISH_CHAIN_SHEET: str | None = next(
+    (spec.drawing_number for spec in _REGISTER if spec.key in _ENGLISH_CHAIN_KEYS),
+    None,
+)
+
+# The German projects carry the same drawing through a revision as two REALLY
+# different sheets: index A and index B of A-2.01 are rendered from the same
+# geometry module, and index B widened the corridor. A chain whose archived
+# and current issues serve one file looks like a chain and proves nothing -
+# open both and the picture is identical.
+_GERMAN_REVISION_CHAIN: tuple[_DocSpec, ...] = (
+    _DocSpec(
+        key="gr-index-a",
+        name="A-2.01 Grundriss Erdgeschoss (Index A).pdf",
+        description="Ground floor plan M 1:100, first issue. Superseded by index B.",
+        category="drawing",
+        tags=["grundriss", "erdgeschoss", "index-A", "superseded"],
+        asset=_GRUNDRISS_A,
+        discipline="architectural",
+        drawing_number=_GRUNDRISS_SHEET,
+        revision_code="A",
+        cde_state="archived",
+        suitability_code="AR",
+        is_current_revision=False,
+    ),
+    _DocSpec(
+        key="gr-index-b",
+        name="A-2.01 Grundriss Erdgeschoss (Index B).pdf",
+        description=(
+            "Ground floor plan M 1:100, index B: corridor widened to 2.50 m for the escape route, "
+            "second meeting room door added. Supersedes index A."
+        ),
+        category="drawing",
+        tags=["grundriss", "erdgeschoss", "index-B", "for construction"],
+        asset=_GRUNDRISS_B,
+        discipline="architectural",
+        drawing_number=_GRUNDRISS_SHEET,
+        revision_code="B",
+        cde_state="published",
+        suitability_code="A1",
+        supersedes="gr-index-a",
+    ),
+)
+
+
+def _register_for(project_name: str) -> tuple[_DocSpec, ...]:
+    """The register one project gets.
+
+    German showcase projects trade the English general-arrangement pair for
+    the Grundriss revision chain, so they end up with exactly one chain and
+    both of its issues are the drawing they say they are.
+    """
+    if project_name not in _GERMAN_SHOWCASE_PROJECTS:
+        return _REGISTER
+    kept = tuple(spec for spec in _REGISTER if spec.key not in _ENGLISH_CHAIN_KEYS)
+    return kept + _GERMAN_REVISION_CHAIN
+
+
 def _safe_name(name: str) -> str:
     """A storage-safe filename, mirroring how an upload names its stored file."""
     return "".join(ch if (ch.isalnum() or ch in "-_.") else "-" for ch in name)
@@ -434,21 +518,106 @@ async def _already_seeded(session: AsyncSession, project_id: uuid.UUID) -> bool:
     return False
 
 
+async def _has_seeded_sheet(session: AsyncSession, project_id: uuid.UUID, drawing_number: str) -> bool:
+    """True when this seeder already filed the given sheet on the project."""
+    stmt = select(Document.metadata_).where(
+        Document.project_id == project_id,
+        Document.drawing_number == drawing_number,
+    )
+    return any((metadata or {}).get("source") == _SEED_SOURCE for metadata in (await session.execute(stmt)).scalars())
+
+
+async def _retire_english_chain(session: AsyncSession, project_id: uuid.UUID) -> int:
+    """Drop the English pair the German chain replaced. Returns rows removed.
+
+    An install seeded before the German chain existed keeps the English
+    general-arrangement pair, and that pair IS the defect the chain fixes: its
+    archived and current issues serve one file, so the register shows a
+    revision that changed nothing. The top-up therefore removes it instead of
+    leaving it beside a chain that does the same job honestly.
+
+    Deliberately narrow. Only rows this seeder wrote are touched, matched on
+    its own marker and on the sheet number, never on a name a user could have
+    typed. Only called once the German chain is confirmed on the project, so a
+    register can never end up with neither chain. And a row some takeoff
+    document was opened from is left alone: takeoff keeps its source as a plain
+    id column with no foreign key behind it, so deleting underneath one would
+    strand the measurements filed against it with nothing failing to say so.
+
+    The files stay on disk. Each project is seeded inside a SAVEPOINT that can
+    still roll back after this runs, and a surviving row whose bytes were
+    deleted is a broken register, while two orphaned demo PDFs cost nothing.
+    """
+    if not _ENGLISH_CHAIN_SHEET:
+        return 0
+
+    stmt = select(Document).where(
+        Document.project_id == project_id,
+        Document.drawing_number == _ENGLISH_CHAIN_SHEET,
+    )
+    candidates = [
+        document
+        for document in (await session.execute(stmt)).scalars().all()
+        if (document.metadata_ or {}).get("source") == _SEED_SOURCE
+    ]
+    if not candidates:
+        return 0
+
+    from app.modules.takeoff.models import TakeoffDocument
+
+    opened_in_takeoff = set(
+        (
+            await session.execute(
+                select(TakeoffDocument.source_document_id).where(
+                    TakeoffDocument.source_document_id.in_([str(document.id) for document in candidates])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    retired = 0
+    for document in candidates:
+        if str(document.id) in opened_in_takeoff:
+            logger.info("documents seed: keeping %s, a takeoff document was opened from it", document.id)
+            continue
+        await session.delete(document)
+        retired += 1
+    await session.flush()
+    return retired
+
+
 async def _seed_project(
     session: AsyncSession,
     project_id: uuid.UUID,
     owner_id: uuid.UUID,
+    project_name: str,
 ) -> dict[str, int]:
-    """Write one project's document register."""
-    empty = {"projects": 0, "documents": 0, "bytes": 0}
+    """Write one project's document register, or top up its revision chain."""
+    empty = {"projects": 0, "documents": 0, "bytes": 0, "retired": 0}
+    specs = _register_for(project_name)
 
     if await _already_seeded(session, project_id):
-        return empty
+        # An install seeded before the German chain existed keeps its register;
+        # only the chain is written on top, because a chain whose archived and
+        # current issues serve one file is what this fixes, and re-filing the
+        # other nine documents would double the register.
+        specs = tuple(spec for spec in specs if spec in _GERMAN_REVISION_CHAIN)
+        if not specs:
+            return empty
+        if await _has_seeded_sheet(session, project_id, _GRUNDRISS_SHEET):
+            # The chain is already filed, which is the whole condition the
+            # retire waits on, so it still runs from here. An install reseeded
+            # between the chain landing and the retire landing carries both the
+            # chain and the pair it replaces, and this early return is the only
+            # path that install ever takes again.
+            return {**empty, "retired": await _retire_english_chain(session, project_id)}
 
-    counts = {"projects": 1, "documents": 0, "bytes": 0}
+    counts = {"projects": 1, "documents": 0, "bytes": 0, "retired": 0}
     by_key: dict[str, uuid.UUID] = {}
 
-    for spec in _REGISTER:
+    for spec in specs:
         if not _check_suitability(spec):
             continue
         stored = _store(project_id, spec)
@@ -483,6 +652,14 @@ async def _seed_project(
         counts["documents"] += 1
         counts["bytes"] += size_bytes
 
+    # Retire only behind a chain that is fully on the project. Counted off the
+    # keys that actually got a row, not off the specs that were meant to write
+    # one: an asset that failed to store skips its spec quietly, and trading a
+    # working English pair for half a German chain would leave the register
+    # with no honest revision at all.
+    if all(spec.key in by_key for spec in _GERMAN_REVISION_CHAIN):
+        counts["retired"] = await _retire_english_chain(session, project_id)
+
     return counts
 
 
@@ -501,13 +678,17 @@ async def seed_documents_demo(
     Args:
         session: Async DB session. The caller commits.
         project_ids: Candidate projects. Skipped when not a demo project or when
-            this seeder has already written to it.
+            this seeder has already written to it - except for the German
+            revision chain, which is topped up on an install seeded before it
+            existed so the chain there shows two different sheets.
 
     Returns:
-        Dict with the number of projects touched, documents written and the
-        total bytes actually placed in the upload store.
+        Dict with the number of projects touched, documents written, total bytes
+        actually placed in the upload store, and rows retired: the English
+        general-arrangement pair the German chain replaces, removed only from
+        projects that now carry that chain.
     """
-    totals = {"projects": 0, "documents": 0, "bytes": 0}
+    totals = {"projects": 0, "documents": 0, "bytes": 0, "retired": 0}
     ids = list(project_ids)
     if not ids:
         return totals
@@ -515,10 +696,12 @@ async def seed_documents_demo(
     from app.modules.projects.models import Project
 
     rows = (
-        await session.execute(select(Project.id, Project.owner_id, Project.metadata_).where(Project.id.in_(ids)))
+        await session.execute(
+            select(Project.id, Project.owner_id, Project.name, Project.metadata_).where(Project.id.in_(ids))
+        )
     ).all()
 
-    for project_id, owner_id, metadata in rows:
+    for project_id, owner_id, project_name, metadata in rows:
         if not (metadata or {}).get("demo_id"):
             continue
         if owner_id is None:
@@ -528,7 +711,7 @@ async def seed_documents_demo(
             # the whole transaction, so one project that cannot be seeded would
             # otherwise take every later project down with it.
             async with session.begin_nested():
-                counts = await _seed_project(session, project_id, owner_id)
+                counts = await _seed_project(session, project_id, owner_id, project_name or "")
         except Exception:
             logger.warning("Documents demo seed skipped for project=%s (non-fatal)", project_id, exc_info=True)
             continue

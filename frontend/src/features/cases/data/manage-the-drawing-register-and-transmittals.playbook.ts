@@ -15,6 +15,7 @@ const playbook: Playbook = {
   order: 271,
   category: "handover",
   companyTypes: ["general-contractor", "bim-consultant"],
+  roles: ["document-controller", "bim-coordinator"],
   icon: "FileStack",
   titleKey: "cases.manage_the_drawing_register_and_transmittals.title",
   titleDefault: "Manage the drawing register and transmittals",
@@ -155,7 +156,7 @@ const playbook: Playbook = {
         "cases.manage_the_drawing_register_and_transmittals.step.track.why",
       whyDefault:
         "Issuing a revision is only half the job, the other half is knowing it landed. Tracking distribution against the model and the register is what stops a subcontractor quietly building to a superseded sheet.",
-      moduleLabel: "3D model",
+      moduleLabel: "BIM",
       moduleLabelKey: "nav.bim",
       to: "/projects/:projectId/bim",
     },

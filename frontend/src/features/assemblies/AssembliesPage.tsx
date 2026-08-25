@@ -26,6 +26,7 @@ import {
 } from './api';
 import { CreateAssemblyModal } from './CreateAssemblyPage';
 import { assembliesGuide } from './assembliesGuide';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* -- Sort + view types --------------------------------------------------- */
 
@@ -385,7 +386,7 @@ export function AssembliesPage() {
   // Templates removed — use New / AI Generate / Clone instead
 
   const fmt = (n: number) =>
-    new Intl.NumberFormat(getIntlLocale(), {
+    new Intl.NumberFormat(getNumberLocale(), {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     }).format(n);
@@ -955,7 +956,7 @@ export function AssembliesPage() {
                     defaultValue: '{{from}}-{{to}} of {{total}}',
                     from: offset + 1,
                     to: Math.min(offset + PAGE_SIZE, total),
-                    total: total.toLocaleString(),
+                    total: total.toLocaleString(getNumberLocale()),
                   })}
                 </p>
                 {totalPages > 1 && (
@@ -1496,7 +1497,7 @@ function AIGenerateModal({
   };
 
   const fmt = (n: number) =>
-    new Intl.NumberFormat(getIntlLocale(), {
+    new Intl.NumberFormat(getNumberLocale(), {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     }).format(n);
@@ -2012,7 +2013,7 @@ function QuickPreview({
   });
 
   const fmt = (n: number) =>
-    new Intl.NumberFormat(getIntlLocale(), {
+    new Intl.NumberFormat(getNumberLocale(), {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     }).format(n);
@@ -2023,7 +2024,7 @@ function QuickPreview({
 
   return (
     <div
-      className="absolute inset-0 z-30 flex flex-col rounded-xl bg-white/98 dark:bg-gray-900/98 backdrop-blur-sm p-4 animate-fade-in overflow-hidden"
+      className="absolute inset-0 z-30 flex flex-col rounded-xl bg-white/95 dark:bg-gray-900/95 backdrop-blur-sm p-4 animate-fade-in overflow-hidden"
       onClick={(e) => e.stopPropagation()}
     >
       <div className="flex items-center justify-between mb-3">

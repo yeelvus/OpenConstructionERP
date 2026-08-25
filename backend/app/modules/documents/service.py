@@ -18,14 +18,13 @@ import logging
 import os
 import re
 import uuid
-from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cde_states import CDEState, CDEStateMachine
@@ -116,6 +115,12 @@ async def _register_version_safely(
     failure (e.g. ``oe_file_version`` table missing on a misconfigured
     install) cannot mask a successful upload. The kind-side row is the
     source of truth; the chain row is the index.
+
+    The ``except`` needs a SAVEPOINT under it to mean what it says. A failed
+    flush leaves the session unusable and catching the error does not revive
+    it, so without one this "best effort" call would take down whatever the
+    upload path does next - including the documents cross-link that runs two
+    lines later and opens a savepoint of its own.
     """
     try:
         from app.modules.file_versions.helpers import canonical_name_for
@@ -136,7 +141,11 @@ async def _register_version_safely(
             canonical_name=canonical,
             file_size=int(file_size or 0),
         )
-        await svc.register_new_version(payload, uploaded_by_id=uploaded_by_uuid)
+        # The savepoint the docstring above is about. This runs before the
+        # rest of the upload path, so a failure here is the one with the most
+        # left to damage.
+        async with session.begin_nested():
+            await svc.register_new_version(payload, uploaded_by_id=uploaded_by_uuid)
     except Exception:
         logger.warning(
             "Failed to register FileVersion chain row for kind=%s file_id=%s",
@@ -864,8 +873,14 @@ class DocumentService:
         search: str | None = None,
         sort_by: str | None = None,
         sort_order: str = "desc",
+        visible_categories: frozenset[str | None] | None = None,
     ) -> tuple[list[Document], int]:
-        """List documents for a project."""
+        """List documents for a project.
+
+        ``visible_categories`` narrows the total to the folders the caller may
+        read; it does not touch the page, which the route filters itself. See
+        :meth:`DocumentRepository.list_for_project`.
+        """
         return await self.repo.list_for_project(
             project_id,
             offset=offset,
@@ -874,6 +889,7 @@ class DocumentService:
             search=search,
             sort_by=sort_by,
             sort_order=sort_order,
+            visible_categories=visible_categories,
         )
 
     # ── Update ─────────────────────────────────────────────────────────────
@@ -1192,6 +1208,16 @@ class DocumentService:
                 file_path_str,
             )
             return
+        # A blob can belong to more than one document. The demo seeder stores
+        # document bytes under the digest of their content, so the one native
+        # model every demo project shows is a single file that every project's
+        # row points at, and deleting one of those documents must not take the
+        # file away from the rest. The id is excluded explicitly instead of
+        # relying on the delete above having reached the database, so the
+        # count means the same thing whether or not it has been flushed.
+        if file_path_str and await self._file_has_other_documents(document_id, file_path_str):
+            return
+
         try:
             file_path = Path(file_path_str)
             if file_path.exists():
@@ -1199,6 +1225,37 @@ class DocumentService:
                 logger.info("File removed: %s", file_path)
         except Exception:
             logger.warning("Failed to remove file: %s", file_path_str)
+
+    async def _file_has_other_documents(self, document_id: uuid.UUID, file_path: str) -> bool:
+        """True when documents other than ``document_id`` point at ``file_path``.
+
+        A failure to answer counts as "yes" on purpose. That keeps the trade
+        the delete path already makes everywhere else: an orphaned file is
+        recoverable, and a document row pointing at a blob somebody else's
+        deletion removed is not.
+        """
+        try:
+            others = (
+                await self.session.execute(
+                    select(func.count())
+                    .select_from(Document)
+                    .where(Document.file_path == file_path, Document.id != document_id)
+                )
+            ).scalar_one()
+        except Exception:
+            logger.exception(
+                "Failed to count the documents sharing %s; keeping the file",
+                file_path,
+            )
+            return True
+        if others:
+            logger.info(
+                "File kept because %d other document(s) reference it: %s",
+                others,
+                file_path,
+            )
+            return True
+        return False
 
     # ── Summary ────────────────────────────────────────────────────────────
 
@@ -1476,44 +1533,53 @@ class PhotoService:
             uploaded_by=user_id,
         )
 
-        # Also create a Document record so photos appear in Documents hub
+        # Also create a Document record so photos appear in Documents hub.
+        #
+        # Through the ORM, the same way the BIM cross-link does it, and NOT
+        # through a raw INSERT. The raw version bound an isoformat STRING to
+        # created_at/updated_at, which are ``DateTime(timezone=True)``. Under
+        # ``text()`` the parameter has no type for SQLAlchemy to coerce, so the
+        # string reached asyncpg, which will not accept text for a timestamptz
+        # argument. Every photo upload on PostgreSQL therefore created no
+        # Document row at all, and the bare ``except Exception`` below turned
+        # that into a silent 201. The ORM fills both timestamps from the
+        # ``Base`` Python-side default, so there is no hand-written timestamp
+        # to get wrong, and the column list cannot drift as the table grows.
+        #
+        # The SAVEPOINT is what makes "non-fatal" true rather than aspirational:
+        # a failed flush poisons the whole session, so catching the error
+        # without one would leave the photo unsaveable anyway and fail the
+        # request a few lines later, somewhere that reads like an unrelated bug.
         try:
-            import json as _json
-
-            from sqlalchemy import text as _text
-
-            doc_id = str(uuid.uuid4())
-            # Write a NAIVE UTC timestamp so the cross-linked Document row
-            # round-trips identical to every other oe_documents_document row
-            # (SQLAlchemy stores model created_at/updated_at as naive UTC on
-            # SQLite). Mixing aware here with naive elsewhere previously broke
-            # the file-manager modified-sort with a TypeError → HTTP 500.
-            now = datetime.now(UTC).replace(tzinfo=None).isoformat()
-            tags_json = _json.dumps(["photo", category or "site"])
-            await self.session.execute(
-                _text(
-                    "INSERT INTO oe_documents_document "
-                    "(id, project_id, name, description, category, file_size, mime_type, "
-                    "file_path, version, uploaded_by, tags, metadata, created_at, updated_at) "
-                    "VALUES (:id, :pid, :name, :desc, :cat, :fsize, :mime, :fpath, 1, :by, :tags, '{}', :now, :now)"
-                ),
-                {
-                    "id": doc_id,
-                    "pid": str(project_id),
-                    "name": safe_name,
-                    "desc": caption or "",
-                    "cat": "photo",
-                    "fsize": len(content),
-                    "mime": stored_mime,
-                    "fpath": str(file_path),
-                    "by": user_id or "",
-                    "tags": tags_json,
-                    "now": now,
-                },
+            async with self.session.begin_nested():
+                doc = Document(
+                    project_id=project_id,
+                    name=safe_name,
+                    description=caption or "",
+                    category="photo",
+                    file_size=len(content),
+                    mime_type=stored_mime,
+                    # Byte-identical to the photo's own path: this string is the
+                    # only link between the two rows, and ``delete_photo`` finds
+                    # the row to remove by matching on it.
+                    file_path=str(file_path),
+                    version=1,
+                    uploaded_by=user_id or "",
+                    tags=["photo", category or "site"],
+                    metadata_={},
+                )
+                self.session.add(doc)
+                await self.session.flush()
+            logger.info("Cross-linked photo %s → document %s (tags: photo, %s)", photo.id, doc.id, category)
+        except SQLAlchemyError:
+            # Named, so the row can be found and the failure is actionable. Not
+            # a bare ``except``: a NameError or a TypeError in this block is a
+            # defect in it, and swallowing those is how the bug above survived.
+            logger.exception(
+                "Failed to cross-link photo %s (project %s) into the documents hub",
+                photo.id,
+                project_id,
             )
-            logger.info("Cross-linked photo → document %s (tags: photo, %s)", doc_id, category)
-        except Exception:
-            logger.exception("CROSS-LINK FAILED")
 
         return photo
 
@@ -1601,23 +1667,27 @@ class PhotoService:
 
         return photos, total
 
-    async def get_gallery(self, project_id: uuid.UUID) -> list[ProjectPhoto]:
-        """Get all photos for the gallery view."""
-        photos, _ = await self.repo.list_for_project(project_id, offset=0, limit=500)
-        return photos
+    async def get_gallery(self, project_id: uuid.UUID, *, limit: int = 500) -> tuple[list[ProjectPhoto], int]:
+        """Read one page of a project's photos, newest first.
 
-    async def get_timeline(self, project_id: uuid.UUID) -> list[dict[str, Any]]:
-        """Get photos grouped by date for timeline view."""
-        photos, _ = await self.repo.list_for_project(project_id, offset=0, limit=500)
+        Backs both the gallery grid and the timeline, which are the same read
+        with different presentation. Returns ``(photos, total)`` where
+        ``total`` is every photo the project holds, so a caller that got
+        ``limit`` rows can tell whether that was all of them.
 
-        groups: dict[str, list[ProjectPhoto]] = defaultdict(list)
-        for photo in photos:
-            date_key = (photo.taken_at or photo.created_at).strftime("%Y-%m-%d")
-            groups[date_key].append(photo)
+        The date grouping the timeline used to get from here now happens in
+        the client: it is a pure function of the rows, and keeping it on this
+        side forced the route to answer with a list of days that could not
+        report how many photos it had left out.
 
-        # Sort by date descending
-        sorted_dates = sorted(groups.keys(), reverse=True)
-        return [{"date": d, "photos": groups[d]} for d in sorted_dates]
+        Args:
+            project_id: Project whose photos to read.
+            limit: Largest number of photos to return.
+
+        Returns:
+            The page of photos and the project's full photo count.
+        """
+        return await self.repo.list_for_project(project_id, offset=0, limit=limit)
 
     async def recent_across_projects(
         self,
@@ -2156,9 +2226,15 @@ class SheetService:
         try:
             import pdfplumber
         except ImportError:
+            # pdfplumber is a base dependency and is in requirements-desktop.lock,
+            # so a bundle that cannot import it is damaged rather than lean: the
+            # repair wording, never DESKTOP_NO_EXTRA, which would claim the build
+            # never carried it.
+            from app.core.self_upgrade import repair_hint  # noqa: PLC0415
+
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="pdfplumber is not installed. Install with: pip install pdfplumber",
+                detail="pdfplumber is not installed. " + repair_hint("Install with: pip install pdfplumber"),
             )
 
         # Read uploaded file

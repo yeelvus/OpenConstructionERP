@@ -9,6 +9,11 @@ bypass, permission-in-token, stale-token live-registry fallback, and 403 when
 the role lacks the permission), that a headless caller with no bearer token is
 authenticated via ``X-API-Key`` and held to the same permission, and that a bad
 or expired API key's own 401 propagates unchanged.
+
+The keys here all declare an empty scope list, which narrows nothing - that is
+the shape every key issued so far has, so these tests pin that the scoping
+added later left the existing behaviour alone. The narrowing itself is covered
+in ``tests/unit/test_api_key_scopes.py``.
 """
 
 from __future__ import annotations
@@ -46,15 +51,24 @@ def _grant(monkeypatch: pytest.MonkeyPatch, granted_role: str | None) -> None:
     )
 
 
-def _use_api_key_user(monkeypatch: pytest.MonkeyPatch, user: _FakeUser | None) -> None:
-    """Stub get_user_from_api_key to return ``user`` (or raise its 401 if None)."""
+def _use_api_key_user(
+    monkeypatch: pytest.MonkeyPatch,
+    user: _FakeUser | None,
+    scopes: list[str] | None = None,
+) -> None:
+    """Stub the API-key resolver with ``user`` + ``scopes`` (or raise its 401).
 
-    async def _resolve(_request: object) -> _FakeUser:
+    ``scopes`` is the key row's own permission list, which narrows what the
+    owner may do through this key. It defaults to empty, meaning the key
+    declares no narrowing - the shape every key issued so far actually has.
+    """
+
+    async def _resolve(_request: object) -> deps.ApiKeyPrincipal:
         if user is None:
             raise HTTPException(status_code=401, detail="Invalid API key")
-        return user
+        return deps.ApiKeyPrincipal(user=user, scopes=list(scopes or []))
 
-    monkeypatch.setattr(deps, "get_user_from_api_key", _resolve)
+    monkeypatch.setattr(deps, "resolve_api_key_principal", _resolve)
 
 
 # --- _authorize: the shared role->permission check --------------------------

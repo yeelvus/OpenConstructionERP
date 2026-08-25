@@ -14,8 +14,8 @@ import { useTranslation } from 'react-i18next';
 import { Search, X, Package, Hammer, Cpu, Users, Loader2, Boxes } from 'lucide-react';
 import { Button } from '@/shared/ui';
 import { apiGet } from '@/shared/lib/api';
-import { getIntlLocale } from '@/shared/lib/formatters';
 import { getResourceTypeLabel } from './boqResourceTypes';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Types ───────────────────────────────────────────────────────────── */
 
@@ -74,7 +74,7 @@ export function CatalogPickerModal({ open, onClose, onSelect }: CatalogPickerMod
 
   const fmt = useCallback(
     (n: number) =>
-      new Intl.NumberFormat(getIntlLocale(), {
+      new Intl.NumberFormat(getNumberLocale(), {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       }).format(n),

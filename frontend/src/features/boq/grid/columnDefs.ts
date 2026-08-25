@@ -15,6 +15,7 @@ import {
 } from '../boqHelpers';
 import type { DisplayQuantityApi } from '@/shared/hooks/useDisplayQuantity';
 import { unitColumnValueSetter } from './cellEditors';
+import { parseDecimalInput } from './parseDecimal';
 import {
   buildFormulaContext,
   evaluateFormulaStrict,
@@ -23,6 +24,7 @@ import {
   type FormulaVariable,
 } from './formula';
 import type { Position } from '../api';
+import { fmtFixed } from '@/shared/lib/formatters';
 
 /**
  * How the Material / Labor / Equipment cost-driver split is shown in the BOQ
@@ -35,6 +37,44 @@ import type { Position } from '../api';
  *  - `off`     neither pill nor columns.
  */
 export type ResourceSplitMode = 'pill' | 'columns' | 'off';
+
+/* ── Ordinal edit gesture arming ─────────────────────────────────────
+ * The grid runs with grid-level ``singleClickEdit`` so data-entry columns
+ * (qty, rate, unit) edit on one click. AG Grid combines that option with the
+ * column one as an OR (``gos.get('singleClickEdit') || colDef.singleClickEdit``),
+ * so a column-level ``singleClickEdit: false`` can NEVER opt back out - the
+ * previous attempt to make the Ordnungszahl double-click-only was a no-op
+ * and a stray single click kept opening an invisible editor over the OZ.
+ *
+ * Instead the ordinal column is editable only while "armed", and only the
+ * gestures we bless arm it: double-click, F2, Enter. The arm is a SELF-
+ * EXPIRING timestamp, not a boolean anyone has to remember to clear - it
+ * survives exactly the synchronous ``startRowOrCellEdit`` that follows the
+ * gesture, then dies on its own. No close path (Escape, blur, commit,
+ * invalid revert, thrown editor) can leak it into a stuck state, and no
+ * later single click can reuse it.
+ */
+let ordinalEditArmedUntil = 0;
+
+/** Bless the next (synchronous) edit start on the ordinal column. */
+function armOrdinalEdit(): void {
+  ordinalEditArmedUntil = Date.now() + 250;
+}
+
+/** True while a blessed gesture's edit start is in flight. */
+function isOrdinalEditArmed(): boolean {
+  return Date.now() < ordinalEditArmedUntil;
+}
+
+/** Test seam: report/clear the arm without waiting out the timestamp. */
+export function __ordinalEditArmState(): { armed: boolean; reset: () => void } {
+  return {
+    armed: isOrdinalEditArmed(),
+    reset: () => {
+      ordinalEditArmedUntil = 0;
+    },
+  };
+}
 
 /** Toolbar cycle order: pill -> columns -> off -> pill. */
 export function nextResourceSplitMode(mode: ResourceSplitMode): ResourceSplitMode {
@@ -101,6 +141,32 @@ export interface BOQColumnContext {
    * callers can use them unconditionally once present).
    */
   displayQuantity?: DisplayQuantityApi;
+  /**
+   * Length (characters) of the longest position ordinal in the grid.
+   * BOQGrid derives it from the loaded positions so the "Pos." column can
+   * be sized to show the FULL Ordnungszahl: a German GAEB OZ like
+   * "01.01.0010" was ellipsised to "01.01.0…" by the old fixed 88px.
+   * Omitted / 0 keeps the compact default width.
+   */
+  maxOrdinalChars?: number;
+}
+
+/**
+ * Pixel width for the ordinal ("Pos.") column that fits the longest ordinal
+ * currently in the grid without truncation.
+ *
+ * The cell renders the OZ in ``font-mono text-xs`` (12px, ~7.5px advance per
+ * character, upper bound across the mono stacks we ship) plus fixed chrome:
+ * 8px cell padding each side and the 10px validation dot with its 4px gap.
+ * Clamped to [88, 180] so short ordinals keep the historic compact column
+ * and a pathological ordinal cannot eat the viewport - the column stays
+ * user-resizable either way.
+ */
+export function ordinalColumnWidth(maxOrdinalChars: number): number {
+  const CHAR_PX = 7.5;
+  const CHROME_PX = 30; // 2 x 8px padding + 10px status dot + 4px gap
+  const fitted = Math.ceil(maxOrdinalChars * CHAR_PX) + CHROME_PX;
+  return Math.max(88, Math.min(180, fitted));
 }
 
 // Note: `currencyFormatter` was previously applied to the unit_rate column
@@ -344,6 +410,16 @@ export function needsPrice(d: Record<string, unknown> | undefined): boolean {
 /** Faint amber tint marking a cell that needs a value. Subtle, not alarming. */
 const NEEDS_VALUE_CLASS = 'bg-amber-50/70 dark:bg-amber-950/30';
 
+/**
+ * Tint marking a derived share that cannot be true - a resource buildup worth
+ * more than the unit rate it is supposed to be a share of.
+ *
+ * Louder than {@link NEEDS_VALUE_CLASS} on purpose: an empty cell is a gap the
+ * estimator has not filled yet, while this one is a contradiction between two
+ * numbers already stored on the same position.
+ */
+const IMPOSSIBLE_SHARE_CLASS = 'bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-400';
+
 /** Localised resource-type labels for the unit-rate build-up tooltip. */
 const RATE_BUILDUP_TYPES: ReadonlyArray<readonly [string, string, string]> = [
   ['labor', 'boq.res_labor', 'Labour'],
@@ -467,17 +543,56 @@ export function getColumnDefs(context: BOQColumnContext): ColDef[] {
     {
       headerName: t('boq.ordinal', { defaultValue: 'Pos.' }),
       field: 'ordinal',
-      width: 88,
-      minWidth: 70,
+      // Sized to the data so the full Ordnungszahl is readable: the fixed
+      // 88px default truncated a standard German GAEB OZ ("01.01.0010")
+      // exactly where the column exists to show it.
+      width: ordinalColumnWidth(context.maxOrdinalChars ?? 0),
+      // The same number is the floor, not just the starting width. The grid
+      // runs sizeColumnsToFit on ready and after every column change, which
+      // redistributes width down to each column's minWidth - a 70px floor
+      // handed the fitted width straight back and re-ellipsised the OZ on a
+      // narrow viewport. An ordinal is an addressable identifier: it has to
+      // be readable to be typed back into an inquiry, so the column gives up
+      // no more width than the longest one in the grid needs. It stays
+      // user-resizable upwards via `resizable: true`.
+      minWidth: ordinalColumnWidth(context.maxOrdinalChars ?? 0),
+      // The grid is singleClickEdit for data-entry columns (qty, rate), but
+      // the Ordnungszahl is the client-issued identity of the line - a stray
+      // click must never open an invisible editor over it. Column-level
+      // ``singleClickEdit: false`` cannot override the grid-level option
+      // (AG Grid ORs them), so the column is instead editable only while a
+      // blessed gesture (double-click / F2 / Enter, below) has armed it.
       editable: (params) => {
-        // Any position number is user-editable (sections included); only the
-        // totals footer stays locked, so users can type whatever ordinal they want.
+        // Only the totals footer stays permanently locked; any position
+        // number (sections included) is editable through the gestures.
         if (params.data?._isFooter) return false;
-        return true;
+        return isOrdinalEditArmed();
+      },
+      // Double-click is otherwise DEAD in a singleClickEdit grid (AG Grid
+      // only starts dblclick-editing when singleClickEdit is off), so the
+      // gesture is wired explicitly: arm, then start the edit ourselves.
+      onCellDoubleClicked: (params) => {
+        if (params.data?._isFooter) return;
+        const rowIndex = params.node?.rowIndex;
+        if (typeof rowIndex !== 'number' || rowIndex < 0) return;
+        armOrdinalEdit();
+        params.api.startEditingCell({ rowIndex, colKey: 'ordinal' });
+      },
+      // F2 on the focused cell runs AG Grid's own start-edit path; arming
+      // just before letting it through makes ``editable`` say yes for
+      // exactly that start. (Enter is not an edit key here - the grid has
+      // ``enterNavigatesVertically``, so Enter moves down instead.)
+      // Printable keys stay unarmed on purpose - type-to-replace on a
+      // mis-focused cell is exactly the stray-rewrite accident.
+      suppressKeyboardEvent: (params) => {
+        if (!params.editing && params.event.key === 'F2') {
+          armOrdinalEdit();
+        }
+        return false;
       },
       headerTooltip: t('boq.ordinal_edit_hint', {
         defaultValue:
-          'Click any position number to type your own. Use Renumber to apply a scheme to all.',
+          'Double-click a position number (or press F2) to type your own. Escape cancels. Use Renumber to apply a scheme to all.',
       }),
       cellClass: (params) => {
         const base = 'font-mono text-xs text-right !pr-2';
@@ -647,8 +762,14 @@ export function getColumnDefs(context: BOQColumnContext): ColDef[] {
       // with no imperial mapping (pcs, %, hr ...), so this is a no-op
       // unless the user is in imperial AND the unit is convertible.
       valueParser: (params) => {
-        const val = parseFloat(params.newValue);
-        if (isNaN(val)) return params.oldValue;
+        // Cold path (editor bypassed / programmatic string commit): parse
+        // locale-aware and strict - parseFloat('48,60') is 48, a silent
+        // near-100x error for a German entry.
+        const val =
+          typeof params.newValue === 'number'
+            ? params.newValue
+            : parseDecimalInput(String(params.newValue ?? ''));
+        if (val === null || !isFinite(val)) return params.oldValue;
         const ctx = params.context as BOQColumnContext | undefined;
         const unit = (params.data?.unit as string | undefined) ?? '';
         return ctx?.displayQuantity ? ctx.displayQuantity.toMetric(val, unit) : val;
@@ -713,8 +834,13 @@ export function getColumnDefs(context: BOQColumnContext): ColDef[] {
       // unit; convert it back to the metric-canonical per-unit rate before
       // storing. ``toMetricRate`` is identity for metric / unmapped units.
       valueParser: (params) => {
-        const val = parseFloat(params.newValue);
-        if (isNaN(val)) return params.oldValue;
+        // Same locale-aware strict parse as the quantity column - the rate
+        // is the cell a German estimator types `48,60` into most often.
+        const val =
+          typeof params.newValue === 'number'
+            ? params.newValue
+            : parseDecimalInput(String(params.newValue ?? ''));
+        if (val === null || !isFinite(val)) return params.oldValue;
         const ctx = params.context as BOQColumnContext | undefined;
         const unit = (params.data?.unit as string | undefined) ?? '';
         return ctx?.displayQuantity ? ctx.displayQuantity.toMetricRate(val, unit) : val;
@@ -905,9 +1031,16 @@ export interface CustomColumnDef {
    *                       matches `resource_role`. Used for GAEB EP-split
    *                       columns (Lohn-EP / Material-EP / Geräte-EP).
    *
-   *   - `percentage_of_unit_rate` — share of `unit_rate` that comes from
-   *     resources of type `resource_role`, expressed as a percent
-   *     (0–100). Used for ÖNORM "Lohn-Anteil %" etc.
+   *   - `percentage_of_unit_rate` — share of the position's stored
+   *     `unit_rate` that comes from resources of type `resource_role`,
+   *     expressed as a percent. Used for ÖNORM "Lohn-Anteil %" etc.
+   *     The divisor is the rate itself, NOT the sum of the position's
+   *     resources: the two are the same number whenever the buildup obeys
+   *     the platform invariant `unit_rate == sum(quantity * unit_rate)`,
+   *     and they differ exactly where the estimate argues with itself. A
+   *     share can therefore exceed 100, which is the point - see
+   *     `IMPOSSIBLE_SHARE_CLASS`. A missing, non-numeric or zero rate is
+   *     no divisor at all, so the cell renders empty.
    *
    * `column_type` stays `number` so existing AG-Grid number behaviour
    * (right-align, tabular nums, formatting) applies. The flag is
@@ -952,7 +1085,7 @@ export interface CustomColumnEngineContext {
  */
 function formatCalculatedNumber(value: number, decimals: number): string {
   const safe = Math.max(0, Math.min(6, decimals));
-  return value.toFixed(safe);
+  return fmtFixed(value, safe);
 }
 
 /**
@@ -1068,6 +1201,90 @@ export function getCustomColumnDefs(
       // direct field-based access when both getters are present, so the
       // chosen field string can never collide with anything on `data`.
       const isDerived = col.derived === 'resource_sum' || col.derived === 'percentage_of_unit_rate';
+
+      // Role parsing and the share arithmetic live out here rather than inside
+      // the `isDerived` branch below because `cellClass` in the ColDef literal
+      // needs the share too, to mark a value that cannot be true. Building a
+      // small Set and two closures for a column that never uses them costs
+      // nothing next to keeping one copy of the arithmetic.
+      const role = col.resource_role;
+      // Normalize role to a Set so single / array forms match identically
+      // (Sonstiges-EP carries ``['other', 'operator', 'subcontractor']``).
+      const roleSet: Set<string> | null = role
+        ? new Set(Array.isArray(role) ? role : [role])
+        : null;
+      const matchesRole = (t: string): boolean => !roleSet || roleSet.has(t);
+      const dec = Math.max(0, Math.min(6, col.decimals ?? 2));
+
+      /** A row's stored `unit_rate` as a finite number, or 0 when it has none. */
+      const unitRateOf = (row: { unit_rate?: unknown } | undefined | null): number => {
+        if (!row) return 0;
+        const v = row.unit_rate;
+        const n = typeof v === 'number' ? v : parseFloat(String(v ?? ''));
+        return Number.isFinite(n) ? n : 0;
+      };
+
+      /**
+       * The `percentage_of_unit_rate` value for one grid row, or null when the
+       * row has no share to show.
+       *
+       * The divisor is the position's own `unit_rate`, never the sum of its
+       * resources. Those two are the same number whenever the buildup obeys the
+       * platform invariant, so a consistent position renders exactly as it did
+       * before; they differ only where the buildup and the rate disagree.
+       * Dividing by the resource sum there prints the share of the buildup while
+       * labelling it the share of the rate, and because the roles it can name
+       * always sum to that divisor, such a column can never be wrong on its face
+       * and so can never report the disagreement either.
+       *
+       * Both the value getter and `cellClass` need this number - one to print
+       * it, the other to decide whether it is a share that cannot be true - and
+       * the rendered string cannot be re-parsed to recover it, because
+       * `fmtFixed` writes the reader's separators and a German "137,40" parses
+       * back as 137. One function keeps the printed value and the styling that
+       * judges it from ever being decided by two different sums.
+       */
+      const shareOfUnitRate = (data: Record<string, unknown> | undefined | null): number | null => {
+        if (!data || data._isSection || data._isFooter || data._isAddResource) return null;
+
+        // Resource sub-row: this one resource's share of the parent position's
+        // rate. The row carries its OWN ``unit_rate`` (the resource's price),
+        // so the divisor has to come from the parent - reading it off ``data``
+        // here would divide by an unrelated number.
+        if (data._isResource) {
+          const t = typeof data._resourceType === 'string' ? data._resourceType : 'other';
+          if (!matchesRole(t)) return null;
+          const q = typeof data._resourceQty === 'number'
+            ? data._resourceQty
+            : parseFloat(String(data._resourceQty ?? '0')) || 0;
+          const r = typeof data._resourceRate === 'number'
+            ? data._resourceRate
+            : parseFloat(String(data._resourceRate ?? '0')) || 0;
+          const parent = data._parentPositionId
+            ? positionsById.get(String(data._parentPositionId))
+            : undefined;
+          const rate = unitRateOf(parent);
+          if (!(rate > 0)) return null;
+          return ((q * r) / rate) * 100;
+        }
+
+        // Position row: every resource matching the role hint, over the rate.
+        const meta = (data.metadata as Record<string, unknown> | undefined) ?? {};
+        const resources = (meta.resources as Array<Record<string, unknown>> | undefined) ?? [];
+        if (!Array.isArray(resources) || resources.length === 0) return null;
+        const rate = unitRateOf(data);
+        if (!(rate > 0)) return null;
+        let matched = 0;
+        for (const res of resources) {
+          const t = typeof res.type === 'string' ? res.type : 'other';
+          if (!matchesRole(t)) continue;
+          const q = typeof res.quantity === 'number' ? res.quantity : parseFloat(String(res.quantity ?? '0')) || 0;
+          const r = typeof res.unit_rate === 'number' ? res.unit_rate : parseFloat(String(res.unit_rate ?? '0')) || 0;
+          matched += q * r;
+        }
+        return (matched / rate) * 100;
+      };
+
       const base: ColDef = {
         headerName: isCalculated ? `ƒ ${col.display_name}` : col.display_name,
         field: `custom_${col.name}`,
@@ -1119,7 +1336,15 @@ export function getCustomColumnDefs(
                 ? 'text-content-secondary'
                 : '';
             const italic = computedOnResource ? 'italic' : '';
-            return `text-right tabular-nums text-xs ${tone} ${italic}`.trim();
+            // A share above 100 says the buildup is worth more than the rate it
+            // is a share of, so the two stored numbers contradict each other.
+            // Print the real figure and mark it rather than clamping: a tidy
+            // 100.00 would hide the contradiction behind a plausible value,
+            // which is precisely the silence this column was changed to break.
+            const share =
+              col.derived === 'percentage_of_unit_rate' ? shareOfUnitRate(params.data) : null;
+            const impossible = share !== null && share > 100 ? ` ${IMPOSSIBLE_SHARE_CLASS}` : '';
+            return `text-right tabular-nums text-xs ${tone} ${italic}${impossible}`.trim();
           }
           return computedOnResource ? 'text-xs italic text-content-tertiary' : 'text-xs';
         },
@@ -1152,26 +1377,24 @@ export function getCustomColumnDefs(
       // above. valueSetter is NOT installed — AG Grid will not fire
       // edits on a non-editable cell, so the field is simply display.
       if (isDerived) {
-        const role = col.resource_role;
-        // Normalize role to a Set so single / array forms match identically
-        // (Sonstiges-EP carries ``['other', 'operator', 'subcontractor']``).
-        const roleSet: Set<string> | null = role
-          ? new Set(Array.isArray(role) ? role : [role])
-          : null;
-        const matchesRole = (t: string): boolean => !roleSet || roleSet.has(t);
-        const dec = Math.max(0, Math.min(6, col.decimals ?? 2));
         base.valueGetter = (params) => {
           const data = params.data;
           if (!data || data._isSection || data._isFooter || data._isAddResource) {
             return '';
           }
 
-          // Resource sub-row: render the per-resource value (its own
-          // qty × rate contribution, OR its own % of the parent
-          // position's total resource sum). Only resources whose type
-          // matches the column's role filter render a value — others
-          // stay blank so the column visually attributes the
-          // contribution to the right resource.
+          // Share of the position's unit rate — the whole computation, for
+          // both row kinds, lives in ``shareOfUnitRate`` so the cell styling
+          // that judges this number is decided by the very same sum.
+          if (col.derived === 'percentage_of_unit_rate') {
+            const pct = shareOfUnitRate(data);
+            return pct === null ? '' : fmtFixed(pct, dec);
+          }
+
+          // Resource sub-row: render this resource's own qty × rate
+          // contribution. Only resources whose type matches the column's
+          // role filter render a value — others stay blank so the column
+          // visually attributes the contribution to the right resource.
           if (data._isResource) {
             const t = typeof data._resourceType === 'string' ? data._resourceType : 'other';
             if (!matchesRole(t)) return '';
@@ -1181,30 +1404,9 @@ export function getCustomColumnDefs(
             const r = typeof data._resourceRate === 'number'
               ? data._resourceRate
               : parseFloat(String(data._resourceRate ?? '0')) || 0;
-            const contribution = q * r;
-            if (col.derived === 'percentage_of_unit_rate') {
-              const parent = data._parentPositionId
-                ? positionsById.get(String(data._parentPositionId))
-                : undefined;
-              const parentResources =
-                ((parent?.metadata as Record<string, unknown> | undefined)
-                  ?.resources as Array<Record<string, unknown>> | undefined) ?? [];
-              let allSum = 0;
-              for (const res of parentResources) {
-                const rq = typeof res.quantity === 'number'
-                  ? res.quantity
-                  : parseFloat(String(res.quantity ?? '0')) || 0;
-                const rr = typeof res.unit_rate === 'number'
-                  ? res.unit_rate
-                  : parseFloat(String(res.unit_rate ?? '0')) || 0;
-                allSum += rq * rr;
-              }
-              if (allSum <= 0) return '';
-              return ((contribution / allSum) * 100).toFixed(dec);
-            }
             // resource_sum on a resource row = this resource's
             // contribution to the position unit rate.
-            return contribution.toFixed(dec);
+            return fmtFixed(q * r, dec);
           }
 
           // Position row: existing aggregation across the position's
@@ -1214,27 +1416,25 @@ export function getCustomColumnDefs(
           const resources = (meta.resources as Array<Record<string, unknown>> | undefined) ?? [];
           if (!Array.isArray(resources) || resources.length === 0) return '';
           let matched = 0;
-          let allSum = 0;
           for (const res of resources) {
             const t = typeof res.type === 'string' ? res.type : 'other';
+            if (!matchesRole(t)) continue;
             const q = typeof res.quantity === 'number' ? res.quantity : parseFloat(String(res.quantity ?? '0')) || 0;
             const r = typeof res.unit_rate === 'number' ? res.unit_rate : parseFloat(String(res.unit_rate ?? '0')) || 0;
-            const contribution = q * r;
-            allSum += contribution;
-            if (matchesRole(t)) matched += contribution;
-          }
-          if (col.derived === 'percentage_of_unit_rate') {
-            if (allSum <= 0) return '';
-            const pct = (matched / allSum) * 100;
-            return pct.toFixed(dec);
+            matched += q * r;
           }
           // resource_sum
-          return matched.toFixed(dec);
+          return fmtFixed(matched, dec);
         };
         const roleLabel = roleSet ? Array.from(roleSet).join(' / ') : 'matching';
-        base.tooltipValueGetter = () => {
+        base.tooltipValueGetter = (params) => {
           if (col.derived === 'percentage_of_unit_rate') {
-            return `${col.display_name} - share of unit rate from ${roleLabel} resources (auto-computed; edit resources to change)`;
+            const pct = shareOfUnitRate(params.data);
+            if (pct !== null && pct > 100) {
+              // The mark on the cell is only half a signal without the reason.
+              return `${col.display_name} - ${roleLabel} resources are worth more than this position's whole unit rate, so the buildup and the rate disagree. Fix the resources or the rate.`;
+            }
+            return `${col.display_name} - share of the position's unit rate from ${roleLabel} resources (auto-computed; edit resources or the rate to change)`;
           }
           return `${col.display_name} - sum of ${roleLabel} resources for this position (auto-computed; edit resources to change)`;
         };
@@ -1307,10 +1507,18 @@ export function getCustomColumnDefs(
       };
 
       if (colType === 'number') {
-        base.cellEditor = 'agNumberCellEditor';
+        // Text editor, not agNumberCellEditor: the stock number editor is an
+        // <input type=number> which drops a German decimal comma at the
+        // keystroke level (48,60 -> 4860). The strict locale-aware parser
+        // below reads the text instead; clearing the cell still stores ''.
+        base.cellEditor = 'agTextCellEditor';
         base.valueParser = (params) => {
-          const val = parseFloat(params.newValue);
-          return isNaN(val) ? '' : val;
+          const raw = String(params.newValue ?? '').trim();
+          if (raw === '') return '';
+          const val = parseDecimalInput(raw);
+          // Unparseable input keeps the previous value - the old parseFloat
+          // fallback silently CLEARED the cell on a typo.
+          return val === null ? params.oldValue : val;
         };
       } else if (colType === 'select' && col.options?.length) {
         base.cellEditor = 'agSelectCellEditor';

@@ -96,6 +96,7 @@ SCRIPTS: dict[str, tuple[str, ...]] = {
     "de": (),
     "el": ("greek",),
     "en": (),
+    "en-US": (),
     "es": (),
     "es-CO": (),
     "es-CL": (),
@@ -125,6 +126,12 @@ SCRIPTS: dict[str, tuple[str, ...]] = {
     "sv": (),
     "th": ("thai",),
     "tr": (),
+    "uk": ("cyrillic",),
+    # Uzbek writes in Latin. The Cyrillic orthography still exists in print but
+    # the official alphabet has been Latin since 1993, and the construction and
+    # procurement documents this product is read beside use it, so a Cyrillic
+    # character in uz.ts is a mistake rather than a variant.
+    "uz": (),
     "ur": ("arabic",),
     "vi": (),
     "zh": ("han",),

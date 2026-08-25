@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 1014,
   category: "bim",
   companyTypes: ["bim-consultant", "developer-client", "project-manager"],
+  roles: ["bim-coordinator", "design-lead", "document-controller"],
   icon: "BadgeCheck",
   titleKey: "cases.check_a_model_against_the_eir_and_raise_issues.title",
   titleDefault: "Check a model against the EIR and raise issues",
@@ -43,7 +44,7 @@ const playbook: Playbook = {
       whyKey: "cases.check_a_model_against_the_eir_and_raise_issues.step.eir.why",
       whyDefault:
         "You cannot check a model against a standard you have not opened. Starting from the actual requirements turns a vague review into a definite pass or fail on each point.",
-      moduleLabel: "EIR Matrix",
+      moduleLabel: "EIR Matrix (ISO 19650)",
       moduleLabelKey: "nav.eir_matrix",
       to: "/requirements/matrix",
     },
@@ -106,7 +107,7 @@ const playbook: Playbook = {
       whyKey: "cases.check_a_model_against_the_eir_and_raise_issues.step.sign.why",
       whyDefault:
         "Sign-off is the gate that protects everyone downstream. Holding it until the model really complies is what stops a data gap being inherited by the estimator and the operator.",
-      moduleLabel: "EIR Matrix",
+      moduleLabel: "EIR Matrix (ISO 19650)",
       moduleLabelKey: "nav.eir_matrix",
       to: "/requirements/matrix",
     },

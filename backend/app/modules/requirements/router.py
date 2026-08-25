@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 
+from app.core.content_disposition import attachment_disposition
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
 from app.modules.requirements.intl import PRIORITY_ORDER, priority_label
 from app.modules.requirements.lifecycle import (
@@ -235,6 +236,7 @@ class _RequirementSetCreateBody(BaseModel):
 async def create_set(
     data: _RequirementSetCreateBody,
     user_id: CurrentUserId,
+    session: SessionDep,
     project_id: uuid.UUID | None = Query(default=None),
     _perm: None = Depends(RequirePermission("requirements.create")),
     service: RequirementsService = Depends(_get_service),
@@ -250,6 +252,13 @@ async def create_set(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="project_id is required (body or ?project_id= query parameter)",
         )
+    # IDOR guard: this route reads no row, so the project is whatever the
+    # caller wrote, in the body or in the query string, and requirements.create
+    # is a global role rather than a project-scoped one. Without this any
+    # holder of it could plant a set inside another tenant's project, where it
+    # appears in that tenant's set list under a name a stranger chose. The
+    # check sits on the merged value so it cannot be bypassed by spelling.
+    await verify_project_access(effective_project_id, str(user_id), session)
     effective_name = (data.name or "").strip()
     if not effective_name:
         raise HTTPException(
@@ -430,7 +439,7 @@ async def _export_dispatch(
         return JSONResponse(
             content=rows,
             headers={
-                "Content-Disposition": f'attachment; filename="{safe_name}.json"',
+                "Content-Disposition": attachment_disposition(f"{safe_name}.json"),
             },
         )
 
@@ -442,7 +451,7 @@ async def _export_dispatch(
             content=payload,
             media_type=("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
             headers={
-                "Content-Disposition": f'attachment; filename="{safe_name}.xlsx"',
+                "Content-Disposition": attachment_disposition(f"{safe_name}.xlsx"),
             },
         )
 
@@ -457,7 +466,7 @@ async def _export_dispatch(
         iter([buf.getvalue()]),
         media_type="text/csv",
         headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}.csv"',
+            "Content-Disposition": attachment_disposition(f"{safe_name}.csv"),
         },
     )
 
@@ -971,14 +980,24 @@ async def import_from_text(
     set_id: uuid.UUID,
     data: TextImportRequest,
     user_id: CurrentUserId,
+    session: SessionDep,
     _perm: None = Depends(RequirePermission("requirements.create")),
     service: RequirementsService = Depends(_get_service),
 ) -> RequirementSetDetail:
-    """Import requirements from structured text into a new set.
+    """Import requirements from structured text into an existing set.
 
-    The set_id in the URL is used to resolve the project_id.
-    A new set is created with the imported requirements.
+    The set_id in the URL names the set the parsed rows are appended to. The
+    service resolves that set and adds to it; it does not create a second one.
+    The previous wording here claimed a new set was created, which is part of
+    why the absent project check below read as harmless.
     """
+    # IDOR guard: gate on the set's owning project, as every other set-scoped
+    # route in this module does. requirements.create is a global role and is
+    # not project-scoped, so without this any holder of it could append rows to
+    # another tenant's set by UUID and receive that set's full contents back in
+    # the 201 body - a cross-tenant write and read from one call.
+    req_set = await service.get_set(set_id)
+    await verify_project_access(req_set.project_id, str(user_id), session)
     try:
         result_set = await service.import_from_text(set_id, data, user_id=user_id)
         return _set_to_detail(result_set)

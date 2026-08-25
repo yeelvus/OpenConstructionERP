@@ -6,7 +6,7 @@
  * All endpoints are prefixed with /v1/inspections/.
  */
 
-import { apiGet, apiPost, apiPatch, apiDelete } from '@/shared/lib/api';
+import { apiGet, apiPost, apiPatch, apiDelete, type Page } from '@/shared/lib/api';
 
 /* -- Types ----------------------------------------------------------------- */
 
@@ -170,15 +170,17 @@ function normaliseInspection(raw: InspectionWire): Inspection {
 
 /* -- API Functions --------------------------------------------------------- */
 
-export async function fetchInspections(filters?: InspectionFilters): Promise<Inspection[]> {
+export async function fetchInspections(
+  filters?: InspectionFilters,
+): Promise<Page<Inspection>> {
   const params = new URLSearchParams();
   if (filters?.project_id) params.set('project_id', filters.project_id);
   if (filters?.status) params.set('status', filters.status);
   if (filters?.result) params.set('result', filters.result);
   if (filters?.type) params.set('type', filters.type);
   const qs = params.toString();
-  const rows = await apiGet<InspectionWire[]>(`/v1/inspections/${qs ? `?${qs}` : ''}`);
-  return rows.map(normaliseInspection);
+  const page = await apiGet<Page<InspectionWire>>(`/v1/inspections/${qs ? `?${qs}` : ''}`);
+  return { ...page, items: page.items.map(normaliseInspection) };
 }
 
 export async function createInspection(data: CreateInspectionPayload): Promise<Inspection> {

@@ -17,9 +17,12 @@ and any failure it reports is new.
 
 Two lists, one comparison:
 
-  - Every ``path="..."`` in ``frontend/src/app/App.tsx``. The catch-all ``*`` is
-    deliberately excluded: it matches everything, so counting it as a match
-    would make this file always pass and mean nothing.
+  - Every ``path="..."`` in ``frontend/src/app/App.tsx``, plus every route a
+    bundled module declares in ``frontend/src/modules/*/manifest.ts(x)``.
+    Modules mount their routes into the same ``<Routes>`` through
+    ``useModuleRouteElements``, so App.tsx alone is not the route table. The
+    catch-all ``*`` is deliberately excluded: it matches everything, so
+    counting it as a match would make this file always pass and mean nothing.
   - Every ``to`` in ``frontend/src/features/cases/data/*.playbook.ts``.
 
 Matching is segment-wise rather than by string equality, because a route
@@ -44,10 +47,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 APP_TSX = REPO_ROOT / "frontend" / "src" / "app" / "App.tsx"
+MODULES_DIR = REPO_ROOT / "frontend" / "src" / "modules"
+MANIFEST_NAMES = ("manifest.ts", "manifest.tsx")
 PLAYBOOK_DIR = REPO_ROOT / "frontend" / "src" / "features" / "cases" / "data"
 PLAYBOOK_GLOB = "*.playbook.ts"
 
 ROUTE_PATH_RE = re.compile(r'path="([^"]*)"')
+# A module manifest writes its routes as object literals, so the path is a
+# `path:` property rather than a JSX attribute. Both quote styles appear.
+MANIFEST_PATH_RE = re.compile(r"""path:\s*(["'])(/[^"'\n]*)\1""")
+DEFAULT_ENABLED_FALSE_RE = re.compile(r"defaultEnabled:\s*false")
 # `to` inside a playbook step. Single and double quotes both appear in the tree.
 STEP_TO_RE = re.compile(r"""^\s*to:\s*(["'])([^"']*)\1""", re.MULTILINE)
 PLAYBOOK_ID_RE = re.compile(r"""^\s*id:\s*(["'])([^"']*)\1""", re.MULTILINE)
@@ -57,6 +66,44 @@ def read_routes(path: Path) -> list[str]:
     """Every route path declared in App.tsx, catch-all excluded."""
     source = path.read_text(encoding="utf-8", errors="replace")
     return [p for p in ROUTE_PATH_RE.findall(source) if p != "*"]
+
+
+def read_module_routes(directory: Path) -> list[str]:
+    """Every route path a bundled module declares in its manifest.
+
+    App.tsx is not the whole route table. ``useModuleRouteElements`` mounts
+    ``manifest.routes`` for every enabled module inside the same ``<Routes>``,
+    so a module screen such as ``/gaeb-exchange`` is exactly as reachable as
+    anything written in App.tsx. Reading only App.tsx calls it dead, and that
+    is what happened: the first case to link a module screen turned this lane
+    red for a route that works. ``cases.test.ts`` already read both sources.
+
+    Modules that ship disabled are skipped on purpose. Their routes are not
+    mounted until the reader turns the module on, so a step pointing at one
+    really does dead-end on a default install. regional-exchange is the live
+    example: it declares twenty country screens and ships off, so a case that
+    links ``/us-masterformat-exchange`` has to say "enable the module first"
+    or point somewhere else, and this guard is right to call it dead.
+
+    Only literal paths are read, and manifests are read as text rather than
+    imported, the same trade-off ``cases.test.ts`` makes. A module that builds
+    its paths from a table (again regional-exchange, ``/${tpl.routeSlug}``) is
+    invisible here; it is also disabled, so nothing is missed today, and if one
+    is ever both enabled and table-built the result is a loud false failure
+    rather than a silent pass. Both manifest extensions are read because
+    regional-exchange keeps its manifest in a ``.tsx``.
+    """
+    routes: list[str] = []
+    for module_dir in sorted(p for p in directory.iterdir() if p.is_dir()):
+        manifests = [module_dir / name for name in MANIFEST_NAMES]
+        manifest = next((m for m in manifests if m.is_file()), None)
+        if manifest is None:
+            continue
+        source = manifest.read_text(encoding="utf-8", errors="replace")
+        if DEFAULT_ENABLED_FALSE_RE.search(source):
+            continue
+        routes.extend(path for _, path in MANIFEST_PATH_RE.findall(source))
+    return routes
 
 
 def segments(path: str) -> list[str]:
@@ -109,13 +156,23 @@ def main() -> int:
         print(f"ERROR: {PLAYBOOK_DIR} not found", file=sys.stderr)
         return 1
 
-    routes = read_routes(APP_TSX)
+    app_routes = read_routes(APP_TSX)
+    module_routes = read_module_routes(MODULES_DIR) if MODULES_DIR.is_dir() else []
+    routes = app_routes + module_routes
     steps = read_steps(PLAYBOOK_DIR)
 
     # An empty read is a broken scan, not a clean tree. Both of these have moved
     # before, and a guard that silently measures nothing is worse than none.
-    if not routes:
+    if not app_routes:
         print(f"ERROR: no route declarations found in {APP_TSX}", file=sys.stderr)
+        return 1
+    if not module_routes:
+        print(
+            f"ERROR: no module routes found under {MODULES_DIR}; modules mount "
+            "their own routes, so an empty read here would call every module "
+            "screen dead",
+            file=sys.stderr,
+        )
         return 1
     if not steps:
         print(
@@ -148,9 +205,10 @@ def main() -> int:
             print(f"  {case_id}: {target} - {why}", file=sys.stderr)
         print(
             "\nA case step is a link the reader clicks. Either declare the route "
-            "in frontend/src/app/App.tsx, or point the step at a screen that "
-            "exists. Do not add the case to a list of exceptions: a walkthrough "
-            "that dead-ends is not a walkthrough.",
+            "in frontend/src/app/App.tsx or in the module manifest that owns the "
+            "screen, or point the step at a screen that exists. Do not add the "
+            "case to a list of exceptions: a walkthrough that dead-ends is not a "
+            "walkthrough.",
             file=sys.stderr,
         )
         return 1
@@ -158,7 +216,8 @@ def main() -> int:
     cases = len({case_id for case_id, _ in steps})
     print(
         f"case routes OK: {len(steps)} steps across {cases} cases, "
-        f"all resolve against {len(routes)} declared routes"
+        f"all resolve against {len(routes)} declared routes "
+        f"({len(app_routes)} in App.tsx, {len(module_routes)} from module manifests)"
     )
     return 0
 

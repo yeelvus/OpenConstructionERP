@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from app.core.content_disposition import attachment_disposition
 from app.dependencies import (
     CurrentUserId,
     RequirePermission,
@@ -259,7 +260,7 @@ async def export_excel(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}.xlsx"',
+            "Content-Disposition": attachment_disposition(f"{safe_name}.xlsx"),
         },
     )
 
@@ -287,7 +288,7 @@ async def export_ids(
         content=content,
         media_type="application/xml",
         headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}.ids"',
+            "Content-Disposition": attachment_disposition(f"{safe_name}.ids"),
         },
     )
 

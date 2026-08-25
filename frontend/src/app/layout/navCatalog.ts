@@ -388,6 +388,9 @@ export const navGroups: NavGroup[] = [
       { labelKey: 'nav.resource_leveling', to: '/portfolio/leveling', icon: Scale, advancedOnly: true },
       { labelKey: 'nav.risk_register', to: '/risks', icon: ShieldAlert, advancedOnly: true },
       { labelKey: 'nav.cvr', to: '/cvr', icon: Scale, advancedOnly: true },
+      // Post-calculation closes the loop the rest of this group opens: what the
+      // estimate allowed against what the site actually spent, per position.
+      { labelKey: 'postcalc.title', to: '/postcalc', icon: Gauge, advancedOnly: true },
       // THCC custom: portfolio cost cockpit (snapshot + labour + monthly import)
       {
         labelKey: 'nav.thcc_cost_board',
@@ -599,6 +602,14 @@ export const navGroups: NavGroup[] = [
         advancedOnly: true,
       },
       { labelKey: 'nav.payroll', to: '/payroll', icon: Wallet, advancedOnly: true },
+      // The weekly payroll a public works contract has to be certified with.
+      // It sits beside payroll because it is built from the same hours.
+      {
+        labelKey: 'nav.certified_payroll',
+        to: '/certified-payroll',
+        icon: FileCheck,
+        advancedOnly: true,
+      },
       { labelKey: 'nav.assets', to: '/assets', icon: Package },
       // Off-site / prefab production sits with resources (it is a production
       // resource surface). Moved out of Model Coordination while it is being

@@ -23,7 +23,12 @@
  * USD/BRL/JPY amount with a Euro sign actively misinforms the operator, so
  * an unknown/blank currency yields a plain grouped number with no symbol.
  */
-import { getIntlLocale } from './formatters';
+// The reader's number locale, not the UI language. A screen follows its
+// reader, and the reader may have asked for a format their language does not
+// imply. The preference answers 'auto' with the UI language, so a caller who
+// never set one sees exactly what it saw before; only a reader who chose is
+// newly obeyed here.
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 import { resolveFractionDigits } from './fractionDigits';
 
 /** Options controlling the fraction-digit policy of {@link formatCurrency}. */
@@ -39,6 +44,21 @@ export interface FormatCurrencyOptions {
    * When given, it is the hard constraint: the minimum bends down to meet it.
    */
   maximumFractionDigits?: number;
+  /**
+   * Sign policy, forwarded to `Intl` verbatim.
+   *
+   * It belongs here rather than at the call site because the locale decides
+   * where the mark goes and a hand-written `+` is in front for everyone.
+   * `Intl` places it according to the locale's own pattern.
+   *
+   * What it does not do is keep the sign on the same line as the figure. `+`
+   * and `$` are both prefix-numeric under the Unicode line-breaking algorithm
+   * and only one prefix may open an unbreakable numeric run, so the break
+   * between them is legal whichever way the string was assembled - the
+   * rendered characters are identical. Forbidding it is the cell's job, and
+   * the call sites on the change-order register say `whitespace-nowrap`.
+   */
+  signDisplay?: Intl.NumberFormatOptions['signDisplay'];
 }
 
 const CURRENCY_CODE_RE = /^[A-Z]{3}$/;
@@ -49,13 +69,22 @@ const PLAIN_FRACTION_DIGITS = 2;
 /**
  * Natural minor-unit count per ISO 4217 code, as the running engine sees it.
  *
- * Deliberately asks `Intl` instead of reusing `shared/ui/currencyMinorUnits`:
- * the two tables disagree on 16 codes (AFN, ALL, COP, HUF, IDR, IQD, IRR,
- * KPW, LAK, LBP, MGA, MMK, PKR, SOS, SYP, YER), where CLDR says zero decimals
- * and the static table says two. Reading the engine keeps the digits this
- * helper renders today byte-for-byte identical, which a static table would
- * silently turn into "1.234,00 Ft". `MoneyDisplay` overriding the engine is a
- * separate, deliberate choice for its own surface.
+ * The engine is the answer for anything a person looks at, and it is now the
+ * only answer: `MoneyDisplay` used to override it from a static ISO 4217
+ * list this tree no longer carries, and the two disagreed on 16 codes
+ * (AFN, ALL, COP, HUF, IDR, IQD, IRR, KPW, LAK, LBP, MGA, MMK, PKR, SOS, SYP,
+ * YER) where CLDR says zero decimals and the list says two. That is not a
+ * contest between two tables, it is a contest between a table and a reader: a
+ * Hungarian does not write forints with fillér, so "1.234,00 Ft" was the list
+ * arguing with the person reading it.
+ *
+ * ISO is right about the other half of the question. An invoice under EN
+ * 16931 and any payment file declare an amount to a bank and a tax office,
+ * whose authority is ISO 4217 and not the locale of whoever is looking, and
+ * nothing on a screen is one of those. That half is written down where a
+ * document is actually assembled, in `money_decimals` in the backend einvoice
+ * rules, because a rule kept next to code that cannot act on it is a
+ * comment rather than a rule.
  *
  * Cached by code alone - currency digits come from CLDR `currencyData` and do
  * not vary by locale, so keying on the locale would only multiply entries.
@@ -71,6 +100,14 @@ function naturalFractionDigits(code: string): number {
     // significant-digits formatter reports no fraction bounds at all. This one
     // never asks for significant digits, so the fallback is unreachable in
     // practice and only there to keep the value a plain number.
+    // The one hardcoded locale in this file, and it is not a display locale.
+    // Nothing formatted here reaches a reader: the call asks the engine a
+    // question about the CURRENCY, and how many minor units a currency has is
+    // a property of the currency. CLDR keeps it in `currencyData`, which is
+    // not keyed by locale at all, so every tag returns the same number and
+    // 'en-US' is simply the one guaranteed present on a host built with a
+    // trimmed ICU. Reading the reader's locale here would be the bug it looks
+    // like the fix for.
     const resolved = new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: code,
@@ -147,6 +184,51 @@ export function toNum(v: string | number | null | undefined): number {
  * @param locale Optional BCP-47 locale tag; defaults to the active UI locale.
  * @param options Optional fraction-digit overrides.
  */
+
+/**
+ * Compact money for tiles, badges and chart axes: "203,1 Mio. €" in German,
+ * "€203.1M" in English, "2.0億円" in Japanese.
+ *
+ * Four screens grew their own version of this and every one of them wrote
+ * `.toFixed(1)` and an English `M`, so a German cost report printed
+ * "203.1M EUR" - a decimal point where that reader expects a thousands
+ * separator, and a magnitude letter their language does not use. The
+ * engine's own compact notation knows both, per locale, and the currency
+ * arrives as a symbol rather than a bare code for the same reason
+ * {@link formatCurrency} prefers one.
+ *
+ * Amounts under a thousand are not compacted - there is nothing to shorten -
+ * and fall through to {@link formatCurrency} at whole-number precision,
+ * which is the look the callers had.
+ *
+ * @param v Amount, string or number, as the wire delivers it.
+ * @param currency ISO 4217 code. Blank or unknown renders a bare number.
+ * @param locale Override for the current UI locale.
+ */
+export function formatCompactCurrency(
+  v: string | number | null | undefined,
+  currency?: string | null,
+  locale?: string,
+): string {
+  const amount = toNum(v);
+  const loc = locale || getNumberLocale();
+  const code = (currency || '').trim().toUpperCase();
+  const isValid = CURRENCY_CODE_RE.test(code);
+  const whole = { minimumFractionDigits: 0, maximumFractionDigits: 0 };
+  if (Math.abs(amount) < 1000) return formatCurrency(amount, code, loc, whole);
+  try {
+    return new Intl.NumberFormat(loc, {
+      notation: 'compact',
+      compactDisplay: 'short',
+      maximumFractionDigits: 1,
+      ...(isValid ? { style: 'currency' as const, currency: code } : {}),
+    }).format(amount);
+  } catch {
+    // A malformed locale tag, the same case formatCurrency guards against.
+    return formatCurrency(amount, code, loc, whole);
+  }
+}
+
 export function formatCurrency(
   v: string | number | null | undefined,
   currency?: string | null,
@@ -154,7 +236,7 @@ export function formatCurrency(
   options?: FormatCurrencyOptions,
 ): string {
   const amount = toNum(v);
-  const loc = locale || getIntlLocale();
+  const loc = locale || getNumberLocale();
   const code = (currency || '').trim().toUpperCase();
   const isValid = CURRENCY_CODE_RE.test(code);
 
@@ -169,6 +251,7 @@ export function formatCurrency(
   try {
     return new Intl.NumberFormat(loc, {
       ...(isValid ? { style: 'currency' as const, currency: code } : {}),
+      ...(options?.signDisplay ? { signDisplay: options.signDisplay } : {}),
       ...digits,
     }).format(amount);
   } catch {
@@ -178,7 +261,23 @@ export function formatCurrency(
     // safe because the ceiling is already inside [0, 20] and `toNum`
     // guarantees a finite amount. The code is appended only when it is a real
     // ISO 4217 code - never echo back a malformed one as if it were a unit.
-    const text = amount.toFixed(digits.maximumFractionDigits);
+    // The sign policy is applied here too: a caller that asked for an explicit
+    // plus asked for it because the alternative was writing one by hand, and a
+    // fallback that quietly drops it hands that problem straight back.
+    const magnitude = options?.signDisplay === 'never' ? Math.abs(amount) : amount;
+    const text = `${fallbackSign(amount, options?.signDisplay)}${magnitude.toFixed(digits.maximumFractionDigits)}`;
     return isValid ? `${text} ${code}` : text;
   }
+}
+
+/**
+ * The leading `+` the `Intl` path would have written, for the hand-rolled
+ * fallback above. Negative amounts already carry their minus from `toFixed`,
+ * and every policy other than an explicit plus writes nothing here.
+ */
+function fallbackSign(amount: number, signDisplay: Intl.NumberFormatOptions['signDisplay']): string {
+  if (amount < 0) return '';
+  if (signDisplay === 'always') return '+';
+  if (signDisplay === 'exceptZero') return amount > 0 ? '+' : '';
+  return '';
 }

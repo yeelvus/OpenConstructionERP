@@ -2,13 +2,17 @@
 # Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 """Demo-data seeder for the Service & Maintenance module.
 
-Function ``seed_service_demo(session)`` populates:
+Function ``seed_service_demo(session, project_ids)`` populates:
     - 3 SLA definitions (gold / silver / bronze)
-    - 5 service contracts across 5 fictional customers
-    - 80 customer assets distributed across the 5 contracts
+    - one service contract per demo project, cycling a list of fictional customers
+    - 80 customer assets distributed across the contracts
     - 30 open tickets (mix of priorities + assignments)
     - 200 historical work orders in ``billed`` state with line items
     - 20 active PPM schedules
+
+Contracts are the module's only project-scoped row. Tickets, work orders and
+assets reach a project through their contract, so a contract with no project
+takes everything under it out of the per-project view as well.
 
 Ticket timing is drawn against each contract's own SLA tier rather than a
 fixed window, so the estate reports a believable spread of met, near-miss and
@@ -38,6 +42,7 @@ from app.modules.service.models import (
     DebriefReport,
     ServiceAsset,
     ServiceContract,
+    ServiceRecurringSchedule,
     ServiceSchedule,
     ServiceTicket,
     ServiceWorkOrder,
@@ -82,7 +87,6 @@ _FAULTS: tuple[str, ...] = (
 # address. ``.example`` is reserved by RFC 2606 and is what the rest of the
 # seeded estate uses, which keeps these off a real company's domain.
 _CUSTOMER_CONTACT_EMAILS: dict[str, str] = {
-    "ACME Facilities Ltd": "helpdesk@acme-facilities.example",
     "Zellbrandt Wartung GmbH": "service@zellbrandt-wartung.example",
     "ООО Тепло-Сервис": "dispatch@teplo-servis.example",
     "Northwind Property Group": "estates@northwind-property.example",
@@ -199,11 +203,44 @@ async def _customer_id_for(session: AsyncSession, idx: int) -> uuid.UUID:
         return uuid.uuid5(uuid.NAMESPACE_DNS, f"openconstructionerp/service/demo/{name}")
 
 
-async def seed_service_demo(session: AsyncSession) -> dict[str, int]:
+async def _project_currencies(
+    session: AsyncSession,
+    project_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, str]:
+    """Return ``{project_id: currency}`` for the projects that declare one.
+
+    A contract that sits on a project prints its own currency on a screen that
+    prints the project's, so the two have to agree or the estate reads as
+    careless. ``Project.currency`` defaults to the empty string, so a project
+    that declares nothing is simply absent from this mapping and the caller
+    falls back to its own list rather than stamping a guess.
+    """
+    if not project_ids:
+        return {}
+    try:
+        from app.modules.projects.models import Project
+
+        rows = (await session.execute(select(Project.id, Project.currency).where(Project.id.in_(project_ids)))).all()
+    except Exception:  # noqa: BLE001 - a currency lookup must not abort the seeder
+        logger.warning("Project currency lookup failed; contracts fall back to the declared list", exc_info=True)
+        return {}
+    return {row[0]: row[1] for row in rows if row[1]}
+
+
+async def seed_service_demo(
+    session: AsyncSession,
+    project_ids: list[uuid.UUID] | None = None,
+) -> dict[str, int]:
     """Populate the database with deterministic demo Service & Maintenance data.
+
+    ``project_ids`` are the demo projects the contract register is spread
+    across, one contract each. Passing none is still valid and produces the
+    older tenant-wide register, which the module's own screen shows and the
+    per-project tab cannot.
 
     Returns a dict with row counts of each entity created.
     """
+    project_ids = list(project_ids or [])
     rng = random.Random(42)
     # One clock, read once. Taking ``today`` from a second ``now()`` call lets
     # a seed run that straddles midnight date rows one day apart from the
@@ -271,25 +308,63 @@ async def seed_service_demo(session: AsyncSession) -> dict[str, int]:
         counters["checklists"] += 1
     await session.flush()
 
-    # ── Contracts (5) ────────────────────────────────────────────────────
+    # ── Contracts (one per demo project) ─────────────────────────────────
     contracts: list[ServiceContract] = []
     contract_statuses = ["active", "active", "active", "draft", "expired"]
-    currencies = ["EUR", "EUR", "RUB", "USD", "GBP"]
-    for idx in range(5):
+    fallback_currencies = ["EUR", "EUR", "RUB", "USD", "GBP"]
+    # One contract per project, cycling the customer list, rather than one per
+    # customer with no project at all. The register used to leave ``project_id``
+    # NULL on every row, which looks right on the flat /service screen and
+    # leaves /projects/:id/service empty on every project, so the module read
+    # as doing nothing from the one place a visitor arrives at it from.
+    #
+    # The customer list is still the only place a customer name exists, so it
+    # is indexed modulo its own length: a shorter list means repeated customers
+    # rather than an IndexError, which is what the previous wording of this
+    # comment was protecting and is still true. Same for the status list, which
+    # is a shape rather than a register. The currency list is neither and is
+    # read only where no project answers - see the contract body below.
+    project_currency = await _project_currencies(session, project_ids)
+    contract_count = len(project_ids) or len(_CUSTOMER_NAMES)
+    for idx in range(contract_count):
+        pid = project_ids[idx] if idx < len(project_ids) else None
         customer_id = await _customer_id_for(session, idx)
+        status = contract_statuses[idx % len(contract_statuses)]
+        # An expired contract whose period runs another six months is a number
+        # that does not add up, and it was harmless only while no contract sat
+        # on a named project. It does now, so the period follows the status:
+        # an expired one ended last month, everything else still has a year to
+        # run. The start moves with it so the term stays the same length.
+        period_end = today - timedelta(days=30) if status == "expired" else today + timedelta(days=185)
+        period_start = period_end - timedelta(days=365)
+        # A contract that sits on a project takes the project's currency, and an
+        # absent one is an answer rather than a gap. ``Project.currency`` is
+        # optional on purpose - the owner has not chosen yet, and the backend
+        # refuses to assume a default - so a contract on such a project is left
+        # blank too. Stamping the list here would put the seed data on the wrong
+        # side of a question the product has already decided, and seed data is
+        # the one population that would otherwise never exercise it.
+        #
+        # The list still answers where there is no project at all, which is the
+        # tenant-wide register: nobody there has declined a currency, so nothing
+        # is being overruled.
+        if pid is not None:
+            currency = project_currency.get(pid, "")
+        else:
+            currency = fallback_currencies[idx % len(fallback_currencies)]
         contract = ServiceContract(
             customer_id=customer_id,
-            project_id=None,
+            project_id=pid,
             contract_number=f"SC-{idx + 1:02d}",
-            title=f"Service contract - {_CUSTOMER_NAMES[idx]}",
+            title=f"Service contract - {_CUSTOMER_NAMES[idx % len(_CUSTOMER_NAMES)]}",
             description="Planned maintenance and reactive callout cover for the site plant.",
-            period_start=(today - timedelta(days=180)).isoformat(),
-            period_end=(today + timedelta(days=185)).isoformat(),
+            period_start=period_start.isoformat(),
+            period_end=period_end.isoformat(),
             sla_definition_id=slas[idx % len(slas)].id,
             sla_tier=slas[idx % len(slas)].name,
-            status=contract_statuses[idx],
+            status=status,
             value=Decimal(rng.randint(20_000, 250_000)),
-            currency=currencies[idx],
+            currency=currency,
             auto_renew=(idx % 2 == 0),
         )
         session.add(contract)
@@ -337,7 +412,12 @@ async def seed_service_demo(session: AsyncSession) -> dict[str, int]:
     # ── Open tickets (30) ────────────────────────────────────────────────
     priorities = ["low", "med", "high", "critical"]
     for i in range(30):
-        contract = contracts[rng.randrange(len(contracts))]
+        # One pass round the register before drawing, so every contract - and
+        # therefore every project - holds at least one open ticket by
+        # construction. Thirty drawn over thirteen leaves a given contract
+        # empty about one time in ten, and "populated on most runs" is not a
+        # property a demo estate can rest on.
+        contract = contracts[i] if i < len(contracts) else contracts[rng.randrange(len(contracts))]
         asset = rng.choice([a for a in assets if a.contract_id == contract.id])
         priority = priorities[rng.randrange(len(priorities))]
         sla = sla_by_id.get(contract.sla_definition_id) or slas[0]
@@ -392,7 +472,10 @@ async def seed_service_demo(session: AsyncSession) -> dict[str, int]:
 
     # ── 200 closed/billed work orders + tickets ──────────────────────────
     for i in range(200):
-        contract = contracts[rng.randrange(len(contracts))]
+        # Same first pass as the open tickets above, for the same reason: a
+        # project whose service history is empty says the module was never
+        # used here, which is the one thing a worked example must not say.
+        contract = contracts[i] if i < len(contracts) else contracts[rng.randrange(len(contracts))]
         contract_assets = [a for a in assets if a.contract_id == contract.id]
         if not contract_assets:
             continue
@@ -541,3 +624,156 @@ def _seed_payload_for_test() -> dict[str, Any]:
         "asset_types": _ASSET_TYPES,
         "root_cause_categories": _ROOT_CAUSE_CATEGORIES,
     }
+
+
+# ── Recurring schedules ─────────────────────────────────────────────────
+# The register a maintenance planner actually works from: the jobs that come
+# round again, rather than the ones somebody raised this morning. Each row is a
+# rule plus the ticket it stamps, and the module's own tab reads as an unbuilt
+# feature until they exist.
+#
+# The wordings are the job as a planner would write it on a schedule of rates,
+# not a description of the software. Statutory names are kept generic rather
+# than tied to one country's regulation, because the estate spans five.
+_RECURRING_SPECS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "Fire alarm and emergency lighting test",
+        "FREQ=MONTHLY;BYMONTHDAY=1",
+        "high",
+        "Call point test on a rotating zone, with a discharge test of the emergency lighting.",
+    ),
+    (
+        "Air handling filter change and coil clean",
+        "FREQ=MONTHLY;INTERVAL=3;BYMONTHDAY=15",
+        "med",
+        "Filter replacement, coil clean and belt tension check across the air handling units.",
+    ),
+    (
+        "Standby generator run-up",
+        "FREQ=WEEKLY;BYDAY=MO",
+        "med",
+        "Off-load run to operating temperature, recording fuel level and battery condition.",
+    ),
+    (
+        "Lifting equipment thorough examination",
+        "FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=1",
+        "high",
+        "Statutory examination of hoists, cranes and lifting accessories in use on site.",
+    ),
+    (
+        "Water hygiene temperature monitoring",
+        "FREQ=MONTHLY;BYMONTHDAY=20",
+        "med",
+        "Sentinel outlet temperatures, with a flush of the outlets that see little use.",
+    ),
+)
+
+# How many rules each project takes. Three reads as a register rather than a
+# single row, and the list is long enough that two projects opened side by side
+# do not look like copies of each other.
+_RECURRING_PER_PROJECT = 3
+
+
+def _next_occurrence(rrule: str, after: datetime) -> str | None:
+    """First occurrence of ``rrule`` strictly after ``after``, as an ISO string.
+
+    Computed rather than typed, so a seeded row carries the same
+    ``next_run_at`` the materialiser would work out for it. A rule the library
+    cannot read leaves the field empty, which the cron worker treats as "not
+    due" rather than as "due now".
+    """
+    from dateutil.rrule import rrulestr
+
+    try:
+        occurrence = rrulestr(f"RRULE:{rrule}", dtstart=after).after(after)
+    except Exception:  # noqa: BLE001 - a bad rule must not take the whole seed down
+        logger.warning("Recurring schedule seed: could not read the rule %s", rrule, exc_info=True)
+        return None
+    return occurrence.isoformat() if occurrence is not None else None
+
+
+async def seed_service_recurring_schedules(
+    session: AsyncSession,
+    project_ids: list[uuid.UUID] | None = None,
+) -> dict[str, int]:
+    """Seed the RRULE-driven recurring schedules for the projects named.
+
+    Deliberately separate from :func:`seed_service_demo`. That function returns
+    early as soon as any service contract exists, which on an install that has
+    been seeded once is always, so a register wired into it would only ever
+    appear on a database that started empty. This one asks the question per
+    project, so a project that is still empty is filled on the next run whatever
+    the rest of the estate looks like.
+
+    That is only safe because of what it is handed: the caller passes the
+    projects it has proved are demo projects, so filling an empty one cannot
+    reach into somebody's own work. A project that already has a schedule is
+    left alone, including one a user wrote.
+
+    Args:
+        session: Open async DB session.
+        project_ids: Projects to seed. Every one of them is seeded.
+
+    Returns:
+        A mapping of entity name to the number of rows inserted.
+    """
+    counters: dict[str, int] = {"recurring_schedules": 0, "projects_skipped": 0}
+    pids = list(project_ids or [])
+    if not pids:
+        logger.info("Service recurring schedule seed skipped: no project ids provided")
+        return counters
+
+    now = datetime.now(UTC)
+    for idx, pid in enumerate(pids):
+        existing = (
+            await session.execute(
+                select(ServiceRecurringSchedule.id).where(ServiceRecurringSchedule.project_id == pid).limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            counters["projects_skipped"] += 1
+            continue
+
+        # Every occurrence stamps a ticket against a contract, so a project
+        # without one would carry rules that can never materialise into
+        # anything. Better an empty tab than a register of rules that fail.
+        contract_id = (
+            await session.execute(
+                select(ServiceContract.id)
+                .where(ServiceContract.project_id == pid)
+                .order_by(ServiceContract.contract_number)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if contract_id is None:
+            logger.info("Service recurring schedule seed: no contract for project %s, skipping", pid)
+            counters["projects_skipped"] += 1
+            continue
+
+        for offset in range(_RECURRING_PER_PROJECT):
+            name, rrule, priority, description = _RECURRING_SPECS[(idx + offset) % len(_RECURRING_SPECS)]
+            session.add(
+                ServiceRecurringSchedule(
+                    project_id=pid,
+                    contract_id=contract_id,
+                    name=name,
+                    rrule=rrule,
+                    template_ticket_data={
+                        "contract_id": str(contract_id),
+                        "title": name,
+                        "description": description,
+                        "priority": priority,
+                    },
+                    next_run_at=_next_occurrence(rrule, now),
+                    # One rule per project is paused, so the register shows both
+                    # states rather than a column that reads the same all the
+                    # way down and teaches the reader nothing about the toggle.
+                    enabled=(offset != _RECURRING_PER_PROJECT - 1),
+                    metadata_={"source": "service_demo_seed"},
+                )
+            )
+            counters["recurring_schedules"] += 1
+
+    await session.flush()
+    logger.info("Service recurring schedules seeded: %s", counters)
+    return counters

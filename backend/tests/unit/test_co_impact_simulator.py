@@ -10,6 +10,7 @@ Two layers are covered:
 
 from __future__ import annotations
 
+import json
 import uuid
 from decimal import Decimal
 
@@ -158,6 +159,7 @@ async def _seed(
     schedule_days: int,
     revised_budget: str = "1000000",
     fx_rates: list | None = None,
+    extra_budget: tuple[str, str] | None = None,
 ) -> ChangeOrder:
     project = Project(
         name="Impact Sim Project",
@@ -181,6 +183,20 @@ async def _seed(
             forecast_final=Decimal("0"),
         )
     )
+    if extra_budget is not None:
+        extra_currency, extra_revised = extra_budget
+        session.add(
+            ProjectBudget(
+                project_id=project.id,
+                category="Imported package",
+                currency_code=extra_currency,
+                original_budget=Decimal("0"),
+                revised_budget=Decimal(extra_revised),
+                committed=Decimal("0"),
+                actual=Decimal("0"),
+                forecast_final=Decimal("0"),
+            )
+        )
     order = ChangeOrder(
         project_id=project.id,
         code="CO-001",
@@ -261,3 +277,199 @@ async def test_simulate_flags_missing_fx_rate(session: AsyncSession) -> None:
     result = await svc.simulate_impact(order.id)
     assert result["fx_converted"] is False
     assert any("FX rate" in n for n in result["notes"])
+
+
+# -- A blended baseline says so ----------------------------------------------
+#
+# ``_convert_to_base`` sums a currency it has no rate for in that currency's own
+# units, so the figure degrades visibly rather than silently shrinking, and it
+# returns the code so the caller can say what happened. The five baseline
+# figures here dropped that code, which left the blend invisible: the reviewer
+# saw one number and no reason to doubt it.
+
+
+@pytest.mark.asyncio
+async def test_simulate_names_the_budget_currency_it_could_not_convert(session: AsyncSession) -> None:
+    """A JPY budget line with no rate is counted at face value into a CAD baseline."""
+    order = await _seed(
+        session,
+        project_currency="CAD",
+        co_currency="CAD",
+        co_cost="50000",
+        schedule_days=0,
+        extra_budget=("JPY", "1000000"),
+        fx_rates=[],  # no JPY rate configured
+    )
+    svc = ChangeOrderService(session)
+    result = await svc.simulate_impact(order.id)
+
+    assert result["baseline_fx_missing"] == ["JPY"]
+    assert any("JPY" in n for n in result["notes"])
+    # 1,000,000 CAD + 1,000,000 JPY added as though they were the same money.
+    # Asserted rather than only warned about, so the note can never drift away
+    # from the arithmetic it is describing.
+    assert result["cost"]["budget_before"] == "2000000.00"
+
+
+@pytest.mark.asyncio
+async def test_a_clean_co_conversion_does_not_vouch_for_the_baseline(session: AsyncSession) -> None:
+    """The discriminating case, and the one that read as entirely clean before.
+
+    The change order is priced in the project's own currency, so ``fx_converted``
+    is True and the CO-cost note never fires. The baseline underneath it is
+    still blended. One flag answering for the other is what made this invisible.
+    """
+    order = await _seed(
+        session,
+        project_currency="CAD",
+        co_currency="CAD",
+        co_cost="50000",
+        schedule_days=0,
+        extra_budget=("JPY", "1000000"),
+        fx_rates=[],
+    )
+    svc = ChangeOrderService(session)
+    result = await svc.simulate_impact(order.id)
+
+    assert result["fx_converted"] is True
+    assert result["baseline_fx_missing"] == ["JPY"]
+
+
+@pytest.mark.asyncio
+async def test_a_rated_budget_currency_is_not_reported_as_missing(session: AsyncSession) -> None:
+    """The negative control: the check must be able to come back empty.
+
+    Same two-currency budget, but the rate exists. Nothing is reported missing
+    and the JPY line converts, so the test can tell a real conversion apart from
+    a warning that never fires.
+    """
+    order = await _seed(
+        session,
+        project_currency="CAD",
+        co_currency="CAD",
+        co_cost="0",
+        schedule_days=0,
+        extra_budget=("JPY", "1000000"),
+        fx_rates=[{"code": "JPY", "rate": "0.01"}],
+    )
+    svc = ChangeOrderService(session)
+    result = await svc.simulate_impact(order.id)
+
+    assert result["baseline_fx_missing"] == []
+    assert not any("JPY" in n for n in result["notes"])
+    # 1,000,000 CAD + (1,000,000 JPY * 0.01) = 1,010,000 CAD.
+    assert result["cost"]["budget_before"] == "1010000.00"
+
+
+@pytest.mark.asyncio
+async def test_a_single_currency_project_reports_nothing_missing(session: AsyncSession) -> None:
+    order = await _seed(
+        session,
+        project_currency="CAD",
+        co_currency="CAD",
+        co_cost="50000",
+        schedule_days=0,
+    )
+    result = await ChangeOrderService(session).simulate_impact(order.id)
+    assert result["baseline_fx_missing"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_handed_to_the_audit_trail_carries_the_warning(session: AsyncSession) -> None:
+    """The projection that ``publish_scenario`` stores is the one with the caveat.
+
+    A stored figure outlives the reason to doubt it, so the caveat has to travel
+    with the snapshot rather than only appear in the live response.
+
+    This one asserts the payload; the stored row is asserted separately below.
+    """
+    order = await _seed(
+        session,
+        project_currency="CAD",
+        co_currency="CAD",
+        co_cost="50000",
+        schedule_days=0,
+        extra_budget=("JPY", "1000000"),
+        fx_rates=[],
+    )
+    snapshot = await ChangeOrderService(session).simulate_impact(order.id)
+
+    assert snapshot["baseline_fx_missing"] == ["JPY"]
+    assert any("JPY" in n for n in snapshot["notes"])
+
+
+# -- Publishing a scenario actually stores one -------------------------------
+#
+# Until this was executed, nothing had ever called ``publish_scenario``. The one
+# test naming it reads a list of route names to check the route is guarded,
+# which is a test about the guard and not about the function, so a total failure
+# shipped behind a button in the impact screen. These call it.
+
+
+async def _published_snapshot(session: AsyncSession) -> dict:
+    """Run a projection, publish it, and hand back what was stored."""
+    order = await _seed(
+        session,
+        project_currency="CAD",
+        co_currency="CAD",
+        co_cost="50000",
+        schedule_days=0,
+        extra_budget=("JPY", "1000000"),
+        fx_rates=[],
+    )
+    svc = ChangeOrderService(session)
+    snapshot = await svc.simulate_impact(order.id)
+    saved = await svc.publish_scenario(order.id, snapshot)
+    return saved.metadata_["simulations"][-1]["snapshot"]
+
+
+@pytest.mark.asyncio
+async def test_publishing_a_scenario_stores_it(session: AsyncSession) -> None:
+    """The flush that used to raise, and the caveat that has to survive it.
+
+    ``simulate_impact`` returns ``order_id`` as a ``uuid.UUID``. Storing the
+    dict verbatim in a JSONB column raised on every call, so the audit trail
+    this endpoint exists to write had never received a single row.
+    """
+    stored = await _published_snapshot(session)
+
+    assert stored["baseline_fx_missing"] == ["JPY"]
+    assert any("JPY" in n for n in stored["notes"])
+    assert stored["cost"]["budget_before"] == "2000000.00"
+
+
+@pytest.mark.asyncio
+async def test_the_stored_scenario_survives_a_json_round_trip(session: AsyncSession) -> None:
+    """The regression guard, aimed at the failure rather than at its symptom.
+
+    Asserting a field is present would pass on a dict that still holds a UUID,
+    because the failure happened at flush and not at read. Serializing the
+    stored row is the same trip the database makes, so this fails the way
+    production failed.
+    """
+    stored = await _published_snapshot(session)
+
+    json.dumps(stored)  # raised "Object of type UUID is not JSON serializable"
+    assert isinstance(stored["order_id"], str)
+
+
+@pytest.mark.asyncio
+async def test_publishing_keeps_only_the_last_ten_scenarios(session: AsyncSession) -> None:
+    """The documented cap, asserted now that anything can be stored at all.
+
+    The bound was written but never exercised, because no scenario had ever
+    been persisted for an eleventh one to push out.
+    """
+    order = await _seed(
+        session,
+        project_currency="CAD",
+        co_currency="CAD",
+        co_cost="1000",
+        schedule_days=0,
+    )
+    svc = ChangeOrderService(session)
+    for _ in range(12):
+        snapshot = await svc.simulate_impact(order.id)
+        saved = await svc.publish_scenario(order.id, snapshot)
+
+    assert len(saved.metadata_["simulations"]) == 10

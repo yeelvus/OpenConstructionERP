@@ -38,6 +38,7 @@ const PINS_KEY = 'oe_cases_pins';
 const PINS_MIGRATED_KEY = 'oe_cases_pins_migrated';
 const CATEGORY_KEY = 'oe_cases_categories';
 const FINDER_KEY = 'oe_cases_finder_open';
+const REGION_KEY = 'oe_cases_region';
 
 // There was a sixth key here, `oe_cases_pin_project`, holding "which real
 // project is the Cases hub pinning to". Nothing outside this store ever wrote
@@ -179,12 +180,46 @@ function persistFinderOpen(open: boolean) {
   }
 }
 
+/** The market filter, remembered across visits.
+ *
+ *  Three of the hub's four narrowing axes persist. The fourth not persisting
+ *  was never read as "a market describes only this visit", it read as the
+ *  market selector being broken: you picked Germany, came back, and the
+ *  catalogue was wide again with nothing on screen to say why.
+ *
+ *  Validated by SHAPE rather than against the catalogue. This store
+ *  deliberately does not import PLAYBOOKS, and a market whose cases have all
+ *  been renamed still has to come back so its chip can be clicked off - the
+ *  same rule the hub's selectors follow when a pick has no matching case.
+ *  Anything that is not two capitals reads as no filter at all. */
+function readRegion(): string {
+  try {
+    const raw = localStorage.getItem(REGION_KEY);
+    return raw && /^[A-Z]{2}$/.test(raw) ? raw : 'all';
+  } catch {
+    return 'all';
+  }
+}
+
+function persistRegion(region: string) {
+  try {
+    if (region && region !== 'all') localStorage.setItem(REGION_KEY, region);
+    else localStorage.removeItem(REGION_KEY);
+  } catch {
+    /* non-fatal */
+  }
+}
+
 /** Add or remove one id, preserving the order the user picked them in. */
 function toggleId<T extends string>(list: readonly T[], id: T): T[] {
   return list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
 }
 
-const VALID_ROLES: readonly ProfessionalRole[] = [
+/** Whitelist a persisted role id must be in to survive a reload. Hand-kept
+ *  rather than derived from `ROLE_META`, which would pull lucide-react into
+ *  this store's chunk; `cases.test.ts` pins it against `ROLE_META` instead,
+ *  because a role missing here loses the user's pick silently on reload. */
+export const VALID_ROLES: readonly ProfessionalRole[] = [
   'estimator',
   'quantity-surveyor',
   'site-manager',
@@ -196,6 +231,9 @@ const VALID_ROLES: readonly ProfessionalRole[] = [
   'design-lead',
   'document-controller',
   'commercial-manager',
+  'accountant',
+  'contract-administrator',
+  'finance-manager',
   'foreman',
 ];
 
@@ -447,6 +485,10 @@ interface CasesState {
    *  the catalogue starts near the top of the page, and an explicit toggle
    *  overrides both and is remembered. */
   finderOpen: boolean;
+  /** The market the hub is narrowed to, or 'all' for every market. Persisted
+   *  like the company, role and discipline filters: it narrows the catalogue
+   *  the same way they do, so it has to survive a visit the same way. */
+  region: string;
   /** Toggle a step's done flag for a run. */
   toggleStepDone: (playbookId: string, projectId: string | null, stepId: string) => void;
   /** Move the runner's focus to a step index (clamped to the step count). */
@@ -472,7 +514,9 @@ interface CasesState {
   toggleRole: (role: ProfessionalRole) => void;
   /** Add or remove one discipline from the category filter. */
   toggleCategory: (category: CaseCategory) => void;
-  /** Drop every company, role and discipline filter in one go. */
+  /** Narrow the hub to one market, or 'all' to drop the filter. */
+  setRegion: (region: string) => void;
+  /** Drop every company, role, discipline and market filter in one go. */
   clearFilters: () => void;
   /** Expand or collapse the hub's filter panel, remembering the choice. */
   setFinderOpen: (open: boolean) => void;
@@ -494,6 +538,7 @@ interface CasesState {
 const initialCompanyTypes = readIdList(COMPANY_TYPE_KEY, VALID_COMPANY_TYPES);
 const initialRoles = readIdList(ROLE_KEY, VALID_ROLES);
 const initialCategories = readIdList(CATEGORY_KEY, VALID_CATEGORIES);
+const initialRegion = readRegion();
 
 export const useCasesStore = create<CasesState>((set, get) => ({
   runs: readRuns(),
@@ -501,9 +546,14 @@ export const useCasesStore = create<CasesState>((set, get) => ({
   companyTypes: initialCompanyTypes,
   roles: initialRoles,
   categories: initialCategories,
+  region: initialRegion,
   pins: readPins(),
   pinsLoading: false,
   pinsError: false,
+  // The market is deliberately NOT counted here. It lives on its own shelf
+  // above the "find your case" panel rather than inside it, so folding that
+  // panel because of a pick made outside it would hide the three selectors
+  // that ARE inside it, for a reason the user cannot see.
   finderOpen: readFinderOpen(
     initialCompanyTypes.length + initialRoles.length + initialCategories.length === 0,
   ),
@@ -577,11 +627,17 @@ export const useCasesStore = create<CasesState>((set, get) => ({
     set({ categories });
   },
 
+  setRegion: (region) => {
+    persistRegion(region);
+    set({ region });
+  },
+
   clearFilters: () => {
     persistIdList(COMPANY_TYPE_KEY, []);
     persistIdList(ROLE_KEY, []);
     persistIdList(CATEGORY_KEY, []);
-    set({ companyTypes: [], roles: [], categories: [] });
+    persistRegion('all');
+    set({ companyTypes: [], roles: [], categories: [], region: 'all' });
   },
 
   setFinderOpen: (open) => {

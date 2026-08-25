@@ -18,8 +18,13 @@ describe('usePreferencesStore', () => {
     const state = usePreferencesStore.getState();
     expect(state.currency).toBe('EUR');
     expect(state.measurementSystem).toBe('metric');
-    expect(state.dateFormat).toBe('DD.MM.YYYY');
-    expect(state.numberLocale).toBe('de-DE');
+    // 'auto' = follow the UI language. See the date-format block below.
+    expect(state.dateFormat).toBe('auto');
+    // 'auto' = follow the UI language, same as dateFormat above. It used to be
+    // a hardcoded 'de-DE', which is what put the money surfaces on German
+    // separators inside an English UI while every other number followed the
+    // language. See `numbersAgreeAcrossSurfaces.test.tsx`.
+    expect(state.numberLocale).toBe('auto');
     expect(state.vatRate).toBe(19);
   });
 
@@ -59,13 +64,6 @@ describe('usePreferencesStore', () => {
     usePreferencesStore.getState().setPreference('currency', 'CHF');
     usePreferencesStore.getState().resetPreferences();
     expect(usePreferencesStore.getState().currency).toBe('EUR');
-  });
-
-  it('should format currency correctly', () => {
-    const { formatCurrency } = usePreferencesStore.getState();
-    const result = formatCurrency(1234.56);
-    expect(result).toContain('1');
-    expect(result).toContain('234');
   });
 
   it('should format numbers correctly', () => {
@@ -117,6 +115,103 @@ describe('usePreferencesStore', () => {
       mockApiGet.mockRejectedValueOnce(new Error('offline'));
       await expect(usePreferencesStore.getState().hydrateFromServer()).resolves.toBeUndefined();
       expect(usePreferencesStore.getState().measurementSystem).toBe('imperial');
+    });
+  });
+
+  // The date format is the one preference whose stored value cannot be trusted
+  // at face value. `users.date_format` is NOT NULL and defaulted to
+  // 'DD.MM.YYYY' long before any surface read the preference, so every account
+  // carries that value whether or not a human ever chose it. Hydration - not
+  // the store default - is therefore where a naive wiring would flip existing
+  // users to numeric day-first dates on their next sign-in.
+  describe('date format hydration', () => {
+    it('reads the legacy account default as "never chose" and stays automatic', async () => {
+      mockApiGet.mockResolvedValueOnce({ date_format: 'DD.MM.YYYY' });
+      await usePreferencesStore.getState().hydrateFromServer();
+      expect(usePreferencesStore.getState().dateFormat).toBe('auto');
+    });
+
+    it('adopts an order the account default could never have produced', async () => {
+      mockApiGet.mockResolvedValueOnce({ date_format: 'YYYY-MM-DD' });
+      await usePreferencesStore.getState().hydrateFromServer();
+      expect(usePreferencesStore.getState().dateFormat).toBe('YYYY-MM-DD');
+    });
+
+    it('adopts an explicit automatic from the account', async () => {
+      usePreferencesStore.getState().setPreference('dateFormat', 'MM/DD/YYYY');
+      mockApiGet.mockResolvedValueOnce({ date_format: 'auto' });
+      await usePreferencesStore.getState().hydrateFromServer();
+      expect(usePreferencesStore.getState().dateFormat).toBe('auto');
+    });
+
+    it('keeps day-first when this browser chose it, rather than reading it as the default', async () => {
+      usePreferencesStore.getState().setPreference('dateFormat', 'DD.MM.YYYY');
+      mockApiGet.mockResolvedValueOnce({ date_format: 'DD.MM.YYYY' });
+      await usePreferencesStore.getState().hydrateFromServer();
+      expect(usePreferencesStore.getState().dateFormat).toBe('DD.MM.YYYY');
+    });
+
+    it('leaves an order outside the vocabulary alone, landing on automatic', async () => {
+      // The regional packs also ship DD/MM/YYYY and YYYY/MM/DD, which this
+      // toggle has no button for.
+      mockApiGet.mockResolvedValueOnce({ date_format: 'DD/MM/YYYY' });
+      await usePreferencesStore.getState().hydrateFromServer();
+      expect(usePreferencesStore.getState().dateFormat).toBe('auto');
+    });
+  });
+
+  // The number format carries the same untrustworthy stored value as the date
+  // format above, and one column wider: `users.number_format` is NOT NULL and
+  // defaulted to the German pattern for every account created anywhere in the
+  // world, so hydration handed German grouping to readers who never asked for
+  // it. This is not a money question - the preference feeds every
+  // `Intl.NumberFormat` in the product, down to file sizes and percentages.
+  //
+  // The column is written in two vocabularies: a display PATTERN, which is
+  // what the seed puts there, and a BCP-47 tag, which is what the settings
+  // toggle PATCHes. Only the pattern can be a leftover default, so only the
+  // pattern is refused.
+  describe('number format hydration', () => {
+    it('reads the seeded account default as "never chose" and stays automatic', async () => {
+      mockApiGet.mockResolvedValueOnce({ number_format: '1.234,56' });
+      await usePreferencesStore.getState().hydrateFromServer();
+      expect(usePreferencesStore.getState().numberLocale).toBe('auto');
+    });
+
+    it('adopts a pattern the account default could never have produced', async () => {
+      mockApiGet.mockResolvedValueOnce({ number_format: '1 234,56' });
+      await usePreferencesStore.getState().hydrateFromServer();
+      expect(usePreferencesStore.getState().numberLocale).toBe('fr-FR');
+    });
+
+    it('adopts an explicit automatic from the account', async () => {
+      usePreferencesStore.getState().setPreference('numberLocale', 'en-US');
+      mockApiGet.mockResolvedValueOnce({ number_format: 'auto' });
+      await usePreferencesStore.getState().hydrateFromServer();
+      expect(usePreferencesStore.getState().numberLocale).toBe('auto');
+    });
+
+    it('keeps German when this browser chose it, rather than reading it as the default', async () => {
+      usePreferencesStore.getState().setPreference('numberLocale', 'de-DE');
+      mockApiGet.mockResolvedValueOnce({ number_format: '1.234,56' });
+      await usePreferencesStore.getState().hydrateFromServer();
+      expect(usePreferencesStore.getState().numberLocale).toBe('de-DE');
+    });
+
+    it('adopts a locale tag saved by the settings toggle, seeding cannot write one', async () => {
+      // A tag in this column is evidence of a click: nothing seeds `de-DE`.
+      // Accounts already carrying one keep reading German, which is the whole
+      // point of refusing only the pattern.
+      mockApiGet.mockResolvedValueOnce({ number_format: 'de-DE' });
+      await usePreferencesStore.getState().hydrateFromServer();
+      expect(usePreferencesStore.getState().numberLocale).toBe('de-DE');
+    });
+
+    it('leaves a pattern outside the vocabulary alone, landing on automatic', async () => {
+      // The regional packs also ship lakh grouping, which no pattern key maps.
+      mockApiGet.mockResolvedValueOnce({ number_format: '12,34,567.89' });
+      await usePreferencesStore.getState().hydrateFromServer();
+      expect(usePreferencesStore.getState().numberLocale).toBe('auto');
     });
   });
 });

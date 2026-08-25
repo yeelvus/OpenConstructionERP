@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.content_disposition import attachment_disposition
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep
 from app.modules.file_transmittals.schemas import (
     TransmittalAcknowledgeResponse,
@@ -335,6 +336,6 @@ async def download_cover(
         content=data,
         media_type=media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": attachment_disposition(filename),
         },
     )

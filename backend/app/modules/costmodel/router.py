@@ -19,6 +19,7 @@ Endpoints:
     POST   /projects/{project_id}/5d/generate-cash-flow  - generate from schedule
     GET    /projects/{project_id}/5d/evm                 - full EVM calculation
     POST   /projects/{project_id}/5d/what-if             - create what-if scenario
+    GET    /projects/{project_id}/spine/position-actuals/ - per bill position, money and site record
 """
 
 import uuid
@@ -26,6 +27,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
+from app.modules.costmodel.position_actuals import build_position_actuals
 from app.modules.costmodel.schemas import (
     BudgetLineCreate,
     BudgetLineResponse,
@@ -43,6 +45,8 @@ from app.modules.costmodel.schemas import (
     CostLineUpdate,
     DashboardResponse,
     EVMResponse,
+    PositionActualsResponse,
+    PositionActualsRow,
     SCurveData,
     SnapshotCreate,
     SnapshotResponse,
@@ -793,16 +797,37 @@ async def list_cost_lines(
     session: SessionDep,
     control_account_id: uuid.UUID | None = Query(default=None, description="Filter by control account"),
     line_status: str | None = Query(default=None, alias="status", description="Filter by cost-line status"),
+    search: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description="Narrow by code or description (case-insensitive substring)",
+    ),
+    linked_to_position: bool | None = Query(
+        default=None,
+        description="True for lines carrying a BOQ position, False for those without",
+    ),
+    boq_position_id: uuid.UUID | None = Query(default=None, description="Resolve the line for one BOQ position"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     service: CostSpineService = Depends(_get_spine_service),
 ) -> list[CostLineResponse]:
-    """List cost lines for a project, optionally filtered by account/status."""
+    """List cost lines for a project, optionally filtered by account/status/search.
+
+    ``search`` exists so a client offering a picker over a large bill can find a
+    line that sorts past the first page. Without it the only way to reach the
+    two-thousandth position is to page the whole project into the browser, and a
+    client that pages only the first page shows a partial list as though it were
+    the whole register.
+    """
     await verify_project_access(project_id, user_id, session)
     return await service.list_lines(
         project_id,
         control_account_id=control_account_id,
         status=line_status,
+        search=search,
+        linked_to_position=linked_to_position,
+        boq_position_id=boq_position_id,
         offset=offset,
         limit=limit,
     )
@@ -953,3 +978,73 @@ async def get_spine_rollup(
     """Return the project-wide Cost Spine rollup (accounts + lines + totals)."""
     await verify_project_access(project_id, user_id, session)
     return await service.rollup_for_project(project_id)
+
+
+@router.get(
+    "/projects/{project_id}/spine/position-actuals/",
+    response_model=PositionActualsResponse,
+    dependencies=[Depends(RequirePermission("costmodel.read"))],
+)
+async def get_position_actuals(
+    project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    boq_id: uuid.UUID | None = Query(default=None, description="Narrow to one bill of quantities"),
+    position_id: list[uuid.UUID] | None = Query(
+        default=None,
+        description="Narrow to specific positions; repeat the parameter for more than one",
+    ),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
+) -> PositionActualsResponse:
+    """What has actually happened against each bill position.
+
+    The rollup above answers this per cost line and in money alone. This
+    answers it per bill position, which is the language the estimate is written
+    in, and puts the site's own record next to the money: percent complete from
+    the progress module and material consumed from the site inventory ledger.
+
+    ``boq_id`` and ``position_id`` narrow the query before the aggregates run,
+    so a drawer opened on one position does not pay for the whole project.
+    Without either, positions come back in bill order and ``offset``/``limit``
+    page them.
+    """
+    await verify_project_access(project_id, user_id, session)
+    report = await build_position_actuals(
+        session,
+        project_id,
+        boq_id=boq_id,
+        position_ids=list(position_id) if position_id else None,
+        offset=offset,
+        limit=limit,
+    )
+    return PositionActualsResponse(
+        currency=report.currency,
+        rows=[
+            PositionActualsRow(
+                boq_position_id=row.boq_position_id,
+                ordinal=row.ordinal,
+                description=row.description,
+                unit=row.unit,
+                cost_line_id=row.cost_line_id,
+                cost_line_code=row.cost_line_code,
+                on_cost_spine=row.on_cost_spine,
+                estimate_quantity=row.estimate_quantity,
+                estimate_unit_rate=row.estimate_unit_rate,
+                estimate_amount=row.estimate_amount,
+                budget_planned=row.budget_planned,
+                budget_actual=row.budget_actual,
+                committed_amount=row.committed_amount,
+                contracted_amount=row.contracted_amount,
+                claimed_amount=row.claimed_amount,
+                uncommitted_amount=row.uncommitted_amount,
+                installed_percent=row.installed_percent,
+                installed_amount=row.installed_amount,
+                consumed_quantity=row.consumed_quantity,
+                consumed_amount=row.consumed_amount,
+            )
+            for row in report.rows
+        ],
+        totals={k: str(v) for k, v in report.totals.items()},
+        positions_off_spine=report.positions_off_spine,
+    )

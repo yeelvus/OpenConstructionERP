@@ -5,9 +5,8 @@
  *
  * Each optional module lives in `frontend/src/modules/<name>/` and exports
  * a `ModuleManifest` from its `manifest.ts`.  The central `_registry.ts`
- * collects all manifests so the app can lazily load routes, inject sidebar
- * nav-items, and populate the command-palette — without eagerly importing
- * the module's page components.
+ * collects all manifests so the app can lazily load routes and inject sidebar
+ * nav-items — without eagerly importing the module's page components.
  */
 
 import type { LucideIcon } from 'lucide-react';
@@ -18,7 +17,11 @@ import type { LazyExoticComponent, ComponentType } from 'react';
 export interface ModuleRoute {
   /** URL path, e.g. `/sustainability` */
   path: string;
-  /** Page title shown in AppLayout header */
+  /**
+   * Page title shown in the AppLayout header (i18n key).
+   * Resolved through `translateManifestText`, so a literal from a module that
+   * has not migrated still renders as itself.
+   */
   title: string;
   /** React.lazy(() => import('./Page')) — loaded only when navigated to */
   component: LazyExoticComponent<ComponentType<unknown>>;
@@ -39,25 +42,18 @@ export interface ModuleNavItem {
   advancedOnly?: boolean;
 }
 
-/* ── Command-palette / search entry ────────────────────────────────── */
-
-export interface ModuleSearchEntry {
-  /** Human-readable label shown in search results */
-  label: string;
-  /** Navigation path */
-  path: string;
-  /** Extra keywords for fuzzy matching */
-  keywords: string[];
-}
-
 /* ── Module manifest ───────────────────────────────────────────────── */
 
 export interface ModuleManifest {
   /** Unique id — must match the key used in useModuleStore, e.g. `sustainability` */
   id: string;
-  /** Display name (i18n key) */
+  /**
+   * Display name (i18n key).
+   * Either a key the locale files already carry, or one this manifest defines
+   * itself in `translations` below. Resolved through `translateManifestText`.
+   */
   name: string;
-  /** Short description (i18n key) */
+  /** Short description (i18n key), resolved the same way as `name`. */
   description: string;
   /** SemVer version string */
   version: string;
@@ -69,8 +65,6 @@ export interface ModuleManifest {
   routes: ModuleRoute[];
   /** Sidebar nav items */
   navItems: ModuleNavItem[];
-  /** Command-palette entries (optional) */
-  searchEntries?: ModuleSearchEntry[];
   /** Whether the module is enabled by default for new users */
   defaultEnabled: boolean;
   /** Module IDs this module depends on (e.g. ['boq', 'costs']) */

@@ -17,7 +17,6 @@ Professional BOQ, CAD and BIM takeoff, 4D scheduling, 5D cost model, and tenderi
 <!-- Each badge row is one source line on purpose. A newline between two badges
      renders as a line break here, which stacks them into a single column. -->
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE) [![Version](https://img.shields.io/github/v/release/datadrivenconstruction/OpenConstructionERP?label=version&color=green&v=10.10.0)](https://github.com/datadrivenconstruction/OpenConstructionERP/releases/latest) [![PyPI](https://img.shields.io/pypi/v/openconstructionerp?color=informational&label=pypi&v=10.10.0)](https://pypi.org/project/openconstructionerp/) [![Downloads (pepy · per month)](https://static.pepy.tech/personalized-badge/openconstructionerp?period=month&units=international_system&left_color=grey&right_color=blue&left_text=downloads%20(pepy%20%C2%B7%20per%20month))](https://pepy.tech/project/openconstructionerp) [![Stars](https://img.shields.io/github/stars/datadrivenconstruction/OpenConstructionERP?style=flat&logo=github)](https://github.com/datadrivenconstruction/OpenConstructionERP/stargazers) [![Last commit](https://img.shields.io/github/last-commit/datadrivenconstruction/OpenConstructionERP?color=informational)](https://github.com/datadrivenconstruction/OpenConstructionERP/commits/main)
-
 ![Languages](https://img.shields.io/badge/languages-29-orange) ![Cost Items](https://img.shields.io/badge/cost_items-55%2C000%2B-red) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/datadrivenconstruction/OpenConstructionERP/badge)](https://securityscorecards.dev/viewer/?uri=github.com/datadrivenconstruction/OpenConstructionERP) [![CodeQL](https://github.com/datadrivenconstruction/OpenConstructionERP/actions/workflows/codeql.yml/badge.svg)](https://github.com/datadrivenconstruction/OpenConstructionERP/actions/workflows/codeql.yml) [![Signed releases](https://img.shields.io/badge/releases-Sigstore_signed-8250df)](SECURITY.md)
 
 <img src="docs/screenshots/hero-overview.png" alt="OpenConstructionERP - open-source construction ERP for BOQ, BIM takeoff, DWG/PDF quantification and 5D cost modeling" width="800" />
@@ -237,7 +236,7 @@ Each block below is a short GIF cut from the full walkthrough above - same order
 <tr>
 <td align="center" width="50%">
 <strong><picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme-icons/person-dark.svg"><img src="docs/readme-icons/person-light.svg" width="14" align="center" alt=""></picture> 1 · Role-Based Onboarding</strong><br/>
-<em>Sign in as Admin / Estimator / Manager - the wizard pre-selects the right 17 of 161 modules for your role</em><br/><br/>
+<em>Sign in as Admin / Estimator / Manager - the wizard pre-selects the right 17 of 180 modules for your role</em><br/><br/>
 <img src="docs/gifs/07_Role_Based_Onboarding.gif" alt="Role-Based Onboarding" width="400" />
 </td>
 <td align="center" width="50%">
@@ -394,21 +393,7 @@ A quick tour of the main workspaces. Every screen is the real application runnin
 
 Build professional cost estimates with a powerful BOQ editor. The full lifecycle - from first sketch to final tender submission:
 
-```
-  Upload              Convert            Validate           Estimate           Tender
- ┌────────┐        ┌──────────┐       ┌───────────┐      ┌──────────┐      ┌──────────┐
- │PDF/CAD │──────▶│ Extract  │─────▶│ 42 rules  │────▶│BOQ Editor│────▶│ Bid Pkgs │
- │Photo   │        │quantities│       │ DIN/NRM/  │      │ + AI     │      │ Compare  │
- │Text    │        │ + AI     │       │ MasterFmt │      │ + Costs  │      │ Award    │
- └────────┘        └──────────┘       └───────────┘      └──────────┘      └──────────┘
-                                                               │
-                                                         ┌─────┴──────┐
-                                                         │ 4D Schedule│
-                                                         │ 5D Costs   │
-                                                         │ Risk Reg.  │
-                                                         │ Reports    │
-                                                         └────────────┘
-```
+<img src="docs/readme-diagrams/01-bill-of-quantities-boq.svg" alt="Bill of quantities boq diagram" width="900" />
 
 - **Hierarchical BOQ structure** - Sections, positions, sub-positions with drag-and-drop reordering
 - **Inline editing** - Click any cell to edit. Tab between fields. Undo/redo with Ctrl+Z
@@ -436,20 +421,7 @@ Access the world's construction pricing data:
 
 Extract quantities from any source - drawings, models, text, or photos:
 
-```
-  Source              DDC cad2data         Canonical            Match              BOQ
- ┌────────┐         ┌──────────────┐    ┌──────────┐       ┌──────────┐      ┌──────────┐
- │.rvt    │         │ Element      │    │ Elements │       │ Classify │      │ Positions│
- │.ifc    │───────▶│ extraction   │──▶│ + Quants │─────▶│ (DIN/NRM)│────▶│ + Linked │
- │.dwg    │         │ (no IFC OS)  │    │ + Props  │       │ + Costs  │      │ geometry │
- │.dgn    │         └──────────────┘    └──────────┘       └──────────┘      └──────────┘
- │.pdf    │                                                                         │
- │photo   │         ┌──────────────┐                                          ┌─────┴────┐
- │text    │───────▶│ CV / OCR / AI│────────────────────────────────────────▶│ BIM Pick │
- └────────┘         │ (PaddleOCR + │                                          │ area/vol │
-                    │  YOLOv11)    │                                          │ /length  │
-                    └──────────────┘                                          └──────────┘
-```
+<img src="docs/readme-diagrams/02-cad-bim-takeoff-ai.svg" alt="Cad bim takeoff ai diagram" width="900" />
 
 
 - **CAD/BIM takeoff** - Upload RVT, IFC, DWG, or DGN files. DDC converters extract elements with volumes, areas, and lengths automatically
@@ -464,21 +436,11 @@ Extract quantities from any source - drawings, models, text, or photos:
 
 ### <picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme-icons/globe-dark.svg"><img src="docs/readme-icons/globe-light.svg" width="14" align="center" alt=""></picture> Geo Hub (3D Globe)
 
+<img src="docs/screenshots/feature-geo-hub.jpg" alt="Geo Hub - every project anchored on a Cesium 3D globe with live pins" width="800" />
+
 Anchor every project on a real spherical earth - Cesium 3D Tiles 1.1 with live HUD and pin layers:
 
-```
-   Anchor              Globe                Mode               Deeplink            Fly-to
- ┌──────────┐       ┌──────────┐       ┌───────────┐       ┌────────────┐       ┌─────────────┐
- │ Project  │       │ Cesium   │       │  Global   │       │ ?model=…   │       │ BIM scene   │
- │ Plot     │─────▶│ 3D Tiles │─────▶│  Project  │─────▶│ ?plot=…    │─────▶│ PropDev     │
- │ CAD model│       │ live HUD │       │ Developm. │       │ ?dev_id=…  │       │ Daily Diary │
- └──────────┘       └──────────┘       └───────────┘       └────────────┘       └─────────────┘
-       ▲            │                                                                       │
-       │            ▼                                                                       │
-       │            ┌──────────────┐                                                        │
-       └────────────│ Pin layers   │ ◀────── HSE · Punchlist · Daily Diary ◀───────────────┘
-                    └──────────────┘
-```
+<img src="docs/readme-diagrams/03-geo-hub-3d-globe.svg" alt="Geo hub 3d globe diagram" width="900" />
 
 
 - **Three-mode picker** - Global (planet-wide portfolio), Project (job-site scale), Development (plot-level masterplan)
@@ -496,23 +458,7 @@ Anchor every project on a real spherical earth - Cesium 3D Tiles 1.1 with live H
 
 End-to-end real-estate developer workflow - from first lead to handover snags to warranty close-out:
 
-```
-   Lead          Reservation         SPA              Handover           Warranty
- ┌────────┐    ┌──────────┐     ┌──────────┐      ┌───────────┐      ┌──────────┐
- │ CRM    │──▶│ Hold +   │───▶│ Contract │────▶│ Snags     │────▶│ Defects  │
- │ inbox  │    │ deposit  │     │ + Escrow │      │ + Photos  │      │ liability│
- │ Broker │    │ schedule │     │ schedule │      │ + Sign-off│      │ + Promote│
- └────────┘    └──────────┘     └──────────┘      └───────────┘      └──────────┘
-      │              │                │                  │                  │
-      └──────────────┴────────────────┴──── Contact bridge (idempotent tags) ┘
-                                              ▼
-                                     ┌────────────────┐
-                                     │ Price Matrix   │
-                                     │ Phases · Blocks│
-                                     │ House Types    │
-                                     │ Brokers · Plots│
-                                     └────────────────┘
-```
+<img src="docs/readme-diagrams/04-property-development.svg" alt="Property development diagram" width="900" />
 
 
 - **Lead → Reservation → SPA → Handover → Warranty** - Full lifecycle FSM with auto-creation of ContractParty on SPA conversion, Payment Schedule state machine, idempotent stage transitions
@@ -532,23 +478,7 @@ End-to-end real-estate developer workflow - from first lead to handover snags to
 
 One module for three lodging kinds - worker camps for site crews, rentals for staff, hotels for visiting consultants - with rooms, bookings and charges in a unified data model:
 
-```
-   PropDev block         Accommodation         Rooms              Bookings           Charges
- ┌──────────────┐      ┌──────────────┐    ┌────────────┐    ┌────────────┐    ┌────────────┐
- │ Plots #1..N  │─1──▶│ Worker camp  │──▶│ available  │──▶│ reserved   │──▶│ base rent  │
- │ (PropDev)    │ click│ Rental       │    │ occupied   │    │ checked_in │    │ extras     │
- │              │      │ Hotel        │    │ maintenance│    │ checked_out│    │ deposits   │
- └──────────────┘      └──────────────┘    │ blocked    │    │ cancelled  │    │ refunds    │
-       ▲                     │             └────────────┘    └────────────┘    └────────────┘
-       │                     ▼                                    ▲
-       │              ┌──────────────┐                            │
-       │              │ HR autobook  │ ◀──── lowest-labelled ─────┘
-       │              │ (suggest+    │       available worker_camp room
-       │              │  confirm)    │
-       │              └──────────────┘
-       │
-   "Bootstrap to Accommodation" CTA
-```
+<img src="docs/readme-diagrams/05-accommodation.svg" alt="Accommodation diagram" width="900" />
 
 - **Three kinds, one module** - `worker_camp` · `rental` · `hotel`, with tab filter and per-kind capacity counters on every card
 - **Rooms with status** - `available` · `occupied` · `maintenance` · `blocked`; 409 prevents booking into a blocked or maintenance room
@@ -567,16 +497,9 @@ One module for three lodging kinds - worker camps for site crews, rentals for st
 
 Bottom-right floating chat on every page - talks to the entire ERP database through 17 typed tools (projects, BOQ items, schedule, validation, risks, CWICR search, BIM elements, full semantic search):
 
-```
-  Any page           Floating button       Panel + 17 tools  Streamed
- ┌─────────┐         ┌──────────────┐      ┌──────────────┐      ┌──────────┐
- │/projects│         │ bottom-right │      │ get_projects │      │ tool card│
- │/boq     │──FAB──▶│ ◯ Message    │────▶│ search_cwicr │────▶│ rendered │
- │/geo     │         │ (badge: 3)   │      │ create_boq   │      │ in chat  │
- └─────────┘         └──────────────┘      └──────────────┘      └──────────┘
-```
+<img src="docs/readme-diagrams/06-floating-chat-with-the.svg" alt="Floating chat with the diagram" width="900" />
 
-- **Always-on** - Mounted in `AppLayout`, available on every route (Dashboard, BOQ, BIM, Geo, PropDev, Accommodation, all 161 modules)
+- **Always-on** - Mounted in `AppLayout`, available on every route (Dashboard, BOQ, BIM, Geo, PropDev, Accommodation, all 180 modules)
 - **Real ERP access** - Reads/writes through tools, not LLM guesswork: `get_all_projects`, `get_project_summary`, `get_boq_items`, `get_schedule`, `get_validation_results`, `get_risk_register`, `search_cwicr_database`, `get_cost_model`, `compare_projects`, `run_validation`, `create_boq_item`, `search_boq_positions`, `search_documents`, `search_tasks`, `search_risks`, `search_bim_elements`, `search_anything`
 - **Streamed responses** - Tool-call cards (risk register table, BOQ summary, etc.) render inline as the model produces them
 - **Provider-agnostic** - Anthropic / OpenAI / Gemini / Mistral / Groq / DeepSeek behind the same tool interface
@@ -587,21 +510,7 @@ Bottom-right floating chat on every page - talks to the entire ERP database thro
 
 Multi-disciplinary BIM coordination with AI-assisted issue triage:
 
-```
-  Federation         Raw clashes        Smart Issues       AI Triage         BCF 3.0
- ┌──────────┐      ┌────────────┐     ┌────────────┐    ┌────────────┐    ┌──────────┐
- │ ARC ·STR │      │ thousands  │     │ clustered  │    │ severity   │    │ any BCF  │
- │ MEP ·HSE │─────▶│ raw pairs  │────▶│ by zone +  │───▶│ rework $   │───▶│ viewer   │
- │ models   │      │ + distance │     │ disciplines│    │ confidence │    │ or tool  │
- └──────────┘      └────────────┘     └────────────┘    └────────────┘    └──────────┘
-                                            │                                  ▲
-                                            ▼                                  │
-                                    ┌─────────────┐                            │
-                                    │ Smart Views │  IDS + COBie owner drops ──┘
-                                    │ RFI · Tasks │
-                                    │ Cost Impact │
-                                    └─────────────┘
-```
+<img src="docs/readme-diagrams/07-coordination-hub-clash-ai.svg" alt="Coordination hub clash ai diagram" width="900" />
 
 
 - **Coordination Hub** - Single dashboard fusing clashes, RFIs, submittals, action items per model federation
@@ -628,20 +537,7 @@ Plan your project timeline and track costs over time:
 
 Complete your estimation workflow:
 
-```
-     BOQ           Bid Package         Distribute          Compare           Award
- ┌──────────┐    ┌──────────────┐    ┌────────────┐    ┌─────────────┐    ┌──────────┐
- │ priced   │    │ subset +     │    │ Subs (mail │    │ side-by-    │    │ winner   │
- │ sections │───▶│ instructions │───▶│ + portal)  │───▶│ side mirror │───▶│ + change │
- │          │    │ + scope      │    │            │    │ + anomalies │    │ orders   │
- └──────────┘    └──────────────┘    └────────────┘    └─────────────┘    └──────────┘
-                                                              │                 │
-                                                              ▼                 ▼
-                                                            ┌─────────────────────┐
-                                                            │ Reports · GAEB X83  │
-                                                            │ Risk Register · EAC │
-                                                            └─────────────────────┘
-```
+<img src="docs/readme-diagrams/08-tendering-risk-reporting.svg" alt="Tendering risk reporting diagram" width="900" />
 
 
 - **Tendering** - Create bid packages, distribute to subcontractors, collect and compare bids with side-by-side price mirror
@@ -662,6 +558,8 @@ Track and validate construction requirements with the EAC (Entity-Attribute-Cons
 
 ### <picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme-icons/pencil-dark.svg"><img src="docs/readme-icons/pencil-light.svg" width="14" align="center" alt=""></picture> PDF Markups & Annotations
 
+<img src="docs/screenshots/feature-markups.jpg" alt="PDF Markups - annotations from DWG takeoff and the markups hub in one review table" width="800" />
+
 Annotate construction drawings and documents directly in the browser:
 
 - **10 markup types** - Cloud, arrow, text, rectangle, highlight, polygon, distance, area, count, stamp
@@ -671,6 +569,8 @@ Annotate construction drawings and documents directly in the browser:
 - **BOQ Integration** - Link measurements directly to BOQ positions (quantity = measured value)
 
 ### <picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme-icons/check-circle-fill-dark.svg"><img src="docs/readme-icons/check-circle-fill-light.svg" width="14" align="center" alt=""></picture> Punch List
+
+<img src="docs/screenshots/feature-punch-list.jpg" alt="Punch list insights - open items by trade, status donut and overdue by priority" width="800" />
 
 Track construction deficiencies from discovery to resolution:
 
@@ -683,6 +583,8 @@ Track construction deficiencies from discovery to resolution:
 - **Verification control** - Different user must verify (not the resolver)
 
 ### <picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme-icons/book-dark.svg"><img src="docs/readme-icons/book-light.svg" width="14" align="center" alt=""></picture> Daily Diary & HSE
+
+<img src="docs/screenshots/feature-daily-diary.jpg" alt="Daily Diary - site days, labour and weather insights built from field records" width="800" />
 
 Field-level reporting and safety tracking that holds up in court:
 
@@ -718,6 +620,8 @@ Field-level reporting and safety tracking that holds up in court:
 | PBC / Base de Precios | Spain | Excel, CSV |
 
 ### <picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme-icons/shield-dark.svg"><img src="docs/readme-icons/shield-light.svg" width="14" align="center" alt=""></picture> Validation & Compliance Engine
+
+<img src="docs/screenshots/feature-validation.jpg" alt="Validation - 147 rules checked against a project BOQ with errors, warnings and a quality score" width="800" />
 
 Ensure your estimates meet regulatory standards before submission:
 
@@ -958,51 +862,7 @@ This pipeline is the reason OpenConstructionERP can replace several commercial p
 
 ### Technical stack
 
-```mermaid
-flowchart TB
-    UI["Frontend SPA<br>React 18, TypeScript, Vite<br>AG Grid, Tailwind, PDF.js"]
-
-    subgraph Backend ["FastAPI Backend, 161 modules"]
-        CORE["Core<br>Module loader, Event bus, Hooks, RBAC<br>Validation, FSM + audit log"]
-        ESTIM["Estimating<br>BOQ, Costs, Catalog, Assemblies<br>Takeoff, BIM Hub, Match-Elements, 5D"]
-        FIELD["Field Operations<br>Service, Equipment, Daily Diary<br>Portal, Resources & Crew"]
-        COMM["Commercial<br>CRM, Contracts, Subcontractors<br>Bid Management, Variations, Suppliers, Property Dev"]
-        QSAFE["Schedule & Quality<br>Advanced Schedule (LPS/CPM/EVM)<br>QMS, HSE, Carbon & ESG, BI Dashboards"]
-        AIS["AI<br>AI Chat SSE, AI Estimate, Cost Intelligence<br>7 LLM providers"]
-        CORE --> ESTIM
-        CORE --> FIELD
-        CORE --> COMM
-        CORE --> QSAFE
-        CORE --> AIS
-    end
-
-    subgraph Data ["Data layer"]
-        PG[("PostgreSQL 16<br>embedded in dev")]
-        VEC[("Vector DB<br>LanceDB / Qdrant")]
-        S3[("MinIO / S3<br>files, CAD, PDFs")]
-    end
-
-    subgraph Pipelines ["Pipelines"]
-        CAD["DDC cad2data<br>RVT, IFC, DWG, DGN to canonical JSON"]
-        CV["CV / OCR<br>PaddleOCR 3.0, YOLOv11<br>PDF takeoff, symbol detection"]
-    end
-
-    UI -- "REST, SSE" --> CORE
-    BIZ --> PG
-    BIZ --> VEC
-    BIZ --> S3
-    CAD --> BIZ
-    CV --> BIZ
-
-    classDef fe fill:#1f6feb,stroke:#0d3885,color:#fff;
-    classDef be fill:#238636,stroke:#104822,color:#fff;
-    classDef ai fill:#db6d28,stroke:#7a3c14,color:#fff;
-    classDef data fill:#8250df,stroke:#4a2c7d,color:#fff;
-    class UI fe
-    class CORE,BIZ be
-    class AIS ai
-    class PG,VEC,S3,CAD,CV data
-```
+<img src="docs/readme-diagrams/09-technical-stack.svg" alt="Technical stack diagram" width="900" />
 
 <details>
 <summary>Plain-text version (for screen readers or non-Mermaid renderers)</summary>
@@ -1015,7 +875,7 @@ flowchart TB
                    │ REST + SSE
 ┌──────────────────┴───────────────────────────────┐
 │  Backend (FastAPI)                               │
-│  161 auto-discovered modules · Plugin system     │
+│  180 auto-discovered modules · Plugin system     │
 ├──────────────────────────────────────────────────┤
 │  BOQ · Costs · Schedule · 5D · Validation · AI   │
 │  Takeoff · Tendering · Risk · Reports · Catalog  │

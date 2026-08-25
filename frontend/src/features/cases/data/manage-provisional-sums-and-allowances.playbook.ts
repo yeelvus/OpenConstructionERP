@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 1002,
   category: "estimating",
   companyTypes: ["cost-consultant", "general-contractor", "developer-client"],
+  roles: ["quantity-surveyor", "estimator", "commercial-manager"],
   icon: "Coins",
   titleKey: "cases.manage_provisional_sums_and_allowances.title",
   titleDefault: "Manage provisional sums and allowances",
@@ -43,7 +44,7 @@ const playbook: Playbook = {
       whyKey: "cases.manage_provisional_sums_and_allowances.step.identify.why",
       whyDefault:
         "Naming the soft spots up front is what stops them being priced twice or missed entirely. It also tells the client exactly which parts of the number are still to be firmed up.",
-      moduleLabel: "Allowances",
+      moduleLabel: "Allowances & Contingency",
       moduleLabelKey: "nav.allowances",
       to: "/allowances",
     },
@@ -64,7 +65,7 @@ const playbook: Playbook = {
       whyKey: "cases.manage_provisional_sums_and_allowances.step.classify.why",
       whyDefault:
         "A defined sum carries programme and preliminaries; an undefined one does not. Getting the type right now decides whether you can claim time and cost when it is finally instructed.",
-      moduleLabel: "Allowances",
+      moduleLabel: "Allowances & Contingency",
       moduleLabelKey: "nav.allowances",
       to: "/allowances",
     },

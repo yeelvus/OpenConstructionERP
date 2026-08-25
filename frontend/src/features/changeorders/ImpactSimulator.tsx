@@ -28,8 +28,25 @@ import {
   History,
 } from 'lucide-react';
 import { Button, Card, Badge } from '@/shared/ui';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtDate, fmtPercent } from '@/shared/lib/formatters';
+
+/** Locale-aware "12. Aug. 2026, 21:16" datetime, matching DateDisplay's
+ *  datetime format so the forecast stamp and the register tables agree. */
+function fmtDateTime(iso: string): string {
+  try {
+    return fmtDate(iso, {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return iso;
+  }
+}
 import { useToastStore } from '@/stores/useToastStore';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 import {
   simulateImpact,
   publishScenario,
@@ -42,7 +59,7 @@ function fmtMoney(value: string, currency: string): string {
   const code = (currency || '').trim().toUpperCase();
   try {
     if (code && /^[A-Z]{3}$/.test(code)) {
-      return new Intl.NumberFormat(getIntlLocale(), {
+      return new Intl.NumberFormat(getNumberLocale(), {
         style: 'currency',
         currency: code,
         maximumFractionDigits: 0,
@@ -51,7 +68,7 @@ function fmtMoney(value: string, currency: string): string {
   } catch {
     /* fall through to plain formatting */
   }
-  return new Intl.NumberFormat(getIntlLocale(), {
+  return new Intl.NumberFormat(getNumberLocale(), {
     maximumFractionDigits: 0,
   }).format(n);
 }
@@ -169,6 +186,14 @@ export function ImpactSimulator({
 
   const ccy = data?.base_currency || '';
 
+  // The two shapes of "this scope does not land in a bill": several unlocked
+  // bills, which the approval refuses to choose between, and no unlocked bill
+  // at all. They are different sentences and the same warning, because to the
+  // reader they mean the same thing - the preview is not promising a write.
+  const boqNotPlaceable = Boolean(
+    data && data.boq.item_count > 0 && (data.boq.target_boq_ambiguous || !data.boq.target_boq_name),
+  );
+
   return (
     <Card className="mb-6 overflow-hidden">
       <button
@@ -239,7 +264,7 @@ export function ImpactSimulator({
                   </span>
                   {data.cost.pct_of_budget > 0 && (
                     <Badge variant="neutral" size="sm">
-                      {data.cost.pct_of_budget.toFixed(1)}%{' '}
+                      {fmtPercent(data.cost.pct_of_budget)}{' '}
                       {t('changeorders.impact_of_budget', { defaultValue: 'of budget' })}
                     </Badge>
                   )}
@@ -324,20 +349,57 @@ export function ImpactSimulator({
                 <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-content-tertiary">
                   <Layers size={14} /> {t('changeorders.impact_boq', { defaultValue: 'Bill of quantities' })}
                 </h4>
-                <p className="text-sm text-content-secondary">
-                  {data.boq.item_count > 0
-                    ? t('changeorders.impact_boq_add', {
+                {/* Three different facts used to share one sentence, and two
+                    of them were rendered as the third. A nameless target fell
+                    back to "the project BOQ", which reads as a promise: with
+                    several unlocked bills the approval refuses to pick one,
+                    and with none it writes nowhere at all. Either way the
+                    preview promised a write that the action would not make.
+                    Named bill, several bills, no bill - one sentence each,
+                    and the middle one points at what resolves it. */}
+                <p
+                  className={
+                    boqNotPlaceable
+                      ? 'flex items-start gap-2 rounded-lg bg-warning/10 px-3 py-2 text-sm text-warning-strong'
+                      : 'text-sm text-content-secondary'
+                  }
+                >
+                  {boqNotPlaceable && <Info size={14} className="mt-0.5 shrink-0" />}
+                  <span>
+                  {data.boq.item_count === 0
+                    ? t('changeorders.impact_boq_empty', {
+                        defaultValue: 'No line items yet, so nothing would be written to the BOQ.',
+                      })
+                    : data.boq.target_boq_ambiguous
+                    ? t('changeorders.impact_boq_ambiguous', {
+                        defaultValue:
+                          'This project has more than one unlocked bill of quantities, so the {{positions}} {{posLabel}} cannot be placed automatically. Name the bill when you approve this change order.',
+                        positions: data.boq.positions_added,
+                        posLabel:
+                          data.boq.positions_added === 1
+                            ? t('changeorders.impact_position', { defaultValue: 'position' })
+                            : t('changeorders.impact_positions', { defaultValue: 'positions' }),
+                      })
+                    : !data.boq.target_boq_name
+                    ? t('changeorders.impact_boq_none', {
+                        defaultValue:
+                          'This project has no unlocked bill of quantities, so the {{positions}} {{posLabel}} would not be written into one.',
+                        positions: data.boq.positions_added,
+                        posLabel:
+                          data.boq.positions_added === 1
+                            ? t('changeorders.impact_position', { defaultValue: 'position' })
+                            : t('changeorders.impact_positions', { defaultValue: 'positions' }),
+                      })
+                    : t('changeorders.impact_boq_add', {
                         defaultValue: 'Will add 1 new section with {{positions}} {{posLabel}} to {{boq}}.',
                         positions: data.boq.positions_added,
                         posLabel:
                           data.boq.positions_added === 1
                             ? t('changeorders.impact_position', { defaultValue: 'position' })
                             : t('changeorders.impact_positions', { defaultValue: 'positions' }),
-                        boq: data.boq.target_boq_name || t('changeorders.impact_boq_primary', { defaultValue: 'the project BOQ' }),
-                      })
-                    : t('changeorders.impact_boq_empty', {
-                        defaultValue: 'No line items yet, so nothing would be written to the BOQ.',
+                        boq: data.boq.target_boq_name,
                       })}
+                  </span>
                 </p>
               </section>
 
@@ -376,7 +438,7 @@ export function ImpactSimulator({
                           >
                             <span className="text-content-tertiary">
                               {s.at
-                                ? new Date(s.at).toLocaleString(getIntlLocale())
+                                ? fmtDateTime(s.at)
                                 : t('changeorders.impact_saved_unknown_date', { defaultValue: 'Saved scenario' })}
                             </span>
                             <span className="flex items-center gap-3 tabular-nums">
@@ -448,7 +510,7 @@ export function ImpactSimulator({
                 <div className="mt-3 flex items-center justify-between">
                   <span className="text-2xs text-content-tertiary">
                     {t('changeorders.impact_as_of', { defaultValue: 'Forecast as of' })}{' '}
-                    {new Date(data.as_of).toLocaleString(getIntlLocale())}
+                    {fmtDateTime(data.as_of)}
                   </span>
                   {canPublish && (
                     <Button

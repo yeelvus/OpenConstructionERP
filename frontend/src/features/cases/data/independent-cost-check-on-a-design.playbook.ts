@@ -15,6 +15,7 @@ const playbook: Playbook = {
   order: 250,
   category: "estimating",
   companyTypes: ["cost-consultant", "developer-client", "designer"],
+  roles: ["quantity-surveyor", "estimator"],
   icon: "Scale",
   titleKey: "cases.independent_cost_check_on_a_design.title",
   titleDefault: "Provide an independent cost check on a design",
@@ -58,8 +59,8 @@ const playbook: Playbook = {
       whyKey: "cases.independent_cost_check_on_a_design.step.open.why",
       whyDefault:
         "You cannot give an honest second opinion without first understanding exactly what the number in front of you actually covers.",
-      moduleLabel: "BOQ",
-      moduleLabelKey: "nav.boq",
+      moduleLabel: "Bill of Quantities",
+      moduleLabelKey: "boq.title",
       to: "/boq",
     },
     {

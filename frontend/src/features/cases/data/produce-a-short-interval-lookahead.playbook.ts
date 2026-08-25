@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 200,
   category: "planning",
   companyTypes: ["general-contractor", "subcontractor", "project-manager"],
+  roles: ["planner", "site-manager", "foreman"],
   icon: "CalendarClock",
   titleKey: "cases.produce_a_short_interval_lookahead.title",
   titleDefault: "Produce a short-interval lookahead",
@@ -57,7 +58,7 @@ const playbook: Playbook = {
       whyKey: "cases.produce_a_short_interval_lookahead.step.pull.why",
       whyDefault:
         "The master programme sets the direction but is too coarse to run a week from. Breaking the near-term work down to real activities is what makes the plan something a gang can be held to.",
-      moduleLabel: "Schedule",
+      moduleLabel: "4D Schedule",
       moduleLabelKey: "nav.schedule",
       to: "/schedule",
     },

@@ -12,7 +12,7 @@ under ``/api/v1/projects/{project_id}/files/``.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,11 @@ FileKind = Literal[
     "report",
     "markup",
 ]
+
+#: The same set as a runtime value, for validating a caller-supplied list of
+#: kinds. Derived from the Literal rather than typed again so a new kind can
+#: never be accepted by the type checker and rejected by the endpoint.
+FILE_KINDS: frozenset[str] = frozenset(get_args(FileKind))
 
 
 class FileRow(BaseModel):

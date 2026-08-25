@@ -46,12 +46,14 @@ import {
 import { getVatRate } from '../boq/boqHelpers';
 import { TranslationSettingsTab } from '../translation';
 import { MethodologyActiveCard } from '../methodology/MethodologyActiveCard';
+import { ruleSetLabel } from '../validation/ruleSetLabels';
 import {
   listComplianceRulePacks,
   type ComplianceRulePack,
 } from '../contracts/api';
 import { AddressAutocomplete } from '@/features/geo-hub/AddressAutocomplete';
 import type { AddressAutocompleteSelection } from '@/features/geo-hub/AddressAutocomplete';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -290,8 +292,8 @@ function FxRateModal({
               const inverseRate = 1 / rateNum;
               const fmt = (n: number) =>
                 n >= 1000 || n < 0.001
-                  ? n.toLocaleString(undefined, { maximumSignificantDigits: 6 })
-                  : n.toLocaleString(undefined, { maximumFractionDigits: 6 });
+                  ? n.toLocaleString(getNumberLocale(), { maximumSignificantDigits: 6 })
+                  : n.toLocaleString(getNumberLocale(), { maximumFractionDigits: 6 });
               return (
                 <div className="rounded-lg bg-surface-tertiary px-3 py-2 text-xs text-content-secondary space-y-0.5">
                   <div>
@@ -333,8 +335,8 @@ function FxRateModal({
               if (!looksInverted && !looksUnusual) return null;
               const fmt = (n: number) =>
                 n >= 1000 || n < 0.001
-                  ? n.toLocaleString(undefined, { maximumSignificantDigits: 6 })
-                  : n.toLocaleString(undefined, { maximumFractionDigits: 6 });
+                  ? n.toLocaleString(getNumberLocale(), { maximumSignificantDigits: 6 })
+                  : n.toLocaleString(getNumberLocale(), { maximumFractionDigits: 6 });
               return (
                 <div
                   role="status"
@@ -505,8 +507,12 @@ function ComplianceRulePacksCard({ project }: { project: Project }) {
                       </p>
                     )}
                     {pack.rule_sets.length > 0 && (
-                      <p className="mt-1 font-mono text-[11px] text-content-tertiary">
-                        {pack.rule_sets.join(' · ')}
+                      // The pack lists which rule sets it brings. It used to
+                      // print the engine identifiers, so a pack advertised
+                      // itself as `boq_quality · din276` to someone choosing
+                      // between packs.
+                      <p className="mt-1 text-[11px] text-content-tertiary">
+                        {pack.rule_sets.map((rs) => ruleSetLabel(rs, t)).join(' · ')}
                       </p>
                     )}
                   </div>

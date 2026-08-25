@@ -87,7 +87,7 @@ class TestDemoOrdering:
         # batimatech-ca's flagship is office-montreal (country CA).
         assert _pack_country("batimatech-ca") == "CA"
         assert _pack_country("uk-jct") == "GB"
-        assert _pack_country("us-rsmeans") == "US"
+        assert _pack_country("us-costdata") == "US"
 
     def test_pack_country_unknown_pack(self) -> None:
         assert _pack_country("does-not-exist") is None

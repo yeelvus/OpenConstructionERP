@@ -9,14 +9,20 @@ import { Database, Download, ExternalLink, X, Sparkles, AlertTriangle as WarnTri
 import { Button, Badge, Breadcrumb, ModuleHelpButton, ModuleGuideButton, ConfirmDialog, DismissibleInfo, IntroRichText } from '@/shared/ui';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { useProgressStore } from '@/shared/ui/GlobalProgress';
-import { apiGet, apiPost, triggerDownload, extractErrorMessageFromBody } from '@/shared/lib/api';
+import { apiGet, apiPost, triggerDownload, extractErrorMessageFromBody, getErrorMessage } from '@/shared/lib/api';
+import {
+  readVectorCount,
+  pollVectorIndexLanded,
+  mayStillBeRunning,
+  VECTOR_READY_MIN_COUNT,
+} from '@/features/costs/vectorIndex';
 import { toNum } from '@/shared/lib/money';
 import { useToastStore } from '@/stores/useToastStore';
 import { useRecentStore } from '@/stores/useRecentStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useBIMLinkSelectionStore } from '@/stores/useBIMLinkSelectionStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
-import { usePreferencesStore } from '@/stores/usePreferencesStore';
+import { usePreferencesStore, useNumberLocale } from '@/stores/usePreferencesStore';
 import { useDisplayQuantity } from '@/shared/hooks/useDisplayQuantity';
 import {
   boqApi,
@@ -55,6 +61,8 @@ import { CostBreakdownPanel } from './CostBreakdownPanel';
 import { EstimateClassification } from './EstimateClassification';
 import { ResourceSummary } from './ResourceSummary';
 import { CommentDrawer, type CommentEntry } from './CommentDrawer';
+import { PriceAnalysisPanel } from './PriceAnalysisPanel';
+import { PositionActualsDrawer } from '@/features/costmodel/PositionActualsDrawer';
 import { SensitivityChart } from './SensitivityChart';
 import { CostRiskPanel } from './CostRiskPanel';
 import { MarkupPanel } from './MarkupPanel';
@@ -80,7 +88,6 @@ import {
   type UndoEntry,
   getVatRate,
   getVatRateFromMarkups,
-  getLocaleForRegion,
   getCurrencySymbol,
   getCurrencyCode,
   createFormatter,
@@ -107,7 +114,7 @@ import { LinkedPositionsModal } from './LinkedPositionsModal';
 
 /* ── Re-exports for tests ────────────────────────────────────────────── */
 
-export { getVatRate, getLocaleForRegion, getCurrencySymbol, computeQualityScore };
+export { getVatRate, getCurrencySymbol, computeQualityScore };
 export type { QualityBreakdown };
 
 /**
@@ -182,12 +189,24 @@ export function BOQEditorPage() {
     enabled: !!boq?.project_id,
   });
 
+  /* ── Deferred warm-up for non-critical queries ─────────────────────
+     The editor's first paint used to fire seven heavy requests at once
+     (sensitivity, cost-risk, resource rollup, BIM models, AACE class ...)
+     which queued on the connection pool and held the page at ~4s. The
+     analysis panels now fetch on expand; the remaining nice-to-haves
+     below wait one breath after mount so the grid data wins the race. */
+  const [deferredReady, setDeferredReady] = useState(false);
+  useEffect(() => {
+    const id = window.setTimeout(() => setDeferredReady(true), 1500);
+    return () => window.clearTimeout(id);
+  }, []);
+
   /* ── Fetch BIM models for the project (used for mini 3D preview) ─── */
 
   const { data: bimModelsData } = useQuery({
     queryKey: ['bim-models', boq?.project_id],
     queryFn: () => fetchBIMModels(boq!.project_id),
-    enabled: !!boq?.project_id,
+    enabled: !!boq?.project_id && deferredReady,
     staleTime: 10 * 60_000,
   });
 
@@ -201,7 +220,21 @@ export function BOQEditorPage() {
 
   const currencySymbol = useMemo(() => getCurrencySymbol(project?.currency), [project?.currency]);
   const currencyCode = useMemo(() => getCurrencyCode(project?.currency), [project?.currency]);
-  const locale = useMemo(() => getLocaleForRegion(project?.region), [project?.region]);
+  // A screen follows its reader, a document follows its project. This is the
+  // screen, so the bill is written the way the person looking at it asked for
+  // numbers to be written, exactly like every other register. It used to be
+  // written the way the project's region implied, which is why the same amount
+  // read one way here and another on the finance page of the same project.
+  //
+  // The document half of that rule is not lost, it is unbuilt. A GAEB file, a
+  // PDF offer and an invoice under EN 16931 are read by the recipient rather
+  // than by us, so those follow the project, and when one of them needs a
+  // locale it will be resolved from the country code the project stores. The
+  // map that used to answer this line could not have done that job: it was
+  // keyed by the label the project form displays while the form saves the
+  // option value, so it matched thirteen of its thirty-one regions and none of
+  // the demo projects at all.
+  const locale = useNumberLocale();
   // Issue #270 - the user's measurement-system preference, threaded into the
   // client-side Excel/PDF exports so quantities + unit labels print in the
   // chosen system (storage stays metric-canonical; only the export boundary
@@ -3949,8 +3982,11 @@ export function BOQEditorPage() {
 
   const handleIndexNow = useCallback(async () => {
     setVectorIndexing(true);
-    try {
-      await apiPost('/v1/costs/vector/index/');
+    // Read the count BEFORE the write. The fallback below can only prove the
+    // work landed by watching this number grow, and it must not mistake
+    // vectors that were already there for the ones this run created.
+    const baseline = await readVectorCount();
+    const announceReady = () => {
       queryClient.invalidateQueries({ queryKey: ['vector-status'] });
       addToast({
         type: 'success',
@@ -3958,11 +3994,38 @@ export function BOQEditorPage() {
         message: t('boq.vector_indexed_msg', { defaultValue: 'Cost database indexed. AI features are now available.' }),
       });
       setShowVectorSetup(false);
-    } catch {
+    };
+    try {
+      // Long budget: the endpoint can spend 30s loading the embedding model before
+      // it embeds the first of ~55K items, so 45s is unwinnable at any catalogue
+      // size (GitHub #436). No global timeout toast either: the catch below owns
+      // the reporting, and on the exact path the fallback exists for the wrapper's
+      // "Request timed out" would land a minute before our own "Ready".
+      await apiPost('/v1/costs/vector/index/', undefined, {
+        longRunning: true,
+        suppressTimeoutToast: true,
+      });
+      announceReady();
+    } catch (err: unknown) {
+      // The client gave up; the server did not. That handler has no disconnect
+      // cancellation, so it keeps embedding and commits. Watch the vector count
+      // for about a minute before calling this a failure - and hold it to the
+      // same threshold `vectorReady` uses above, so we never announce a ready
+      // index that the next AI action would bounce straight back to this modal.
+      const landed = mayStillBeRunning(err)
+        ? await pollVectorIndexLanded({ baseline, minCount: VECTOR_READY_MIN_COUNT })
+        : null;
+      if (landed !== null) {
+        announceReady();
+        return;
+      }
       addToast({
         type: 'error',
         title: t('boq.vector_index_error', { defaultValue: 'Indexing Failed' }),
-        message: t('boq.vector_index_error_msg', { defaultValue: 'Failed to index the cost database. Try importing a database first.' }),
+        // Say what actually went wrong - the server's own reason, or that we
+        // timed out waiting. The old copy advised importing a database first,
+        // which is misleading for a user who already has one loaded.
+        message: getErrorMessage(err),
       });
     } finally {
       setVectorIndexing(false);
@@ -4517,6 +4580,16 @@ export function BOQEditorPage() {
     [boq?.positions, updateMutation],
   );
 
+  /** Price-analysis drawer state (unit-rate build-up of one position) */
+  const [priceAnalysisPositionId, setPriceAnalysisPositionId] = useState<string | null>(null);
+
+  /**
+   * Position-actuals drawer state (what the site has recorded against one
+   * position). Lives here rather than in the grid because the endpoint is
+   * project scoped and only this page knows the project.
+   */
+  const [actualsPositionId, setActualsPositionId] = useState<string | null>(null);
+
   /** Comment drawer state */
   const [commentPositionId, setCommentPositionId] = useState<string | null>(null);
   const userEmail = useAuthStore((s) => s.userEmail) ?? '';
@@ -4610,6 +4683,10 @@ export function BOQEditorPage() {
         links={[
           { label: t('nav.assemblies', { defaultValue: 'Assemblies' }), onClick: () => navigate('/assemblies') },
           { label: t('nav.costs', { defaultValue: 'Cost Database' }), onClick: () => navigate('/costs') },
+          {
+            label: t('nav.cost_explorer', { defaultValue: 'Cost Explorer' }),
+            onClick: () => navigate('/cost-explorer'),
+          },
           { label: t('nav.validation', { defaultValue: 'Validation' }), onClick: () => navigate('/validation') },
           // CONN-83 — outbound AI affordances. Draft a fresh set of positions
           // with the AI Quick Estimate, or ask the Cost Advisor about rates
@@ -4929,6 +5006,8 @@ export function BOQEditorPage() {
           onOpenCostDbForPosition={handleOpenCostDbForPosition}
           onOpenCatalogForPosition={handleOpenCatalogForPosition}
           onOpenAICopilot={handleOpenAICopilot}
+          onPriceAnalysis={setPriceAnalysisPositionId}
+          onShowPositionActuals={setActualsPositionId}
           aiCopilotPositionId={aiCopilotOpen ? aiCopilotPositionId : null}
           renderInlineCopilot={renderInlineCopilot}
           onAddManualResource={handleAddManualResource}
@@ -5016,13 +5095,15 @@ export function BOQEditorPage() {
       )}
 
       {/* ── Resource Summary ──────────────────────────────────────────── */}
-      {boqId && hasPositions && <div className="mt-6" data-testid="boq-resource-summary"><ResourceSummary boqId={boqId} locale={locale} /></div>}
+      {boqId && hasPositions && <div className="mt-6" data-testid="boq-resource-summary"><ResourceSummary boqId={boqId} locale={locale} currency={currencyCode} /></div>}
 
       {/* ── Cost Breakdown Panel ─────────────────────────────────────── */}
       {boqId && hasPositions && <div className="mt-6"><CostBreakdownPanel boqId={boqId} locale={locale} /></div>}
 
       {/* ── AACE Estimate Classification ──────────────────────────────── */}
-      {boqId && hasPositions && <div className="mt-6"><EstimateClassification boqId={boqId} /></div>}
+      {/* Mounted after the deferred warm-up so its request stays out of the
+          first-paint burst; the strip appears a moment later below the fold. */}
+      {boqId && hasPositions && deferredReady && <div className="mt-6"><EstimateClassification boqId={boqId} /></div>}
 
       {/* ── Sensitivity Analysis (Tornado Chart) ──────────────────────── */}
       {boqId && hasPositions && <div className="mt-6"><SensitivityChart boqId={boqId} locale={locale} /></div>}
@@ -5496,6 +5577,51 @@ export function BOQEditorPage() {
           </div>
         </div>
       )}
+
+      {/* ── Price Analysis Drawer ───────────────────────────────────── */}
+      {priceAnalysisPositionId && (() => {
+        const pos = boq?.positions.find((p) => p.id === priceAnalysisPositionId);
+        if (!pos) return null;
+        // Whether the rate was ever broken down is knowable here and nowhere
+        // downstream: the API answers with a full sheet either way, because a
+        // position without a split gets one synthesised line carrying the
+        // whole rate.
+        const resources = pos.metadata?.resources;
+        return (
+          <PriceAnalysisPanel
+            positionId={priceAnalysisPositionId}
+            positionOrdinal={pos.ordinal ?? ''}
+            positionDescription={pos.description ?? ''}
+            hasResourceSplit={Array.isArray(resources) && resources.length > 0}
+            onClose={() => setPriceAnalysisPositionId(null)}
+          />
+        );
+      })()}
+
+      {/* ── Position Actuals Drawer ─────────────────────────────────
+          What the estimate said against what the project has since
+          committed, contracted, installed and issued from the store for
+          this one position. Rendered unconditionally with an `open` flag,
+          the SideDrawer contract, rather than mounted on demand: the panel
+          owns its own transition and its query is gated on `open` anyway.
+          Only the ordinal and description come from the grid row; every
+          figure comes back from the endpoint in one response so the numbers
+          on screen are consistent with each other. */}
+      {(() => {
+        const pos = actualsPositionId
+          ? boq?.positions.find((p) => p.id === actualsPositionId)
+          : undefined;
+        return (
+          <PositionActualsDrawer
+            open={actualsPositionId !== null}
+            onClose={() => setActualsPositionId(null)}
+            projectId={boq?.project_id}
+            positionId={actualsPositionId}
+            positionOrdinal={pos?.ordinal ?? ''}
+            positionDescription={pos?.description ?? ''}
+          />
+        );
+      })()}
 
       {/* ── Comment Drawer ──────────────────────────────────────────── */}
       {commentPositionId && (() => {

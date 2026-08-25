@@ -41,6 +41,7 @@ import random as _random
 import threading
 import time as _time
 import uuid as _uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import mean as _mean
@@ -51,6 +52,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 
+from app.core.content_disposition import attachment_disposition
 from app.core.csv_safety import neutralise_formula
 from app.core.i18n import get_locale
 from app.core.rate_limiter import ai_limiter, upload_limiter
@@ -243,7 +245,10 @@ async def list_converters(verify: bool = False) -> dict[str, Any]:
     }
 
 
-@router.post("/converters/{converter_id}/verify/")
+@router.post(
+    "/converters/{converter_id}/verify/",
+    dependencies=[Depends(RequirePermission("takeoff.read"))],
+)
 async def verify_converter(converter_id: str) -> dict[str, Any]:
     """Force-run the smoke test for one converter and return health.
 
@@ -251,6 +256,12 @@ async def verify_converter(converter_id: str) -> dict[str, Any]:
     so the user can re-verify after manually fixing a broken install
     (e.g. installing VC++ Redistributable, unblocking files, or running
     the converter exe once as administrator).
+
+    ``takeoff.read`` rather than the ``takeoff.create`` its install sibling
+    asks for. What this returns is health, so the bar is a read; what made it
+    worth gating is that producing that health spawns the converter binary,
+    and it used to do so for a caller who had not logged in. The listing at
+    ``/converters/`` stays open because it only stats files.
     """
     import asyncio
 
@@ -297,13 +308,44 @@ async def verify_converter(converter_id: str) -> dict[str, Any]:
 # users get separate `.deb` packages from the apt source maintained at
 # `pkg.datadrivenconstruction.io` (handled separately below).
 #
-# Both the repo slug and the branch can be overridden via environment so
-# an operator can point the auto-installer at a fork or a pinned release
-# branch without a code change. ``OE_CONVERTER_REPO`` /
-# ``OE_CONVERTER_BRANCH`` are the canonical names; the defaults are the
-# real, publicly-readable upstream repository.
+# The ref is a COMMIT SHA and must stay one. It used to read ``"main"``,
+# which meant every install fetched whatever the branch tip happened to
+# be at that moment: no tag, no pin, no checksum, and native executables
+# at the other end. A ref is not a cosmetic detail here, because the
+# `download_url` the Contents API hands back carries the ref, so a
+# SHA-pinned listing resolves to SHA-addressed `raw.githubusercontent.com`
+# blobs that a later force-push cannot change. A branch name resolves to
+# whatever that branch points at today.
+#
+# The upstream repository publishes no tags and no releases (measured:
+# `/tags` returns an empty array, `/releases/latest` returns 404), so a
+# commit SHA is the only pinnable ref available. This one is the tree the
+# 2026-08-22 licence audit enumerated - 1266 entries, verified identical
+# to `main` at the time of pinning.
+#
+# Moving the pin is a deliberate act: bump the literal below, or set
+# ``OE_CONVERTER_REF`` (``OE_CONVERTER_BRANCH`` is still honoured as the
+# older name) to point a fork or a newer commit at the installer without
+# a code change. ``tests/unit/test_converter_ref_is_pinned.py`` fails if
+# the default goes back to a branch name, or if this literal and the
+# desktop release workflow drift apart.
+_DDC_DEFAULT_REF = "45498426fd225c36a2a2a3a67993fd39c5d9d0ff"
 _DDC_REPO = os.environ.get("OE_CONVERTER_REPO", "datadrivenconstruction/cad2data-Revit-IFC-DWG-DGN")
-_DDC_BRANCH = os.environ.get("OE_CONVERTER_BRANCH", "main")
+
+
+def _resolve_converter_ref(env: Mapping[str, str] | None = None) -> str:
+    """Pick the converter ref: new env name, old env name, then the pin.
+
+    Takes ``env`` so the precedence is testable without touching the real
+    process environment. An empty string is treated as unset - a CI runner
+    that exports ``OE_CONVERTER_REF=`` from an undefined variable should get
+    the pin, not an empty ref that would make every Contents API call 404.
+    """
+    source = os.environ if env is None else env
+    return source.get("OE_CONVERTER_REF") or source.get("OE_CONVERTER_BRANCH") or _DDC_DEFAULT_REF
+
+
+_DDC_REF = _resolve_converter_ref()
 
 # Per-format directory inside the repo for Windows binaries. Each
 # directory contains the small `*Exporter.exe`, the matching
@@ -981,7 +1023,7 @@ def _github_list_directory(repo_path: str) -> list[dict[str, Any]]:
     import urllib.error
     import urllib.request
 
-    api_url = f"https://api.github.com/repos/{_DDC_REPO}/contents/{repo_path}?ref={_DDC_BRANCH}"
+    api_url = f"https://api.github.com/repos/{_DDC_REPO}/contents/{repo_path}?ref={_DDC_REF}"
     req = urllib.request.Request(
         api_url,
         headers={
@@ -1866,7 +1908,7 @@ async def _install_converter_impl(converter_id: str, force: bool, app: Any) -> d
                     "message": (
                         f"Could not install {meta['name']}: {exc}. "
                         f"You can install it manually from "
-                        f"https://github.com/{_DDC_REPO}/tree/{_DDC_BRANCH}/"
+                        f"https://github.com/{_DDC_REPO}/tree/{_DDC_REF}/"
                         f"{_WINDOWS_CONVERTER_DIRS[converter_id]}"
                     ),
                 }
@@ -1915,7 +1957,7 @@ async def _install_converter_impl(converter_id: str, force: bool, app: Any) -> d
                         f"a required DLL is missing (Windows error 0x{rc & 0xFFFFFFFF:08x}). "
                         f"This usually means the Qt6 plugins didn't download correctly. "
                         f"Try uninstalling and reinstalling, or install manually from "
-                        f"https://github.com/{_DDC_REPO}/tree/{_DDC_BRANCH}/"
+                        f"https://github.com/{_DDC_REPO}/tree/{_DDC_REF}/"
                         f"{_WINDOWS_CONVERTER_DIRS[converter_id]}"
                     )
             except subprocess.TimeoutExpired:
@@ -2067,7 +2109,7 @@ async def _install_converter_impl(converter_id: str, force: bool, app: Any) -> d
             "message": (
                 f"Could not install {meta['name']}: {type(exc).__name__}: {exc}. "
                 f"Check the server logs for the full traceback. You can install "
-                f"manually from https://github.com/{_DDC_REPO}/tree/{_DDC_BRANCH}/"
+                f"manually from https://github.com/{_DDC_REPO}/tree/{_DDC_REF}/"
                 f"{_WINDOWS_CONVERTER_DIRS.get(converter_id, '')}"
             ),
         }
@@ -3240,7 +3282,7 @@ async def export_cad_group(
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+        headers={"Content-Disposition": attachment_disposition(download_name)},
     )
 
 
@@ -4575,6 +4617,8 @@ async def upload_document(
         "pages": doc.pages,
         "size_bytes": doc.size_bytes,
         "status": doc.status,
+        # The owning project (audit case-2 B-7); None for standalone uploads.
+        "project_id": doc.project_id or None,
         # Per-page text-layer audit (8.2.0). Tells the client how many pages
         # came back with no text layer (likely scanned drawings needing OCR)
         # so a partly-scanned upload is not silently treated as empty.
@@ -4694,6 +4738,8 @@ async def create_takeoff_from_source(
         "pages": doc.pages,
         "size_bytes": doc.size_bytes,
         "status": doc.status,
+        # The owning project (audit case-2 B-7); mirrors the detail response.
+        "project_id": doc.project_id or None,
         "source_document_id": doc.source_document_id,
         "pages_without_text": no_text_count,
         "pages_without_text_list": no_text_pages,
@@ -4835,6 +4881,12 @@ async def get_document(
         "pages": doc.pages,
         "size_bytes": doc.size_bytes,
         "status": doc.status,
+        # The owning project (audit case-2 B-7): the viewer falls back to this
+        # for measurement identity when no project is active in the app header.
+        # ``None`` for legacy standalone uploads. Must live in this dict - the
+        # endpoint declares no response_model, so a field added only to
+        # ``TakeoffDocumentResponse`` never reaches the wire.
+        "project_id": doc.project_id or None,
         "extracted_text": doc.extracted_text[:2000] if doc.extracted_text else "",
         "page_data": doc.page_data,
         "analysis": doc.analysis,

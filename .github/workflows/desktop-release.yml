@@ -5,8 +5,8 @@
 #
 # Artifacts:
 #   - Windows: .exe (NSIS installer)
-#   - macOS: .dmg
-#   - Linux: .AppImage, .deb
+#   - macOS: .dmg, .app.tar.gz
+#   - Linux: .deb, .AppImage, and .rpm from a job of its own (see build-linux-rpm)
 
 name: Desktop Release
 
@@ -18,15 +18,53 @@ on:
     inputs:
       sidecar_only:
         description: >-
-          Build and smoke-test the sidecar without bundling or releasing.
-          Leave this on to check a sidecar change: the bundle step names the
-          release after the git ref, so a manual run from a branch would
-          otherwise open a draft release called "main".
+          Kept for the dispatch form and for anything that still passes it, but
+          it no longer decides anything. A dispatch bundles and releases only
+          when the tag box below holds a version tag, so a run started from a
+          branch is sidecar-only whatever this box says. It used to be the only
+          thing standing between a manual run and a public release named after
+          the branch it was started from.
         type: boolean
         default: true
+      tag:
+        description: >-
+          Rebuild the installers for a tag that already has a release, e.g.
+          v15.0.0, and attach whatever is missing. A tag push takes its
+          workflow file from the tag's own commit, so a pipeline fix landed
+          after the tag can never reach that run; this is the way in. The
+          source is checked out at the tag, only the pipeline comes from the
+          branch you dispatch from. Setting this builds the bundles whatever
+          sidecar_only says, because a repair that stopped at the sidecar
+          would be a green run that fixed nothing.
+        required: false
+        default: ""
 
 permissions:
   contents: write
+
+# The tag this run is releasing. A tag push carries it in github.ref_name; a
+# repair run is dispatched from a branch and names the tag in an input, so the
+# two cannot be read from the same place and every job that touches the release
+# reads this instead of the ref it happens to be running on.
+env:
+  RELEASE_REF: ${{ inputs.tag || github.ref_name }}
+  # The Tauri CLI every bundling step runs. Nothing pinned it before: the action
+  # resolves a CLI by itself, the repository declares none, and the README told
+  # developers to `cargo install tauri-cli` with no version. So the bundler that
+  # built a release was whichever one the runner fetched that day, and a local
+  # build used whatever the developer installed months earlier.
+  #
+  # That is not only a reproducibility principle, it changes the product. The
+  # installer's translations live in the bundler, not in this repository, so the
+  # set of languages an installer speaks is a property of the CLI that built it.
+  # Unpinned, the same commit could ship a different set of translated installer
+  # messages depending on the machine, and a local build could warn that a
+  # language is untranslated while the release built from that very commit had
+  # it. 2.11.4 carries NSIS message translations for 23 languages, including a
+  # Vietnamese one that CLIs from before May 2026 do not have and silently
+  # replace with English. Of the 21 languages tauri.conf.json offers, Polish is
+  # the only one this CLI has no translation for.
+  TAURI_CLI_VERSION: "2.11.4"
 
 jobs:
   build-sidecar:
@@ -56,6 +94,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The source comes from the tag, the pipeline from wherever this run
+          # was started. On a tag push the two are the same commit and this
+          # line changes nothing.
+          ref: ${{ env.RELEASE_REF }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -81,6 +124,13 @@ jobs:
           npm run build
 
       - name: Install Python dependencies
+        # This step is written in POSIX and runs on all three legs, so it has
+        # to say so. Without an explicit shell a windows runner uses pwsh,
+        # where a trailing backslash does not continue a line: pwsh read the
+        # continuation below as a fresh statement and stopped on "Missing
+        # expression after unary operator '--'". Every other multi-line step
+        # in this file already declares its shell.
+        shell: bash
         run: |
           cd backend
           # Install the exact, pinned dependency set first so every release
@@ -88,7 +138,24 @@ jobs:
           # (environment markers), so the same file resolves correctly on
           # Windows, macOS and Linux. Then install the project itself without
           # touching deps, so the lock fully owns the dependency graph.
-          pip install -r requirements-desktop.lock
+          #
+          # The extra index is where torch's CPU builds live, and Linux is the
+          # only leg that needs it. Left to PyPI, torch's Linux wheels declare
+          # the whole nvidia CUDA stack and this step grows from about 190 MB
+          # of wheels to about 2.7 GB, on a headless server that will never
+          # address a GPU. The Windows and macOS wheels on PyPI are CPU-only
+          # already, so the pin costs them nothing.
+          #
+          # The index is added here rather than written into the lock on
+          # purpose. It publishes its own copies of a few ordinary packages,
+          # some of them years stale, and offering it to the resolver as a
+          # general source is not free: it serves urllib3 1.26.13 against
+          # qdrant-client's floor of 1.26.14, and compiling the lock with the
+          # index in scope fails outright on that conflict. Here every version
+          # is already decided by the lock, so pip only has to find the pinned
+          # files rather than choose between them.
+          pip install -r requirements-desktop.lock \
+            --extra-index-url https://download.pytorch.org/whl/cpu
           pip install -e . --no-deps
 
       - name: Build sidecar with PyInstaller
@@ -164,7 +231,16 @@ jobs:
       # This runs on all three platforms. The same "does it start at all"
       # question catches the issue #419 class of break more directly than
       # reading the archive does, and it costs seconds.
-      - name: Check the sidecar starts
+      # Narrower than its old name ("Check the sidecar starts") claimed, and
+      # renamed because the gap between the two shipped a broken release. This
+      # runs the `version` subcommand, which proves the bootloader unpacks, the
+      # interpreter runs and the app package imports. It does NOT run the server
+      # startup path, so every data file that path reads is outside what this
+      # step measures. A sidecar missing its translation catalogue passed here
+      # on all three platforms and then failed on users' machines at "Starting
+      # the application server". The step below covers that; keep the two
+      # separate so neither name overstates what it checked.
+      - name: Check the sidecar runs and reports its version
         shell: bash
         timeout-minutes: 10
         run: |
@@ -172,8 +248,16 @@ jobs:
           bin="desktop/dist/openconstructionerp-server${{ matrix.ext }}"
           chmod +x "$bin" 2>/dev/null || true
           echo "Running: $bin version"
-          out=$("$bin" version 2>&1)
-          code=$?
+          # `|| code=$?` rather than a bare assignment followed by reading $?.
+          # GitHub runs `shell: bash` as `bash --noprofile --norc -eo pipefail`,
+          # so errexit is on regardless of the `set` line above, and a bare
+          # assignment from a failing command ends the step right there. The
+          # gate still held, because the step failed either way, but the branch
+          # below never ran: the annotation naming this as the failure that
+          # would reach every user's machine could not print, and the run page
+          # said only "Process completed with exit code 1".
+          code=0
+          out=$("$bin" version 2>&1) || code=$?
           echo "--- output ---"
           echo "$out"
           echo "--- exit $code ---"
@@ -188,6 +272,171 @@ jobs:
               echo "::error title=The desktop sidecar started but said nothing recognisable::Exit was 0 but the output does not carry a version line, so the interpreter may have started without the app package."
               exit 1 ;;
           esac
+
+          # Which version it reports, not merely that it reports one. The step
+          # above accepts any version string, so a sidecar built from the wrong
+          # commit passes it: the jobs in this workflow each check out
+          # RELEASE_REF independently, a git tag can be moved between those two
+          # checkouts, and nothing else in the pipeline compares what was built
+          # against what is being released. A v15.1.0 release carrying a 15.0.0
+          # sidecar would be green everywhere.
+          #
+          # Safe to gate on, measured rather than assumed: the frozen sidecar
+          # printed "OpenConstructionERP v15.0.0" on all three platforms in the
+          # v15.0.0 run (32222276138), so the version resolves inside a bundle
+          # where importlib.metadata does not answer.
+          #
+          # Only for a release ref. A sidecar-only dispatch from a branch has no
+          # version to be compared against and says so.
+          ref="${RELEASE_REF:-}"
+          case "$ref" in
+            v[0-9]*)
+              want="OpenConstructionERP v${ref#v}"
+              case "$out" in
+                *"$want"*)
+                  echo "OK: the sidecar reports ${ref#v}, which is the version being released." ;;
+                *)
+                  echo "::error title=The sidecar reports a different version than the tag being released::Expected the version line to read '${want}' for ${ref}, and it does not. Either this job checked out something other than ${ref}, or the tag moved after it was pushed, or the version was never bumped in the source. Shipping this would put one version number on the installer and another inside it."
+                  exit 1 ;;
+              esac ;;
+            *)
+              echo "Not a release ref (${ref:-<empty>}), so the reported version is not compared against a tag." ;;
+          esac
+
+      # The startup path, exercised on the frozen artefact rather than reasoned
+      # about from the spec. `doctor` asks app.core.i18n to load the catalogue
+      # with the same call app.main makes, so this fails here for the same
+      # reason it would fail on a user's machine, one build earlier.
+      #
+      # The exit code is deliberately not the gate. `doctor` reports on the
+      # whole install and legitimately flags things a frozen bundle cannot
+      # answer, importlib.metadata among them, so a non-zero exit here would be
+      # noise. The assertion is on the one line this step is about, and the
+      # wording it requires is the one the "all loaded" branch prints: a bundle
+      # carrying only some of the catalogue says "N of M" and fails, which is
+      # the state the desktop build sat in, undetected, for its whole life.
+      - name: Check the sidecar carries the data its startup reads
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -uo pipefail
+          bin="desktop/dist/openconstructionerp-server${{ matrix.ext }}"
+          chmod +x "$bin" 2>/dev/null || true
+          echo "Running: $bin doctor"
+          out=$("$bin" doctor 2>&1) || true
+          echo "--- output ---"
+          echo "$out"
+          echo "--- end ---"
+          line=$(printf '%s\n' "$out" | grep -i "Translation catalogue" || true)
+          if [ -z "$line" ]; then
+            echo "::error title=The sidecar could not report on its translation catalogue::doctor produced no 'Translation catalogue' line on ${{ matrix.os }}, so this build cannot say whether it carries one. Either the preflight check was removed or the sidecar failed before reaching it. See the output above."
+            exit 1
+          fi
+          case "$line" in
+            *"all "*" locales loaded"*)
+              echo "OK: $line" ;;
+            *)
+              echo "::error title=The desktop sidecar is missing its translation catalogue::${line}. app.main calls load_translations() during startup, so a bundle in this state exits before serving anything and the launcher can only report that the backend did not start in time. The catalogue is force-included into the wheel and shipped by desktop/pyinstaller.spec; check that the spec still adds backend/locales."
+              exit 1 ;;
+          esac
+
+          # The other data file the product is unusable without, read from the
+          # same report. The catalogue was made unconditional in the spec
+          # precisely because a conditional include shipped a bundle without
+          # it; the frontend dist is still conditional there
+          # (`if FRONTEND_DIST.is_dir()`), so a sidecar built beside an empty
+          # or half-written frontend/dist collects no UI, starts perfectly,
+          # answers /api/health, and serves a blank page. Nothing in this
+          # pipeline looked at that, on any platform.
+          #
+          # doctor already asks the server's own lookup, so this is a read of
+          # an existing answer rather than a new check: "ok" prints the path
+          # the UI was found at, and the "no frontend found" branch is a
+          # warning, which is invisible to a step that only reads doctor's exit
+          # code.
+          ui=$(printf '%s\n' "$out" | grep -i "Frontend bundle" || true)
+          if [ -z "$ui" ]; then
+            echo "::error title=The sidecar could not report on its bundled UI::doctor produced no 'Frontend bundle' line on ${{ matrix.os }}, so this build cannot say whether it carries the web UI at all. Either the check was removed or the sidecar failed before reaching it."
+            exit 1
+          fi
+          case "$ui" in
+            *"bundled React UI ready"*)
+              echo "OK: $ui" ;;
+            *)
+              echo "::error title=The desktop sidecar carries no web UI::${ui}. The sidecar would start and serve the API, and the desktop window would show nothing. desktop/pyinstaller.spec only bundles frontend/dist when that directory exists at build time, so check that the frontend build step ran and wrote into it before PyInstaller was invoked."
+              exit 1 ;;
+          esac
+
+      # The stage the outage happened at, on the frozen artefact. Everything
+      # above either reads the archive or starts the interpreter; none of it
+      # boots a database. "Starting the local database" and "Preparing the
+      # database" are two of the four stages the launcher reports to the user,
+      # and until this step nothing in this pipeline reached either of them on
+      # any platform. A readiness probe that asked an address the embedded
+      # postmaster does not listen on took CI (PostgreSQL) red on Linux while
+      # every check in this job stayed green on all three, which is how a
+      # start-path defect passes a release.
+      #
+      # init-db is the launcher's own path rather than a stand-in for it: the
+      # same helper boots the cluster, the same wait decides it is ready, and
+      # then every module's tables are created. It exits non-zero if any of
+      # that fails. The data directory is a scratch one, so the run starts from
+      # nothing the way a first install does and cannot be satisfied by a
+      # cluster some earlier step left behind.
+      #
+      # The assertion is on the line naming the embedded cluster, not on the
+      # exit code alone. A runner that happened to carry DATABASE_URL would
+      # give a green init-db against an external database and prove nothing
+      # about the thing being shipped.
+      #
+      # This is the only place in the pipeline that starts PostgreSQL, so on
+      # macOS and Windows it is the only evidence the desktop start path works
+      # at all. Linux is covered here and in CI (PostgreSQL).
+      - name: Check the sidecar starts its database and prepares it
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -uo pipefail
+          bin="desktop/dist/openconstructionerp-server${{ matrix.ext }}"
+          chmod +x "$bin" 2>/dev/null || true
+          # A relative directory, deliberately. RUNNER_TEMP on Windows is a
+          # path with backslashes, and handing one to bash on one leg of a
+          # three-platform matrix is a way to fail that leg for a reason
+          # that has nothing to do with what the step checks. A relative
+          # name is resolved by the sidecar itself, the same way on all
+          # three.
+          scratch="oe-first-run-data"
+          rm -rf "$scratch"
+          mkdir -p "$scratch"
+          echo "Running: $bin init-db --data-dir $scratch"
+          code=0
+          out=$("$bin" init-db --data-dir "$scratch" 2>&1) || code=$?
+          echo "--- output ---"
+          echo "$out"
+          echo "--- exit $code ---"
+          if [ "$code" -ne 0 ]; then
+            echo "=== PostgreSQL's own log, which carries the cause when the cluster is the problem ==="
+            if [ -d "$scratch/pgdata/log" ]; then
+              for f in "$scratch/pgdata/log"/*; do
+                echo "--- $f ---"
+                tail -n 200 "$f" || true
+              done
+            elif [ -f "$scratch/pgdata/log" ]; then
+              tail -n 200 "$scratch/pgdata/log" || true
+            else
+              echo "(no log at $scratch/pgdata/log)"
+            fi
+            echo "::error title=The desktop sidecar cannot start its own database::init-db exits ${code} on ${{ matrix.os }}. On a user's machine this is the launcher stopping at 'Starting the local database' or 'Starting the application server', which is the failure v15.0.0 shipped. The output and the PostgreSQL log above carry the cause."
+            exit 1
+          fi
+          case "$out" in
+            *"embedded PostgreSQL at"*)
+              echo "OK: the sidecar brought up its own PostgreSQL and created the schema." ;;
+            *)
+              echo "::error title=init-db succeeded without the embedded database::Exit was 0 but the report does not name an embedded cluster, so this run proved nothing about the database the installer ships. Check whether DATABASE_URL is set on this runner."
+              exit 1 ;;
+          esac
+          rm -rf "$scratch"
 
       # Printed on every macOS run, green or red, because it is the evidence for
       # the paragraph above. It describes the wrapper and the machine that built
@@ -261,19 +510,32 @@ jobs:
   build-tauri:
     name: Build Desktop (${{ matrix.os }})
     needs: build-sidecar
-    # Skipped on a manual sidecar-only run. The step below names the release
-    # after the git ref, so a manual run from a branch would open a draft
-    # release called "main". A tag push never takes this branch: the input is
-    # empty there, so the condition is true.
-    if: github.event_name != 'workflow_dispatch' || inputs.sidecar_only != true
+    # Bundling is what publishes, so the condition for bundling is the
+    # condition for being allowed to publish, and only a version tag qualifies.
+    #
+    # A tag push takes the first clause and always bundles. A dispatch has to
+    # name a tag that starts with "v", which is the shape the release path
+    # assumes everywhere below.
+    #
+    # This used to read `inputs.tag != '' || inputs.sidecar_only != true`, and
+    # the second half of that was a live hazard: unticking the sidecar_only box
+    # on a run started from main passed RELEASE_REF="main" to tauri-action,
+    # which would have opened a draft release tagged "main" carrying the
+    # installers. No run ever did it (measured: the repository holds no draft
+    # releases, and the one dispatch that reached this job, 32246095283, passed
+    # tagName v15.0.0), but nothing except the default state of a checkbox was
+    # preventing it. startsWith also refuses a tag box holding a branch name,
+    # which is the same mistake typed by hand rather than left unticked.
+    if: github.event_name != 'workflow_dispatch' || startsWith(inputs.tag, 'v')
     runs-on: ${{ matrix.os }}
-    # Measured over the same three releases: Windows 27.8 to 29.6 min, macOS
-    # 26.4 to 36.2, Linux 119.2 to 123.5. Linux is not an outlier, it is the
-    # normal cost of building the Tauri bundle there with no Rust cache, and it
-    # is stable within four minutes across three releases. The cap is set from
-    # that leg rather than from the average, because a matrix job takes one
-    # number for every OS in it.
-    timeout-minutes: 240
+    # Windows 27.8 to 33.2 min, macOS 26.4 to 52.9, Linux 26.5 once the rpm is
+    # out of this job. The earlier reading of 119 to 123 min for Linux was read
+    # as "the normal cost of building the Tauri bundle there with no Rust
+    # cache", and that was wrong: on v14.8.1 the Rust build finished in 5m29s
+    # and the deb was written in 13 seconds. The two hours were the rpm, which
+    # now has a job of its own. The cap is a little over twice the slowest leg,
+    # because a matrix job takes one number for every OS in it.
+    timeout-minutes: 120
     strategy:
       # Build every OS even if one fails, so a single-platform break never
       # cancels the others and we still ship the installers that did build.
@@ -282,13 +544,29 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            # Windows ships the NSIS installer only. The .msi was a second
+            # installer for the same platform, which meant two downloads to
+            # choose between, two things to sign and two ways for a release to
+            # be half Windows. The NSIS one is the one that carries our hooks,
+            # our language selector and the per-machine install mode.
+            bundles: "--bundles nsis"
           - os: macos-latest
             target: aarch64-apple-darwin
+            # Empty means the config's own target list, which is what macOS
+            # wants: the dmg and the app archive.
+            bundles: ""
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            # The deb only. The AppImage follows in a step of its own and the
+            # rpm in a job of its own, both for the same reason: neither is
+            # allowed to cost us a package that had already been built. See
+            # "Bundle the AppImage" below and build-linux-rpm.
+            bundles: "--bundles deb"
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_REF }}
 
       - name: Set up Node.js 20
         uses: actions/setup-node@v4
@@ -367,9 +645,18 @@ jobs:
         shell: pwsh
         env:
           # Same override knobs the runtime auto-installer honours, so a fork or
-          # a pinned release branch can be selected without editing this file.
+          # a newer commit can be selected without editing this file.
+          #
+          # The ref default is a COMMIT SHA and must stay one, and it must stay
+          # equal to ``_DDC_DEFAULT_REF`` in backend/app/modules/takeoff/router.py.
+          # This step bakes the IFC converter into the Windows installer, so the
+          # bytes we ship and the bytes the runtime installer downloads have to
+          # come from the same commit - otherwise a user who installs DWG on a
+          # machine that already has the bundled IFC converter gets two different
+          # builds of the same Qt DLLs side by side. The gate that keeps the two
+          # literals equal is backend/tests/unit/test_converter_ref_is_pinned.py.
           OE_CONVERTER_REPO: ${{ vars.OE_CONVERTER_REPO || 'datadrivenconstruction/cad2data-Revit-IFC-DWG-DGN' }}
-          OE_CONVERTER_REF: ${{ vars.OE_CONVERTER_REF || 'main' }}
+          OE_CONVERTER_REF: ${{ vars.OE_CONVERTER_REF || '45498426fd225c36a2a2a3a67993fd39c5d9d0ff' }}
           # Lifts the unauthenticated API rate limit on the runner. The converter
           # repo is public, so a read with the default job token is enough.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -379,8 +666,9 @@ jobs:
           $ref  = $env:OE_CONVERTER_REF
           $subPath = 'DDC_WINDOWS_Converters/DDC_CONVERTER_IFC'
           $destRoot = 'desktop/src-tauri/resources/converters/ifc_windows'
-          # The API zipball endpoint accepts any ref - branch, tag, or SHA - so a
-          # pinned tag works the same as the default branch with no URL change.
+          # The API zipball endpoint accepts any ref - branch, tag, or SHA - so
+          # the pinned SHA works with no URL change. Verified against the live
+          # endpoint on 2026-08-22: zipball/<sha> answers 200.
           $zipUrl = "https://api.github.com/repos/$repo/zipball/$ref"
           $tmpZip = Join-Path $env:RUNNER_TEMP 'ddc_ifc.zip'
           $tmpDir = Join-Path $env:RUNNER_TEMP 'ddc_ifc_extract'
@@ -434,10 +722,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: "OpenConstructionERP ${{ github.ref_name }}"
+          # Run the pinned CLI instead of whichever one the action resolves.
+          tauriScript: npx --yes @tauri-apps/cli@${{ env.TAURI_CLI_VERSION }}
+          # Empty on Windows and macOS, "--bundles deb,appimage" on Linux.
+          args: ${{ matrix.bundles }}
+          tagName: ${{ env.RELEASE_REF }}
+          releaseName: "OpenConstructionERP ${{ env.RELEASE_REF }}"
           releaseBody: |
-            ## OpenConstructionERP ${{ github.ref_name }}
+            ## OpenConstructionERP ${{ env.RELEASE_REF }}
 
             A real native desktop app. No Python, no pip, no Docker, and no database to set up. Download one file, run it, and you are ready.
 
@@ -445,9 +737,9 @@ jobs:
 
             | Platform | File | Notes |
             | --- | --- | --- |
-            | Windows | `.exe` installer, 64-bit | WebView2 is fetched automatically if it is missing |
+            | Windows | `.exe` installer, 64-bit | The web view runtime is inside the installer, so setup needs no internet |
             | macOS | `.dmg`, Apple Silicon | Drag the app to Applications, then see "Opening on macOS" below |
-            | Linux | `.deb` or `.AppImage`, 64-bit | `.deb` for Debian and Ubuntu, `.AppImage` runs anywhere |
+            | Linux | `.deb`, `.rpm` or `.AppImage`, 64-bit | `.deb` for Debian and Ubuntu, `.rpm` for Fedora and openSUSE, `.AppImage` runs anywhere |
 
             The files are attached below under Assets. You can also always get the newest build at https://openconstructionerp.com/download which detects your operating system for you.
 
@@ -483,6 +775,56 @@ jobs:
             Docs: https://openconstructionerp.com/docs  .  Report an issue: https://github.com/datadrivenconstruction/OpenConstructionERP/issues
           releaseDraft: true
           prerelease: false
+
+      # The AppImage, on its own, and allowed to fail.
+      #
+      # It used to be bundled by the same command as the deb, and on v15.3.0
+      # that is what cost us the deb. linuxdeploy failed, so the whole
+      # "tauri build --bundles deb,appimage" invocation exited 1, and the deb
+      # it had finished writing twenty seconds earlier never reached the
+      # release. Debian and Ubuntu users had nothing for that version while a
+      # working package sat in the runner's target directory, thrown away by
+      # the failure of a different package.
+      #
+      # The AppImage is also the likeliest thing here to break without us
+      # having changed anything. Its bundler downloads linuxdeploy and three
+      # plugins from upstream at bundle time, one of them from a rolling
+      # "continuous" tag, so an upstream publish lands in our release run. And
+      # it is the least downloaded thing we ship: 4 against 9 for the deb and
+      # 15 for the rpm on v14.8.1.
+      #
+      # So the same treatment as build-linux-rpm. Keep it, and keep it out of
+      # the path of the packages that do not depend on it. tauri reuses the
+      # binary the step above compiled, so this costs bundling time only.
+      - name: Bundle the AppImage
+        if: matrix.os == 'ubuntu-22.04'
+        continue-on-error: true
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop
+          tauriScript: npx --yes @tauri-apps/cli@${{ env.TAURI_CLI_VERSION }}
+          args: --bundles appimage
+          # No releaseBody here. The step above already wrote it, and this one
+          # has only an asset to add.
+          tagName: ${{ env.RELEASE_REF }}
+          releaseName: "OpenConstructionERP ${{ env.RELEASE_REF }}"
+          releaseDraft: true
+          prerelease: false
+
+      - name: Say whether the AppImage was produced
+        if: matrix.os == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          set -uo pipefail
+          IMG=$(find desktop/src-tauri/target -path '*/bundle/appimage/*.AppImage' -type f 2>/dev/null | head -1)
+          if [ -z "${IMG:-}" ]; then
+            echo "::warning title=No AppImage was produced::The appimage bundler failed. The deb built by the step before it is unaffected and is on the release. Distribution-agnostic Linux users have no AppImage for this version."
+            echo "No AppImage was produced by this run." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "Built $(basename "$IMG"), $(du -h "$IMG" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
 
       # Read-only diagnostic: confirm the macOS .app carries a valid ad-hoc
       # code signature. With the sidecar pre-signed and signingIdentity "-",
@@ -546,16 +888,33 @@ jobs:
       # the file named in the user's failure report from clearing a run by never
       # having been opened.
       #
-      # It warns rather than fails, for now. The measurement is new here and has
-      # never been taken at this point, so nothing establishes what a healthy
-      # bundled sidecar reads as, and making a release depend on an unmeasured
-      # property is how you learn its value at tag time. The cost of the other
-      # choice is bounded but real: tauri-action uploads the installers to the
-      # draft release from inside itself, before this step runs, so failing here
-      # withholds no artifact that was going to ship, but it does turn the run
-      # red and it skips the Windows signing job, which needs build-tauri. Once
-      # one clean reading exists, turn the exit 0 at the end of the failing
-      # branch into exit 1 and this becomes a gate.
+      # It is a gate now. It used to warn on the stated grounds that the
+      # measurement was new and nothing established what a healthy bundled
+      # sidecar reads as, with the condition for promoting it written down:
+      # once one clean reading exists, fail instead of warning. That reading
+      # exists. The v14.8.1 run, 31617860264, printed "OK: inside the shipped
+      # bundle, nothing the sidecar unpacks disagrees with it about a Team ID"
+      # from this step on the macOS leg.
+      #
+      # The second half of the old reasoning has also expired. Failing here no
+      # longer skips the Windows signing job: that job's condition was changed
+      # to run whenever build-tauri reached any conclusion other than skipped.
+      #
+      # Know what a red run here costs, and know that it is less than it was.
+      # This used to read "Release Signing triggers on a Desktop Release that
+      # concluded success, so a failure at this point leaves the release
+      # unsigned until someone dispatches the signing workflow by hand", and
+      # that has not been true since the conclusion gate came out of
+      # release-signing.yml - a run's conclusion is a fact about the run and
+      # the thing being judged is the release, which that workflow's inventory
+      # job now reads directly. request-signing below follows the same rule as
+      # sign-windows and starts the signing workflow whenever this job reached
+      # any conclusion other than skipped, so a red census here does not
+      # withhold the signature. What it does mean is that the macOS installer
+      # on the release is one this gate refused, and the inventory will sign a
+      # release carrying it, because a bundle that exists is what a manifest
+      # describes. The report job at the end of this workflow says what
+      # reached the release rather than leaving it to be discovered.
       - name: Check what the bundled sidecar carries (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -563,18 +922,24 @@ jobs:
         run: |
           set -uo pipefail
 
+          # Finding nothing to measure is a failure, not a quiet pass. These two
+          # branches used to warn and exit 0, which is the worst shape a gate
+          # can have: it examined zero items and reported success. Neither state
+          # is survivable anyway. No .app under target means the macOS bundle
+          # was not produced, and no sidecar inside Contents/MacOS means the
+          # .dmg about to ship cannot start a backend at all.
           APP=$(find desktop/src-tauri/target -path '*/bundle/macos/*.app' -type d -maxdepth 8 2>/dev/null | head -1)
           if [ -z "${APP:-}" ]; then
-            echo "::warning title=The bundled sidecar was never measured::No .app bundle was found under desktop/src-tauri/target, so the census of the artifact users install did not run. The pre-bundle census in the Build Sidecar job still holds, and it says nothing about what bundling did."
-            exit 0
+            echo "::error title=No macOS app bundle was produced::Nothing matching */bundle/macos/*.app exists under desktop/src-tauri/target, so there is no artifact to measure and none to ship. The census of the artifact users install did not run because the artifact does not exist."
+            exit 1
           fi
           echo "App bundle: $APP"
 
           SIDECAR=$(find "$APP/Contents/MacOS" -type f -name 'openconstructionerp-server*' 2>/dev/null | head -1)
           if [ -z "${SIDECAR:-}" ]; then
-            echo "::warning title=The bundled sidecar was never measured::No openconstructionerp-server binary was found in $APP/Contents/MacOS, so the census of the artifact users install did not run."
+            echo "::error title=The macOS app carries no sidecar::No openconstructionerp-server binary was found in $APP/Contents/MacOS. The bundle would install and then never start a backend. Check that the externalBin entry in tauri.conf.json still matches the file name the Build Sidecar job uploads."
             ls -la "$APP/Contents/MacOS" || true
-            exit 0
+            exit 1
           fi
           echo "Bundled sidecar: $SIDECAR"
 
@@ -623,9 +988,9 @@ jobs:
             echo "OK: inside the shipped bundle, nothing the sidecar unpacks disagrees with it about a Team ID."
             echo "Bundled sidecar census: clean." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::warning title=The shipped sidecar disagrees with its own payload about a Team ID::The census above found inside the .app the shape that stops the app at 'Starting the application server' on a user's machine, or could not measure enough of it to rule that out. Compare it against the pre-bundle census in the Build Sidecar job: if that one was clean, bundling is what changed it. This warns rather than fails while the measurement is new."
+            echo "::error title=The shipped sidecar disagrees with its own payload about a Team ID::The census above found inside the .app the shape that stops the app at 'Starting the application server' on a user's machine, or could not measure enough of it to rule that out. Compare it against the pre-bundle census in the Build Sidecar job: if that one was clean, bundling is what changed it."
             echo "Bundled sidecar census: MISMATCH or inconclusive, see the Build Desktop (macos-latest) log." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            exit 1
           fi
 
       # What the macOS leg publishes is ad-hoc signed and has never been
@@ -689,9 +1054,138 @@ jobs:
             echo "See \`docs/desktop/MACOS_NOTARIZATION.md\` and \`docs/desktop/RELEASE_SIGNATURE_INVENTORY.md\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # The Linux .rpm, on its own, because it costs more than everything else in
+  # this workflow put together.
+  #
+  # Measured on two releases. v14.8.1, a 369 MB sidecar: Rust finished in
+  # 5m29s, the .deb was written in 13 seconds, the .rpm took 1h48m43s and the
+  # AppImage 1m53s after it. v15.0.0, a 732 MB sidecar: the .deb took 25
+  # seconds and the .rpm was still running 3h33m later when the 240 minute job
+  # cap cancelled it, which took the whole run to "cancelled" and with it the
+  # Linux installers, SHA256SUMS and the cosign signature, none of which have
+  # anything to do with rpm. The two readings are the same throughput, about
+  # 56 KB of payload a second, so this scales with whatever the sidecar
+  # weighs and the next thing added to it moves the cap again.
+  #
+  # The rate is the point. The .deb packs the identical payload to the
+  # identical size in 25 seconds, so this is not the compression algorithm:
+  # the rpm bundler is roughly four hundred times slower than gzip at the same
+  # job. This used to say "and no setting we own changes that", and that was
+  # not true: a setting exists and had never been tried. It is worth naming,
+  # because the sentence closed off the only cheap repair there is. Upstream
+  # puts the cost in the packer rather than in the algorithm - tauri-apps/tauri
+  # issue 11478 is this same symptom on this same runner image, and a Tauri
+  # maintainer answers that the compression in the rpm-rs crate is much slower
+  # than whatever the deb bundler uses - and tauri exposes that packer's
+  # compression as bundle.linux.rpm.compression, absent from tauri.conf.json
+  # until now and therefore Gzip level 6, the bundler's own default. It is set
+  # to {"type": "none"} there now.
+  #
+  # Which should cost close to nothing in bytes, because this payload does not
+  # compress. v14.8.1 shipped a 369 MB sidecar inside a 394 MB .deb and a 394
+  # MB .rpm; v15.0.0 a 732 MB sidecar inside a 743 MB .deb. Both packages come
+  # out larger than the binary they carry, so gzip is spending hours to save a
+  # low single-digit percentage of a package that is mostly a PyInstaller
+  # onefile archive, which is already compressed.
+  #
+  # Read the next run rather than this comment. "none" is also the cleanest
+  # experiment available: if the rpm is suddenly minutes, the compressor was
+  # the whole cost, and if it is still hours the cost is elsewhere in rpm-rs
+  # and the setting can go back. Either way the release no longer waits on the
+  # answer, which is the other half of this and is the part that does not
+  # depend on a measurement we have not taken yet.
+  #
+  # The rpm is the most downloaded Linux package we publish (15 against 9 for
+  # the deb and 4 for the AppImage on v14.8.1), so it is not something to
+  # drop; it is something to keep out of the path of the release.
+  #
+  # Hence a job of its own, needing only the sidecar so it starts alongside
+  # the others, and continue-on-error so that if it does run out of clock the
+  # release still concludes green. The run still waits for this job before it
+  # completes, but the signature no longer does: request-signing below starts
+  # Release Signing as soon as the installers are attached, and this run's
+  # eventual completion starts it a second time so the manifest ends up
+  # covering the rpm too.
+  build-linux-rpm:
+    name: Build Linux RPM
+    needs: build-sidecar
+    # Same condition as build-tauri, and for the same reason: this job also
+    # passes a tagName to tauri-action, so it can also open a release.
+    if: github.event_name != 'workflow_dispatch' || startsWith(inputs.tag, 'v')
+    runs-on: ubuntu-22.04
+    # Twice the v15.0.0 payload at the measured rate, plus the half hour the
+    # rest of the job takes. A cap above six hours is not available.
+    timeout-minutes: 350
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
+
+      - name: Download sidecar
+        uses: actions/download-artifact@v4
+        with:
+          name: sidecar-x86_64-unknown-linux-gnu
+          path: desktop/src-tauri/binaries/
+
+      - name: Make sidecar executable
+        run: chmod +x desktop/src-tauri/binaries/*
+
+      - name: Build the rpm
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop
+          # Run the pinned CLI instead of whichever one the action resolves.
+          tauriScript: npx --yes @tauri-apps/cli@${{ env.TAURI_CLI_VERSION }}
+          args: --bundles rpm
+          # No releaseBody here. The release already exists by the time this
+          # finishes and carries the notes release.yml wrote from the
+          # changelog; this job only has an asset to add to it.
+          tagName: ${{ env.RELEASE_REF }}
+          releaseName: "OpenConstructionERP ${{ env.RELEASE_REF }}"
+          releaseDraft: true
+          prerelease: false
+
+      - name: Say how long the rpm took
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          RPM=$(find desktop/src-tauri/target -path '*/bundle/rpm/*.rpm' -type f 2>/dev/null | head -1)
+          if [ -z "${RPM:-}" ]; then
+            echo "::warning title=No rpm was produced::The rpm bundler did not finish inside this job's cap, or it failed. The release keeps its .deb and .AppImage; Fedora and openSUSE users have no package for this version."
+            echo "No rpm was produced by this run." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          SIZE=$(du -h "$RPM" | cut -f1)
+          echo "Built $(basename "$RPM"), $SIZE" >> "$GITHUB_STEP_SUMMARY"
+
   # Authenticode code signing for the Windows installers.
   #
-  # The tauri-action above uploads the Windows .exe (NSIS) and .msi to the
+  # The tauri-action above uploads the Windows .exe (NSIS) to the
   # release as a draft, so the assets are never visible to users until the
   # founder publishes the release by hand. This job runs on the Windows
   # runner after the build, signs each Windows installer with the founder's
@@ -725,7 +1219,7 @@ jobs:
     # with fail-fast disabled, so one leg failing marks the whole job failed
     # while the other legs still attach their installers to the release. A
     # macOS leg that failed after the Windows leg had already uploaded its
-    # .exe and .msi would therefore leave signed-looking Windows installers on
+    # .exe would therefore leave a signed-looking Windows installer on
     # a release that this job never looked at, and WINDOWS_SIGNING_REQUIRED
     # could not fire because nothing ran to read it. That is the same silence
     # this job just removed from the inside, relocated to its own boundary.
@@ -737,8 +1231,8 @@ jobs:
     runs-on: windows-latest
     # Measured at 0.3 to 0.6 min, because there are no signing secrets and the
     # job downloads nothing. The cap is deliberately far above that: if the
-    # secrets ever arrive this job starts downloading and re-uploading two
-    # installers of about 350 MB each, and the timeout should not be the thing
+    # secrets ever arrive this job starts downloading and re-uploading an
+    # installer of about 650 MB, and the timeout should not be the thing
     # that discovers it.
     timeout-minutes: 30
     steps:
@@ -792,7 +1286,7 @@ jobs:
           AZURE_KV_CLIENT_SECRET: ${{ secrets.AZURE_KV_CLIENT_SECRET }}
           AZURE_KV_TENANT_ID: ${{ secrets.AZURE_KV_TENANT_ID }}
           SIGNING_REQUIRED: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_REF }}
         shell: bash
         run: |
           set -euo pipefail
@@ -826,7 +1320,7 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
-            echo "::warning title=Windows installers are not code signed::None of the five AZURE_KV_* secrets are set, so the .exe and .msi on this release are unsigned. Windows SmartScreen will warn every person who runs them. See docs/desktop/WINDOWS_SIGNING.md."
+            echo "::warning title=The Windows installer is not code signed::None of the five AZURE_KV_* secrets are set, so the .exe on this release is unsigned. Windows SmartScreen will warn every person who runs it. See docs/desktop/WINDOWS_SIGNING.md."
             # A heading rather than a line, because this is the one branch
             # that ships an unsigned artifact and stays green. It has to be
             # the first thing read on the run page, not something found by
@@ -836,7 +1330,7 @@ jobs:
               echo
               echo "# WINDOWS INSTALLERS ON THIS RELEASE ARE NOT CODE SIGNED"
               echo
-              echo "> The \`.exe\` and \`.msi\` this run attached to \`${TAG:-this tag}\` carry **no Authenticode signature**."
+              echo "> The \`.exe\` this run attached to \`${TAG:-this tag}\` carries **no Authenticode signature**."
               echo "> Windows SmartScreen will warn every person who runs them, and nothing in the files"
               echo "> identifies who published them. Every release of this project so far has shipped in"
               echo "> this state. It is written here so that it reads as a decision and not as a silence."
@@ -879,7 +1373,7 @@ jobs:
         if: steps.preflight.outputs.mode == 'sign'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_REF }}
         shell: bash
         run: |
           set -euo pipefail
@@ -899,21 +1393,20 @@ jobs:
             --repo "${{ github.repository }}" \
             --dir signing \
             --pattern '*.exe' \
-            --pattern '*.msi' \
             --skip-existing
 
           ls -la signing
 
-          # Composition, not count. Counting files would accept two .exe and no
-          # .msi, which is the shape a half finished Windows build leaves
-          # behind, and the missing installer would then ship unsigned while
-          # this job stayed green. Both kinds have to be present.
+          # Windows ships one installer now, so the question is no longer which
+          # kinds arrived but whether the one kind did. Zero is the answer that
+          # has to fail: an empty directory here would let the signing step
+          # below find nothing, exit zero, and take the job green having signed
+          # nothing at all.
           shopt -s nullglob
           exes=(signing/*.exe)
-          msis=(signing/*.msi)
-          echo "downloaded ${#exes[@]} .exe and ${#msis[@]} .msi"
-          if [ ${#exes[@]} -eq 0 ] || [ ${#msis[@]} -eq 0 ]; then
-            echo "::error title=Windows installers are missing from the release::Expected at least one .exe and at least one .msi on $TAG, found ${#exes[@]} and ${#msis[@]}. Signing only what arrived would publish a release with one signed installer and one unsigned one, which is harder to notice than a release with neither." >&2
+          echo "downloaded ${#exes[@]} .exe"
+          if [ ${#exes[@]} -eq 0 ]; then
+            echo "::error title=The Windows installer is missing from the release::Expected at least one .exe on $TAG and found none. There is nothing to sign, and a green signing job over an empty directory reads as a signed release." >&2
             exit 1
           fi
 
@@ -935,7 +1428,7 @@ jobs:
           echo "Windows code signing: running against Azure Key Vault." >> "$GITHUB_STEP_SUMMARY"
 
           shopt -s nullglob
-          files=(signing/*.exe signing/*.msi)
+          files=(signing/*.exe)
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error title=Nothing to sign::The download step verified that installers were present and this step found none." >&2
             exit 1
@@ -982,7 +1475,7 @@ jobs:
           echo "using $signtool"
 
           shopt -s nullglob
-          files=(signing/*.exe signing/*.msi)
+          files=(signing/*.exe)
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error title=Nothing to verify::The signing step reported success and left no installers behind." >&2
             exit 1
@@ -1001,13 +1494,13 @@ jobs:
         if: steps.preflight.outputs.mode == 'sign'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_REF }}
         shell: bash
         run: |
           set -euo pipefail
 
           shopt -s nullglob
-          files=(signing/*.exe signing/*.msi)
+          files=(signing/*.exe)
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error title=Nothing to upload::Verification passed over a set of installers that is now empty." >&2
             exit 1
@@ -1023,3 +1516,329 @@ jobs:
               --repo "${{ github.repository }}" \
               --clobber
           done
+
+  # Start Release Signing now, rather than when this run finally ends.
+  #
+  # Release Signing also triggers on a `workflow_run` completion of Desktop
+  # Release, and that trigger stays exactly as it is. What it cannot do is fire
+  # early: a run is not complete until every job in it is, build-linux-rpm
+  # above runs for two to four hours, and so a release sat with six installers
+  # and no SHA256SUMS, no signature, no certificate, no SBOM and no licence
+  # inventory for as long as the slowest optional package took. v15.1.0
+  # published its installers at 14:28 UTC and was still carrying none of those
+  # five files four hours later. Giving the rpm a job of its own bought nothing
+  # by itself, because the trigger was never separated with it.
+  #
+  # workflow_dispatch is one of the two events a GITHUB_TOKEN is allowed to
+  # raise. Events produced by a GITHUB_TOKEN do not start workflow runs, which
+  # is the recursion guard, and workflow_dispatch and repository_dispatch are
+  # the documented exceptions to it. So this job can ask for the signature at
+  # the moment there is something to sign.
+  #
+  # It is dispatched against the default branch rather than against the tag, on
+  # purpose and for the same reason the `tag` input at the top of this file
+  # exists: a tag carries the pipeline as it was when the tag was cut, and a
+  # fix landed afterwards can never reach it. The late `workflow_run` pass
+  # already runs from the default branch, and the two passes have to be the
+  # same pipeline or the second one silently repairs or breaks what the first
+  # one did.
+  #
+  # It needs sign-windows as well as build-tauri, and that is not tidiness. The
+  # day the Azure Key Vault secrets are set, sign-windows replaces the .exe on
+  # the release with a signed copy of itself. A manifest taken before that
+  # would carry the hash of bytes nobody can download any more, and it would
+  # verify cleanly against nothing, which is the worst way for a checksum file
+  # to be wrong.
+  #
+  # It does not require either of them to have succeeded, deliberately. Whether
+  # a release is worth signing is a question about the release, and
+  # release-signing.yml has a job that reads the assets and answers it. A
+  # condition here demanding green would put a run-shaped gate back in front of
+  # the signature one file over from the test that forbids it, and that gate is
+  # what cost v15.0.0 seven files.
+  #
+  # Two signing runs per release is the intended outcome rather than a side
+  # effect. The early one covers the installers. The late one, started by this
+  # run finally completing, regenerates the manifest over the release as it
+  # then stands, which is how the rpm gets inside it. Signing is idempotent by
+  # construction: it re-downloads every asset on the release and clobbers all
+  # three of its files, and the SBOM job it calls clobbers its three too.
+  request-signing:
+    name: Start Release Signing
+    needs: [build-tauri, sign-windows]
+    if: ${{ !cancelled() && needs.build-tauri.result != 'skipped' && (github.ref_type == 'tag' || startsWith(inputs.tag, 'v')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Narrower than the `contents: write` this workflow grants by default.
+    # Declaring permissions on a job replaces the whole set for that job's
+    # token, so this one can start a workflow and read the repository and can
+    # touch neither the release nor the code.
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Ask Release Signing to run against this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ env.RELEASE_REF }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          branch="${DEFAULT_BRANCH:-main}"
+          if [ -z "${DEFAULT_BRANCH:-}" ]; then
+            echo "::warning title=The event carried no default branch::Falling back to 'main'. If the default branch is not main, this dispatch runs the wrong copy of release-signing.yml or fails outright."
+          fi
+          echo "Dispatching Release Signing for ${TAG} from ${branch}"
+
+          # The newest run of the signing workflow before we ask for another
+          # one. Run ids increase per repository, so a larger one afterwards is
+          # a run that did not exist when this step started. Without this
+          # reading the step below would find the previous release's run and
+          # call it ours.
+          before=$(gh run list --workflow release-signing.yml --repo "$REPO" \
+            --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+          echo "newest Release Signing run before the dispatch: ${before}"
+
+          # No `|| true`. A refused dispatch is a real failure with a real
+          # cause, usually the actions: write scope or a workflow file that is
+          # not on the default branch, and it has to be visible as one.
+          gh workflow run release-signing.yml \
+            --repo "$REPO" \
+            --ref "$branch" \
+            -f tag="$TAG"
+
+          # Read it back. "gh workflow run" reports that the API accepted the
+          # request, which is not the same claim as a run existing, and this
+          # whole job is worth nothing if the difference between the two goes
+          # unnoticed.
+          started=""
+          for attempt in 1 2 3 4 5 6; do
+            sleep 10
+            latest=$(gh run list --workflow release-signing.yml --repo "$REPO" \
+              --limit 1 --json databaseId,url --jq '.[0] | "\(.databaseId) \(.url)"' || true)
+            id="${latest%% *}"
+            if [ -n "$id" ] && [ "$id" != "$before" ]; then
+              started="$latest"
+              break
+            fi
+            echo "attempt ${attempt}: no new run yet"
+          done
+
+          if [ -n "$started" ]; then
+            echo "Release Signing started: ${started}"
+            {
+              echo "### Release Signing started early for \`${TAG}\`"
+              echo
+              echo "${started#* }"
+              echo
+              echo "It ran against the installers rather than waiting for this run to finish, so"
+              echo "the checksums, signature, certificate, SBOM and licence inventory do not wait"
+              echo "on \`build-linux-rpm\`. When this run does complete, Release Signing runs again"
+              echo "and regenerates the manifest over everything then published, including the rpm."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Not a failure, and saying which kind of not-a-failure matters. The
+          # `workflow_run` trigger on release-signing.yml is untouched, so the
+          # signature still arrives when this run completes. What is lost is
+          # only the head start, which puts the release back where every
+          # release before this change already was.
+          echo "::warning title=Release Signing did not start early::The dispatch was accepted but no new run appeared within a minute. ${TAG} is not left unsigned: Release Signing still triggers when this run completes, which is after build-linux-rpm, so the signature arrives hours later instead of minutes. Check the actions: write scope on this job and that release-signing.yml on ${branch} still declares workflow_dispatch."
+          {
+            echo "### Release Signing did not start early for \`${TAG}\`"
+            echo
+            echo "The dispatch was accepted and no new run appeared within a minute."
+            echo
+            echo "The release is not left unsigned. \`release-signing.yml\` still triggers on this"
+            echo "run completing, so the signature arrives after \`build-linux-rpm\` rather than"
+            echo "after the installers. To sign now, dispatch **Release Signing** against"
+            echo "\`${TAG}\` by hand."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # What ended up on the release, read off the release.
+  #
+  # Every other job in this workflow reports on what it did. None of them, and
+  # nothing in release.yml or release-signing.yml either, ever looked at the
+  # thing all of them are producing. That gap is not theoretical: v15.0.0 is
+  # published today with six installers, no .rpm, no SHA256SUMS, no signature,
+  # no SBOM and no licence inventory, because its Linux leg was cancelled by a
+  # job timeout, which made the run conclude "cancelled", which meant Release
+  # Signing never triggered. Every job that ran was green. Nothing anywhere
+  # said the release was short seven files.
+  #
+  # This is the counterpart of the `confirm` job in release-signing.yml, and it
+  # exists for the same reason that one does: a guard that reasons about what
+  # should have happened cannot see a step that never ran. Reading the assets
+  # does not depend on any of that reasoning being right.
+  #
+  # always(), and deliberately not gated on the results of the jobs above. The
+  # case worth catching is precisely the one where a job did not conclude
+  # normally, so a condition that requires them all to have succeeded would
+  # stay quiet exactly when it is needed.
+  report:
+    name: Say what reached the release
+    needs: [build-sidecar, build-tauri, build-linux-rpm, sign-windows, request-signing]
+    if: ${{ always() && (github.ref_type == 'tag' || startsWith(inputs.tag, 'v')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Red on the job tile, with the annotation and the summary block, but the
+    # run still concludes success. That is deliberate and it is not timidity.
+    #
+    # tauri-action uploads the installers from inside itself, so by the time
+    # this job looks, everything it can complain about is already on the
+    # release. Failing the run therefore withholds no artifact.
+    #
+    # The reason written here used to be that failing would stop Release
+    # Signing, "which only starts from a Desktop Release that concluded
+    # success", leaving the release short an installer AND short its manifest.
+    # That reason has expired twice over: the conclusion gate is gone from
+    # release-signing.yml, and request-signing above has already asked for the
+    # signature by the time this job runs. Keeping continue-on-error is still
+    # right, for the plainer reason that a job which only observes should not
+    # be able to colour a run it did not produce.
+    #
+    # The test that decides continue-on-error here: does failing prevent a bad
+    # artifact from shipping, or does it only strip the signature off one that
+    # already shipped? The bundled census in build-tauri fails the run because
+    # a broken .app is worth stopping for. This job only observes.
+    continue-on-error: true
+    steps:
+      - name: Read the assets back off the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ env.RELEASE_REF }}
+          SIDECAR_RESULT: ${{ needs.build-sidecar.result }}
+          TAURI_RESULT: ${{ needs.build-tauri.result }}
+          RPM_RESULT: ${{ needs.build-linux-rpm.result }}
+          SIGN_RESULT: ${{ needs.sign-windows.result }}
+          DISPATCH_RESULT: ${{ needs.request-signing.result }}
+        run: |
+          set -uo pipefail
+
+          # Bounded retry against read-after-write lag on the assets API, the
+          # same shape release-signing.yml uses. Three misses over twenty
+          # seconds is not a slow API.
+          assets=""
+          fetch_error=""
+          for attempt in 1 2 3; do
+            if assets=$(gh release view "$TAG" --repo "${{ github.repository }}" \
+                 --json assets --jq '.assets[].name' 2>fetch.err); then
+              fetch_error=""
+              [ -n "$assets" ] && break
+            else
+              fetch_error=$(tr '\n' ' ' < fetch.err)
+              assets=""
+            fi
+            [ "$attempt" != 3 ] && sleep 10
+          done
+
+          if [ -n "$fetch_error" ]; then
+            echo "::error title=Could not read the release::Reading the assets on ${TAG} failed, so this run cannot say what it published: ${fetch_error}"
+            exit 1
+          fi
+
+          echo "Assets on ${TAG}:"
+          printf '%s\n' "$assets"
+
+          have() { printf '%s\n' "$assets" | grep -q -- "$1"; }
+
+          # The installer per platform this workflow claims to build. Named as
+          # suffixes rather than counted, because counting accepts two Linux
+          # packages and no macOS one.
+          missing=""
+          for expected in 'Windows .exe:\.exe$' 'macOS .dmg:\.dmg$' \
+                          'macOS .app.tar.gz:\.app\.tar\.gz$' 'Linux .deb:\.deb$'; do
+            have "${expected#*:}" || missing="${missing} ${expected%%:*},"
+          done
+          missing="${missing%,}"
+
+          # The AppImage left that list when it moved into a step of its own,
+          # for the same reason the rpm was never in it: it is allowed to be
+          # absent. Its bundler downloads linuxdeploy and three plugins from
+          # upstream at bundle time, so it can fail on a day we changed
+          # nothing, and on v15.3.0 it took the already-written deb down with
+          # it because the two shared one command. Reported, not gated.
+          if have '\.AppImage$'; then
+            img_line="present"
+          else
+            img_line="**absent** (the appimage bundler did not deliver)"
+            echo "::warning title=This release has no AppImage::${TAG} carries no AppImage, so Linux users who want neither a deb nor an rpm have nothing to download. The other Linux packages are unaffected."
+          fi
+
+          # The rpm is the one platform allowed to be absent. Its job is
+          # continue-on-error on purpose, because the bundler is roughly four
+          # hundred times slower than the deb at the same payload and has run
+          # out of clock before. A missing rpm costs Fedora and openSUSE users
+          # this version; it does not make the release wrong.
+          if have '\.rpm$'; then
+            rpm_line="present"
+          else
+            rpm_line="**absent** (build-linux-rpm reported \`${RPM_RESULT}\`)"
+            echo "::warning title=This release has no rpm::The rpm bundler did not deliver, so Fedora and openSUSE users have no package for ${TAG}. The other Linux packages are unaffected."
+          fi
+
+          # When Release Signing ran, which is no longer something this job has
+          # to predict from the shape of the run. request-signing dispatches it
+          # as soon as the installers are on the release and reads back whether
+          # a run appeared, so this reports that job's result instead of
+          # reasoning about a trigger.
+          #
+          # Everything this block used to say about a run's conclusion is gone
+          # with the conclusion gate it described. release-signing.yml judges
+          # the release rather than the run, so a Desktop Release that ends
+          # failed or cancelled still reaches it. build-sidecar and build-tauri
+          # results are therefore no longer part of this answer; they are still
+          # printed by their own job tiles, and what they can cost the release
+          # is an installer, which the missing-platform check below reports.
+          case "${DISPATCH_RESULT}" in
+            success)
+              signing="**started early**, when the installers reached the release rather than when this run ends."
+              if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+                # A dispatch cannot trigger the second pass. Release Signing
+                # reads its tag out of head_branch on a workflow_run event, and
+                # on a dispatch that is a branch name, so its resolve job
+                # refuses. The early pass is the only one a repair run gets.
+                signing="$signing This was a dispatch, so there is no second pass: the manifest covers the release as it stood when signing ran. If \`build-linux-rpm\` attaches an rpm after that, dispatch Release Signing against ${TAG} again."
+                if [ "$RPM_RESULT" = "success" ]; then
+                  echo "::warning title=The signature on this release may not cover the rpm::request-signing started Release Signing when the installers were attached, and build-linux-rpm reported success, so the rpm may have landed after the manifest was written. A dispatch cannot trigger the second signing pass. Dispatch Release Signing against ${TAG} to regenerate the manifest over everything now published."
+                fi
+              else
+                signing="$signing It runs a second time when this run completes, which is what puts the rpm inside the manifest."
+              fi
+              ;;
+            skipped)
+              signing="not requested by this run: \`request-signing\` was skipped, which is the sidecar-only path where there is no release to sign."
+              ;;
+            *)
+              signing="**not started early**: \`request-signing\` reported \`${DISPATCH_RESULT}\`, and that job's summary says what it saw. ${TAG} is not left unsigned - Release Signing still triggers when this run completes, after \`build-linux-rpm\` - so the signature arrives hours later instead of minutes."
+              echo "::warning title=The signature on this release will be late::request-signing reported ${DISPATCH_RESULT}, so ${TAG} waits for this whole run, build-linux-rpm included, before it gets its checksums, signature, certificate, SBOM and licence inventory. Dispatch Release Signing against ${TAG} by hand rather than waiting."
+              ;;
+          esac
+
+          {
+            echo "### What reached \`${TAG}\`"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Assets on the release | $(printf '%s\n' "$assets" | grep -c . || true) |"
+            echo "| rpm | ${rpm_line} |"
+            echo "| AppImage | ${img_line} |"
+            echo "| Build Sidecar | \`${SIDECAR_RESULT}\` |"
+            echo "| Build Desktop | \`${TAURI_RESULT}\` |"
+            echo "| Windows signing job | \`${SIGN_RESULT}\` |"
+            echo "| Release Signing | ${signing} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$missing" ]; then
+            echo "::error title=The release is missing installers this workflow builds::${TAG} carries no asset matching:${missing}. A release page that is short a platform looks the same as one that never built for it, and users of that platform simply find nothing to download."
+            {
+              echo
+              echo "**Missing from the release:** ${missing}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "OK: ${TAG} carries an installer for every platform this workflow builds."

@@ -47,9 +47,11 @@ function humanize(code: string): string {
   return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : spaced;
 }
 
-// Human labels for the fixed enums (VRClassification / VRStatus / VRUrgency).
-// Kept as the t() defaultValue so English reads well even before the locale
-// keys land, and an unknown code degrades gracefully via humanize().
+// Human labels for the fixed enums of the whole variations family. Kept as the
+// t() defaultValue so English reads well even before the locale keys land, and
+// an unknown code degrades gracefully via humanize(). The same dictionary backs
+// the register tables, filters, chain chips and drawer badges on the page, so
+// an enum is worded once (chart legend and table badge can never diverge).
 const CLASS_LABELS: Record<string, string> = {
   scope_change: 'Scope change',
   unforeseen: 'Unforeseen condition',
@@ -60,12 +62,28 @@ const CLASS_LABELS: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
+  // Variation requests
   draft: 'Draft',
   submitted: 'Submitted',
   under_review: 'Under review',
   approved: 'Approved',
   rejected: 'Rejected',
   converted_to_vo: 'Converted to order',
+  // Notices
+  issued: 'Issued',
+  acknowledged: 'Acknowledged',
+  responded: 'Responded',
+  closed: 'Closed',
+  // Variation orders
+  in_progress: 'In progress',
+  completed: 'Completed',
+  voided: 'Voided',
+  // Daywork sheets
+  signed: 'Signed',
+  disputed: 'Disputed',
+  billed: 'Billed',
+  // EoT claims
+  granted: 'Granted',
 };
 
 const URGENCY_LABELS: Record<string, string> = {
@@ -74,15 +92,15 @@ const URGENCY_LABELS: Record<string, string> = {
   high: 'High',
 };
 
-function classLabel(code: string, t: Translate): string {
+export function classLabel(code: string, t: Translate): string {
   return t(`variations.insights.class_${code}`, { defaultValue: CLASS_LABELS[code] ?? humanize(code) });
 }
 
-function statusLabel(code: string, t: Translate): string {
+export function statusLabel(code: string, t: Translate): string {
   return t(`variations.insights.status_${code}`, { defaultValue: STATUS_LABELS[code] ?? humanize(code) });
 }
 
-function urgencyLabel(code: string, t: Translate): string {
+export function urgencyLabel(code: string, t: Translate): string {
   return t(`variations.insights.urgency_${code}`, { defaultValue: URGENCY_LABELS[code] ?? humanize(code) });
 }
 

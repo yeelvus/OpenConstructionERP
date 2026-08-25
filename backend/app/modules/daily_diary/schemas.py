@@ -348,6 +348,41 @@ class DiaryPhotoResponse(BaseModel):
     updated_at: datetime
 
 
+# ── Paged list envelopes ─────────────────────────────────────────────────
+#
+# `total` is the count that matched the filter, never the length of `items`.
+# The diary is the record a dispute is argued from, so a page presented as
+# the whole day, or the whole month, is the one shape this module must not
+# return.
+
+
+class DailyDiaryListResponse(BaseModel):
+    """One page of diaries plus the size of the whole set."""
+
+    items: list[DailyDiaryResponse] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 100
+
+
+class DiaryEntryListResponse(BaseModel):
+    """One page of a diary's entries plus the size of the whole set."""
+
+    items: list[DiaryEntryResponse] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 500
+
+
+class DiaryPhotoListResponse(BaseModel):
+    """One page of diary photos plus the size of the whole set."""
+
+    items: list[DiaryPhotoResponse] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 500
+
+
 # ── DiaryVideo ───────────────────────────────────────────────────────────
 
 

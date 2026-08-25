@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import clsx from 'clsx';
 import {
   Wrench,
@@ -298,6 +298,12 @@ function contactDisplayName(c: ContactLite | undefined, fallback: string): strin
 export function ServicePage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  // The module is mounted twice: flat at /service, which is the tenant-wide
+  // dispatcher view, and under /projects/:projectId/service. On the project
+  // mount every list is scoped server-side — narrowing here instead would
+  // page first and filter after, so a project could show an empty tab while
+  // its own records sat just past the page boundary.
+  const { projectId: routeProjectId } = useParams<{ projectId: string }>();
   const [tab, setTab] = useState<Tab>('tickets');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('');
@@ -309,25 +315,34 @@ export function ServicePage() {
   // when creating a work order — keep it enabled on the WO tab too, otherwise
   // the "New Work Order" modal renders an empty ticket dropdown.
   const ticketsQ = useQuery({
-    queryKey: ['service', 'tickets'],
-    queryFn: () => listTickets({ limit: 100 }),
+    queryKey: ['service', 'tickets', routeProjectId ?? ''],
+    queryFn: () => listTickets({ project_id: routeProjectId, limit: 100 }),
     enabled: tab === 'tickets' || tab === 'work_orders',
   });
   const workOrdersQ = useQuery({
-    queryKey: ['service', 'workOrders'],
-    queryFn: () => listWorkOrders({ limit: 100 }),
+    queryKey: ['service', 'workOrders', routeProjectId ?? ''],
+    queryFn: () => listWorkOrders({ project_id: routeProjectId, limit: 100 }),
     enabled: tab === 'work_orders',
   });
   // Contracts back the picker in the ticket/asset create modals, so they must
   // be loaded on every tab whose "New …" action needs to choose a contract.
   const contractsQ = useQuery({
-    queryKey: ['service', 'contracts'],
-    queryFn: () => listContracts({ limit: 100 }),
+    queryKey: ['service', 'contracts', routeProjectId ?? ''],
+    queryFn: () => listContracts({ project_id: routeProjectId, limit: 100 }),
     enabled: true,
   });
   const contracts = contractsQ.data ?? [];
   const [selectedContractId, setSelectedContractId] = useState<string>('');
-  const effectiveContractId = selectedContractId || contracts[0]?.id || '';
+  // A pick made under one scope must not survive into another. Moving between
+  // /service and /projects/:projectId/service re-renders this component
+  // without remounting it, so the state outlives the list it was chosen from,
+  // and a stale id would put a foreign contract's assets under this project's
+  // name — the very thing the scoping is for. Derived rather than reset in an
+  // effect so there is no render where the two disagree.
+  const effectiveContractId =
+    (selectedContractId && contracts.some((c) => c.id === selectedContractId)
+      ? selectedContractId
+      : contracts[0]?.id) || '';
 
   const assetsQ = useQuery({
     queryKey: ['service', 'assets', effectiveContractId],
@@ -608,7 +623,7 @@ export function ServicePage() {
 
       {/* Body */}
       {tab === 'recurring' ? (
-        <RecurringSchedulesTab contracts={contracts} />
+        <RecurringSchedulesTab contracts={contracts} projectId={routeProjectId} />
       ) : (
       <Card padding="none">
         {isLoading ? (
@@ -692,6 +707,7 @@ export function ServicePage() {
           contracts={contracts}
           tickets={ticketsQ.data ?? []}
           defaultContractId={effectiveContractId}
+          projectId={routeProjectId}
           onClose={() => setCreateOpen(false)}
         />
       )}
@@ -1537,12 +1553,15 @@ function CreateModal({
   contracts,
   tickets,
   defaultContractId,
+  projectId,
   onClose,
 }: {
   kind: Tab;
   contracts: ServiceContract[];
   tickets: ServiceTicket[];
   defaultContractId: string;
+  /** Route project on the scoped mount; the new contract is struck against it. */
+  projectId?: string;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -1653,6 +1672,10 @@ function CreateModal({
       } else if (kind === 'contracts') {
         await createContract({
           ...contractForm,
+          // Struck from inside a project, the contract belongs to it —
+          // otherwise it would be created and then vanish from the very
+          // list the user was looking at.
+          ...(projectId ? { project_id: projectId } : {}),
           value: Number(contractForm.value) || 0,
         });
         addToast({ type: 'success', title: t('service.contract_created', { defaultValue: 'Contract created' }) });

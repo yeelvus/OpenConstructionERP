@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { boqApi, type CostAutocompleteItem } from './api';
-import { getIntlLocale } from '@/shared/lib/formatters';
 import { AutocompleteTooltip } from './AutocompleteTooltip';
 import { highlightMatch } from './highlightMatch';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /**
  * Autocomplete suggestion for cost items.
@@ -284,7 +284,7 @@ export function AutocompleteInput({
 
   /** Format rate for display. */
   const fmtRate = (rate: number) =>
-    new Intl.NumberFormat(getIntlLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
+    new Intl.NumberFormat(getNumberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
       rate,
     );
 

@@ -4,11 +4,11 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { apiGet, apiPost } from '@/shared/lib/api';
+import { apiGet, apiPost, type Page } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtFixed } from '@/shared/lib/formatters';
 import { SUPPORTED_LANGUAGES } from '@/app/i18n';
 import { uploadDocument, fetchDocuments, type DocumentItem } from '@/features/documents/api';
 import {
@@ -65,6 +65,7 @@ import {
   useDashboardRollupContext,
 } from './context/DashboardRollupContext';
 import { useDashboardRollup } from './hooks/useDashboardRollup';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 // Static Tailwind class strings (dynamic `lg:col-span-${n}` would be purged).
 const DASH_SPAN_CLASS: Record<number, string> = {
@@ -887,9 +888,19 @@ function KpiRibbon({
 
   // Compact currency formatter using Intl.NumberFormat \u2014 handles every ISO
   // 4217 code natively (BRL, INR, JPY, etc.). For values \u2265 1M we use the
-  // built-in compact notation; below that, two decimals. The ISO code is
-  // ALWAYS rendered next to the figure (Intl currency style emits the
-  // symbol/code), so a per-currency chip is never ambiguous.
+  // built-in compact notation; below that, the currency's own minor units. The
+  // ISO code is ALWAYS rendered next to the figure (Intl currency style emits
+  // the symbol/code), so a per-currency chip is never ambiguous.
+  //
+  // Below the threshold the decimals are deliberately NOT stated here. This
+  // read `maximumFractionDigits: compact ? 1 : 2` with no floor under it, which
+  // looks like "two decimals" and is not: with no `minimumFractionDigits` the
+  // engine takes the floor from the currency itself, so the ceiling only ever
+  // bit the currencies whose own count is not two. The tile printed a tenth of
+  // a yen, a unit the yen does not have, and dropped the third digit of a
+  // dinar, a unit the dinar does. EUR and USD render identically either way,
+  // which is why it read as correct for as long as it did. Saying nothing
+  // leaves the count to the currency, which is the one thing that knows it.
   const formatMoney = (raw: number | string | null | undefined, code: string) => {
     // Harden against backend Decimal-strings sneaking past TypeScript: any
     // string that can't be parsed degrades to 0 rather than crashing.
@@ -897,11 +908,12 @@ function KpiRibbon({
     if (!Number.isFinite(value)) return `0 ${code}`;
     try {
       const compact = value >= 1_000;
-      return new Intl.NumberFormat(getIntlLocale(), {
+      return new Intl.NumberFormat(getNumberLocale(), {
         style: 'currency',
         currency: code,
-        notation: compact ? 'compact' : 'standard',
-        maximumFractionDigits: compact ? 1 : 2,
+        // A ceiling belongs to compact notation, where one decimal is the
+        // point of compacting. It does not belong to the full-length figure.
+        ...(compact ? { notation: 'compact' as const, maximumFractionDigits: 1 } : {}),
       }).format(value);
     } catch {
       // Unknown currency code \u2014 fall back to raw number with code suffix.
@@ -1810,9 +1822,12 @@ function QuickUploadCard({ projects }: { projects?: ProjectSummary[] }) {
     (uploadProjectId === activeProjectId ? activeProjectName : '') ||
     '';
 
-  const { data: documents } = useQuery({
+  const { data: documentPage } = useQuery({
     queryKey: ['documents', uploadProjectId],
-    queryFn: () => fetchDocuments(uploadProjectId ?? ''),
+    // Spelled out because this query holds a page, not a list: three surfaces
+    // cache under ['documents', <project>] and React Query will hand any of
+    // them what another put there.
+    queryFn: (): Promise<Page<DocumentItem>> => fetchDocuments(uploadProjectId ?? ''),
     enabled: !!uploadProjectId,
     staleTime: 30_000,
   });
@@ -1899,7 +1914,9 @@ function QuickUploadCard({ projects }: { projects?: ProjectSummary[] }) {
     setDragOver(false);
   }, []);
 
-  const documentCount = (documents as DocumentItem[] | undefined)?.length ?? 0;
+  // The project's document count, not the page's. The link says "N documents"
+  // and used to say how many the first page held.
+  const documentCount = documentPage?.total ?? 0;
   const hasProject = !!uploadProjectId;
   const hasProjects = selectableProjects.length > 0;
 
@@ -2281,18 +2298,28 @@ function DashboardPageInner() {
     }
     const byCurrency: CurrencyTotal[] = Array.from(sums.entries())
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([currency, total]) => ({ currency, total_value: total.toFixed(2) }));
+      .map(([currency, total]) => ({ currency, total_value: fmtFixed(total, 2) }));
     return { byCurrency, multiCurrency: byCurrency.length > 1 };
   }, [scopedBoqSummary]);
 
-  // Fetch contacts count for NextSteps suggestions
-  const { data: contactsList } = useQuery({
+  // Fetch contacts count for NextSteps suggestions.
+  //
+  // This asked for a bare array, got the `{items, total, offset, limit}`
+  // envelope the endpoint has been returning, and read `.length` off the
+  // object - `undefined`, so the count was zero for every user with any
+  // number of contacts, and NextSteps kept suggesting the first one. Reads
+  // `total` now, and asks for one row rather than fifty, since the count is
+  // the only thing wanted here.
+  const { data: contactsPage } = useQuery({
     queryKey: ['dashboard-contacts-count'],
-    queryFn: () => apiGet<{ id: string }[]>('/v1/contacts/').catch(() => []),
+    queryFn: () =>
+      apiGet<Page<{ id: string }>>('/v1/contacts/?limit=1').catch(
+        () => ({ items: [], total: 0, offset: 0, limit: 1 }) as Page<{ id: string }>,
+      ),
     retry: false,
     staleTime: 60_000,
   });
-  const contactsCount = contactsList?.length ?? 0;
+  const contactsCount = contactsPage?.total ?? 0;
 
   // Most-recently updated BOQ for "Continue your work" - sourced from the
   // rollup's pre-computed ``boq_summary.last_boq`` so we don't need to
@@ -2377,7 +2404,7 @@ function DashboardPageInner() {
           )}
           {lastBoq.grandTotal > 0 && (
             <span className="text-xs font-semibold text-content-primary tabular-nums">
-              {lastBoq.currency} {lastBoq.grandTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              {lastBoq.currency} {lastBoq.grandTotal.toLocaleString(getNumberLocale(), { maximumFractionDigits: 0 })}
             </span>
           )}
           <ArrowRight size={16} className="text-content-tertiary group-hover:text-oe-blue group-hover:translate-x-0.5 transition-all" />
@@ -2954,7 +2981,7 @@ function AnalyticsSection({ projects }: { projects: ProjectSummary[] }) {
       }
       byCurrency = Array.from(sums.entries())
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([currency, total]) => ({ currency, total_value: total.toFixed(2) }));
+        .map(([currency, total]) => ({ currency, total_value: fmtFixed(total, 2) }));
     }
     const multiCurrency = extra.multi_currency ?? byCurrency.length > 1;
 
@@ -3013,10 +3040,10 @@ function AnalyticsSection({ projects }: { projects: ProjectSummary[] }) {
   const fmtCompact = (value: number, code: string): string => {
     const num =
       value >= 1_000_000
-        ? `${(value / 1_000_000).toFixed(1)}M`
+        ? `${fmtFixed(value / 1_000_000, 1)}M`
         : value >= 1_000
-          ? `${(value / 1_000).toFixed(0)}K`
-          : value.toLocaleString(getIntlLocale(), {
+          ? `${fmtFixed(value / 1_000, 0)}K`
+          : value.toLocaleString(getNumberLocale(), {
               minimumFractionDigits: 0,
               maximumFractionDigits: 0,
             });
@@ -3187,6 +3214,20 @@ function SystemStatus() {
   const dbStatus = status?.database?.status ?? 'offline';
   const vectorStatus = status?.vector_db?.status ?? 'offline';
   const vectorVectors = status?.vector_db?.vectors ?? 0;
+  // The vector row carries two facts that arrive independently: which engine is
+  // answering, and how much it is holding. A configured engine reports a name
+  // before it has indexed anything, and a count can arrive with no name behind
+  // it, so each half is written on its own and the separator only appears when
+  // there are in fact two things to separate.
+  const vectorEngine = status?.vector_db?.engine ?? '';
+  const vectorHeld =
+    vectorVectors > 0
+      ? t('dashboard.status_vectors_count', {
+          defaultValue: '{{n}} vectors',
+          n: vectorVectors.toLocaleString(getNumberLocale()),
+        })
+      : '';
+  const vectorDetail = vectorEngine && vectorHeld ? `${vectorEngine} · ${vectorHeld}` : vectorEngine || vectorHeld;
   const aiConfigured = status?.ai?.configured || hasUserAiKey;
 
   const services = [
@@ -3207,17 +3248,7 @@ function SystemStatus() {
     {
       name: t('dashboard.vector_db', { defaultValue: 'Vector DB' }),
       status: vectorStatus,
-      detail: [
-        status?.vector_db?.engine,
-        vectorVectors > 0
-          ? t('dashboard.status_vectors_count', {
-              defaultValue: '{{n}} vectors',
-              n: vectorVectors.toLocaleString(),
-            })
-          : '',
-      ]
-        .filter(Boolean)
-        .join(' · '),
+      detail: vectorDetail,
       icon: <Globe size={13} />,
       delay: 520,
     },

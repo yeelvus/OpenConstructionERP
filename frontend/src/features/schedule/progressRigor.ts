@@ -9,6 +9,7 @@
 
 import { toNum } from '@/shared/lib/money';
 import type { EvmWarningKey, PercentCompleteType } from './api';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 export interface StepLike {
   weight: string | number;
@@ -48,7 +49,7 @@ export function pvPercentOfBac(pv: string | number | null | undefined, bac: stri
   const p = toNum(pv);
   const b = toNum(bac);
   if (!b) return '-';
-  return `${((p / b) * 100).toFixed(1)}%`;
+  return fmtPercent((p / b) * 100);
 }
 
 /** i18n default-value text for each deterministic EVM-distortion warning key. */

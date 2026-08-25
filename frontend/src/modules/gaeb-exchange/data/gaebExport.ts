@@ -49,6 +49,11 @@ const GAEB_UNIT_CODES: Record<string, string> = {
   kg: 'kg',
   g: 'g',
   t: 't',
+  lb: 'lb',
+  // "ton_us" is deliberately absent: GAEB has no short-ton code, and
+  // mapping it to 'ton' would break the round-trip because
+  // fromGaebUnitCode('ton') cannot tell the short ton from the tonne.
+  // Falling through verbatim keeps the unit unambiguous in both directions.
   // counts / lump
   pcs: 'Stk',
   ea: 'Stk',
@@ -133,6 +138,54 @@ export interface ExportPosition {
   section?: string;
   parentId?: string | null;
   isSection?: boolean;
+}
+
+/**
+ * How much of a bill actually carries money.
+ *
+ *   'all'     - every line item has a unit rate
+ *   'partial' - some do, some do not
+ *   'none'    - no line item carries a rate (or there are no line items)
+ */
+export type PriceCoverageState = 'all' | 'partial' | 'none';
+
+export interface PriceCoverage {
+  state: PriceCoverageState;
+  /** Line items (sections excluded) carrying a non-zero unit rate. */
+  priced: number;
+  /** Line items whose unit rate is missing or zero. */
+  missing: number;
+  /** Line items considered, i.e. everything that is not a section header. */
+  items: number;
+}
+
+/**
+ * Measure how many exportable line items carry a unit rate.
+ *
+ * The export summary's "Prices" tile must answer from the DATA, not from the
+ * chosen format: an X84 (priced bid) built from an unpriced LV used to claim
+ * "Prices: Yes" while every Einheitspreis in the editor read 0,00 — a false
+ * statement standing on the last frame the user sees. A single priced line out
+ * of four hundred is the same false statement in a quieter voice, so the tile
+ * needs the partial state this returns: the bidder who reads "Yes" and receives
+ * a half-priced file is exactly the failure it exists to prevent.
+ *
+ * A rate of zero counts as missing. The model has no way to mark a line as
+ * deliberately priced at nothing, so an unfilled Einheitspreis and a genuine
+ * 0,00 bid are the same number here; naming the count lets the estimator go and
+ * look. Section header rows never carry money and are excluded throughout.
+ */
+export function priceCoverage(positions: ExportPosition[]): PriceCoverage {
+  const items = positions.filter((p) => !p.isSection);
+  const priced = items.filter((p) => Number(p.unitRate) > 0).length;
+  const missing = items.length - priced;
+  const state: PriceCoverageState = priced === 0 ? 'none' : missing === 0 ? 'all' : 'partial';
+  return { state, priced, missing, items: items.length };
+}
+
+/** True when at least one exportable line item carries a non-zero unit rate. */
+export function hasPricedPositions(positions: ExportPosition[]): boolean {
+  return priceCoverage(positions).state !== 'none';
 }
 
 export interface GAEBExportOptions {

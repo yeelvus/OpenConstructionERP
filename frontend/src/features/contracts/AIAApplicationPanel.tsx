@@ -29,6 +29,7 @@ import {
   downloadAiaApplicationPdf,
   type AIAApplication,
 } from './api';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 function toNum(v: string | number | null | undefined): number {
   if (v === null || v === undefined) return 0;
@@ -223,7 +224,7 @@ export function AIAApplicationPanel({ claimId, currency }: AIAApplicationPanelPr
                       <td className="px-2 py-1.5">{money(ln.materials_stored)}</td>
                       <td className="px-2 py-1.5">{money(ln.total_completed_stored)}</td>
                       <td className="px-2 py-1.5 text-content-tertiary">
-                        {toNum(ln.percent_complete).toFixed(1)}%
+                        {fmtPercent(toNum(ln.percent_complete))}
                       </td>
                       <td className="px-2 py-1.5">{money(ln.balance_to_finish)}</td>
                       <td className="px-2 py-1.5">{money(ln.retainage)}</td>
@@ -245,7 +246,7 @@ export function AIAApplicationPanel({ claimId, currency }: AIAApplicationPanelPr
                       {ln.item_number}
                     </span>
                     <span className="text-[10px] text-content-tertiary">
-                      {toNum(ln.percent_complete).toFixed(1)}%
+                      {fmtPercent(toNum(ln.percent_complete))}
                     </span>
                   </div>
                   <p className="mb-2 text-xs text-content-secondary">{ln.description}</p>

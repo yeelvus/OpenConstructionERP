@@ -54,7 +54,7 @@ import { RequiresProject } from '@/shared/auth/RequiresProject';
 import { PlanningCrossLinks } from '@/features/schedule/PlanningCrossLinks';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { useToastStore } from '@/stores/useToastStore';
-import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 import { getErrorMessage } from '@/shared/lib/api';
 import { projectsApi } from '@/features/projects/api';
 import {
@@ -121,6 +121,18 @@ import {
   baselineStatusLabel,
   taskStatusLabel,
 } from './labels';
+import { fmtPercent } from '@/shared/lib/formatters';
+
+// English fallbacks for the computed `schedule_advanced.rnc.*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const ADVANCED_RNC_LABELS: Record<string, string> = {
+  manpower: 'Manpower', material: 'Material', equipment: 'Equipment', info: 'Information',
+  weather: 'Weather', predecessor: 'Predecessor not complete', changes: 'Changes', quality: 'Quality',
+  other: 'Other'
+};
+
 
 const SCHEDULE_TAB_IDS = [
   'master',
@@ -516,7 +528,7 @@ export function ScheduleAdvancedPage() {
     onChange: setTab,
     orientation: 'horizontal',
   });
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
   const [projectId, setProjectId] = useState<string>('');
   const [masterId, setMasterId] = useState<string>('');
   const [lookAheadId, setLookAheadId] = useState<string>('');
@@ -1009,7 +1021,7 @@ function ProjectLpsDashboard({ projectId }: { projectId: string }) {
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <DashStat
           label={t('schedule_advanced.ppc', { defaultValue: 'PPC' })}
-          value={data.ppc_trend.length > 0 ? `${latestPpcPct.toFixed(0)}%` : '—'}
+          value={data.ppc_trend.length > 0 ? fmtPercent(latestPpcPct, 0) : '—'}
           hint={t('schedule_advanced.dashboard_latest_week', { defaultValue: 'Latest week' })}
           tone={
             data.ppc_trend.length === 0
@@ -1059,7 +1071,7 @@ function ProjectLpsDashboard({ projectId }: { projectId: string }) {
               return (
                 <li key={cat} className="flex items-center gap-3 text-sm">
                   <span className="w-28 shrink-0 truncate text-content-secondary" title={cat}>
-                    {t(`schedule_advanced.rnc.${cat}`, { defaultValue: cat })}
+                    {t(`schedule_advanced.rnc.${cat}`, { defaultValue: ADVANCED_RNC_LABELS[cat] ?? cat })}
                   </span>
                   <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface-secondary">
                     <div
@@ -2913,7 +2925,7 @@ function WeeklyTab({
                       </Badge>
                     </td>
                     <td className="px-4 py-2 text-right font-mono text-xs">
-                      {pctNumber(w.ppc_percent).toFixed(0)}%
+                      {fmtPercent(pctNumber(w.ppc_percent), 0)}
                     </td>
                     <td className="px-4 py-2 text-right">
                       {w.status === 'draft' && (
@@ -3086,7 +3098,7 @@ function WeeklyTab({
         </h3>
         <div className="flex flex-col items-center justify-center py-6">
           <div className="text-5xl font-bold text-oe-blue">
-            {ppc.toFixed(0)}%
+            {fmtPercent(ppc, 0)}
           </div>
           <div className="mt-3 h-2 w-full max-w-[200px] rounded-full bg-surface-secondary overflow-hidden">
             <div
@@ -3308,7 +3320,7 @@ function MissCommitmentDialog({
         >
           {RNC_CATEGORIES.map((cat) => (
             <option key={cat} value={cat}>
-              {t(`schedule_advanced.rnc.${cat}`, { defaultValue: cat })}
+              {t(`schedule_advanced.rnc.${cat}`, { defaultValue: ADVANCED_RNC_LABELS[cat] ?? cat })}
             </option>
           ))}
         </select>

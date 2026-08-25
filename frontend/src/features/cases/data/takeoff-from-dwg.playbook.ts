@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 45,
   category: "bim",
   companyTypes: ["cost-consultant", "general-contractor", "bim-consultant"],
+  roles: ["quantity-surveyor", "estimator", "bim-coordinator"],
   icon: "Ruler",
   titleKey: "cases.takeoff_from_dwg.title",
   titleDefault: "Measure quantities from a DWG",
@@ -53,8 +54,8 @@ const playbook: Playbook = {
       whyKey: "cases.takeoff_from_dwg.step.open.why",
       whyDefault:
         "A scale that is out by even a few percent multiplies through every area and length you take off, and nobody notices until the concrete order comes back wrong. Calibrating once at the start is a two minute job that protects the whole take-off.",
-      moduleLabel: "DWG take-off",
-      moduleLabelKey: "onboarding.mod_dwg_takeoff",
+      moduleLabel: "DWG Takeoff",
+      moduleLabelKey: "nav.dwg_takeoff",
       to: "/dwg-takeoff",
     },
     {
@@ -88,8 +89,8 @@ const playbook: Playbook = {
       whyKey: "cases.takeoff_from_dwg.step.measure.why",
       whyDefault:
         "Measurements kept in tidy groups price without untangling and audit in seconds. When a figure looks high, you click the group and see the exact shape that produced it, instead of defending a number you cannot explain.",
-      moduleLabel: "Take-off",
-      moduleLabelKey: "nav.takeoff_overview",
+      moduleLabel: "PDF Measurements",
+      moduleLabelKey: "nav.pdf_measurements",
       to: "/takeoff?tab=measurements",
     },
     {

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
+  AlertTriangle,
   Wallet,
   FileText,
   CreditCard,
@@ -49,6 +50,7 @@ import {
   tabIds,
   ModuleGuideButton,
 } from '@/shared/ui';
+import type { BadgeVariant } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
 import {
@@ -75,6 +77,16 @@ import { StatementsTab } from './StatementsTab';
 import { RetentionLedgerTab } from './RetentionLedgerTab';
 import { EInvoiceModal } from './EInvoiceModal';
 import { financeGuide } from './financeGuide';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
+
+// English fallbacks for the computed `finance.payment_status_*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const PAYMENT_STATUS_LABELS: Record<string, string> = {
+  completed: 'Completed', refunded: 'Refunded'
+};
+
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -130,6 +142,11 @@ interface Invoice {
   // to that claim. NULL on every non-claim invoice.
   source_claim_id?: string | null;
   line_items?: InvoiceLineItem[];
+  // Serialized InvoiceResponse.metadata. The e-invoice engine reads
+  // document-level fields (buyer reference / Leitweg-ID, VAT declaration,
+  // seller overrides) from metadata.einvoice, so the edit form has to carry
+  // the object through a PATCH instead of wiping it.
+  metadata?: Record<string, unknown> | null;
   // Raw wire fields from InvoiceResponse — the API uses these names
   // (invoice_date / currency_code / amount_total / amount_subtotal /
   // tax_amount / notes / contact_id) rather than the legacy display
@@ -179,6 +196,44 @@ function normaliseInvoice(i: InvoiceWire): Invoice {
     amount: amountRaw != null ? Number(amountRaw) : 0,
     currency: i.currency_code ?? i.currency ?? '',
   } as Invoice;
+}
+
+/** The stored BT-10 (buyer reference / Leitweg-ID), whichever spelling wrote it. */
+function readBuyerReference(metadata: Record<string, unknown> | null | undefined): string {
+  const einvoice =
+    metadata && typeof metadata === 'object' && metadata.einvoice && typeof metadata.einvoice === 'object'
+      ? (metadata.einvoice as Record<string, unknown>)
+      : {};
+  const value = einvoice.buyer_reference ?? einvoice.leitweg_id;
+  return typeof value === 'string' ? value : '';
+}
+
+/**
+ * Merge the form's buyer reference into a copy of the invoice's stored
+ * metadata. A PATCH replaces the whole metadata object server-side, so the
+ * form must carry every key it does not edit (the seed's seller block, VAT
+ * declaration, claim provenance) or editing one field would wipe the rest.
+ */
+function invoiceMetadataWithBuyerReference(
+  base: Record<string, unknown> | null | undefined,
+  buyerReference: string,
+): Record<string, unknown> {
+  const meta: Record<string, unknown> = { ...(base && typeof base === 'object' ? base : {}) };
+  const einvoice: Record<string, unknown> = {
+    ...(meta.einvoice && typeof meta.einvoice === 'object' ? (meta.einvoice as Record<string, unknown>) : {}),
+  };
+  const ref = buyerReference.trim();
+  if (ref) {
+    einvoice.buyer_reference = ref;
+    // The engine reads either spelling; keep one so they cannot diverge.
+    delete einvoice.leitweg_id;
+  } else {
+    delete einvoice.buyer_reference;
+    delete einvoice.leitweg_id;
+  }
+  if (Object.keys(einvoice).length > 0) meta.einvoice = einvoice;
+  else delete meta.einvoice;
+  return meta;
 }
 
 interface Payment {
@@ -245,16 +300,21 @@ function currencyOptions(active: string): string[] {
   return [...COMMON_CURRENCIES];
 }
 
-const INVOICE_STATUS_COLORS: Record<
-  string,
-  'neutral' | 'blue' | 'success' | 'warning' | 'error'
-> = {
+export const INVOICE_STATUS_COLORS: Record<string, BadgeVariant> = {
   draft: 'neutral',
   pending: 'warning',
   approved: 'blue',
+  // Issued to the client and waiting to be paid. Without an entry here it
+  // arrived as 'neutral', so the invoice the client is holding looked exactly
+  // like a draft nobody has sent and like one that was cancelled. It gets its
+  // own hue rather than sharing blue with approved: the two sit one row apart
+  // in this very column, and a reader scanning it takes one colour to mean one
+  // state.
+  sent: 'purple',
   paid: 'success',
   disputed: 'error',
   cancelled: 'neutral',
+  credit_note_issued: 'neutral',
 };
 
 // Editor-safe invoice status transitions offered by the edit-modal status
@@ -271,12 +331,42 @@ export const INVOICE_SELF_SERVICE_TRANSITIONS: Record<string, string[]> = {
   draft: ['pending', 'cancelled'],
   pending: ['draft', 'cancelled'],
   approved: [],
+  sent: [],
   paid: [],
   cancelled: ['draft'],
+  credit_note_issued: [],
 };
 
-// Display order for the status options so the dropdown reads predictably.
-export const INVOICE_STATUS_ORDER = ['draft', 'pending', 'approved', 'paid', 'cancelled'];
+// Display order for the status options so the dropdown reads predictably. This
+// is the whole lifecycle the backend FSM knows, not the part the dropdown may
+// move an invoice into: a status missing here has no label and renders as the
+// raw database word, which is what 'sent' used to do. Which of them an editor
+// may actually select stays governed by the transition map above, and both of
+// those are empty for the states only a privileged endpoint can reach.
+export const INVOICE_STATUS_ORDER = [
+  'draft',
+  'pending',
+  'approved',
+  'sent',
+  'paid',
+  'cancelled',
+  'credit_note_issued',
+];
+
+/**
+ * True when this invoice is one we issue rather than one we received.
+ *
+ * The e-invoice action only belongs on a receivable: the buyer is resolved from
+ * the linked contact for that direction alone, and a payable carries no seller
+ * identity of ours at all. Offered on a supplier's invoice it opened a
+ * compliance report listing our own missing details on a document we are not
+ * issuing. Reads the wire field with the display alias as a fallback, the same
+ * pair the edit form resolves, because the table is fed from both shapes.
+ */
+export function isReceivable(inv: Pick<Invoice, 'direction'>): boolean {
+  const wire = inv as { invoice_direction?: string };
+  return wire.invoice_direction === 'receivable' || inv.direction === 'receivable';
+}
 
 /**
  * Options shown in the invoice edit-modal status dropdown: the current status
@@ -405,6 +495,7 @@ export function FinanceSummaryCards({
   const totalActual = Number(dashboard?.total_actual ?? 0);
   const totalInvoiced = Number(dashboard?.total_payable ?? 0);
   const totalReceivable = Number(dashboard?.total_receivable ?? 0);
+  const totalOverdue = Number(dashboard?.total_overdue ?? 0);
   const remaining = (totalRevised || totalBudget) - totalActual;
   // Currency comes from the data (task #217) — never hardcoded. When the
   // backend cannot resolve one (no priced records yet) MoneyDisplay still
@@ -494,6 +585,21 @@ export function FinanceSummaryCards({
       icon: <PiggyBank size={18} />,
       color: 'bg-green-50 text-green-600 dark:bg-green-950/40 dark:text-green-400',
       accent: 'bg-green-500',
+    },
+    {
+      // The money already past its due date, beside the money still owed. The
+      // endpoint has returned it all along and the reporting page has drawn it
+      // all along; this screen declared the field and never read it, so the
+      // one figure a finance lead opens the page for was the one it did not
+      // show. Same key as the reporting tile: one number, one wording.
+      label: t('reporting.overdue_total', { defaultValue: 'Total Overdue' }),
+      value: totalOverdue,
+      icon: <AlertTriangle size={18} />,
+      color:
+        totalOverdue > 0
+          ? 'bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-400'
+          : 'bg-green-50 text-green-600 dark:bg-green-950/40 dark:text-green-400',
+      accent: totalOverdue > 0 ? 'bg-red-500' : 'bg-green-500',
     },
     {
       label: t('finance.summary_remaining', { defaultValue: 'Remaining Budget' }),
@@ -595,7 +701,7 @@ export function FinanceSummaryCards({
                 {t('finance.budget_consumption', { defaultValue: 'Budget consumed' })}
               </span>
               <span className="tabular-nums font-semibold text-content-primary">
-                {consumedPct.toFixed(1)}%
+                {fmtPercent(consumedPct)}
                 {warningLevel !== 'normal' && (
                   <span
                     className={clsx(
@@ -1622,20 +1728,14 @@ function BudgetsTab({ projectId }: { projectId: string }) {
                   <td className="px-4 py-3 text-right">
                     <MoneyDisplay amount={forecastValue} currency={rowCurrency} />
                   </td>
-                  <td className="px-4 py-3 text-right">
-                    <span
-                      className={
-                        b.variance >= 0
-                          ? 'text-semantic-success font-medium'
-                          : 'text-semantic-error font-medium'
-                      }
-                    >
-                      <MoneyDisplay
-                        amount={b.variance}
-                        currency={rowCurrency}
-                        colorize
-                      />
-                    </span>
+                  {/* One authority for the colour. The wrapper span used to
+                      colour the cell from `b.variance >= 0` while MoneyDisplay
+                      coloured the number from the same value: two rules over
+                      one figure, and the outer one compared a string that
+                      arrives as money on the wire, so an empty variance read
+                      as a surplus and painted green. MoneyDisplay decides. */}
+                  <td className="px-4 py-3 text-right font-medium">
+                    <MoneyDisplay amount={b.variance} currency={rowCurrency} colorize />
                   </td>
                   <td className="px-4 py-3 text-right">
                     <button
@@ -1652,6 +1752,15 @@ function BudgetsTab({ projectId }: { projectId: string }) {
               );
             })}
           </tbody>
+          {/* The totals are written exactly like the rows they sum. They used to
+              be compacted, which sounds like a space saving and is not one:
+              German has no short currency form below a million, so a compacted
+              total of 225,297.60 came out as "225.297,6 $" - full length, one
+              decimal - directly under rows reading "133.794,64 $", and the
+              reader was asked to compare two precisions in one column. Above a
+              million the same cell collapsed to "9,4 Mio. €" instead. A column
+              is compact all the way down or not at all, and these columns are
+              wide enough not to be. */}
           {totals && (
             <tfoot>
               <tr className="bg-surface-secondary/60 font-semibold">
@@ -1659,22 +1768,22 @@ function BudgetsTab({ projectId }: { projectId: string }) {
                   {t('common.total')}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MultiCurrencyTotal items={totals.original} variant="inline" compact />
+                  <MultiCurrencyTotal items={totals.original} variant="inline" />
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MultiCurrencyTotal items={totals.revised} variant="inline" compact />
+                  <MultiCurrencyTotal items={totals.revised} variant="inline" />
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MultiCurrencyTotal items={totals.committed} variant="inline" compact />
+                  <MultiCurrencyTotal items={totals.committed} variant="inline" />
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MultiCurrencyTotal items={totals.actual} variant="inline" compact />
+                  <MultiCurrencyTotal items={totals.actual} variant="inline" />
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MultiCurrencyTotal items={totals.forecast} variant="inline" compact />
+                  <MultiCurrencyTotal items={totals.forecast} variant="inline" />
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MultiCurrencyTotal items={totals.variance} variant="inline" compact />
+                  <MultiCurrencyTotal items={totals.variance} variant="inline" />
                 </td>
                 <td />
               </tr>
@@ -1749,13 +1858,7 @@ function BudgetsTab({ projectId }: { projectId: string }) {
                   <span className="text-content-secondary font-medium">
                     {t('finance.variance', { defaultValue: 'Variance' })}
                   </span>
-                  <span
-                    className={
-                      b.variance >= 0
-                        ? 'text-semantic-success font-medium'
-                        : 'text-semantic-error font-medium'
-                    }
-                  >
+                  <span className="font-medium">
                     <MoneyDisplay amount={b.variance} currency={rowCurrency} colorize />
                   </span>
                 </div>
@@ -1887,7 +1990,7 @@ function BudgetsTab({ projectId }: { projectId: string }) {
 /* ── Invoices Tab ─────────────────────────────────────────────────────── */
 
 function InvoicesTab({ projectId }: { projectId: string }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
   const { confirm, ...confirmProps } = useConfirm();
@@ -1922,6 +2025,11 @@ function InvoicesTab({ projectId }: { projectId: string }) {
     amount: '',
     currency: '',
     description: '',
+    // BT-10, the Buyer reference / Leitweg-ID. Invoice data by the standard:
+    // it routes this one document, so it lives under metadata.einvoice here
+    // and deliberately not in the e-invoice settings (which hold seller
+    // columns only). XRechnung refuses without it (BR-DE-15).
+    buyer_reference: '',
     // Lifecycle status of the invoice. Only meaningful in edit mode (a new
     // invoice is always created as 'draft'); surfaced as a dropdown so opening
     // an invoice lets a user advance its status, which is otherwise only
@@ -1979,6 +2087,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
       // an editor on a BRL/USD/etc. project keeps that currency (task #217).
       currency: inv.currency_code || inv.currency || projectCurrency || '',
       description: inv.notes ?? inv.description ?? '',
+      buyer_reference: readBuyerReference(inv.metadata),
       // The backend serialises the canonical 'sent' node; normalise it to the
       // 'approved' label the UI uses so the dropdown shows the right option.
       status: inv.status === 'sent' ? 'approved' : inv.status || 'draft',
@@ -2036,6 +2145,26 @@ function InvoicesTab({ projectId }: { projectId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [invoiceModalOpen]);
 
+  // The e-invoice engine derives the document from its lines (BR-16 refuses
+  // an invoice without any), and this simple form bills one figure - so that
+  // figure travels as one lump-sum line. The unit token follows the UI
+  // language ('psch' is the German schedule word, 'lsum' the neutral one);
+  // both map to UNECE LS in the export.
+  const singleFormLine = (form: typeof invoiceForm, lineAmount: number) => {
+    if (!(lineAmount > 0)) return [];
+    return [
+      {
+        description:
+          form.description.trim() ||
+          t('finance.invoice_line_default', { defaultValue: 'Contract works for the billing period' }),
+        quantity: '1',
+        unit: i18n.language.toLowerCase().startsWith('de') ? 'psch' : 'lsum',
+        unit_rate: lineAmount.toFixed(2),
+        amount: lineAmount.toFixed(2),
+      },
+    ];
+  };
+
   const createInvoiceMut = useMutation({
     mutationFn: (data: typeof invoiceForm) => {
       const sub = parseFloat(data.subtotal || '0');
@@ -2055,13 +2184,18 @@ function InvoicesTab({ projectId }: { projectId: string }) {
         currency_code: data.currency || projectCurrency || '',
         notes: data.description || undefined,
         status: 'draft',
+        // One net line for the billed figure (falls back to the total when
+        // only a total was typed), and the BT-10 routing id under
+        // metadata.einvoice - both read by the e-invoice check and export.
+        line_items: singleFormLine(data, sub > 0 ? sub : total),
+        metadata: invoiceMetadataWithBuyerReference(null, data.buyer_reference),
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['finance-invoices', projectId] });
       queryClient.invalidateQueries({ queryKey: ['finance', 'dashboard', projectId] });
       setShowCreate(false);
-      setInvoiceForm({ direction: 'payable', counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', subtotal: '', tax: '', amount: '', currency: projectCurrency, description: '', status: 'draft' });
+      setInvoiceForm({ direction: 'payable', counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', subtotal: '', tax: '', amount: '', currency: projectCurrency, description: '', buyer_reference: '', status: 'draft' });
       setAmountEditedManually(false);
       addToast({ type: 'success', title: t('finance.invoice_created', { defaultValue: 'Invoice created successfully' }) });
     },
@@ -2086,6 +2220,13 @@ function InvoicesTab({ projectId }: { projectId: string }) {
       // doesn't look like a no-op transition (approved -> sent).
       const prev = data.prevStatus === 'sent' ? 'approved' : data.prevStatus;
       const statusChanged = data.form.status !== prev;
+      // A claim-born or imported invoice carries a real line breakdown;
+      // replacing it with this form's single figure would destroy it. Only
+      // the simple shape (no lines yet, or the one line this form wrote) is
+      // kept in sync with the edited amounts.
+      const existingLines = editingInvoice?.line_items ?? [];
+      const lineItemsPatch =
+        existingLines.length <= 1 ? { line_items: singleFormLine(data.form, sub > 0 ? sub : total) } : {};
       return apiPatch(`/v1/finance/${data.id}`, {
         contact_id: data.form.contact_id || null,
         invoice_direction: data.form.direction,
@@ -2096,6 +2237,10 @@ function InvoicesTab({ projectId }: { projectId: string }) {
         amount_total: String(total),
         currency_code: data.form.currency || projectCurrency || '',
         notes: data.form.description || null,
+        // Merged over the stored object: PATCH replaces metadata wholesale,
+        // and only the buyer reference is edited here.
+        metadata: invoiceMetadataWithBuyerReference(editingInvoice?.metadata, data.form.buyer_reference),
+        ...lineItemsPatch,
         ...(statusChanged ? { status: data.form.status } : {}),
       });
     },
@@ -2290,7 +2435,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
             size="sm"
             icon={<Plus size={14} />}
             onClick={() => {
-              setInvoiceForm({ direction: subTab, counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', subtotal: '', tax: '', amount: '', currency: projectCurrency, description: '', status: 'draft' });
+              setInvoiceForm({ direction: subTab, counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', subtotal: '', tax: '', amount: '', currency: projectCurrency, description: '', buyer_reference: '', status: 'draft' });
               setInvoiceErrors({});
               setAmountEditedManually(false);
               setShowCreate(true);
@@ -2330,8 +2475,12 @@ function InvoicesTab({ projectId }: { projectId: string }) {
               <option value="draft">{t('finance.status_draft', { defaultValue: 'Draft' })}</option>
               <option value="pending">{t('finance.status_pending', { defaultValue: 'Pending' })}</option>
               <option value="approved">{t('finance.status_approved', { defaultValue: 'Approved' })}</option>
+              <option value="sent">{t('finance.status_sent', { defaultValue: 'Sent' })}</option>
               <option value="paid">{t('finance.status_paid', { defaultValue: 'Paid' })}</option>
               <option value="cancelled">{t('finance.status_cancelled', { defaultValue: 'Cancelled' })}</option>
+              <option value="credit_note_issued">
+                {t('finance.status_credit_note_issued', { defaultValue: 'Credit note issued' })}
+              </option>
             </select>
             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
               <ChevronDown size={14} />
@@ -2364,7 +2513,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                   ? {
                       label: t('finance.new_invoice', { defaultValue: 'New Invoice' }),
                       onClick: () => {
-                        setInvoiceForm({ direction: subTab, counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', subtotal: '', tax: '', amount: '', currency: projectCurrency, description: '', status: 'draft' });
+                        setInvoiceForm({ direction: subTab, counterparty: '', contact_id: '', invoice_date: todayStr, due_date: '', subtotal: '', tax: '', amount: '', currency: projectCurrency, description: '', buyer_reference: '', status: 'draft' });
                         setInvoiceErrors({});
                         setAmountEditedManually(false);
                         setShowCreate(true);
@@ -2478,10 +2627,10 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                         )}
                       </td>
                       <td className="px-4 py-3 text-content-secondary">
-                        <DateDisplay value={inv.issue_date} />
+                        <DateDisplay value={inv.issue_date} format="numeric" />
                       </td>
                       <td className="px-4 py-3 text-content-secondary">
-                        <DateDisplay value={inv.due_date} />
+                        <DateDisplay value={inv.due_date} format="numeric" />
                       </td>
                       <td className="px-4 py-3 text-right">
                         <MoneyDisplay amount={inv.amount} currency={inv.currency} />
@@ -2507,15 +2656,17 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                           >
                             <Pencil size={14} />
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => setEinvoiceFor(inv)}
-                            title={t('finance.einvoice.action')}
-                            aria-label={t('finance.einvoice.action')}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-content-tertiary hover:bg-surface-secondary hover:text-oe-blue transition-colors"
-                          >
-                            <FileCode2 size={14} />
-                          </button>
+                          {isReceivable(inv) && (
+                            <button
+                              type="button"
+                              onClick={() => setEinvoiceFor(inv)}
+                              title={t('finance.einvoice.action')}
+                              aria-label={t('finance.einvoice.action')}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-content-tertiary hover:bg-surface-secondary hover:text-oe-blue transition-colors"
+                            >
+                              <FileCode2 size={14} />
+                            </button>
+                          )}
                           {inv.status === 'draft' && (
                             <Button
                               variant="secondary"
@@ -2580,11 +2731,11 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                         {t('common.total')}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <MultiCurrencyTotal items={invoiceTotals.totalAmount} variant="inline" compact />
+                        <MultiCurrencyTotal items={invoiceTotals.totalAmount} variant="inline" />
                       </td>
                       <td className="px-4 py-3 text-center text-xs text-content-tertiary">
                         {t('finance.total_paid', { defaultValue: 'Paid' })}:{' '}
-                        <MultiCurrencyTotal items={invoiceTotals.totalPaid} variant="inline" compact />
+                        <MultiCurrencyTotal items={invoiceTotals.totalPaid} variant="inline" />
                       </td>
                       <td />
                     </tr>
@@ -2618,26 +2769,28 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                       {/* The card carries the e-invoice action too, for the same
                           reason #284 gave the status actions: an action only the
                           desktop table offers is unreachable on a phone. */}
-                      <button
-                        type="button"
-                        onClick={() => setEinvoiceFor(inv)}
-                        title={t('finance.einvoice.action')}
-                        aria-label={t('finance.einvoice.action')}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-content-tertiary hover:bg-surface-secondary hover:text-oe-blue transition-colors"
-                      >
-                        <FileCode2 size={14} />
-                      </button>
+                      {isReceivable(inv) && (
+                        <button
+                          type="button"
+                          onClick={() => setEinvoiceFor(inv)}
+                          title={t('finance.einvoice.action')}
+                          aria-label={t('finance.einvoice.action')}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-content-tertiary hover:bg-surface-secondary hover:text-oe-blue transition-colors"
+                        >
+                          <FileCode2 size={14} />
+                        </button>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center justify-between text-xs text-content-tertiary">
-                    <span><DateDisplay value={inv.issue_date} /></span>
+                    <span><DateDisplay value={inv.issue_date} format="numeric" /></span>
                     <span className="font-semibold text-content-primary">
                       <MoneyDisplay amount={inv.amount} currency={inv.currency} />
                     </span>
                   </div>
                   {inv.due_date && (
                     <div className="text-xs text-content-tertiary mt-1">
-                      {t('finance.due_date', { defaultValue: 'Due' })}: <DateDisplay value={inv.due_date} />
+                      {t('finance.due_date', { defaultValue: 'Due' })}: <DateDisplay value={inv.due_date} format="numeric" />
                     </div>
                   )}
                   {/* Status actions mirror the desktop row so a draft invoice
@@ -2895,6 +3048,38 @@ function InvoicesTab({ projectId }: { projectId: string }) {
               />
             </WideModalField>
 
+            {/* BT-10 Buyer reference / Leitweg-ID - outgoing invoices only.
+                It routes this one document through the recipient's systems
+                (German public buyers hand a Leitweg-ID over for exactly this),
+                so it is invoice data and the e-invoice check (BR-DE-15)
+                points here. The seller side lives in Settings, E-invoice;
+                this field is deliberately not there. */}
+            {invoiceForm.direction === 'receivable' && (
+              <WideModalField
+                label={t('finance.einvoice.buyerReferenceLabel', {
+                  defaultValue: 'Buyer reference / Leitweg-ID',
+                })}
+                span={2}
+                hint={t('finance.einvoice.buyerReferenceHint', {
+                  defaultValue:
+                    'BT-10 on the e-invoice. Public-sector buyers in Germany supply a Leitweg-ID and reject an XRechnung without it; other buyers may give a PO or routing reference.',
+                })}
+              >
+                <input
+                  type="text"
+                  value={invoiceForm.buyer_reference}
+                  onChange={(e) =>
+                    setInvoiceForm((f) => ({ ...f, buyer_reference: e.target.value }))
+                  }
+                  className={inputCls}
+                  placeholder="04011000-1234512345-06"
+                  aria-label={t('finance.einvoice.buyerReferenceLabel', {
+                    defaultValue: 'Buyer reference / Leitweg-ID',
+                  })}
+                />
+              </WideModalField>
+            )}
+
             {/* Status - edit mode only. A new invoice is always created as
                 'draft', and before #284 a draft had no control to move forward
                 (the row Approve / Mark Paid buttons only appear from 'pending'
@@ -2987,7 +3172,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                   onChange={(e) => {
                     const sub = e.target.value;
                     const tax = invoiceForm.tax || '0';
-                    const total = (parseFloat(sub || '0') + parseFloat(tax)).toFixed(2);
+                    const total = fmtFixed(parseFloat(sub || '0') + parseFloat(tax), 2);
                     // Only auto-fill the total while the user hasn't taken it
                     // over manually; otherwise preserve their entered total.
                     setInvoiceForm((f) => ({
@@ -3014,7 +3199,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                   onChange={(e) => {
                     const tax = e.target.value;
                     const sub = invoiceForm.subtotal || '0';
-                    const total = (parseFloat(sub) + parseFloat(tax || '0')).toFixed(2);
+                    const total = fmtFixed(parseFloat(sub) + parseFloat(tax || '0'), 2);
                     // Preserve a manually entered total; otherwise keep it in
                     // sync with subtotal+tax.
                     setInvoiceForm((f) => ({
@@ -3056,7 +3241,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                       const sub = parseFloat(invoiceForm.subtotal || '0');
                       const tax = parseFloat(invoiceForm.tax || '0');
                       const total = (Number.isFinite(sub) ? sub : 0) + (Number.isFinite(tax) ? tax : 0);
-                      return total.toFixed(2);
+                      return fmtFixed(total, 2);
                     })()}
                     onChange={(e) => {
                       const v = e.target.value;
@@ -3075,7 +3260,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                     onClick={() => {
                       const sub = parseFloat(invoiceForm.subtotal || '0');
                       const tax = parseFloat(invoiceForm.tax || '0');
-                      const total = ((Number.isFinite(sub) ? sub : 0) + (Number.isFinite(tax) ? tax : 0)).toFixed(2);
+                      const total = fmtFixed((Number.isFinite(sub) ? sub : 0) + (Number.isFinite(tax) ? tax : 0), 2);
                       setAmountEditedManually(false);
                       setInvoiceForm((f) => ({ ...f, amount: total }));
                     }}
@@ -3652,7 +3837,7 @@ function PaymentsTab({
                   {p.invoice_number || '\u2014'}
                 </td>
                 <td className="px-4 py-3 text-content-secondary">
-                  <DateDisplay value={p.payment_date} />
+                  <DateDisplay value={p.payment_date} format="numeric" />
                 </td>
                 <td className="px-4 py-3 text-right">
                   <MoneyDisplay amount={p.amount} currency={p.currency_code || p.currency} />
@@ -3668,7 +3853,7 @@ function PaymentsTab({
                     const status = p.status || (p.is_refund ? 'refunded' : 'completed');
                     return (
                       <Badge variant={status === 'refunded' ? 'warning' : 'success'} size="sm">
-                        {t(`finance.payment_status_${status}`, { defaultValue: status })}
+                        {t(`finance.payment_status_${status}`, { defaultValue: PAYMENT_STATUS_LABELS[status] ?? status })}
                       </Badge>
                     );
                   })()}
@@ -3683,7 +3868,7 @@ function PaymentsTab({
                   {t('common.total', { defaultValue: 'Total' })}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <MultiCurrencyTotal items={paymentTotals.total} variant="inline" compact />
+                  <MultiCurrencyTotal items={paymentTotals.total} variant="inline" />
                 </td>
                 <td colSpan={2} />
               </tr>
@@ -3991,7 +4176,7 @@ function EVMTab({
                     colorize={kpi.isVariance}
                   />
                 ) : (
-                  (kpi.value ?? 0).toFixed(2)
+                  fmtFixed(kpi.value ?? 0, 2)
                 )}
               </div>
               {kpi.isIndex && (() => {

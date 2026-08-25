@@ -45,8 +45,9 @@ import {
   EmptyState,
 } from '@/shared/ui';
 import { useConfirm } from '@/shared/hooks/useConfirm';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useToastStore } from '@/stores/useToastStore';
-import { apiGet } from '@/shared/lib/api';
+import { apiGet, type Page } from '@/shared/lib/api';
 import { useAuthStore } from '@/stores/useAuthStore';
 import {
   closeRFI,
@@ -68,6 +69,16 @@ import {
   type RFIFormData,
 } from './RFIPage';
 import { ApprovalInstanceCard } from '@/features/approval-routes';
+import { getIntlLocale } from '@/shared/lib/formatters';
+
+// English fallbacks for the computed `rfi.status_*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const RFI_STATUS_LABELS: Record<string, string> = {
+  draft: 'Draft', open: 'Open', answered: 'Answered', closed: 'Closed', void: 'Void'
+};
+
 
 /**
  * Decode the ``sub`` claim from the JWT — duplicated locally so the
@@ -137,7 +148,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 function formatDate(value: string | null | undefined): string {
   if (!value) return '—';
   try {
-    return new Date(value).toLocaleDateString(undefined, {
+    return new Date(value).toLocaleDateString(getIntlLocale(), {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -150,7 +161,7 @@ function formatDate(value: string | null | undefined): string {
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return '—';
   try {
-    return new Date(value).toLocaleString(undefined, {
+    return new Date(value).toLocaleString(getIntlLocale(), {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -237,7 +248,7 @@ function ActivityStatusToken({ status }: { status: string | null }) {
   return (
     <Badge variant={cfg.variant} size="sm" className={cfg.cls}>
       {t(`rfi.status_${status}`, {
-        defaultValue: status.charAt(0).toUpperCase() + status.slice(1),
+        defaultValue: RFI_STATUS_LABELS[status] ?? status.charAt(0).toUpperCase() + status.slice(1),
       })}
     </Badge>
   );
@@ -282,6 +293,11 @@ export function RFIDetailPage() {
     enabled: !!rfiId,
     staleTime: 30_000,
   });
+  // The journal comes back oldest first and the endpoint caps `limit` at 100,
+  // so on a long-running RFI the entries this page does NOT have are the most
+  // recent ones. `total` is what lets the section admit that.
+  const activityEntries = activityQuery.data?.items ?? [];
+  const activityTotal = activityQuery.data?.total ?? activityEntries.length;
 
   // Resolve the owning project's currency so the cost-exposure figure
   // carries its ISO code (the amount lives in the project's currency,
@@ -311,11 +327,11 @@ export function RFIDetailPage() {
       // We pull the full project document list (capped at 200) and then
       // filter to the linked ids. Cheaper than one-GET-per-id when the
       // user attached more than a couple of drawings.
-      const rows = await apiGet<AttachmentApiRow[]>(
+      const page = await apiGet<Page<AttachmentApiRow>>(
         `/v1/documents/?${params.toString()}`,
       );
       const wanted = new Set(linkedIds);
-      return rows
+      return page.items
         .filter((r) => wanted.has(r.id))
         .map(normaliseAttachment);
     },
@@ -556,7 +572,7 @@ export function RFIDetailPage() {
             >
               {t(`rfi.status_${rfi.status}`, {
                 defaultValue:
-                  rfi.status.charAt(0).toUpperCase() + rfi.status.slice(1),
+                  RFI_STATUS_LABELS[rfi.status] ?? rfi.status.charAt(0).toUpperCase() + rfi.status.slice(1),
               })}
             </Badge>
             {isOverdue && (
@@ -832,7 +848,7 @@ export function RFIDetailPage() {
                   defaultValue: 'Could not load the activity history.',
                 })}
               </p>
-            ) : (activityQuery.data ?? []).length === 0 ? (
+            ) : activityEntries.length === 0 ? (
               <p className="text-sm text-content-tertiary italic">
                 {t('rfi.history_empty', {
                   defaultValue: 'No activity recorded yet.',
@@ -840,7 +856,7 @@ export function RFIDetailPage() {
               </p>
             ) : (
               <ol className="space-y-2.5">
-                {(activityQuery.data ?? []).map((entry) => {
+                {activityEntries.map((entry) => {
                   const actor = displayUser(entry.actor_id);
                   return (
                     <li
@@ -881,6 +897,10 @@ export function RFIDetailPage() {
                 })}
               </ol>
             )}
+            <TruncationNotice
+              page={{ items: activityEntries, total: activityTotal }}
+              className="mt-2"
+            />
           </Card>
 
           {/* Bottom actions when answered, in case user scrolled */}

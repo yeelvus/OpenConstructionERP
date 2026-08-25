@@ -329,7 +329,7 @@ All write endpoints gated by `RequirePermission("admin")` (same as
 
 ```json
 {
-  "slug": "us-rsmeans",
+  "slug": "us-costdata",
   "mode": "apply",                       // "apply" | "update"
   "from_version": "0.1.0",               // null on first apply
   "to_version": "0.2.0",
@@ -403,7 +403,7 @@ keeps the existing copy (`:654-666`) plus the install-requires-restart caveat (�
 │                                                                                │
 │ ┌──────────────────────┐ ┌──────────────────────┐ ┌──────────────────────┐   │
 │ │▌US Construction Pack  │ │▌Batimatech (CA)       │ │▌BIM Hessen (DE)       │  │
-│ │ us-rsmeans · v0.2.0   │ │ batimatech-ca · v0.2.0│ │ bimhessen-de · v0.2.0 │  │
+│ │ us-costdata · v0.2.0  │ │ batimatech-ca · v0.2.0│ │ bimhessen-de · v0.2.0 │  │
 │ │ [USD] [us_state_tax]  │ │ [CAD] [ca_gst_pst]    │ │ [EUR] [de_ust_19]     │  │
 │ │ Standards: MF2020 +6  │ │ Standards: NBC +4     │ │ Standards: VOB +3     │  │
 │ │ ── ✓ Active ────────  │ │ ───────────────────   │ │ ⬆ Update v0.1→v0.2    │  │
@@ -415,7 +415,7 @@ keeps the existing copy (`:654-666`) plus the install-requires-restart caveat (�
 ### 6.5 ASCII wireframe — apply-preview modal
 
 ```
-┌ Apply "US Construction Pack" (us-rsmeans v0.2.0) ───────────────────── [✕] ┐
+┌ Apply "US Construction Pack" (us-costdata v0.2.0) ──────────────────── [✕] ┐
 │ Review what will change. Nothing is applied until you confirm.              │
 │                                                                            │
 │ Modules                                                                    │

@@ -18,6 +18,8 @@ import {
   Snowflake,
   CloudFog,
   CloudLightning,
+  Cloudy,
+  Haze,
   Users,
   FileText,
   CheckCircle2,
@@ -70,6 +72,8 @@ import {
   downloadFieldReportsTemplate,
   fetchWeather,
   weatherConditionFromDescription,
+  REPORT_TYPES,
+  WEATHER_CONDITIONS,
 } from './api';
 import type {
   FieldReport,
@@ -94,6 +98,7 @@ import { SignaturePad } from './SignaturePad';
 import { fieldreportsGuide } from './fieldreportsGuide';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { buildFieldReportsInsights } from './fieldReportsInsights';
+import { getIntlLocale } from '@/shared/lib/formatters';
 
 declare global {
   interface Window {
@@ -103,8 +108,6 @@ declare global {
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
 
-const REPORT_TYPES: ReportType[] = ['daily', 'inspection', 'safety', 'concrete_pour'];
-const WEATHER_CONDITIONS: WeatherCondition[] = ['clear', 'cloudy', 'rain', 'snow', 'fog', 'storm'];
 
 const COMMON_TRADES = [
   'Concrete',
@@ -122,10 +125,13 @@ const COMMON_TRADES = [
 
 const WEATHER_ICONS: Record<WeatherCondition, typeof Sun> = {
   clear: Sun,
+  partly_cloudy: CloudSun,
   cloudy: Cloud,
+  overcast: Cloudy,
   rain: CloudRain,
   snow: Snowflake,
   fog: CloudFog,
+  hazy: Haze,
   storm: CloudLightning,
 };
 
@@ -145,7 +151,7 @@ const STATUS_DOT_COLOR: Record<ReportStatus, string> = {
 
 function formatDate(dateStr: string): string {
   try {
-    return new Date(dateStr + 'T00:00:00').toLocaleDateString(undefined, {
+    return new Date(dateStr + 'T00:00:00').toLocaleDateString(getIntlLocale(), {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -495,7 +501,7 @@ export function FieldReportsPage() {
 
   // ── Month label ─────────────────────────────────────────────────────
 
-  const monthLabel = new Date(calYear, calMonth - 1).toLocaleDateString(undefined, {
+  const monthLabel = new Date(calYear, calMonth - 1).toLocaleDateString(getIntlLocale(), {
     year: 'numeric',
     month: 'long',
   });
@@ -2087,7 +2093,7 @@ function ReportModal({
                 </div>
                 <button
                   onClick={() => handleRemoveWorkforce(idx)}
-                  className="rounded p-1 text-semantic-error/60 hover:text-semantic-error hover:bg-semantic-error-bg"
+                  className="rounded p-1 text-content-tertiary hover:text-semantic-error hover:bg-semantic-error-bg"
                   title={t('common.remove', { defaultValue: 'Remove' })}
                   aria-label={t('common.remove', { defaultValue: 'Remove' })}
                 >

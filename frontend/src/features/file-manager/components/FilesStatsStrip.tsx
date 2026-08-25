@@ -13,13 +13,15 @@ import { useTranslation } from 'react-i18next';
 import { Database, FileText, HardDrive, Layers } from 'lucide-react';
 import type { FileKind, FileTreeNode, StorageLocations } from '../types';
 import { ALL_KINDS, KIND_COLORS } from '../kindModule';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 function fmtBytes(bytes: number): string {
   if (bytes === 0 || !Number.isFinite(bytes)) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   const v = bytes / Math.pow(1024, i);
-  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i] ?? 'TB'}`;
+  return `${fmtFixed(v, v >= 100 || i === 0 ? 0 : 1)} ${units[i] ?? 'TB'}`;
 }
 
 interface FilesStatsStripProps {
@@ -63,7 +65,7 @@ export function FilesStatsStrip({ tree, locations }: FilesStatsStripProps) {
         <Metric
           icon={<FileText size={14} />}
           label={t('files.stats_total', { defaultValue: 'Total files' })}
-          value={stats.totalFiles.toLocaleString()}
+          value={stats.totalFiles.toLocaleString(getNumberLocale())}
         />
         <Metric
           icon={<HardDrive size={14} />}
@@ -103,7 +105,7 @@ export function FilesStatsStrip({ tree, locations }: FilesStatsStripProps) {
                 key={seg.kind}
                 className={`${KIND_COLORS[seg.kind] ?? 'bg-content-tertiary'} transition-[width] duration-500`}
                 style={{ width: `${seg.pct}%` }}
-                title={`${seg.label}: ${fmtBytes(seg.bytes)} (${seg.pct.toFixed(1)}%)`}
+                title={`${seg.label}: ${fmtBytes(seg.bytes)} (${fmtPercent(seg.pct)})`}
               />
             ))}
           </div>
@@ -117,7 +119,7 @@ export function FilesStatsStrip({ tree, locations }: FilesStatsStripProps) {
                   className={`h-2 w-2 rounded-full ${KIND_COLORS[seg.kind] ?? 'bg-content-tertiary'}`}
                 />
                 <span>{seg.label}</span>
-                <span className="text-content-quaternary tabular-nums">{seg.pct.toFixed(0)}%</span>
+                <span className="text-content-quaternary tabular-nums">{fmtPercent(seg.pct, 0)}</span>
               </span>
             ))}
           </div>

@@ -208,7 +208,11 @@ def test_either_tax_registration_answers_br_de_16(field: str):
 
 
 def test_br_de_16_does_not_apply_to_an_invoice_outside_the_scope_of_vat():
-    """The rule names categories S, Z, E, AE, K, G, L and M. O is not among them."""
+    """The rule names categories S, Z, E, AE, K, G, L and M. O is not among them.
+
+    The O group carries its exemption reason (BR-O-10 requires one), so the
+    only rule this document could still trip is the one under test.
+    """
     inv = _invoice(
         seller=_party(vat_id=None, tax_number=None, legal_id="HRB 12345"),
         lines=[
@@ -223,7 +227,15 @@ def test_br_de_16_does_not_apply_to_an_invoice_outside_the_scope_of_vat():
                 vat_category="O",
             )
         ],
-        tax_subtotals=[TaxSubtotal(category="O", rate=Decimal("0"), basis=Decimal("1000"), tax_amount=Decimal("0"))],
+        tax_subtotals=[
+            TaxSubtotal(
+                category="O",
+                rate=Decimal("0"),
+                basis=Decimal("1000"),
+                tax_amount=Decimal("0"),
+                exemption_reason="Not subject to VAT",
+            )
+        ],
         tax_total=Decimal("0"),
         grand_total=Decimal("1000"),
         due_payable=Decimal("1000"),

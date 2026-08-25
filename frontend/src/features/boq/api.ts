@@ -1,6 +1,6 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
-import { apiGet, apiPost, apiPut, apiPatch, apiDelete } from '@/shared/lib/api';
+import { apiGet, apiPost, apiPut, apiPatch, apiDelete, downloadWithAuth, API_BASE } from '@/shared/lib/api';
 import type { CostVariant, VariantStats } from '@/features/costs/api';
 import { resourceAwareTotalInBase } from './boqHelpers';
 
@@ -166,7 +166,13 @@ export interface Markup {
   id: string;
   boq_id: string;
   name: string;
-  markup_type: 'percentage' | 'fixed';
+  /**
+   * ``banded`` charges each tranche of its base at its own rate off a card in
+   * ``metadata.bands`` (a surety's quote for a bond). ``escalation`` indexes
+   * its base from one month to another and carries no percentage of its own;
+   * the ratio arrives as ``escalation_factor``.
+   */
+  markup_type: 'percentage' | 'fixed' | 'banded' | 'escalation';
   category: 'overhead' | 'profit' | 'tax' | 'contingency' | 'insurance' | 'bond' | 'other';
   percentage: number;
   /**
@@ -179,6 +185,23 @@ export interface Markup {
   apply_to: 'direct_cost' | 'subtotal' | 'cumulative';
   sort_order: number;
   is_active: boolean;
+  /**
+   * Null means bill-wide: the company standard, inherited by everything. A
+   * position id confines the line to that position and its descendants, and
+   * ``overrides_id`` names the bill-wide line it stands in for there. The two
+   * together are what separates an exception from an ordinary extra row on
+   * screen.
+   */
+  scope_position_id?: string | null;
+  overrides_id?: string | null;
+  /**
+   * Only ever set on an ``escalation`` line, resolved server-side against the
+   * stored cost-index series and serialised as a Decimal string. The browser
+   * holds no index series, so it multiplies by this rather than working out a
+   * factor of its own. Null when the series or periods could not be resolved,
+   * in which case the line is worth nothing and says so.
+   */
+  escalation_factor?: number | string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -197,6 +220,17 @@ export interface CreateMarkupData {
   apply_to?: string;
   sort_order?: number;
   is_active?: boolean;
+  /** Confines the line to one position and its descendants. Omit for bill-wide. */
+  scope_position_id?: string | null;
+  /** The bill-wide line this scoped line stands in for. Needs a scope as well. */
+  overrides_id?: string | null;
+  /**
+   * Carries the configuration the type needs: `bands` for a banded line,
+   * `escalation` (series_id, base_period, target_period) for an escalation
+   * one. The server refuses either type without it rather than storing a line
+   * that would price at zero.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 export interface UpdateMarkupData {
@@ -208,6 +242,10 @@ export interface UpdateMarkupData {
   apply_to?: string;
   sort_order?: number;
   is_active?: boolean;
+  /** Send explicitly null to clear, i.e. to promote an exception to bill-wide. */
+  scope_position_id?: string | null;
+  overrides_id?: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 /* ── Create / Update payloads ────────────────────────────────────────── */
@@ -432,8 +470,15 @@ export function normalizePositions(positions: Position[]): Position[] {
 
 /* ── Section helpers (used on the frontend to group positions) ────── */
 
-/** A section is a position with no unit (acts as a group header). */
-export function isSection(pos: Position): boolean {
+/** A section is a position with no unit (acts as a group header).
+ *
+ * Accepts anything carrying a `unit` so row shapes outside this feature
+ * (e.g. the GAEB exchange module's export rows) can apply the SAME rule
+ * instead of re-deriving it — the API never serves an `is_section` flag,
+ * and a re-derived rule is how the export summary ended up counting zero
+ * sections for every BOQ.
+ */
+export function isSection(pos: Pick<Position, 'unit'>): boolean {
   return !pos.unit || pos.unit.trim() === '' || pos.unit.trim().toLowerCase() === 'section';
 }
 
@@ -865,6 +910,91 @@ export interface CostBreakdownResponse {
   categories: CostBreakdownCategory[];
   markups: CostBreakdownMarkup[];
   top_resources: CostBreakdownResource[];
+}
+
+/* ── Price Analysis types (per-position unit-rate build-up) ───────── */
+
+/**
+ * Presentation presets the backend knows (`price_breakdown/presets.py`).
+ * Only these two are offered in the UI: the international default and the
+ * German EFB sheets a public client asks for with the tender.
+ */
+export type PriceAnalysisPreset = 'international' | 'efb';
+
+/**
+ * One resource line of the build-up, costed per ONE unit of the position.
+ *
+ * Every money and quantity field is a Decimal rendered as a JSON string
+ * ("108.00"), the platform-wide wire contract - coerce with `toNum` before
+ * any arithmetic. `kind_i18n_key` is minted by the backend as
+ * `price_breakdown.kind.<kind>`; use it rather than a parallel key.
+ */
+export interface PriceAnalysisComponent {
+  kind: string;
+  kind_i18n_key: string;
+  description: string;
+  unit: string;
+  quantity: string;
+  unit_cost: string;
+  amount: string;
+}
+
+/**
+ * The EFB (Einheitliche Formblaetter) grouping, present only when the request
+ * asked for `preset=efb`.
+ *
+ * `rows[].label` carries the German form wording ("Lohnkosten (221)",
+ * "Nachunternehmerleistungen (222)", "Stoffkosten (223)"). That is the name of
+ * a field on a German procurement form, in the same class as a GAEB or DIN 276
+ * heading, so it is rendered verbatim and is deliberately not translated.
+ * All six rows are always present, zero amounts included, because a Formblatt
+ * has fixed rows.
+ */
+export interface PriceAnalysisEfbRow {
+  kind: string;
+  label: string;
+  amount: string;
+}
+
+export interface PriceAnalysisEfb {
+  position_ref: string;
+  unit: string;
+  currency: string;
+  rows: PriceAnalysisEfbRow[];
+  direct_unit_cost: string;
+  overhead_amount: string;
+  risk_amount: string;
+  profit_amount: string;
+  unit_rate: string;
+}
+
+/**
+ * The full unit-price breakdown of one position.
+ *
+ * `kind_totals` always carries all six resource kinds, zeros included, so a
+ * reader that renders it unfiltered draws four empty rows on an ordinary
+ * labour-plus-material position.
+ */
+export interface PriceAnalysisResponse {
+  position_ref: string;
+  description: string;
+  unit: string;
+  currency: string;
+  position_quantity: string;
+  components: PriceAnalysisComponent[];
+  kind_totals: Record<string, string>;
+  kind_i18n_keys: Record<string, string>;
+  i18n_keys: Record<string, string>;
+  direct_unit_cost: string;
+  overhead_pct: string;
+  overhead_amount: string;
+  risk_pct: string;
+  risk_amount: string;
+  profit_pct: string;
+  profit_amount: string;
+  unit_rate: string;
+  position_total: string;
+  efb?: PriceAnalysisEfb;
 }
 
 /* ── Resource Summary types ────────────────────────────────────────── */
@@ -1581,6 +1711,30 @@ export const boqApi = {
   getCostBreakdown: (boqId: string) =>
     apiGet<CostBreakdownResponse>(`/v1/boq/boqs/${boqId}/cost-breakdown/`),
 
+  /* Price Analysis: how ONE position's unit rate is built up. */
+  getPriceAnalysis: (positionId: string, preset: PriceAnalysisPreset = 'international') =>
+    apiGet<PriceAnalysisResponse>(
+      `/v1/boq/positions/${encodeURIComponent(positionId)}/price-analysis/` +
+        `?preset=${encodeURIComponent(preset)}`,
+    ),
+
+  /* The same analysis as a Markdown document, which is how a German bidder
+   * hands the Preisblatt over. The preset travels with it: `render_markdown`
+   * takes its headings from the preset, so downloading the EFB sheet while
+   * looking at the international view would hand over the wrong wording. */
+  downloadPriceAnalysisMarkdown: (
+    positionId: string,
+    preset: PriceAnalysisPreset = 'international',
+    positionRef?: string,
+  ) => {
+    const safe = (positionRef || 'position').replace(/[/\s]/g, '_');
+    return downloadWithAuth(
+      `${API_BASE}/v1/boq/positions/${encodeURIComponent(positionId)}/price-analysis/` +
+        `?format=markdown&preset=${encodeURIComponent(preset)}`,
+      `price_analysis_${safe}.md`,
+    );
+  },
+
   /* AACE Estimate Classification */
   getClassification: (boqId: string) =>
     apiGet<EstimateClassificationResponse>(`/v1/boq/boqs/${boqId}/classification/`),
@@ -1799,7 +1953,10 @@ export interface CustomColumnDef {
    * Optional semantic hint that turns a `number` column into an auto-derived
    * value. See `grid/columnDefs.ts` for the runtime contract.
    *   - `resource_sum`           — sum of position resources matching `resource_role`
-   *   - `percentage_of_unit_rate`— labor/material/etc share of unit_rate as %
+   *   - `percentage_of_unit_rate`— labor/material/etc resources as a percent of
+   *     the position's stored `unit_rate`. Divided by the rate itself, not by
+   *     the resource total, so the value can exceed 100 when a buildup is worth
+   *     more than the rate it sits under.
    */
   derived?: 'resource_sum' | 'percentage_of_unit_rate';
   /** Single role or a list — array form lets a column sum several resource

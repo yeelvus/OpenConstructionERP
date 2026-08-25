@@ -18,15 +18,37 @@ import {
 } from 'lucide-react';
 import { Button, Badge, DismissibleInfo } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
-import { apiGet } from '@/shared/lib/api';
+import { apiGet, getAuthToken, triggerDownload } from '@/shared/lib/api';
+import { fmtNumber, fmtFixed } from '@/shared/lib/formatters';
 import { useToastStore } from '@/stores/useToastStore';
-import { parseGAEBXML, importGAEBToBOQ, decodeXmlBuffer, type GAEBPosition } from '@/features/boq/gaebImport';
+import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { boqApi, isSection as isSectionRow } from '@/features/boq/api';
+import {
+  parseGAEBXML,
+  parseGAEBProjectName,
+  detectGAEBPhase,
+  importGAEBToBOQ,
+  truncateFinding,
+  decodeXmlBuffer,
+  type GAEBPosition,
+} from '@/features/boq/gaebImport';
 import {
   generateGAEBXML,
   downloadGAEBXML,
+  priceCoverage,
   type GAEBExportFormat,
   type ExportPosition,
 } from './data/gaebExport';
+
+/**
+ * All formats selectable on the Export tab. X81/X83 are generated
+ * client-side; X84 (Angebotsabgabe) is produced by the backend exporter,
+ * which writes an XSD-valid bid submission (?format=x84).
+ */
+type ExportFormatChoice = GAEBExportFormat | 'X84';
+
+/** Sentinel option value: create a new BOQ named after the imported file. */
+const NEW_BOQ_OPTION = '__new__';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -105,8 +127,8 @@ function ImportPreview({
                   {pos.description || '-'}
                 </td>
                 <td className="px-3 py-1.5 text-center text-content-secondary">{pos.unit || '-'}</td>
-                <td className="px-3 py-1.5 text-right tabular-nums">{pos.quantity > 0 ? pos.quantity.toFixed(3) : '-'}</td>
-                <td className="px-3 py-1.5 text-right tabular-nums">{pos.unitRate > 0 ? pos.unitRate.toFixed(2) : '-'}</td>
+                <td className="px-3 py-1.5 text-right tabular-nums">{pos.quantity > 0 ? fmtNumber(pos.quantity, 3) : '-'}</td>
+                <td className="px-3 py-1.5 text-right tabular-nums">{pos.unitRate > 0 ? fmtNumber(pos.unitRate, 2) : '-'}</td>
                 <td className="px-3 py-1.5 text-content-tertiary text-2xs truncate" title={pos.section}>{pos.section || '-'}</td>
               </tr>
             ))}
@@ -127,10 +149,19 @@ export default function GAEBExchangeModule() {
   const addToast = useToastStore((s) => s.addToast);
   const queryClient = useQueryClient();
 
+  // The globally active project (header selector) pre-fills both target
+  // pickers: a Kalkulator importing an Ausschreibung is almost always
+  // working inside the project already open in the header.
+  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+
   // --- Import state ---
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
   const [parsedPositions, setParsedPositions] = useState<GAEBPosition[] | null>(null);
+  const [gaebProjectName, setGaebProjectName] = useState('');
+  // Exchange phase (X81/X83/X84…) read from the file's own DP element, not
+  // guessed from price presence - an unpriced X83 is NOT an X81.
+  const [gaebPhase, setGaebPhase] = useState('');
   const [parseError, setParseError] = useState<string | null>(null);
   const [importTargetBoqId, setImportTargetBoqId] = useState('');
   const [isImporting, setIsImporting] = useState(false);
@@ -139,7 +170,7 @@ export default function GAEBExchangeModule() {
   // --- Export state ---
   const [exportProjectId, setExportProjectId] = useState('');
   const [exportBoqId, setExportBoqId] = useState('');
-  const [exportFormat, setExportFormat] = useState<GAEBExportFormat>('X83');
+  const [exportFormat, setExportFormat] = useState<ExportFormatChoice>('X83');
   const [isExporting, setIsExporting] = useState(false);
   const [showExportPreview, setShowExportPreview] = useState(false);
 
@@ -152,8 +183,9 @@ export default function GAEBExchangeModule() {
     queryFn: () => apiGet<Project[]>('/v1/projects/'),
   });
 
-  // Import: project selection for target BOQ
-  const [importProjectId, setImportProjectId] = useState('');
+  // Import: project selection for target BOQ (pre-filled from the header
+  // context so the import lands in the project the user is working in).
+  const [importProjectId, setImportProjectId] = useState(activeProjectId ?? '');
   const { data: importBoqs = [] } = useQuery<BOQ[]>({
     queryKey: ['boqs-for-import', importProjectId],
     queryFn: () => apiGet<BOQ[]>(`/v1/boq/boqs/?project_id=${importProjectId}`),
@@ -185,6 +217,8 @@ export default function GAEBExchangeModule() {
     async (file: File) => {
       setImportFile(file);
       setParsedPositions(null);
+      setGaebProjectName('');
+      setGaebPhase('');
       setParseError(null);
       setImportResult(null);
 
@@ -195,15 +229,20 @@ export default function GAEBExchangeModule() {
         const buffer = await file.arrayBuffer();
         const xmlString = decodeXmlBuffer(buffer);
         const positions = parseGAEBXML(xmlString);
+        setGaebProjectName(parseGAEBProjectName(xmlString));
+        setGaebPhase(detectGAEBPhase(xmlString));
 
         if (positions.length === 0) {
-          setParseError(t('gaeb.parse_error', { defaultValue: 'No positions found in the GAEB XML file. Ensure the file is valid GAEB DA XML 3.3 (X81 or X83).' }));
+          setParseError(t('gaeb.parse_error', { defaultValue: 'No positions found in the GAEB XML file. Ensure the file is valid GAEB DA XML 3.3 (X81, X83 or X84).' }));
         } else {
           setParsedPositions(positions);
           addToast({
             type: 'success',
             title: t('gaeb.parsed_ok', { defaultValue: 'File parsed successfully' }),
-            message: `${positions.length} positions found`,
+            message: t('gaeb.toast_positions_found', {
+              count: positions.length,
+              defaultValue: '{{count}} positions found',
+            }),
           });
         }
       } catch {
@@ -232,16 +271,37 @@ export default function GAEBExchangeModule() {
   );
 
   const handleImport = useCallback(async () => {
-    if (!importFile || !importTargetBoqId) return;
+    if (!importFile || !importTargetBoqId || !importProjectId) return;
     setIsImporting(true);
     try {
-      const result = await importGAEBToBOQ(importFile, importTargetBoqId);
+      let targetBoqId = importTargetBoqId;
+      if (importTargetBoqId === NEW_BOQ_OPTION) {
+        // Create a fresh BOQ named after the tender (PrjInfo/NamePrj),
+        // falling back to the file name. An incoming Ausschreibung belongs
+        // in its own LV, not appended to an existing estimate.
+        const boqName = gaebProjectName || importFile.name.replace(/\.[^.]+$/, '');
+        const newBoq = await boqApi.create({ project_id: importProjectId, name: boqName });
+        targetBoqId = newBoq.id;
+        setImportTargetBoqId(newBoq.id);
+        queryClient.invalidateQueries({ queryKey: ['boqs-for-import', importProjectId] });
+      }
+      const result = await importGAEBToBOQ(importFile, targetBoqId);
       setImportResult(result);
       queryClient.invalidateQueries({ queryKey: ['boq-positions'] });
       addToast({
         type: result.imported > 0 ? 'success' : 'warning',
         title: t('gaeb.import_complete', { defaultValue: 'GAEB import complete' }),
-        message: `${result.imported} positions imported${result.errors.length > 0 ? `, ${result.errors.length} errors` : ''}`,
+        message:
+          result.errors.length > 0
+            ? t('gaeb.toast_imported_with_errors', {
+                count: result.imported,
+                errors: result.errors.length,
+                defaultValue: '{{count}} positions imported, {{errors}} rejected',
+              })
+            : t('gaeb.toast_positions_imported', {
+                count: result.imported,
+                defaultValue: '{{count}} positions imported',
+              }),
       });
     } catch (err) {
       addToast({
@@ -252,11 +312,13 @@ export default function GAEBExchangeModule() {
     } finally {
       setIsImporting(false);
     }
-  }, [importFile, importTargetBoqId, queryClient, addToast, t]);
+  }, [importFile, importTargetBoqId, importProjectId, gaebProjectName, queryClient, addToast, t]);
 
   const handleClearImport = useCallback(() => {
     setImportFile(null);
     setParsedPositions(null);
+    setGaebProjectName('');
+    setGaebPhase('');
     setParseError(null);
     setImportResult(null);
   }, []);
@@ -299,7 +361,11 @@ export default function GAEBExchangeModule() {
             : (Number(p.quantity) || 0) * (Number(p.unit_rate) || 0),
         section: p.section,
         parentId: p.parent_id,
-        isSection: p.is_section,
+        // The positions endpoint serves no `is_section` flag — deriving it
+        // here from the shared unit rule is what makes the summary's section
+        // count and the X81/X83 hierarchy export see the BOQ's sections at
+        // all (an explicit server flag, if one ever appears, still wins).
+        isSection: p.is_section ?? isSectionRow(p),
       })),
     [exportPositions],
   );
@@ -307,25 +373,64 @@ export default function GAEBExchangeModule() {
   const selectedExportBoq = exportBoqs.find((b) => b.id === exportBoqId);
   const selectedExportProject = projects.find((p) => p.id === exportProjectId);
 
-  const handleExport = useCallback(() => {
+  // What the summary's "Prices" tile is allowed to claim. Read from the rates
+  // in the bill, then overridden to "none" for X81, which drops prices by
+  // definition - the file the user is about to download really carries none.
+  const coverage = useMemo(() => priceCoverage(exportablePositions), [exportablePositions]);
+  const priceState = exportFormat === 'X81' ? 'none' : coverage.state;
+
+  const handleExport = useCallback(async () => {
     if (exportablePositions.length === 0) {
       addToast({ type: 'warning', title: t('gaeb.no_positions', { defaultValue: 'No positions to export' }) });
       return;
     }
     setIsExporting(true);
     try {
-      const result = generateGAEBXML({
-        format: exportFormat,
-        projectName: selectedExportProject?.name ?? 'Project',
-        boqName: selectedExportBoq?.name ?? 'BOQ',
-        positions: exportablePositions,
-      });
-      downloadGAEBXML(result);
-      addToast({
-        type: 'success',
-        title: t('gaeb.export_complete', { defaultValue: 'GAEB export complete' }),
-        message: `${result.positionCount} positions, ${result.sectionCount} sections → ${result.filename}`,
-      });
+      if (exportFormat === 'X84') {
+        // X84 (Angebotsabgabe) comes from the backend exporter: it writes an
+        // XSD-valid bid submission with Bieter address, UP/IT and Totals.
+        // The server defaults ?format=x84 to a Hauptangebot.
+        const token = getAuthToken();
+        const r = await fetch(`/api/v1/boq/boqs/${exportBoqId}/export/gaeb/?format=x84`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!r.ok) {
+          throw new Error(`Export request failed (${r.status})`);
+        }
+        const blob = await r.blob();
+        const disposition = r.headers.get('content-disposition') ?? '';
+        const serverName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+        const fallback = `${(selectedExportBoq?.name ?? 'boq').replace(/[^\w-]+/g, '_')}.X84`;
+        const filename = serverName || fallback;
+        triggerDownload(blob, filename);
+        addToast({
+          type: 'success',
+          title: t('gaeb.export_complete', { defaultValue: 'GAEB export complete' }),
+          message: t('gaeb.toast_exported_to_file', {
+            count: exportablePositions.filter((p) => !p.isSection).length,
+            file: filename,
+            defaultValue: '{{count}} positions → {{file}}',
+          }),
+        });
+      } else {
+        const result = generateGAEBXML({
+          format: exportFormat,
+          projectName: selectedExportProject?.name ?? 'Project',
+          boqName: selectedExportBoq?.name ?? 'BOQ',
+          positions: exportablePositions,
+        });
+        downloadGAEBXML(result);
+        addToast({
+          type: 'success',
+          title: t('gaeb.export_complete', { defaultValue: 'GAEB export complete' }),
+          message: t('gaeb.toast_exported_with_sections', {
+            count: result.positionCount,
+            sections: result.sectionCount,
+            file: result.filename,
+            defaultValue: '{{count}} positions, {{sections}} sections → {{file}}',
+          }),
+        });
+      }
     } catch (err) {
       addToast({
         type: 'error',
@@ -335,7 +440,7 @@ export default function GAEBExchangeModule() {
     } finally {
       setIsExporting(false);
     }
-  }, [exportablePositions, exportFormat, selectedExportProject, selectedExportBoq, addToast, t]);
+  }, [exportablePositions, exportFormat, exportBoqId, selectedExportProject, selectedExportBoq, addToast, t]);
 
   // ---------------------------------------------------------------------------
   // Render
@@ -346,7 +451,7 @@ export default function GAEBExchangeModule() {
       <PageHeader
         srTitle={t('gaeb.title', { defaultValue: 'GAEB XML 3.3 Import / Export' })}
         subtitle={t('gaeb.subtitle', {
-          defaultValue: 'Exchange BOQ data in GAEB DA XML format (X81 / X83)',
+          defaultValue: 'Exchange BOQ data in GAEB DA XML format (X81 / X83 / X84)',
         })}
       />
 
@@ -372,7 +477,7 @@ export default function GAEBExchangeModule() {
       >
         {t('gaeb.intro_body', {
           defaultValue:
-            'Import a GAEB DA XML file (X81 priceless LV or X83 priced Angebot) straight into a BOQ, or export your BOQ back out as a tender or bid document in the same format. Imports run through validation on the way in, so your Leistungsverzeichnis arrives structured and checked.',
+            'Import a GAEB DA XML file (X81 tender specification, X83 invitation to tender or X84 priced bid) straight into a BOQ, or export your BOQ back out in the same family of exchange phases. Imports run through validation on the way in, so your Leistungsverzeichnis arrives structured and checked.',
         })}
       </DismissibleInfo>
 
@@ -421,7 +526,7 @@ export default function GAEBExchangeModule() {
                   <FileUp size={18} className="text-oe-blue" />
                   <span className="font-medium">{importFile.name}</span>
                   <span className="text-content-tertiary">
-                    ({(importFile.size / 1024).toFixed(1)} KB)
+                    ({fmtFixed(importFile.size / 1024, 1)} KB)
                   </span>
                   <button
                     onClick={handleClearImport}
@@ -435,11 +540,16 @@ export default function GAEBExchangeModule() {
                   <div className="flex items-center justify-center gap-1.5 text-xs text-emerald-600">
                     <CheckCircle2 size={14} />
                     {parsedPositions.length} {t('gaeb.positions_found', { defaultValue: 'positions found' })}
-                    {parsedPositions.some((p) => p.unitRate > 0) && (
-                      <Badge variant="blue" className="ml-2">X83</Badge>
-                    )}
-                    {parsedPositions.every((p) => p.unitRate === 0) && (
-                      <Badge variant="neutral" className="ml-2">X81</Badge>
+                    {/* Phase read from the file's DP element - the old price
+                        heuristic labelled every unpriced X83 as "X81" and a
+                        priced X84 as "X83". Blue marks the priced phases. */}
+                    {gaebPhase && (
+                      <Badge
+                        variant={gaebPhase === 'X84' || gaebPhase === 'X86' ? 'blue' : 'neutral'}
+                        className="ml-2"
+                      >
+                        {gaebPhase}
+                      </Badge>
                     )}
                   </div>
                 )}
@@ -464,7 +574,7 @@ export default function GAEBExchangeModule() {
                   {t('gaeb.browse', { defaultValue: 'Browse files' })}
                 </Button>
                 <p className="text-2xs text-content-quaternary">
-                  {t('gaeb.formats_hint', { defaultValue: 'Supported: .x81, .x83, .xml (GAEB DA XML 3.3)' })}
+                  {t('gaeb.formats_hint', { defaultValue: 'Supported: .x81, .x83, .x84, .xml (GAEB DA XML 3.3)' })}
                 </p>
                 <button
                   type="button"
@@ -481,7 +591,7 @@ export default function GAEBExchangeModule() {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".x81,.x83,.xml"
+              accept=".x81,.x83,.x84,.xml"
               className="hidden"
               onChange={handleFileInputChange}
             />
@@ -492,8 +602,11 @@ export default function GAEBExchangeModule() {
             <ImportPreview positions={parsedPositions} t={t} />
           )}
 
-          {/* Target BOQ selection + Import button */}
-          {parsedPositions && parsedPositions.length > 0 && (
+          {/* Target BOQ selection + Import button.
+              Hidden once the import has run: leaving an armed "Import N
+              positions" button under a "M positions imported" panel invites
+              a double import. Clearing the file starts a fresh round. */}
+          {parsedPositions && parsedPositions.length > 0 && !importResult && (
             <div className="rounded-xl border border-border bg-surface-primary p-5">
               <h3 className="text-sm font-semibold text-content-primary mb-3">
                 {t('gaeb.target_boq', { defaultValue: 'Import Target' })}
@@ -528,6 +641,10 @@ export default function GAEBExchangeModule() {
                     className="w-full rounded-lg border border-border bg-surface-secondary px-3 py-2 text-sm disabled:opacity-50"
                   >
                     <option value="">— {t('gaeb.select_boq', { defaultValue: 'Select BOQ' })} —</option>
+                    <option value={NEW_BOQ_OPTION}>
+                      + {t('gaeb.create_new_boq', { defaultValue: 'Create a new BOQ' })}
+                      {gaebProjectName ? ` (${truncateFinding(gaebProjectName, 60)})` : ''}
+                    </option>
                     {importBoqs.map((b) => (
                       <option key={b.id} value={b.id}>{b.name}</option>
                     ))}
@@ -569,16 +686,25 @@ export default function GAEBExchangeModule() {
                 </span>
               </div>
               {importResult.errors.length > 0 && (
-                <ul className="mt-2 space-y-1 text-xs text-content-secondary">
+                /* Findings never reprint raw payloads: each entry is
+                   truncated and the list wraps anywhere, so a base64 blob
+                   or Langtext can not blow the layout sideways. */
+                <ul className="mt-2 space-y-1 text-xs text-content-secondary break-words [overflow-wrap:anywhere]">
                   {importResult.errors.map((err, idx) => (
-                    <li key={`err-${err.slice(0, 40)}-${idx}`}>• {err}</li>
+                    <li key={`err-${err.slice(0, 40)}-${idx}`}>• {truncateFinding(err, 300)}</li>
                   ))}
                 </ul>
               )}
               {importResult.imported > 0 && (
                 <Link
                   data-testid="regional-open-boq"
-                  to={importTargetBoqId ? `/boq?boq=${importTargetBoqId}` : '/boq'}
+                  // The editor is a path param (/boq/:boqId). `?boq=` was read by
+                  // nothing, so this link promised the editor and delivered the list.
+                  to={
+                    importTargetBoqId && importTargetBoqId !== NEW_BOQ_OPTION
+                      ? `/boq/${importTargetBoqId}`
+                      : '/boq'
+                  }
                   className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-oe-blue hover:underline"
                 >
                   {t('gaeb.open_boq', {
@@ -640,11 +766,12 @@ export default function GAEBExchangeModule() {
                 </label>
                 <select
                   value={exportFormat}
-                  onChange={(e) => setExportFormat(e.target.value as GAEBExportFormat)}
+                  onChange={(e) => setExportFormat(e.target.value as ExportFormatChoice)}
                   className="w-full rounded-lg border border-border bg-surface-secondary px-3 py-2 text-sm"
                 >
-                  <option value="X83">X83 - {t('gaeb.x83_desc', { defaultValue: 'Bid Submission (with prices)' })}</option>
+                  <option value="X83">X83 - {t('gaeb.x83_desc', { defaultValue: 'Invitation to Tender (Ausschreibung)' })}</option>
                   <option value="X81">X81 - {t('gaeb.x81_desc', { defaultValue: 'Tender Specification (no prices)' })}</option>
+                  <option value="X84">X84 - {t('gaeb.x84_desc', { defaultValue: 'Bid Submission (priced offer)' })}</option>
                 </select>
               </div>
             </div>
@@ -679,9 +806,31 @@ export default function GAEBExchangeModule() {
                   <div className="text-2xs text-content-tertiary uppercase">{t('gaeb.format_label', { defaultValue: 'Format' })}</div>
                   <div className="text-lg font-bold text-content-primary">{exportFormat}</div>
                 </div>
-                <div className="rounded-lg bg-surface-secondary/50 p-3 text-center">
+                <div className="rounded-lg bg-surface-secondary/50 p-3 text-center" data-testid="gaeb-prices-tile">
                   <div className="text-2xs text-content-tertiary uppercase">{t('gaeb.prices', { defaultValue: 'Prices' })}</div>
-                  <div className="text-lg font-bold text-content-primary">{exportFormat === 'X83' ? 'Yes' : 'No'}</div>
+                  {/* "Yes" only when every line item carries a rate. One priced
+                      line out of four hundred is not a priced bid, and the
+                      bidder who reads "Yes" and receives a half-priced file has
+                      no way back - so the partial state names how many rates
+                      are still missing instead of rounding up to Yes. */}
+                  <div
+                    className={`text-lg font-bold ${priceState === 'partial' ? 'text-amber-600 dark:text-amber-400' : 'text-content-primary'}`}
+                  >
+                    {priceState === 'all' && t('common.yes', { defaultValue: 'Yes' })}
+                    {/* `boq.partial` is the platform's existing "some but not
+                        all" label, already translated in every locale. */}
+                    {priceState === 'partial' && t('boq.partial', { defaultValue: 'Partial' })}
+                    {priceState === 'none' && t('common.no', { defaultValue: 'No' })}
+                  </div>
+                  {priceState === 'partial' && (
+                    <div className="text-2xs text-amber-600 dark:text-amber-400">
+                      {t('gaeb.prices_missing', {
+                        count: coverage.missing,
+                        defaultValue: '{{count}} line without a rate',
+                        defaultValue_other: '{{count}} lines without a rate',
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -694,7 +843,7 @@ export default function GAEBExchangeModule() {
                         <th className="px-3 py-1.5 text-left font-medium text-content-secondary">{t('boq.description', { defaultValue: 'Description' })}</th>
                         <th className="px-3 py-1.5 text-center font-medium text-content-secondary">{t('boq.unit', { defaultValue: 'Unit' })}</th>
                         <th className="px-3 py-1.5 text-right font-medium text-content-secondary">{t('boq.quantity', { defaultValue: 'Qty' })}</th>
-                        {exportFormat === 'X83' && (
+                        {exportFormat !== 'X81' && (
                           <th className="px-3 py-1.5 text-right font-medium text-content-secondary">{t('boq.unit_rate', { defaultValue: 'Rate' })}</th>
                         )}
                       </tr>
@@ -707,9 +856,9 @@ export default function GAEBExchangeModule() {
                           <td className="px-3 py-1.5 font-mono text-content-tertiary">{pos.ordinal}</td>
                           <td className="px-3 py-1.5 text-content-primary max-w-[280px] truncate">{pos.description}</td>
                           <td className="px-3 py-1.5 text-center text-content-secondary">{pos.unit}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">{pos.quantity.toFixed(3)}</td>
-                          {exportFormat === 'X83' && (
-                            <td className="px-3 py-1.5 text-right tabular-nums">{pos.unitRate.toFixed(2)}</td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">{fmtNumber(pos.quantity, 3)}</td>
+                          {exportFormat !== 'X81' && (
+                            <td className="px-3 py-1.5 text-right tabular-nums">{fmtNumber(pos.unitRate, 2)}</td>
                           )}
                         </tr>
                       ))}

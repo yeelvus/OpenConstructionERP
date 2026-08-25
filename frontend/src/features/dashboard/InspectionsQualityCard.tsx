@@ -5,7 +5,9 @@
  * project's quality inspections.
  *
  * There is no server-side stats endpoint, so this aggregates the inspection
- * list client-side (GET /v1/inspections/?project_id=...):
+ * list client-side (GET /v1/inspections/?project_id=...). That list comes back
+ * one page at a time, so the figures below describe the page, not necessarily
+ * the project - hence the truncation notice under them:
  *   - pass rate  = passed / (passed + failed), guarded against divide-by-zero
  *                  and clamped to 0..100 (never NaN),
  *   - open count = inspections still scheduled or in progress,
@@ -22,9 +24,11 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { ClipboardCheck, ArrowRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, InfoHint } from '@/shared/ui';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { fetchInspections, type Inspection } from '@/features/inspections/api';
 import { KpiStrip } from './KpiStrip';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 interface InspectionStats {
   total: number;
@@ -66,7 +70,7 @@ export function InspectionsQualityCard() {
     staleTime: 60 * 1000,
   });
 
-  const stats = useMemo(() => aggregate(data ?? []), [data]);
+  const stats = useMemo(() => aggregate(data?.items ?? []), [data]);
 
   // Self-hide on no project / loading / empty so the dashboard is not
   // cluttered for projects that have not logged any inspections.
@@ -74,7 +78,7 @@ export function InspectionsQualityCard() {
   if (isLoading) return null;
   if (!data || stats.total === 0) return null;
 
-  const nf = new Intl.NumberFormat();
+  const nf = new Intl.NumberFormat(getNumberLocale());
   const hasEvaluated = stats.evaluated > 0;
 
   const rateColor =
@@ -135,6 +139,10 @@ export function InspectionsQualityCard() {
             })}
           </p>
         )}
+        {/* A rate computed from one page is a rate over a sample, and a sample
+            presented as a project figure is the more misleading the further
+            the register runs past it. */}
+        <TruncationNotice page={data} className="mt-2 text-2xs" />
         <InfoHint
           className="mt-3"
           text={t('dashboard.inspections_help', {

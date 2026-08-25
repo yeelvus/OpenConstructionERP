@@ -165,6 +165,29 @@ describe('A - one scene is one sheet', () => {
     expect(sceneEntities(loose, [], null)).toHaveLength(loose.length);
   });
 
+  it('never offers a block definition as a sheet', () => {
+    // The other half of the backend's contract. A definition arrives tagged
+    // `block` and carrying no layout, so it can only reach the picker if
+    // something starts reading a name off the tag. A real export carries
+    // ~1700 definitions against one sheet, so a regression here is a strip of
+    // seventeen hundred thumbnails rather than a hidden one.
+    const definitionMember = (block: string): DxfEntity => ({
+      id: `def-${block}`,
+      type: 'LINE',
+      layer: '0',
+      color: 7,
+      start: { x: 0, y: 0 },
+      end: { x: 1, y: 1 },
+      block,
+    });
+    const withDefs = MODEL_AND_PAPERSPACE.entities.concat([
+      definitionMember('DOOR-900'),
+      definitionMember('*D1000'),
+    ]);
+    expect(layoutNames(withDefs)).toEqual(layouts);
+    expect(sceneEntities(withDefs, layouts, 'Model').every((e) => !e.block)).toBe(true);
+  });
+
   it('never hands the renderer two coordinate systems in one box', () => {
     // Why the union is not a fallback. Model space is an 18 m building and
     // Layout1 is a 400 mm paper sheet; fitted together the sheet collapses to

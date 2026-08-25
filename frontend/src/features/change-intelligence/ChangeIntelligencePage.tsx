@@ -105,6 +105,7 @@ import {
   type ParetoRow,
 } from './api';
 import { changeIntelligenceGuide } from './change_intelligenceGuide';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
 
 type BadgeVariant = 'neutral' | 'blue' | 'success' | 'warning' | 'error';
 
@@ -199,7 +200,7 @@ function ratePercent(rate: string | null | undefined): string {
  */
 function pctNum(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-';
-  return `${value.toFixed(1)}%`;
+  return fmtPercent(value);
 }
 
 /**
@@ -212,7 +213,7 @@ function pctString(value: string | null | undefined): string {
   if (value === null || value === undefined || value === '') return '-';
   const n = Number(value);
   if (!Number.isFinite(n)) return '-';
-  return `${n.toFixed(1)}%`;
+  return fmtPercent(n);
 }
 
 /** Badge variant for a HIGH/LOW traceability cohort label. */
@@ -317,20 +318,33 @@ function CoordinationTab({ projectId }: { projectId: string }) {
           {plan?.steps.map((s) => (
             <Card key={s.ref_id} className="p-3">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={URGENCY_VARIANT[s.urgency]}>{humanize(s.urgency)}</Badge>
-                <span className="text-xs text-content-tertiary">{humanize(s.kind)}</span>
+                {/* Urgency / kind / action / reason arrive as stable engine
+                    tokens (the reason 1:1 per urgency), so each is translated
+                    by token with the wire text as the unknown-token fallback. */}
+                <Badge variant={URGENCY_VARIANT[s.urgency]}>
+                  {t(`change_intelligence.coordination.urgency.${s.urgency}`, { defaultValue: humanize(s.urgency) })}
+                </Badge>
+                <span className="text-xs text-content-tertiary">
+                  {t(`claims_evidence.kind.${s.kind}`, { defaultValue: humanize(s.kind) })}
+                </span>
                 <span className="font-medium text-content-primary">
                   {s.title || t('change_intelligence.common.untitled', { defaultValue: '(untitled)' })}
                 </span>
                 <span className="ml-auto inline-flex items-center gap-1 text-sm font-medium text-oe-blue">
-                  {humanize(s.recommended_action)}
+                  {t(`change_intelligence.coordination.action.${s.recommended_action}`, {
+                    defaultValue: humanize(s.recommended_action),
+                  })}
                   <ArrowRight className="h-3.5 w-3.5" />
                 </span>
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-content-secondary">
                 <span>
                   {t('change_intelligence.coordination.ball_in_court', { defaultValue: 'Ball in court:' })}{' '}
-                  <span className="font-medium">{s.ball_in_court}</span>
+                  <span className="font-medium">
+                    {s.ball_in_court === 'unassigned'
+                      ? t('change_intelligence.coordination.unassigned', { defaultValue: 'Unassigned' })
+                      : s.ball_in_court}
+                  </span>
                 </span>
                 {s.days_to_due != null && (
                   <span>
@@ -345,7 +359,9 @@ function CoordinationTab({ projectId }: { projectId: string }) {
                         })}
                   </span>
                 )}
-                <span className="text-content-tertiary">{s.reason}</span>
+                <span className="text-content-tertiary">
+                  {t(`change_intelligence.coordination.reason.${s.urgency}`, { defaultValue: s.reason })}
+                </span>
               </div>
             </Card>
           ))}
@@ -422,8 +438,8 @@ function CycleTimeTab({ projectId }: { projectId: string }) {
                   <td className="px-3 py-2 font-medium text-content-primary">{p.party}</td>
                   <td className="px-3 py-2 text-right">{p.open_count}</td>
                   <td className="px-3 py-2 text-right text-semantic-error">{p.overdue_count || ''}</td>
-                  <td className="px-3 py-2 text-right">{p.avg_age_days.toFixed(1)}</td>
-                  <td className="px-3 py-2 text-right">{p.oldest_age_days.toFixed(0)}</td>
+                  <td className="px-3 py-2 text-right">{fmtFixed(p.avg_age_days, 1)}</td>
+                  <td className="px-3 py-2 text-right">{fmtFixed(p.oldest_age_days, 0)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1371,7 +1387,7 @@ function ApportionmentFormModal({
             {rows.map((r, i) => {
               const rowPct = Number(r.pct);
               const preview =
-                chargeable > 0 && Number.isFinite(rowPct) ? ((chargeable * rowPct) / 100).toFixed(2) : '0';
+                chargeable > 0 && Number.isFinite(rowPct) ? fmtFixed((chargeable * rowPct) / 100, 2) : '0';
               return (
                 <li key={r.key} className="flex items-end gap-2">
                   <WideModalField
@@ -1747,16 +1763,26 @@ function DisputeRiskTab({ projectId }: { projectId: string }) {
                     <ArrowRight
                       className={`h-3.5 w-3.5 shrink-0 text-content-tertiary transition-transform ${expanded ? 'rotate-90' : ''}`}
                     />
-                    <Badge variant={EXPOSURE_VARIANT[it.band]}>{humanize(it.band)}</Badge>
+                    {/* The band shares its vocabulary (and translation) with the
+                        summary tiles above; driver and cure are stable engine
+                        tokens (cure text is 1:1 per driver), translated by token
+                        with the wire text as the unknown-token fallback. */}
+                    <Badge variant={EXPOSURE_VARIANT[it.band]}>
+                      {t(`change_intelligence.dispute.tile.${it.band}`, { defaultValue: humanize(it.band) })}
+                    </Badge>
                     <span className="text-sm font-semibold text-content-primary">{it.exposure_score}</span>
-                    <span className="text-xs text-content-tertiary">{humanize(it.kind)}</span>
+                    <span className="text-xs text-content-tertiary">
+                      {t(`claims_evidence.kind.${it.kind}`, { defaultValue: humanize(it.kind) })}
+                    </span>
                     <span className="font-medium text-content-primary">
                       {it.change_ref ? `${it.change_ref}: ` : ''}
                       {it.title || t('change_intelligence.common.untitled', { defaultValue: '(untitled)' })}
                     </span>
                     <span className="ml-auto inline-flex items-center gap-1 text-xs text-content-tertiary">
                       <ShieldAlert className="h-3.5 w-3.5" />
-                      {humanize(it.dominant_driver)}
+                      {t(`change_intelligence.dispute.driver.${it.dominant_driver}`, {
+                        defaultValue: humanize(it.dominant_driver),
+                      })}
                     </span>
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 pl-5 text-sm text-content-secondary">
@@ -1766,7 +1792,11 @@ function DisputeRiskTab({ projectId }: { projectId: string }) {
                         <MoneyDisplay amount={it.money_basis} currency={it.currency} showCode />
                       </span>
                     ) : null}
-                    <span className="text-content-tertiary">{it.recommended_cure}</span>
+                    <span className="text-content-tertiary">
+                      {t(`change_intelligence.dispute.cure.${it.dominant_driver}`, {
+                        defaultValue: it.recommended_cure,
+                      })}
+                    </span>
                   </div>
                 </button>
                 {expanded && (
@@ -1985,14 +2015,14 @@ function WatchTab({ projectId }: { projectId: string }) {
                   <span>
                     {t('change_intelligence.watch.idle_days', {
                       defaultValue: '{{days}}d idle',
-                      days: r.idle_days.toFixed(0),
+                      days: fmtFixed(r.idle_days, 0),
                     })}
                   </span>
                   {r.overdue_days > 0 && (
                     <span className="text-semantic-error">
                       {t('change_intelligence.watch.overdue_days', {
                         defaultValue: '{{days}}d overdue',
-                        days: r.overdue_days.toFixed(0),
+                        days: fmtFixed(r.overdue_days, 0),
                       })}
                     </span>
                   )}
@@ -3244,7 +3274,7 @@ function RunRateTab({ projectId }: { projectId: string }) {
         />
         <StatTile
           label={t('change_intelligence.runrate.tile.intake', { defaultValue: 'Intake / month' })}
-          value={data ? data.intake_rate_per_month.toFixed(1) : '0'}
+          value={data ? fmtFixed(data.intake_rate_per_month, 1) : '0'}
         />
       </div>
 

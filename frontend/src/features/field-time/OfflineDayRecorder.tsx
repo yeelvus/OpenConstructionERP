@@ -75,9 +75,16 @@ export function OfflineDayRecorder({ projectId, onRecorded }: OfflineDayRecorder
   // The same query keys the editor uses, so whichever surface is opened first
   // warms the pickers for the other - which is how the roster is still there
   // after the link drops.
+  // Scoped to the open project. A day sheet is written for one site, and an
+  // unscoped roster offered the supervisor crews from every other project on
+  // the install. The project id is part of the key so the two field-time
+  // surfaces cannot warm each other with another project's roster.
   const resourcesQ = useQuery({
-    queryKey: ['resources', 'list', 'field-time'],
-    queryFn: () => listResources({ limit: 500 }),
+    queryKey: ['resources', 'list', 'field-time', projectId],
+    queryFn: () => listResources({ limit: 500, project_id: projectId }),
+    // Without a project there is nothing to scope to, and asking anyway is
+    // the unscoped roster again. A day cannot be recorded projectless.
+    enabled: !!projectId,
   });
   const equipmentQ = useQuery({
     queryKey: ['equipment', 'list', 'field-time'],
@@ -91,17 +98,17 @@ export function OfflineDayRecorder({ projectId, onRecorded }: OfflineDayRecorder
 
   const labour: PickOption[] = useMemo(
     () =>
-      (resourcesQ.data ?? [])
+      (resourcesQ.data?.items ?? [])
         .filter((r) => r.resource_type !== 'equipment')
         .map((r) => ({ id: r.id, label: joinLabel(r.code, r.name) || r.id })),
     [resourcesQ.data],
   );
   const plant: PickOption[] = useMemo(
-    () => (equipmentQ.data ?? []).map((e) => ({ id: e.id, label: joinLabel(e.code, e.name) || e.id })),
+    () => (equipmentQ.data?.items ?? []).map((e) => ({ id: e.id, label: joinLabel(e.code, e.name) || e.id })),
     [equipmentQ.data],
   );
   const variations: PickOption[] = useMemo(
-    () => (variationsQ.data ?? []).map((v) => ({ id: v.id, label: joinLabel(v.code, v.title) || v.id })),
+    () => (variationsQ.data?.items ?? []).map((v) => ({ id: v.id, label: joinLabel(v.code, v.title) || v.id })),
     [variationsQ.data],
   );
 

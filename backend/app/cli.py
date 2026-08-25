@@ -52,7 +52,34 @@ def _stdout_supports_unicode() -> bool:
     return "utf" in enc
 
 
-DEFAULT_DATA_DIR = Path.home() / ".openestimate"
+def _default_data_dir() -> Path:
+    """Where the CLI keeps its data when nothing on the command line says otherwise.
+
+    Everything else in the platform that resolves a data directory honours the
+    same three overrides in the same order: ``OE_DATA_DIR``, then ``DATA_DIR``,
+    then ``OE_CLI_DATA_DIR``. The uploads root does, the JWT secret does, the
+    demo seed does, the partner pack state does. This one did not, and the
+    result was a split: an operator who set ``OE_DATA_DIR`` to a mounted volume
+    got their uploads and their signing secret on the volume and their database,
+    their cluster and their config file left behind in the home directory, which
+    on a container is the layer that disappears on redeploy. The override was
+    documented and half honoured, which is worse than not honouring it, because
+    nothing reports the half that was ignored.
+
+    An explicit ``--data-dir`` still wins: this only supplies the default.
+    """
+    override = os.environ.get("OE_DATA_DIR") or os.environ.get("DATA_DIR") or os.environ.get("OE_CLI_DATA_DIR")
+    if override and override.strip():
+        return Path(override.strip())
+    try:
+        return Path.home() / ".openestimate"
+    except RuntimeError:
+        # No home directory can be resolved (a minimal container with HOME
+        # unset and no passwd entry). A relative path beats aborting the CLI.
+        return Path(".openestimate")
+
+
+DEFAULT_DATA_DIR = _default_data_dir()
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 MIN_PYTHON = (3, 12)
@@ -64,6 +91,54 @@ COMMUNITY_URL = "https://t.me/datadrivenconstruction"
 GITHUB_URL = "https://github.com/datadrivenconstruction/OpenConstructionERP"
 
 logger = logging.getLogger("openestimate.cli")
+
+
+# ── Data directory: declared once, resolved once ──────────────────────────
+# Every command that works in the data directory goes through these two
+# functions. Spelling the flag out per command, and resolving it per command,
+# is how a path ends up anchored on the working directory: the command that
+# forgets is invisible next to the four that remembered, and on a development
+# box or in CI the working directory is writable, so nothing reports it. It
+# only surfaces on an install under a directory the process may not write to.
+# One declaration and one resolution mean a command added later either uses
+# them or has no data directory at all, and the unit test named after this
+# section fails the build if a second spelling of either one appears.
+def _add_data_dir_arg(p: argparse.ArgumentParser) -> None:
+    """Declare ``--data-dir`` on a subcommand parser.
+
+    Args:
+        p: The subcommand parser that should accept a data directory.
+    """
+    p.add_argument(
+        "--data-dir",
+        default=str(DEFAULT_DATA_DIR),
+        help=f"Data directory (default: {DEFAULT_DATA_DIR})",
+    )
+
+
+def _data_dir_from_args(args: argparse.Namespace) -> Path:
+    """Resolve the data directory this invocation works in.
+
+    Absolute either way: an explicit ``--data-dir`` is expanded and resolved,
+    and a command that declares no such flag falls back to
+    :data:`DEFAULT_DATA_DIR`, which already honours ``OE_DATA_DIR`` /
+    ``DATA_DIR`` / ``OE_CLI_DATA_DIR``. Nothing here is left relative to the
+    working directory.
+
+    A blank value is how a compose file and a launcher script spell "not set",
+    and ``Path("")`` is the working directory, so blanks fall back to the
+    default exactly as they do in :func:`_default_data_dir`.
+
+    Args:
+        args: The parsed command line.
+
+    Returns:
+        An absolute path to the data directory.
+    """
+    raw = getattr(args, "data_dir", None)
+    value = str(raw).strip() if raw is not None else ""
+    base = Path(value) if value else DEFAULT_DATA_DIR
+    return base.expanduser().resolve()
 
 
 # ── ANSI colors (amber accent #f0883e, disabled if no TTY or NO_COLOR) ────
@@ -218,6 +293,13 @@ def _setup_env(data_dir: Path, host: str, port: int) -> None:
             if status.startswith("migrated"):
                 print(_green(_u("✓ ", "OK ")) + status)
             print(_green(_u("✓ ", "OK ")) + "Database: embedded PostgreSQL 16 (no Docker)")
+        elif embedded_pg.last_fatal_detail():
+            # boot() named the cause. The generic advice below would be actively
+            # wrong for those: a data directory written by another PostgreSQL
+            # major is not repaired by reinstalling, and reinstalling is how it
+            # got there. Print what boot worked out instead of talking over it.
+            print(_red(_u("✗ ", "X ")) + str(embedded_pg.last_fatal_detail()))
+            raise SystemExit(1)
         else:
             # pixeltable-pgserver missing or initdb failed. There is no SQLite
             # fallback anymore: PostgreSQL is required, so fail loudly with an
@@ -225,8 +307,11 @@ def _setup_env(data_dir: Path, host: str, port: int) -> None:
             print(
                 _red(_u("✗ ", "X "))
                 + "Embedded PostgreSQL could not start (already retried a few times). "
-                + "Reinstall the package (pip install --upgrade --force-reinstall "
-                + "openconstructionerp), run 'openconstructionerp doctor' for details, or "
+                + _repair_hint(
+                    "Reinstall the package (pip install --upgrade --force-reinstall openconstructionerp), ",
+                    "Reinstall the app from its installer, ",
+                )
+                + "run 'openconstructionerp doctor' for details, or "
                 + "set DATABASE_URL to an external PostgreSQL."
             )
             print(
@@ -279,6 +364,41 @@ class Check:
             print(f"            {_dim(arrow + self.hint)}")
 
 
+def _repair_hint(pip_advice: str, frozen_advice: str | None = None) -> str:
+    """Advice for a reader whose install shipped this and shipped it broken.
+
+    Imported where it is used rather than at module scope, because ``doctor``
+    is meant to answer quickly and the CLI already defers its app imports.
+
+    Only one hint below can reach a desktop reader today, the [cv] one:
+    everything else the doctor names is in ``requirements-desktop.lock``, so
+    those branches report ok and never render a hint at all. That is a fact
+    about today's lock rather than about this code. The day a dependency
+    leaves the lock, or a check lands for something the bundle does not carry,
+    another armed line goes live with nothing to catch it, which is why every
+    site is routed rather than the one that is wrong now.
+
+    ``frozen_advice`` is for the two sites that print mid-sentence, where the
+    full paragraph would not fit the line being built.
+    """
+    from app.core.self_upgrade import DESKTOP_REPAIR, repair_hint
+
+    return repair_hint(pip_advice, DESKTOP_REPAIR if frozen_advice is None else frozen_advice)
+
+
+def _no_extra_hint(pip_advice: str) -> str:
+    """Advice for a reader whose install never carried this in the first place.
+
+    Separate from :func:`_repair_hint` because "reinstall" is not an answer
+    here. A bundle reinstalled from the same installer carries exactly the same
+    fixed set of packages, so that advice sends the reader round a loop while
+    the check goes on printing the same line.
+    """
+    from app.core.self_upgrade import DESKTOP_NO_EXTRA, repair_hint
+
+    return repair_hint(pip_advice, DESKTOP_NO_EXTRA)
+
+
 def check_python_version() -> Check:
     ver = sys.version_info
     if (ver.major, ver.minor) < MIN_PYTHON:
@@ -306,7 +426,9 @@ def check_package_installed() -> Check:
             "Package installed",
             "warn",
             "running from source checkout (not pip-installed)",
-            "For production use: pip install openconstructionerp",
+            # A bundle that cannot read its own version is not a source
+            # checkout and has nothing to install itself from.
+            _repair_hint("For production use: pip install openconstructionerp"),
         )
 
 
@@ -362,18 +484,144 @@ def check_port_free(host: str, port: int) -> Check:
 
 
 def check_frontend_bundled() -> Check:
-    pkg_dir = Path(__file__).parent / "_frontend_dist"
-    if pkg_dir.is_dir() and (pkg_dir / "index.html").exists():
-        return Check("Frontend bundle", "ok", "bundled React UI ready")
-    dev_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-    if dev_dist.is_dir() and (dev_dist / "index.html").exists():
-        return Check("Frontend bundle", "ok", f"using dev build from {dev_dist}")
-    return Check(
-        "Frontend bundle",
-        "warn",
-        "no frontend found - server will run API only",
-        "Reinstall the pip package to get the bundled UI, or run `npm run build` in frontend/",
-    )
+    """Report the UI the server would actually serve, by asking the server's own lookup.
+
+    This used to repeat ``Path(__file__).parent / "_frontend_dist"``, the same
+    expression ``cli_static.get_frontend_dir()`` uses, on the reasoning that two
+    copies of one expression cannot disagree. They can, and in the frozen
+    desktop build they do, because the expression is identical and the anchor is
+    not. This module is the PyInstaller entry script, so it is executed as
+    ``__main__`` and its ``__file__`` sits at the root of the unpacked bundle;
+    ``cli_static`` is an ordinary module inside the ``app`` package, so its
+    ``__file__`` sits one level down, which is where the UI is actually
+    unpacked. The copy here therefore looked one directory too high and
+    reported "no frontend" on a sidecar that was serving the UI perfectly - a
+    false negative on the desktop channel, where this check matters most,
+    telling the operator to reinstall a package that was not broken.
+
+    Asking the real lookup removes the duplication and the divergence together.
+    A check that answers from its own reimplementation of the thing it is
+    checking can only ever be right by coincidence.
+    """
+    try:
+        # Imported inside the try, not above it. cli_static pulls fastapi and
+        # starlette at module level, and this module's own imports are stdlib
+        # only on purpose: that is what lets the CLI diagnose an install whose
+        # dependencies did not resolve. run_preflight builds its list with no
+        # per-check guard, so an ImportError escaping here would not degrade one
+        # line, it would abort the whole report - on exactly the broken install
+        # the report exists to explain.
+        #
+        # That guard is covered by unit tests and deliberately not by a frozen
+        # build: fastapi and starlette are collected into the bundle alongside
+        # everything else, so this import resolves there by construction. Making
+        # it fail would mean excluding fastapi from the spec, and the resulting
+        # sidecar would not start at all - measuring a build nobody could ship
+        # rather than the guard working. The anchor question above is the
+        # opposite case and was settled on a real artefact, which reported the
+        # UI at <bundle>/app/_frontend_dist.
+        #
+        # One change would make a frozen test worth its cost: if cli_static ever
+        # gains a conditional module-level import (a platform-gated or optional
+        # dependency at the top of that file), then this import can fail inside
+        # a healthy bundle and the frozen path stops being unreachable.
+        from app.cli_static import get_frontend_dir
+
+        return Check("Frontend bundle", "ok", f"bundled React UI ready at {get_frontend_dir()}")
+    except FileNotFoundError:
+        return Check(
+            "Frontend bundle",
+            "warn",
+            "no frontend found - server will run API only",
+            # `npm run build` is not an answer inside a bundle either: there is
+            # no repo checkout beside it to run that in.
+            _repair_hint("Reinstall the pip package to get the bundled UI, or run `npm run build` in frontend/"),
+        )
+    except Exception as exc:
+        # Deliberately broad, because this function is a reporter: anything it
+        # fails to catch it converts into the absence of every other check. A
+        # lookup that cannot run is still its own finding, and not the same
+        # finding as a UI that is absent.
+        return Check(
+            "Frontend bundle",
+            "error",
+            f"the frontend lookup could not run: {type(exc).__name__}: {exc}",
+            _repair_hint("Reinstall the pip package: this install cannot load its own web stack."),
+        )
+
+
+def check_locales_bundled() -> Check:
+    """Report the translation catalogue the server would actually load.
+
+    Asks ``load_translations`` instead of testing the directory, for the reason
+    spelled out on :func:`check_frontend_bundled` above: a check that
+    reimplements the lookup it is checking is right only by coincidence. Here
+    the lookup is a single line, which is what makes copying it tempting and
+    what makes copying it wrong, because the path resolves to a directory NEXT
+    TO the app package and therefore lands somewhere different in a source
+    tree, a wheel and a frozen bundle.
+
+    This is the twin of the frontend check and should always have existed
+    beside it. Both are force-included into the wheel precisely because the
+    package walk cannot see them, which makes them the two files most likely to
+    be missing from a build; one of them had a preflight line and the other did
+    not. The desktop sidecar shipped without the catalogue for the whole life of
+    the desktop build and nothing said so, because the loader used to refill the
+    directory from an embedded copy carrying 20 of the languages and a much
+    smaller key set. The only symptom was a catalogue quietly missing most of
+    its strings, which no check could see: every file present, parsing, and
+    agreeing with the others.
+
+    Error rather than warning, because the server treats it as one. When the
+    catalogue is absent ``load_translations`` raises, startup aborts, and a
+    desktop user is told only that the backend did not start in time. The point
+    of this line is to say the true sentence before the server has to.
+    """
+    try:
+        from app.core.i18n import get_available_locales, load_translations
+
+        load_translations()
+        locales = get_available_locales()
+        loaded = [entry for entry in locales if entry["loaded"]]
+    except FileNotFoundError as exc:
+        return Check(
+            "Translation catalogue",
+            "error",
+            f"missing: {exc}",
+            _repair_hint(
+                "Reinstall the pip package. If this is the desktop app, the build itself was "
+                "assembled without the catalogue and only a corrected build fixes it: the bundle "
+                "unpacks itself into a fresh temporary directory on every launch, so there is "
+                "nowhere to put the files back."
+            ),
+        )
+    except Exception as exc:
+        # Broad on purpose, exactly as the frontend check above is: this
+        # function is a reporter, and an exception escaping it would replace
+        # every other line of the report with a traceback.
+        return Check(
+            "Translation catalogue",
+            "error",
+            f"the catalogue could not be loaded: {type(exc).__name__}: {exc}",
+            _repair_hint("Reinstall the pip package: this install cannot load its own translations."),
+        )
+
+    if not loaded:
+        return Check(
+            "Translation catalogue",
+            "error",
+            "the directory is there and no locale in it could be read",
+            _repair_hint("Reinstall the pip package: the translation files are unreadable or empty."),
+        )
+    if len(loaded) < len(locales):
+        missing = ", ".join(sorted(str(entry["code"]) for entry in locales if not entry["loaded"]))
+        return Check(
+            "Translation catalogue",
+            "warn",
+            f"{len(loaded)} of {len(locales)} locales loaded, absent: {missing}",
+            _repair_hint("Reinstall the pip package to get the whole catalogue."),
+        )
+    return Check("Translation catalogue", "ok", f"all {len(loaded)} locales loaded")
 
 
 def check_env_overrides() -> Check:
@@ -408,7 +656,11 @@ def check_core_tabular_deps() -> list[Check]:
     """
     from importlib.util import find_spec
 
-    hint = "Cost database import requires pandas + pyarrow. Reinstall with: pip install --upgrade openconstructionerp"
+    # Both are base dependencies, so a bundle missing one is damaged rather than
+    # merely lean, and repair is the honest advice there.
+    hint = _repair_hint(
+        "Cost database import requires pandas + pyarrow. Reinstall with: pip install --upgrade openconstructionerp"
+    )
     out: list[Check] = []
     for mod in ("pandas", "pyarrow"):
         try:
@@ -429,16 +681,24 @@ def check_core_tabular_deps() -> list[Check]:
     return out
 
 
-def check_ai_provider_keys() -> Check:
+def check_ai_provider_keys(data_dir: Path | None = None) -> Check:
     """Check whether at least one LLM provider API key is configured.
 
     We call LLM providers via REST (httpx), not vendor SDKs, so there is
     no Python package to probe. Instead, look at the two places keys can
     live:
       1. Settings / environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...)
-      2. ``~/.openestimate/config.json`` (CLI-managed overrides)
+      2. ``<data-dir>/config.json`` (CLI-managed overrides)
 
     This only reports INFO-level WARN when none are set - AI is optional.
+
+    Args:
+        data_dir: The data directory this invocation works in. This check read
+            :data:`DEFAULT_DATA_DIR` instead, so ``doctor --data-dir`` reported
+            on a config file belonging to a different installation while its
+            sibling check on the same run reported on the directory it was
+            given. Omitting it keeps the old default for a caller with no data
+            directory in hand.
     """
     # 1. Settings-level keys (env vars, .env file, pydantic-settings).
     env_key_names = (
@@ -453,7 +713,7 @@ def check_ai_provider_keys() -> Check:
     configured = [name for name in env_key_names if os.environ.get(name)]
 
     # 2. CLI config file overrides.
-    config_path = DEFAULT_DATA_DIR / "config.json"
+    config_path = (data_dir or DEFAULT_DATA_DIR) / "config.json"
     if config_path.exists():
         try:
             import json
@@ -496,8 +756,13 @@ def _pdf_reader_imports_in_process() -> bool:
     return os.environ.get("OE_DESKTOP", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def check_optional_extras() -> list[Check]:
-    """Report which optional extras are installed (mostly non-fatal)."""
+def check_optional_extras(data_dir: Path | None = None) -> list[Check]:
+    """Report which optional extras are installed (mostly non-fatal).
+
+    Args:
+        data_dir: The data directory this invocation works in, forwarded to the
+            checks that read a file out of it.
+    """
     from importlib.util import find_spec
 
     def _present(mod: str) -> bool:
@@ -507,7 +772,7 @@ def check_optional_extras() -> list[Check]:
             return False
 
     def _import_error(mod: str) -> str | None:
-        """Import ``mod`` the same way the upload path will import it.
+        """Import ``mod`` the same way the code that needs it will import it.
 
         Returns None when the import succeeds, otherwise the last line of the
         failure. Normally a child process is used, for two reasons: it is where
@@ -520,7 +785,10 @@ def check_optional_extras() -> list[Check]:
         is exactly why the upload path parses in-process on desktop. Probing
         with a child there would report every healthy desktop install as a
         broken PDF reader, so the check follows the parser and imports in this
-        process instead.
+        process instead. The helper is named for the PDF readers because they
+        were the first caller, but both reasons hold for any module with a
+        native extension, which is why the vector and encoder checks below use
+        it too.
         """
         import subprocess
 
@@ -546,36 +814,69 @@ def check_optional_extras() -> list[Check]:
         last = err.splitlines()[-1] if err else f"exit {proc.returncode}"
         return last[:200]
 
+    def _extra_check(label: str, mod: str, extra: str, ok_msg: str, missing_msg: str) -> Check:
+        """Report an optional extra as one of three states rather than two.
+
+        ``find_spec`` answers "is it on disk", which is the wrong question for a
+        module that is mostly a compiled extension. lancedb is almost entirely
+        one Rust library and sentence-transformers imports torch, a pile of
+        native shared objects, so either can resolve perfectly and still fail to
+        load. Calling that "installed" is precisely the class of lie this
+        command exists to catch, and it is not hypothetical: a frozen build was
+        measured reporting the encoder as installed while carrying 167
+        sentence-transformers modules and no torch whatsoever.
+
+        Absent stays a warning, because a stock server is meant not to carry
+        these. Present but unimportable is an error, because something did ship
+        it and it does not work, and the operator needs to know those are
+        different problems with different fixes. The cheap lookup runs first, so
+        the import cost is only paid when there is something to prove: on the
+        common install that simply lacks the extra, this costs what it did
+        before.
+        """
+        if not _present(mod):
+            return Check(
+                label,
+                "warn",
+                missing_msg,
+                _no_extra_hint(f"pip install 'openconstructionerp[{extra}]'"),
+            )
+        err = _import_error(mod)
+        if err is None:
+            return Check(label, "ok", ok_msg)
+        return Check(
+            label,
+            "error",
+            f"present but will not import: {err}",
+            _repair_hint(f"pip install --force-reinstall 'openconstructionerp[{extra}]'"),
+        )
+
     out: list[Check] = []
 
     # Embedded vector search (LanceDB) - used by the local semantic search
     # path for cost-database matching. Optional: code falls back to keyword
     # match when missing.
-    if _present("lancedb"):
-        out.append(Check("Vector search [vector]", "ok", "lancedb installed"))
-    else:
-        out.append(
-            Check(
-                "Vector search [vector]",
-                "warn",
-                "not installed (LanceDB semantic search disabled)",
-                "pip install 'openconstructionerp[vector]'",
-            )
+    out.append(
+        _extra_check(
+            "Vector search [vector]",
+            "lancedb",
+            "vector",
+            "lancedb imports cleanly",
+            "not installed (LanceDB semantic search disabled)",
         )
+    )
 
     # Semantic embeddings (sentence-transformers + Qdrant client).
     # Renamed from `[ai]` in v1.3.14 - the old extra is still an alias.
-    if _present("sentence_transformers"):
-        out.append(Check("Semantic search [semantic]", "ok", "sentence-transformers installed"))
-    else:
-        out.append(
-            Check(
-                "Semantic search [semantic]",
-                "warn",
-                "not installed (RAG / embedding search disabled)",
-                "pip install 'openconstructionerp[semantic]'",
-            )
+    out.append(
+        _extra_check(
+            "Semantic search [semantic]",
+            "sentence_transformers",
+            "semantic",
+            "sentence-transformers imports cleanly",
+            "not installed (RAG / embedding search disabled)",
         )
+    )
 
     # PDF takeoff. This one is checked by importing, not by locating: find_spec
     # resolves a module without executing it, so a wheel whose native extension
@@ -603,21 +904,146 @@ def check_optional_extras() -> list[Check]:
                 "PDF takeoff",
                 "error" if both_gone else "warn",
                 f"PDF reader will not import: {broken}",
-                "pip install --force-reinstall --no-cache-dir openconstructionerp",
-            )
-        )
-    if not _present("paddleocr"):
-        out.append(
-            Check(
-                "PDF dimension OCR [cv]",
-                "warn",
-                "not installed (geometry detection still works; dimension-text reading disabled)",
-                "pip install 'openconstructionerp[cv]'",
+                _repair_hint("pip install --force-reinstall --no-cache-dir openconstructionerp"),
             )
         )
 
+    # Routed through the same helper as the other extras, which changes two
+    # things. It reports when OCR is available instead of only when it is
+    # absent: the old branch appended nothing at all on an install that had the
+    # extra, so "OCR works here" and "this check never ran" printed identically,
+    # which is the one thing a diagnostic must never do. And it verifies by
+    # importing rather than by locating, so a wheel set that is present but
+    # cannot load is reported as broken instead of as installed - the blind spot
+    # this function's own docstring was written about, which had been closed for
+    # the vector and encoder checks and left open one extra over.
+    #
+    # The engine is asked about separately, because importing the frontend does
+    # not answer for it. [cv] resolves paddleocr and paddlex and does NOT pull
+    # paddlepaddle: upstream expects the caller to choose a CPU, GPU or
+    # platform-specific build. Measured on a throwaway venv carrying nothing but
+    # `paddleocr==3.7.0`, exactly as the extra declares it: `import paddleocr`
+    # succeeds, `from paddleocr import PaddleOCR` succeeds, and no engine is
+    # installed. So find_spec says installed, a real import says installed, and
+    # OCR still cannot run. Importing harder cannot separate these, which is why
+    # the question changes rather than the depth of the probe.
+    #
+    # It gets its own line and its own severity because the fix is different. A
+    # broken paddleocr is reinstalled; a missing engine is chosen and installed
+    # per platform, and telling someone to reinstall the extra there sends them
+    # round a loop that reproduces the same state.
+    #
+    # What is NOT covered: the failure at construction time. PaddleOCR() fetches
+    # models over the network on first use, so probing it would measure the
+    # operator's connection as much as their install, and no preflight check can
+    # honestly do that.
+    def _engine_distribution_installed() -> bool:
+        """Is anything named like a paddlepaddle build installed?
+
+        Asked by distribution name rather than by import name, and asked only
+        as a second opinion. The engine imports as ``paddle`` but ships as
+        ``paddlepaddle``, and the GPU build is a third name again, so neither
+        question is safely sufficient alone: the import name would call a
+        working install broken the day upstream renames it, and the
+        distribution name alone misses an engine vendored some other way.
+
+        Absence has to fail BOTH before it is reported, because a false
+        "engine missing" is the worst result this check can produce. It tells
+        an operator to install what they already have, and a check that cries
+        wolf once is the check nobody reads the next time.
+
+        A source-install instrument, not a frozen one: a PyInstaller bundle
+        carries dist-info only for what its spec ran ``copy_metadata`` on, so
+        this question answers "no" inside the desktop build regardless of what
+        is bundled. That costs nothing today, because the lock carries no
+        paddle at all and the first branch answers long before this one. It
+        stops being free the day OCR ships to desktop.
+        """
+        try:
+            from importlib.metadata import distributions
+
+            found = distributions()
+        except Exception:
+            # A metadata directory that cannot even be listed must not take the
+            # diagnostic down. It costs only the second opinion, which the
+            # caller then reads as "not found here".
+            return False
+
+        for dist in found:
+            # Guarded per entry, never per sweep. One unreadable dist-info
+            # anywhere in site-packages would otherwise raise mid-iteration and
+            # throw away the answer for every OTHER distribution, printing the
+            # false "engine missing" this whole helper exists to prevent - and
+            # doing it by iteration order, since a short-circuiting scan says
+            # yes or no depending on whether the engine was reached before the
+            # broken entry or after it.
+            try:
+                name = (dist.metadata["Name"] or "").lower()
+            except Exception:
+                continue
+            if name.startswith("paddlepaddle"):
+                return True
+        return False
+
+    cv_label = "PDF dimension OCR [cv]"
+    if not _present("paddleocr"):
+        out.append(
+            Check(
+                cv_label,
+                "warn",
+                "not installed (geometry detection still works; dimension-text reading disabled)",
+                _no_extra_hint("pip install 'openconstructionerp[cv]'"),
+            )
+        )
+    elif (cv_err := _import_error("paddleocr")) is not None:
+        out.append(
+            Check(
+                cv_label,
+                "error",
+                f"present but will not import: {cv_err}",
+                _repair_hint("pip install --force-reinstall 'openconstructionerp[cv]'"),
+            )
+        )
+    elif not _present("paddle") and not _engine_distribution_installed():
+        out.append(
+            Check(
+                cv_label,
+                "error",
+                "paddleocr is installed but its inference engine (paddlepaddle) is not - "
+                "OCR will fail when a scanned drawing is uploaded, not here",
+                # Routed too, though it never says "pip": what makes a remedy
+                # unreachable is that it asks the reader to install something,
+                # not the word it uses to ask. Testing only for the word would
+                # have passed this line and left it broken.
+                _no_extra_hint(
+                    "Install a paddlepaddle build for this platform. The [cv] extra deliberately "
+                    "does not choose one, because the right build depends on CPU vs GPU and OS."
+                ),
+            )
+        )
+    # find_spec is the gate here and the import is the verdict, deliberately in
+    # that order and not to be collapsed into one. The lookup is cheap and only
+    # decides whether there is anything to verify; the import is what decides
+    # whether it works, which is the whole reason this function stopped trusting
+    # find_spec. The verdict is also only pronounced when the import NAME
+    # resolved: an engine found solely by its distribution name is left alone
+    # rather than imported under a name it may not answer to, since guessing
+    # wrong there would print "installed but will not import" at an install that
+    # is fine.
+    elif _present("paddle") and (engine_err := _import_error("paddle")) is not None:
+        out.append(
+            Check(
+                cv_label,
+                "error",
+                f"the OCR engine is installed but will not import: {engine_err}",
+                _repair_hint("Reinstall a paddlepaddle build matching this platform and Python version."),
+            )
+        )
+    else:
+        out.append(Check(cv_label, "ok", "paddleocr imports cleanly and a paddlepaddle engine is installed"))
+
     # AI provider key configuration (not a package check).
-    out.append(check_ai_provider_keys())
+    out.append(check_ai_provider_keys(data_dir))
 
     return out
 
@@ -636,6 +1062,7 @@ def run_preflight(
         check_data_dir(data_dir),
         check_port_free(host, port),
         check_frontend_bundled(),
+        check_locales_bundled(),
         check_env_overrides(),
     ]
     # Base tabular deps (pandas, pyarrow) are ERROR-level: the onboarding
@@ -643,14 +1070,14 @@ def run_preflight(
     # `serve` also catches a broken install before uvicorn spins up.
     checks.extend(check_core_tabular_deps())
     if verbose:
-        checks.extend(check_optional_extras())
+        checks.extend(check_optional_extras(data_dir))
     return checks
 
 
 # ── Commands ──────────────────────────────────────────────────────────────
 def cmd_serve(args: argparse.Namespace) -> None:
     """Start the OpenConstructionERP server."""
-    data_dir = Path(args.data_dir).expanduser().resolve()
+    data_dir = _data_dir_from_args(args)
 
     # ``serve --no-demo``: skip demo accounts / showcase projects for this
     # start AND remember the choice in the data dir so subsequent bare
@@ -873,7 +1300,7 @@ def _register_all_module_models() -> tuple[int, int, list[tuple[str, str]]]:
 
 def cmd_init_db(args: argparse.Namespace) -> None:
     """Initialise the data directory and create the database schema."""
-    data_dir = Path(args.data_dir).expanduser().resolve()
+    data_dir = _data_dir_from_args(args)
     reset = bool(getattr(args, "reset", False))
 
     from app.core import embedded_pg
@@ -933,6 +1360,29 @@ def cmd_init_db(args: argparse.Namespace) -> None:
             await postgres_auto_migrate(engine, Base)
         except Exception as exc:  # noqa: BLE001
             logger.warning("init-db: postgres_auto_migrate skipped: %s", exc)
+        # The heal numbers a freshly added oe_progress_entry.seq in heap order,
+        # which is not the order the Alembic migration gives the same rows and
+        # decides which reading the progress module calls current. Same repair
+        # as the one the app runs at boot; here so init-db leaves the database
+        # in the state the first serve would have reached anyway.
+        try:
+            from app.modules.progress.seq_repair import repair_progress_entry_seq
+
+            async with engine.begin() as conn:
+                await repair_progress_entry_seq(conn)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("init-db: progress seq repair skipped: %s", exc)
+        # An upgraded database keeps the naive classified_at that this version
+        # declares aware, because the auto-migrator above only adds, never
+        # retypes. Widen it here so the column matches the model on the
+        # installations that have one already.
+        try:
+            from app.modules.project_route.tz_repair import widen_classified_at
+
+            async with engine.begin() as conn:
+                await widen_classified_at(conn)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("init-db: classified_at widening skipped: %s", exc)
         # Provision row-level-security roles + policies when enabled. No-op
         # while settings.rls_enforce is off, so a default init-db is unchanged.
         try:
@@ -959,7 +1409,15 @@ def cmd_init_db(args: argparse.Namespace) -> None:
             print(f"    - {_bold(name)}: {_dim(err)}")
         print()
         print(_red("Schema may be incomplete. Reinstall the package or check the error above."))
-        print(_dim(f"  {_u('\u2192', '->')} pip install --upgrade --force-reinstall openconstructionerp"))
+        print(
+            _dim(
+                f"  {_u('\u2192', '->')} "
+                + _repair_hint(
+                    "pip install --upgrade --force-reinstall openconstructionerp",
+                    "Reinstall the app from its installer",
+                )
+            )
+        )
         print(_dim(f"  {_u('\u2192', '->')} Then run 'openconstructionerp doctor' to verify."))
         sys.exit(1)
 
@@ -977,7 +1435,7 @@ def cmd_init_db(args: argparse.Namespace) -> None:
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     """Run pre-flight checks and report OK / WARN / ERROR per item."""
-    data_dir = Path(args.data_dir).expanduser().resolve()
+    data_dir = _data_dir_from_args(args)
 
     print()
     print(_bold(_u("OpenConstructionERP \u2014 doctor", "OpenConstructionERP - doctor")))
@@ -1027,7 +1485,16 @@ def cmd_version(_args: argparse.Namespace) -> None:
 
     print(f"OpenConstructionERP v{version}")
     print(f"Python {sys.version.split()[0]} ({sys.platform})")
-    print(f"Site-packages: {Path(sys.executable).parent}")
+    # This is the line people paste when something is wrong with an install, so
+    # each label has to name what it actually shows. "Site-packages" used to be
+    # printed against the interpreter's own directory, which is Scripts on
+    # Windows and bin elsewhere, so anyone who followed it went looking for the
+    # package where the package is not. The data directory is here for the same
+    # reason: it is the other thing support asks for, and printing it is also
+    # how an operator confirms their data-dir override was taken.
+    print(f"Installed at: {Path(__file__).resolve().parent.parent}")
+    print(f"Interpreter: {sys.executable}")
+    print(f"Data directory: {DEFAULT_DATA_DIR}")
     print(f"Docs: {DOCS_URL}")
 
 
@@ -1063,6 +1530,34 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
         print(_dim("Download the latest installer and run it over this install:"))
         print(_dim(f"  {RELEASES_URL}"))
         print(_dim("Your projects and settings stay where they are."))
+        sys.exit(1)
+
+    # pip is about to replace files in site-packages, and on this install some
+    # of those files are executing right now: the embedded PostgreSQL binaries
+    # live under pixeltable_pgserver, and compiled extensions are loaded into
+    # any running server. On Windows the running image is locked, so pip fails
+    # partway and leaves an install that is neither the old version nor the new
+    # one. Elsewhere it succeeds and the running process quietly becomes a
+    # mixture of both, because this codebase imports inside functions in many
+    # places and every later import reads the new file.
+    #
+    # Asking first costs nothing and turns a torn install into one clear line.
+    data_dir = _data_dir_from_args(args)
+    try:
+        from app.core.embedded_pg import cluster_postmaster_pid
+
+        live_pid = cluster_postmaster_pid(data_dir)
+    except Exception:  # noqa: BLE001
+        live_pid = None
+
+    if live_pid is not None:
+        print()
+        print(_red(_bold("  The application is still running.")))
+        print(_dim(f"The local database is being served by process {live_pid} from:"))
+        print(_dim(f"  {data_dir / 'pgdata'}"))
+        print()
+        print(_dim("Upgrading now would replace files that process is executing from."))
+        print(_dim("Close the app (or stop `openconstructionerp serve`), then run this again."))
         sys.exit(1)
 
     target = "openconstructionerp"
@@ -1215,7 +1710,7 @@ def _prompt_seed_demo() -> bool | None:
 
 def cmd_seed(args: argparse.Namespace) -> None:
     """Load demo data into the database."""
-    data_dir = Path(args.data_dir).expanduser().resolve()
+    data_dir = _data_dir_from_args(args)
     _setup_env(data_dir, DEFAULT_HOST, DEFAULT_PORT)
 
     import asyncio
@@ -1736,11 +2231,7 @@ def cmd_pack(args: argparse.Namespace) -> None:
 def _add_common_server_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--host", default=DEFAULT_HOST, help=f"Bind host (default: {DEFAULT_HOST})")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Bind port (default: {DEFAULT_PORT})")
-    p.add_argument(
-        "--data-dir",
-        default=str(DEFAULT_DATA_DIR),
-        help=f"Data directory (default: {DEFAULT_DATA_DIR})",
-    )
+    _add_data_dir_arg(p)
     p.add_argument(
         "--embedded-pg",
         action="store_true",
@@ -1748,8 +2239,17 @@ def _add_common_server_args(p: argparse.ArgumentParser) -> None:
     )
 
 
-def main() -> None:
-    """CLI entry point."""
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the full command line, every subcommand included.
+
+    Split out of :func:`main` so the parser can be inspected without running a
+    command: ``test_cli_data_dir_is_declared_and_resolved_in_one_place`` walks
+    every declaration here and fails if one of them names a path that is not
+    absolute.
+
+    Returns:
+        The top-level parser, with all subparsers attached.
+    """
     parser = argparse.ArgumentParser(
         prog="openconstructionerp",
         description=(
@@ -1794,11 +2294,7 @@ def main() -> None:
         "init-db",
         help="Create the database schema and data directories",
     )
-    init_db_p.add_argument(
-        "--data-dir",
-        default=str(DEFAULT_DATA_DIR),
-        help=f"Data directory (default: {DEFAULT_DATA_DIR})",
-    )
+    _add_data_dir_arg(init_db_p)
     init_db_p.add_argument(
         "--reset",
         action="store_true",
@@ -1806,11 +2302,7 @@ def main() -> None:
     )
     # Legacy alias - same args, same handler.
     init_p = subparsers.add_parser("init", help="Alias for init-db")
-    init_p.add_argument(
-        "--data-dir",
-        default=str(DEFAULT_DATA_DIR),
-        help=f"Data directory (default: {DEFAULT_DATA_DIR})",
-    )
+    _add_data_dir_arg(init_p)
     init_p.add_argument(
         "--reset",
         action="store_true",
@@ -1834,6 +2326,11 @@ def main() -> None:
         default=None,
         help="Pin to a specific version (e.g. --version 2.6.10). Defaults to latest.",
     )
+    # cmd_upgrade refuses to replace files a running cluster is executing from,
+    # and it looks for that cluster in the data directory. Without this flag the
+    # only data directory it could look in was the default one, so an operator
+    # who keeps their data elsewhere was told nothing was running.
+    _add_data_dir_arg(upgrade_p)
 
     # welcome (zero-network greeting + quick-start + support links)
     subparsers.add_parser(
@@ -1848,11 +2345,7 @@ def main() -> None:
     # seed
     seed_p = subparsers.add_parser("seed", help="Load seed/demo data")
     seed_p.add_argument("--demo", action="store_true", help="Install demo project with sample data")
-    seed_p.add_argument(
-        "--data-dir",
-        default=str(DEFAULT_DATA_DIR),
-        help=f"Data directory (default: {DEFAULT_DATA_DIR})",
-    )
+    _add_data_dir_arg(seed_p)
 
     # module - install / list / uninstall business modules
     module_p = subparsers.add_parser(
@@ -1915,14 +2408,18 @@ def main() -> None:
         help="Overwrite an existing folder of the same slug",
     )
 
-    args = parser.parse_args()
-
-    # Make the module group's parser reachable from cmd_module so it can print
+    # Make each group's own parser reachable from its command so it can print
     # help when invoked with no sub-action (``openconstructionerp module``).
-    if args.command == "module":
-        args._module_parser = module_p
-    if args.command == "pack":
-        args._pack_parser = pack_p
+    module_p.set_defaults(_module_parser=module_p)
+    pack_p.set_defaults(_pack_parser=pack_p)
+
+    return parser
+
+
+def main() -> None:
+    """CLI entry point."""
+    parser = _build_parser()
+    args = parser.parse_args()
 
     # Embedded PostgreSQL is the default (see embedded_pg.is_requested). The
     # flag is an explicit override mapped to the same env var _setup_env reads
@@ -1956,12 +2453,25 @@ def main() -> None:
         #   demo login and community links BEFORE uvicorn eats the
         #   terminal for the startup wait.
         # * Subsequent runs - jump straight to serve (they already know).
-        data_dir = Path(DEFAULT_DATA_DIR)
-        first_run = not data_dir.exists() or not (data_dir / "openestimate.db").exists()
         args.host = DEFAULT_HOST
         args.port = DEFAULT_PORT
-        args.data_dir = str(DEFAULT_DATA_DIR)
         args.quiet = False
+        # The bare command declares no flags, so this reads the same default
+        # every subcommand reads, through the same resolver.
+        data_dir = _data_dir_from_args(args)
+        # A first run is a data directory with no database behind it. This asked
+        # only whether the legacy SQLite file was missing, and embedded
+        # PostgreSQL replaced that file as the default in v6.0.0, so it is
+        # absent on every install made since and the answer was always yes. A
+        # workspace in daily use was greeted as a brand new one and re-prompted
+        # on every bare invocation, which is the sort of defect that reads as
+        # cosmetic until you notice the product cannot tell whether it has met
+        # you before. The cluster marker is the test the demo-seed question a
+        # few lines below already used; keeping both meant one question asked
+        # two ways, and the way that decided the greeting was the wrong one.
+        first_run = not data_dir.exists() or (
+            not (data_dir / "pgdata" / "PG_VERSION").exists() and not (data_dir / "openestimate.db").exists()
+        )
 
         if first_run:
             print_welcome(next_command_hint=False)
@@ -1974,10 +2484,10 @@ def main() -> None:
             # flagship/Heilbronn backfills) respects it.
             from app.core.demo_seed import read_demo_seed_choice, write_demo_seed_choice
 
-            fresh_install = (
-                not (data_dir / "pgdata" / "PG_VERSION").exists() and not (data_dir / "openestimate.db").exists()
-            )
-            if fresh_install and "SEED_DEMO" not in os.environ and read_demo_seed_choice(data_dir) is None:
+            # Reaching here means first_run above already answered this, and
+            # answering it twice is how the two drifted apart in the first
+            # place.
+            if "SEED_DEMO" not in os.environ and read_demo_seed_choice(data_dir) is None:
                 seed_choice = _prompt_seed_demo()
                 if seed_choice is not None:
                     write_demo_seed_choice(seed_choice, data_dir)

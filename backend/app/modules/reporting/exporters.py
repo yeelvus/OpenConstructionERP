@@ -552,7 +552,7 @@ def _export_pdf(
     )
 
     from app.core.pdf_branding import branded_doc_metadata, branded_header_footer
-    from app.core.pdf_fonts import BODY_FONT, BOLD_FONT, register_pdf_fonts
+    from app.core.pdf_fonts import BODY_FONT, BOLD_FONT, pdf_style_for_text, register_pdf_fonts
 
     register_pdf_fonts()
 
@@ -610,9 +610,14 @@ def _export_pdf(
         a subset of HTML, so user-controlled strings MUST be escaped or a
         payload like ``<font color="white">`` would render / a malformed tag
         would crash paraparser.
+
+        It also picks the face, for the same reason it does the escaping: this
+        is the one place every string in the report passes through. A report
+        run over a Chinese project carries Chinese in its title, its project
+        name and every value in its snapshot.
         """
         rendered = "" if text is None else str(text)
-        return Paragraph(html.escape(rendered, quote=True), styles[style_key])
+        return Paragraph(html.escape(rendered, quote=True), pdf_style_for_text(styles[style_key], rendered))
 
     flowables: list[Any] = []
     flowables.append(_p(title, "title"))
@@ -832,20 +837,19 @@ def export_report(
 
 
 def _safe_filename(title: str) -> str:
-    """ASCII-safe, quote-free base filename derived from the report title.
+    """Quote-free, single-line base filename derived from the report title.
 
-    Mirrors the BOQ export filename handling: non-ASCII is replaced and
-    double quotes are swapped for single quotes so the value is safe inside
-    a ``Content-Disposition: attachment; filename="..."`` header. Falls back
-    to ``report`` when the title reduces to nothing.
+    Keeps the title's real characters (umlauts, Cyrillic, CJK): the router
+    builds the header with
+    :func:`app.core.content_disposition.attachment_disposition`, which emits
+    the RFC 6266 ASCII fallback plus UTF-8 ``filename*`` pair. What must go
+    here is anything that would break the header line itself: double quotes
+    are swapped for single quotes and control characters (CR/LF/tab) are
+    stripped - a CR/LF in a header value is HTTP response splitting. Falls
+    back to ``report`` when the title reduces to nothing.
     """
-    base = (title or "").encode("ascii", errors="replace").decode("ascii").replace('"', "'")
-    # Strip control characters before anything else. CR/LF/tab are ASCII, so
-    # they survive the round-trip above and would otherwise land verbatim in the
-    # ``Content-Disposition: attachment; filename="..."`` header - a CR/LF there
-    # is HTTP header injection (response splitting) and also breaks the download
-    # in most clients. Keep only printable ASCII (0x20-0x7e).
-    base = "".join(ch for ch in base if " " <= ch <= "~").strip()
+    base = (title or "").replace('"', "'")
+    base = "".join(ch for ch in base if ch >= " " and ch != "\x7f").strip()
     # Collapse path separators that would confuse some download clients.
     base = base.replace("/", "-").replace("\\", "-")
     return base or "report"

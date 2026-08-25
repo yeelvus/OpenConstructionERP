@@ -16,7 +16,8 @@ Usage in routers:
 
 import logging
 import uuid as _uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
+from dataclasses import dataclass
 from datetime import UTC
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -310,10 +311,53 @@ async def get_optional_user_payload(
 # ── API-key auth (additive, JWT stays primary) ─────────────────────────────
 
 
-async def get_user_from_api_key(
+@dataclass(frozen=True)
+class ApiKeyPrincipal:
+    """The caller behind a valid ``X-API-Key``: the key's owner and its scopes.
+
+    ``scopes`` is a copy of the key row's ``permissions`` list, taken before the
+    session closes so nothing here lazy-loads later. It is NOT the owner's
+    permission list - see :func:`key_scopes_allow` for what it does.
+    """
+
+    user: "User"
+    scopes: list[str]
+
+
+def key_scopes_allow(
+    scopes: Sequence[str] | None,
+    permission: str,
+    *,
+    require_declared: bool = False,
+) -> bool:
+    """Decide the narrowing half of an API key's authority.
+
+    A key's ``permissions`` list has the OPPOSITE polarity of a JWT's. A JWT
+    list WIDENS: a permission present in the token is granted. A key's list
+    NARROWS: it can only ever take authority away from the owner, never add
+    any. The effective authority of a request authenticated by an API key is
+    therefore the INTERSECTION of what the owner's live role grants and what
+    the key declares, and this function computes the key half of it. The owner
+    half stays where it always was, in the role->permission registry.
+
+    An empty or missing list declares no narrowing and returns True, so every
+    key issued before scopes were enforced keeps exactly the authority it has
+    today.
+
+    Routes that must never open to a general-purpose key pass
+    ``require_declared=True``, which drops that escape: an undeclared scope is
+    refused even on a key that narrows nothing else.
+    """
+    declared = list(scopes or ())
+    if not declared:
+        return not require_declared
+    return permission in declared
+
+
+async def resolve_api_key_principal(
     request: Request,
-) -> "User":
-    """Resolve an ``X-API-Key`` header to its owning user.
+) -> ApiKeyPrincipal:
+    """Resolve an ``X-API-Key`` header to its owner and the key's own scopes.
 
     Additive entry point that runs entirely separate from the JWT path.
     The header value is hashed with the same SHA-256 scheme used at key
@@ -321,6 +365,10 @@ async def get_user_from_api_key(
     looked up via :meth:`APIKeyRepository.get_by_hash`, which already
     rejects inactive or expired keys. The key's ``last_used_at`` is touched
     on each successful resolution.
+
+    Returns both halves of the caller because authorization needs both: the
+    owner supplies the role the registry is asked about, and the key supplies
+    the scope list that narrows it.
 
     Raises:
         HTTPException 401 if the header is missing, unknown, expired, or its
@@ -348,6 +396,7 @@ async def get_user_from_api_key(
                 detail="Invalid API key",
                 headers={"WWW-Authenticate": "ApiKey"},
             )
+        scopes = list(api_key.permissions or [])
         await APIKeyRepository(session).update_last_used(api_key.id)
         user = await session.get(_UserModel, api_key.user_id)
         if user is None or not user.is_active:
@@ -355,7 +404,21 @@ async def get_user_from_api_key(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found or inactive",
             )
-        return user
+        return ApiKeyPrincipal(user=user, scopes=scopes)
+
+
+async def get_user_from_api_key(
+    request: Request,
+) -> "User":
+    """Resolve an ``X-API-Key`` header to its owning user.
+
+    Thin wrapper over :func:`resolve_api_key_principal` for callers that only
+    need the identity. Anything making an authorization decision must use the
+    principal instead, because the key's scopes narrow what its owner may do
+    and this return value drops them.
+    """
+    principal = await resolve_api_key_principal(request)
+    return principal.user
 
 
 ApiKeyUser = Annotated["User", Depends(get_user_from_api_key)]
@@ -444,9 +507,12 @@ class RequirePermissionOrApiKey:
     issued before a role->permission change still passes through the live
     registry (issue #101). For a headless caller that presents no usable bearer
     token it authenticates with the ``X-API-Key`` mechanism
-    (:func:`get_user_from_api_key`) and applies the identical role->permission
-    check to the key's owning user. Either way the same permission is required,
-    so opening a route to machine callers never lowers its authorization bar.
+    (:func:`resolve_api_key_principal`) and applies the identical role->permission
+    check to the key's owning user, then narrows the result by the key's own
+    declared permission list (see :meth:`_authorize`). Either way the same
+    permission is required, so opening a route to machine callers never lowers
+    its authorization bar, and a key can be issued that reaches less than its
+    owner does.
 
     Unlike :class:`RequirePermission` (which returns ``None`` and is used in a
     route's ``dependencies=[...]``), this resolves and RETURNS the caller's user
@@ -477,18 +543,41 @@ class RequirePermissionOrApiKey:
             return str(payload["sub"])
         # Headless caller: no usable bearer token, so require a valid X-API-Key.
         # Its own 401 (missing / unknown / expired key, or inactive owner)
-        # propagates unchanged; a valid key resolves to its owning user.
-        user = await get_user_from_api_key(request)
-        self._authorize(getattr(user, "role", "") or "", None)
-        return str(user.id)
+        # propagates unchanged; a valid key resolves to its owner and scopes.
+        principal = await resolve_api_key_principal(request)
+        self._authorize(getattr(principal.user, "role", "") or "", None, principal.scopes)
+        return str(principal.user.id)
 
-    def _authorize(self, role: str, permissions: list[str] | None) -> None:
+    def _authorize(
+        self,
+        role: str,
+        permissions: list[str] | None,
+        key_scopes: Sequence[str] | None = None,
+    ) -> None:
         """Apply the shared role->permission check; raise 403 when it fails.
 
         ``permissions`` is the JWT's baked-in permission list for a bearer
         caller, or ``None`` for an API-key caller (whose token carries no such
-        list), in which case the decision rests entirely on the live registry.
+        list), in which case the owner-side decision rests entirely on the live
+        registry.
+
+        ``key_scopes`` is the API key's own ``permissions`` list, or ``None``
+        when no key is involved. It pulls in the opposite direction to the two
+        arguments above: those can grant, this can only take away. The
+        authority of an API-key request is the INTERSECTION of the owner's live
+        permissions and the key's declared list, so a key can be held below its
+        owner but never raised above them.
+
+        The narrowing runs FIRST, ahead of the admin bypass, and that ordering
+        is the whole point: narrowing an admin's key is exactly the case the
+        declared list exists for, and a check placed after the bypass would
+        never execute for the owner who most needs it.
         """
+        if not key_scopes_allow(key_scopes, self.permission):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"API key does not carry permission: {self.permission}",
+            )
         if role == "admin":
             return
         if permissions is not None and self.permission in permissions:

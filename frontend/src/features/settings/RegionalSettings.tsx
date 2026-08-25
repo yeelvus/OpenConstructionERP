@@ -15,7 +15,8 @@ import { Globe, Ruler, FileText, Calendar, Hash, DollarSign, Search, Check } fro
 import clsx from 'clsx';
 import { Card, CardHeader, CardContent } from '@/shared/ui';
 import { apiGet, apiPatch } from '@/shared/lib/api';
-import { usePreferencesStore, type MeasurementSystem, type DateFormat, type NumberLocale } from '@/stores/usePreferencesStore';
+import { formatCurrency } from '@/shared/lib/money';
+import { usePreferencesStore, resolveNumberLocale, adoptServerNumberFormat, useNumberLocale, NUMBER_LOCALES, type MeasurementSystem, type DateFormat, type NumberLocale } from '@/stores/usePreferencesStore';
 import { useToastStore } from '@/stores/useToastStore';
 import {
   CUSTOM_CURRENCY_SENTINEL,
@@ -67,6 +68,8 @@ const PAPER_SIZES = [
   { value: 'Legal', label: 'Legal (8.5 x 14 in)' },
 ] as const;
 
+// 'auto' is added in the component so its label can be translated; the three
+// explicit orders are shown as their own example, which needs no translation.
 const DATE_FORMATS: { value: DateFormat; example: string }[] = [
   { value: 'DD.MM.YYYY', example: '07.04.2026' },
   { value: 'MM/DD/YYYY', example: '04/07/2026' },
@@ -75,18 +78,35 @@ const DATE_FORMATS: { value: DateFormat; example: string }[] = [
 
 interface NumberFormatOption {
   locale: NumberLocale;
-  label: string;
   example: string;
 }
 
-const NUMBER_FORMATS: NumberFormatOption[] = [
-  { locale: 'de-DE', label: '1.234,56', example: '1.234,56' },
-  { locale: 'en-US', label: '1,234.56', example: '1,234.56' },
-  { locale: 'fr-FR', label: '1 234,56', example: '1 234,56' },
-  { locale: 'en-GB', label: '1,234.56', example: '1,234.56' },
-  { locale: 'ru-RU', label: '1 234,56', example: '1 234,56' },
-  { locale: 'es-MX', label: '1,234.56', example: '1,234.56' },
-];
+/**
+ * The sample the buttons are labelled with.
+ *
+ * Seven digits, not four, because the difference this control exists to show
+ * only appears above four: `en-IN` writes `12,34,567.89`, grouping the lakh
+ * and the crore, and `1,234.56` hides that completely. The old sample made the
+ * Indian button indistinguishable from the American one, which is a fair part
+ * of why there was no Indian button at all.
+ */
+const NUMBER_FORMAT_SAMPLE = 1234567.89;
+
+/**
+ * One button per locale the preference can hold, built from the store's own
+ * list so the two cannot drift apart. A value the type allows and this picker
+ * has no button for is a setting nobody can reach.
+ *
+ * The example is computed rather than written down, so it says what `Intl`
+ * will actually do rather than what someone remembered it does. Some examples
+ * read alike, because for a plain number `en-US`, `en-GB`, `es-MX`, `ja-JP`
+ * and `zh-CN` genuinely agree; they part company on currency, which is the
+ * other thing this preference drives, so they are not duplicate buttons even
+ * where they are duplicate labels.
+ */
+const NUMBER_FORMATS: NumberFormatOption[] = NUMBER_LOCALES.filter((l) => l !== 'auto').map(
+  (locale) => ({ locale, example: new Intl.NumberFormat(locale).format(NUMBER_FORMAT_SAMPLE) }),
+);
 
 const CURRENCIES = [
   { code: 'EUR', symbol: '\u20AC', name: 'Euro' },
@@ -329,13 +349,77 @@ export function RegionalSettings({ animationDelay = '0ms' }: { animationDelay?: 
   const timezone = prefs?.timezone ?? 'UTC';
   const measurementSystem = (prefs?.measurement_system as MeasurementSystem) ?? storeMeasurement;
   const paperSize = prefs?.paper_size ?? 'A4';
-  const dateFormat = (prefs?.date_format as DateFormat) ?? storeDateFormat;
-  const numberFormat = (prefs?.number_format as NumberLocale) ?? storeNumberLocale;
+  // Read the date format from the store, not from the raw account field. The
+  // account column is free-form and NOT NULL: it can hold an order this toggle
+  // has no button for (the regional packs ship DD/MM/YYYY and YYYY/MM/DD), and
+  // its default is indistinguishable from a real choice. The store is what the
+  // date surfaces actually render with, so showing it keeps the control honest.
+  const dateFormat = storeDateFormat;
+  // Resolve before showing it: `numberLocale` defaults to `'auto'` (follow the
+  // UI language), which is not one of the buttons, so an unresolved value would
+  // light none of them while the app was quite definitely formatting with
+  // something. Showing the resolved locale keeps the control describing what
+  // the money surfaces actually render with. Clicking a button turns the
+  // automatic default into an explicit choice, which is the honest reading of a
+  // deliberate click. A locale outside the list (the UI has 29 languages) lights
+  // no button, exactly as an unmapped account value already did.
+  // Read the account value through the same translator the boot path uses. The
+  // column is free-form and has been written in two vocabularies: `i18n_data.py`
+  // seeds a display pattern (`1.234,56`) and this toggle PATCHes a BCP-47 tag
+  // (`de-DE`). Casting the raw string to `NumberLocale` compiles and then
+  // matches no button, so an account still carrying the seeded pattern showed a
+  // Number Format row with nothing selected while the product was quite
+  // definitely formatting in German. Measured on the stand: stored `de-DE`,
+  // every button `aria-pressed="false"`.
+  // Pass the local preference the boot path passes, so this row and the store
+  // reach the same answer. The translator refuses the seeded German pattern on
+  // a browser that never chose, which means the store stays on `'auto'`; a row
+  // that skipped the argument would light the German button while the product
+  // formatted in the interface language, and a control that disagrees with
+  // what is on screen is worse than one that lights nothing.
+  const serverFormat = prefs?.number_format
+    ? adoptServerNumberFormat(prefs.number_format, storeNumberLocale)
+    : undefined;
+  const numberFormat = resolveNumberLocale(serverFormat ?? storeNumberLocale);
   // MONEY-BUG FIX: read the persisted server value from `currency_code`
   // (the real backend field) instead of the non-existent `currency`, so a
   // saved currency survives reload. Do NOT hardcode 'EUR' here — fall back to
   // the local store, which carries the user's last-selected currency.
   const currency = prefs?.currency_code ?? storeCurrency;
+
+  // The one figure on this screen that is not a label for a button.
+  //
+  // Every example in the row below is built from its own button's locale, so
+  // the row reads identically whichever button is pressed, and somebody
+  // choosing a format is choosing blind. This reads the preference through the
+  // same resolver the rest of the product formats with, which is also the only
+  // place where "the number follows the reader" can be watched happening
+  // rather than argued about.
+  //
+  // Subscribing rather than sampling is the whole point. The snapshot reader
+  // would leave this preview showing the previous format after a click, which
+  // is precisely the failure it exists to rule out.
+  // Formatted by the module the money surfaces format through, not by a
+  // formatter written out again here. A preview whose only job is to show what
+  // the product prints is not correct when it is well formed, it is correct
+  // when it agrees, and a second formatter can only ever agree by coincidence.
+  // This one had already stopped: it capped the decimals at two for any
+  // currency, so an account set to yen was promised "¥1,234,567.89" while
+  // every register in the product rounded it to "¥1,234,568". The reader was
+  // choosing a format against a sample nothing else on screen would produce.
+  //
+  // Routing it here also settles what happens if the minor units of some
+  // currency are ever ruled on differently: the ruling lands in `money.ts` and
+  // this line follows it, rather than needing to be found and changed again.
+  //
+  // The try/catch is gone with the formatter. `formatCurrency` never throws -
+  // a half-typed custom currency code is not a valid ISO code, and it renders
+  // a bare grouped number for one, which is what the catch did.
+  const previewLocale = useNumberLocale();
+  const numberFormatPreview = useMemo(
+    () => formatCurrency(NUMBER_FORMAT_SAMPLE, currency, previewLocale),
+    [previewLocale, currency],
+  );
 
   // Patch mutation
   const patchMutation = useMutation({
@@ -492,10 +576,16 @@ export function RegionalSettings({ animationDelay = '0ms' }: { animationDelay?: 
             </label>
             <ToggleGroup
               value={dateFormat}
-              options={DATE_FORMATS.map((f) => ({
-                value: f.value,
-                label: f.example,
-              }))}
+              options={[
+                {
+                  value: 'auto' as DateFormat,
+                  label: t('settings.date_format_auto', { defaultValue: 'Automatic' }),
+                },
+                ...DATE_FORMATS.map((f) => ({
+                  value: f.value,
+                  label: f.example,
+                })),
+              ]}
               onChange={(val) => handleChange('date_format', val)}
             />
           </div>
@@ -514,6 +604,12 @@ export function RegionalSettings({ animationDelay = '0ms' }: { animationDelay?: 
               }))}
               onChange={(val) => handleChange('number_format', val)}
             />
+            <p className="mt-1.5 text-xs text-content-tertiary">
+              {t('settings.number_format_preview', {
+                example: numberFormatPreview,
+                defaultValue: 'Amounts across the app now read {{example}}',
+              })}
+            </p>
           </div>
 
           {/* Currency */}

@@ -13,6 +13,7 @@ const playbook: Playbook = {
   order: 280,
   category: "quality",
   companyTypes: ["general-contractor", "owner-operator"],
+  roles: ["site-manager", "project-manager", "design-lead"],
   stage: "handover",
   icon: "ClipboardCheck",
   titleKey: "cases.witness_and_record_mep_commissioning.title",
@@ -60,7 +61,7 @@ const playbook: Playbook = {
       whyKey: "cases.witness_and_record_mep_commissioning.step.plan.why",
       whyDefault:
         "A commissioning check with no agreed pass mark is an argument waiting to happen. Setting the criteria up front is what lets the witness say pass or fail on the day instead of debating it.",
-      moduleLabel: "QMS",
+      moduleLabel: "Quality Management",
       moduleLabelKey: "nav.qms",
       to: "/projects/:projectId/qms",
     },

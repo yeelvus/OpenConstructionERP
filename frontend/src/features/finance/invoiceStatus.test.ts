@@ -1,9 +1,17 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
+
+// Vitest runs from the frontend root, and under the Vite transform
+// import.meta.url is not a file URL, so the source is reached from there.
+const PAGE_SOURCE = 'src/features/finance/FinancePage.tsx';
 import {
   invoiceStatusOptions,
+  isReceivable,
   INVOICE_SELF_SERVICE_TRANSITIONS,
+  INVOICE_STATUS_COLORS,
   INVOICE_STATUS_ORDER,
 } from './FinancePage';
 
@@ -15,6 +23,20 @@ import {
  * those go through the manager-gated /approve and /pay endpoints (and /pay
  * writes a binding ledger entry). These tests lock that invariant in.
  */
+/** Every line that opens the e-invoice dialog, and which of them run unguarded. */
+function unguardedEInvoiceOpeners(source: string): { total: number; unguarded: number[] } {
+  const lines = source.split('\n');
+  const unguarded: number[] = [];
+  let total = 0;
+  lines.forEach((line, i) => {
+    if (!/setEinvoiceFor\(inv\)/.test(line)) return;
+    total += 1;
+    const preceding = lines.slice(Math.max(0, i - 10), i).join('\n');
+    if (!/isReceivable\(inv\)\s*&&/.test(preceding)) unguarded.push(i + 1);
+  });
+  return { total, unguarded };
+}
+
 describe('invoice status dropdown options', () => {
   it('offers draft -> pending so a new invoice can move forward', () => {
     const opts = invoiceStatusOptions('draft');
@@ -57,6 +79,62 @@ describe('invoice status dropdown options', () => {
         expect(INVOICE_STATUS_ORDER).toContain(to);
       }
     }
+  });
+
+  it('reads the invoice direction from either field shape the table is fed with', () => {
+    // The e-invoice action hangs off this: offered on a payable, the dialog
+    // reports our own missing seller details on a document the supplier
+    // issued. The rows arrive with the wire name from the API and with the
+    // display alias from the legacy shape, so both have to answer.
+    expect(isReceivable({ invoice_direction: 'receivable' } as never)).toBe(true);
+    expect(isReceivable({ direction: 'receivable' } as never)).toBe(true);
+    expect(isReceivable({ invoice_direction: 'payable', direction: 'receivable' } as never)).toBe(true);
+    expect(isReceivable({ direction: 'payable' } as never)).toBe(false);
+    expect(isReceivable({} as never)).toBe(false);
+  });
+
+  it('guards every place the e-invoice dialog can be opened from', () => {
+    // isReceivable being correct proves nothing about where it is called, and
+    // the defect this closes was a call site, not a predicate: the button was
+    // offered on payables, where the dialog reports our own missing seller
+    // details on a document the supplier wrote. The page renders the action
+    // twice, once in the table row and once in the phone card, so the guard has
+    // to be at both. Read off the source because both sites are inline in a
+    // 2700 line page with no component to mount on its own, and because the
+    // regression to catch is a third site shipping unguarded rather than the
+    // conditional failing to work.
+    const source = readFileSync(resolve(process.cwd(), PAGE_SOURCE), 'utf-8');
+    const openers = unguardedEInvoiceOpeners(source);
+    expect(openers.unguarded).toEqual([]);
+    expect(openers.total).toBe(2);
+  });
+
+  it('would notice an unguarded site (the check above is falsifiable)', () => {
+    // A scan that has never come back dirty is not evidence. Run the same
+    // function over a page that opens the dialog with no guard in front of it,
+    // and it has to name the line.
+    const planted = [
+      'const x = 1;',
+      '<button onClick={() => setEinvoiceFor(inv)}>',
+      '{isReceivable(inv) && (',
+      '  <button onClick={() => setEinvoiceFor(inv)}>',
+    ].join('\n');
+    const openers = unguardedEInvoiceOpeners(planted);
+    expect(openers.total).toBe(2);
+    expect(openers.unguarded).toEqual([2]); // 1-based line of the bare button
+  });
+
+  it('keeps approved and sent on different badge colours', () => {
+    // These two sit one row apart in the same status column, and an invoice
+    // that has gone out to the client is not an invoice that has only been
+    // approved internally. They shared one blue until the palette grew a
+    // variant for it. Statuses that mean "nothing is in flight" are still free
+    // to share neutral, so this pins the one pair that has to stay apart
+    // rather than demanding a unique colour per status.
+    expect(INVOICE_STATUS_COLORS.sent).not.toBe(INVOICE_STATUS_COLORS.approved);
+    // ...and neither may borrow the colour that means the money arrived.
+    expect(INVOICE_STATUS_COLORS.sent).not.toBe(INVOICE_STATUS_COLORS.paid);
+    expect(INVOICE_STATUS_COLORS.approved).not.toBe(INVOICE_STATUS_COLORS.paid);
   });
 
   it('preserves the canonical display order in the option list', () => {

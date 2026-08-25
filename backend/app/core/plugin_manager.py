@@ -21,8 +21,8 @@ Install flow:
 
 Usage:
     manager = ModulePluginManager(modules_dir, registry_url)
-    await manager.install("oe-rsmeans-connector", version="1.2.0")
-    await manager.uninstall("oe-rsmeans-connector")
+    await manager.install("oe-cost-index-connector", version="1.2.0")
+    await manager.uninstall("oe-cost-index-connector")
     available = await manager.list_available()
 """
 

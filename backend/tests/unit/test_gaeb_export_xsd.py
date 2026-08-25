@@ -181,6 +181,35 @@ def test_export_validates_against_gaeb_xsd(gaeb_format: str) -> None:
     _assert_validates(_build_demo_boq(), gaeb_format)
 
 
+@pytest.mark.parametrize("bid_type", ["main", "alternate"])
+def test_export_x84_bid_types_validate(bid_type: str) -> None:
+    """Both X84 bid types (Hauptangebot / Nebenangebot) stay XSD-valid.
+
+    The alternate branch writes the rationale of flagged positions as a
+    ``BidComm`` (Bieter Kommentar) - a real schema element - so the document
+    must validate either way. The main branch must carry no BidComm at all.
+    """
+    boq = _build_demo_boq()
+    # Flag one position as an alternate so the branch has something to write.
+    boq.sections[0].positions[0].metadata = {
+        "alt_parent_ref": "01.001",
+        "alt_markup_reason": "Fertigteil statt Ortbeton, kuerzere Bauzeit.",
+    }
+    xml = build_gaeb_xml(boq, project_name="XSD Demo", project_currency="EUR", gaeb_format="x84", bid_type=bid_type)
+    schema = _load_schema("84")
+    doc = etree.fromstring(xml.encode("utf-8"))
+    assert schema.validate(doc), f"X84 bid_type={bid_type} failed XSD validation: " + "; ".join(
+        f"{e.line}:{e.message}" for e in schema.error_log[:12]
+    )
+    ns = {"g": doc.tag.split("}")[0].lstrip("{")}
+    bid_comms = doc.findall(".//g:Item/g:BidComm", ns)
+    if bid_type == "alternate":
+        assert len(bid_comms) == 1, "flagged position must carry its BidComm rationale"
+        assert "Nebenangebot zu Position 01.001" in "".join(bid_comms[0].itertext())
+    else:
+        assert bid_comms == [], "a plain Hauptangebot must not carry alternate markers"
+
+
 @pytest.mark.parametrize("gaeb_format", ["x83", "x84"])
 def test_export_flat_boq_validates(gaeb_format: str) -> None:
     """A flat LV (no sections, with a markup) validates against the 3.3 XSD."""

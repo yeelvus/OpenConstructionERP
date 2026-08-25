@@ -396,6 +396,32 @@ class Settings(BaseSettings):
     # regional indices, catalogs) is never tenant-scoped. Env: ``OE_RLS_ENFORCE``.
     rls_enforce: bool = False
 
+    # ── Public read-only demo ────────────────────────────────────────────
+    # When True, the deployment refuses every request that would change
+    # persistent state and answers 403 with ``{"error": "demo_read_only",
+    # "message": ...}``, so a visitor sees the seeded example projects exactly
+    # as they were seeded instead of whatever the previous visitor typed. Reads
+    # are untouched, and signing in still works. Default False: a self-hosted
+    # install behaves byte-for-byte as it does today, and turning this on is an
+    # explicit operator decision for the hosted demo box only. Distinct from
+    # ``OE_DEMO_MODE``, which governs analytics and redaction on that same box
+    # and is read straight from the environment elsewhere; the hosted demo sets
+    # both. See :mod:`app.core.demo_read_only`. Env: ``OE_DEMO_READ_ONLY``.
+    demo_read_only: bool = False
+
+    # ── Public demo upload retention ─────────────────────────────────────
+    # How many days a visitor's uploaded file survives on the public demo
+    # before the retention sweep removes it and its blob. ``0``, the default,
+    # means "keep everything forever", which is what every self-hosted install
+    # does today and keeps doing. A positive value is only half the switch:
+    # the sweep also requires ``demo_read_only`` above, so somebody's real
+    # project files cannot be deleted by setting this variable alone on a
+    # box that is not the hosted demo. 14 is the recommended window - see
+    # ``DEFAULT_RETENTION_DAYS`` in :mod:`app.core.demo_retention`, which also
+    # documents what the sweep will and will not touch. Seeded demo content is
+    # never removed at any window. Env: ``OE_DEMO_UPLOADS_RETENTION_DAYS``.
+    demo_uploads_retention_days: int = 0
+
     # ── AI / Vector ──────────────────────────────────────────────────────
     # Default: Qdrant (CWICR v3 pipeline - BAAI/bge-m3 + 30 per-language
     # collections + parquet lookup). LanceDB remains as a legacy fallback

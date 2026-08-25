@@ -4,7 +4,6 @@ import {
   MODULE_REGISTRY,
   getAllModuleRoutes,
   getModuleNavItems,
-  getModuleSearchEntries,
   getModuleDefaults,
   getModulesByCategory,
 } from './_registry';
@@ -100,10 +99,9 @@ describe('MODULE_REGISTRY', () => {
     expect(paths).toContain('/nordic-ns3420-exchange');
   });
 
-  it('regional-exchange should expose search entries + translations', () => {
+  it('regional-exchange should ship its own translations', () => {
     const mod = MODULE_REGISTRY.find((m) => m.id === 'regional-exchange');
     expect(mod).toBeDefined();
-    expect(mod!.searchEntries!.length).toBe(20);
     expect(mod!.translations).toBeDefined();
     expect(mod!.translations!['en']).toBeDefined();
   });
@@ -165,22 +163,6 @@ describe('getModuleNavItems', () => {
   it('should return empty array for non-existent group', () => {
     const items = getModuleNavItems('nonexistent');
     expect(items).toEqual([]);
-  });
-});
-
-describe('getModuleSearchEntries', () => {
-  it('should return search entries from all modules', () => {
-    const entries = getModuleSearchEntries();
-    expect(entries.length).toBeGreaterThanOrEqual(8);
-  });
-
-  it('should have keywords for each entry', () => {
-    const entries = getModuleSearchEntries();
-    for (const entry of entries) {
-      expect(entry.keywords.length).toBeGreaterThan(0);
-      expect(entry.path).toBeTruthy();
-      expect(entry.label).toBeTruthy();
-    }
   });
 });
 

@@ -6,6 +6,13 @@ import { useTranslation as useI18nTranslation } from 'react-i18next';
 
 export const SUPPORTED_LANGUAGES = [
   { code: 'en', name: 'English', flag: '🇬🇧', country: 'gb' },
+  // American English is a regional variant of the entry above, in the same sense
+  // es-MX is one of es: the file under `locales/en-US.ts` holds only the words
+  // American practice names differently, and every other key is answered by
+  // `en.ts` through the fallback chain. The region subtag is upper case because
+  // that is how i18next normalises a two-part code, and the bundle has to be
+  // registered under the same spelling it looks up.
+  { code: 'en-US', name: 'English (US)', english: 'English (United States)', flag: '🇺🇸', country: 'us' },
   { code: 'de', name: 'Deutsch', english: 'German', flag: '🇩🇪', country: 'de' },
   { code: 'fr', name: 'Français', english: 'French', flag: '🇫🇷', country: 'fr' },
   { code: 'es', name: 'Español', english: 'Spanish', flag: '🇪🇸', country: 'es' },
@@ -48,6 +55,28 @@ export const SUPPORTED_LANGUAGES = [
   { code: 'fa', name: 'فارسی', english: 'Persian', flag: '🇮🇷', country: 'ir', dir: 'rtl' },
   { code: 'he', name: 'עברית', english: 'Hebrew', flag: '🇮🇱', country: 'il', dir: 'rtl' },
   { code: 'el', name: 'Ελληνικά', english: 'Greek', flag: '🇬🇷', country: 'gr' },
+  // `uk` is the ISO 639-1 code for Ukrainian, and it is also the string this
+  // codebase already uses for the United Kingdom as a *region*: a BoQ preset
+  // region, a country-pack id, and the country map in CreateProjectPage all
+  // carry `uk` meaning Britain. The two live in different namespaces and must
+  // stay that way. Nothing may derive a UI language from a region code, or a
+  // British project would come up in Ukrainian.
+  { code: 'uk', name: 'Українська', english: 'Ukrainian', flag: '🇺🇦', country: 'ua' },
+  // Uzbek is written in Latin script: the Latin alphabet has been the official
+  // one since 1993 and is what public and construction documentation uses. The
+  // two modifier letters in the language's own name are U+02BB, not an
+  // apostrophe, and a straight quote there is a misspelling rather than a
+  // typographic preference.
+  //
+  // Uzbek is deliberately not offered yet. Measured on 2026-08-18, 16249 of
+  // the 34369 keys uz.ts shares with en.ts were still byte identical to the
+  // English, so about half the interface would reach a reader in English
+  // through silent fallback. Because the script is Latin, a glance cannot
+  // tell a translation from an untranslated string here, so that figure is a
+  // literal comparison rather than an inspection. The locale file stays on
+  // disk and the batch work continues; uncomment this line when it is done,
+  // and keep the U+02BB modifier letters when you do.
+  // { code: 'uz', name: 'Oʻzbekcha', english: 'Uzbek', flag: '🇺🇿', country: 'uz' },
 ];
 
 export function getLanguageByCode(code: string): (typeof SUPPORTED_LANGUAGES)[number] {
@@ -58,15 +87,24 @@ export function getLanguageByCode(code: string): (typeof SUPPORTED_LANGUAGES)[nu
  * Normalize a partner-pack ``default_locale`` to a supported UI language code.
  *
  * Pack manifests carry BCP-47 locales that often include a region subtag
- * (batimatech-ca ships ``fr-CA`` for French Canada, uk-jct ships ``en-GB``).
- * The UI ships base languages only, so we strip the region and lower-case
- * (``fr-CA`` -> ``fr``), then validate against ``SUPPORTED_LANGUAGES``.
- * Returns ``'en'`` for any locale we do not ship, so a pack can never force the
- * app into an unsupported language.
+ * (batimatech-ca ships ``fr-CA`` for French Canada, uk-jct ships ``en-GB``,
+ * commercial-denver ships ``en-US``). A regional code the UI actually ships is
+ * answered with itself, because a pack that names a region has asked for that
+ * region and stripping it would hand a Denver pack British English. Anything
+ * else falls back to the base language (``fr-CA`` -> ``fr``), and a locale we do
+ * not ship at all returns ``'en'``, so a pack can never force the app into a
+ * language that has no strings.
  */
 export function normalizePackLocale(locale: string | null | undefined): string {
   if (!locale) return 'en';
-  const base = locale.split('-')[0]!.trim().toLowerCase();
+  const trimmed = locale.trim();
+  // Match how i18next writes a two-part code, so 'en-us' and 'EN-us' both find
+  // the 'en-US' we ship rather than falling through to the base language.
+  const parts = trimmed.split('-');
+  const regional =
+    parts.length === 2 ? `${parts[0]!.toLowerCase()}-${parts[1]!.toUpperCase()}` : trimmed;
+  if (SUPPORTED_LANGUAGES.some((l) => l.code === regional)) return regional;
+  const base = parts[0]!.toLowerCase();
   return SUPPORTED_LANGUAGES.some((l) => l.code === base) ? base : 'en';
 }
 
@@ -222,6 +260,12 @@ const initialLanguage = resolveInitialLanguage();
 i18n
   .use(initReactI18next)
   .init({
+    // Initialize synchronously: every resource this init needs is already in
+    // memory (the bundled EN object), so deferring init to a timer only opens
+    // a boot window where ``t()`` echoes raw keys. With sync init the store
+    // is ready the moment this module finishes evaluating, which the
+    // ``initialLocaleReady`` mount gate below relies on.
+    initImmediate: false,
     // Only English is bundled synchronously — every other locale is
     // lazy-loaded by ``loadLocaleResource`` below. ``fallbackLng: 'en'``
     // means missing keys (e.g. while the locale chunk is still in
@@ -231,6 +275,13 @@ i18n
     // The regional variants fall back to their own language before English, so
     // a key not localised for Chile shows Spanish rather than English. That is
     // what lets those files carry only the words that actually differ.
+    //
+    // en-US needs no line of its own. i18next resolves a two-part code through
+    // ['en-US', 'en'] before it ever consults this map, and the `default` branch
+    // below names the same fallback again, so a key absent from en-US.ts is
+    // answered by en.ts either way. Asserted in enUSFallsBackToEnglish.test.ts
+    // rather than assumed, because a missing key and a resolved one look alike
+    // on screen when every call site passes a defaultValue.
     fallbackLng: {
       'es-MX': ['es', 'en'],
       'es-CL': ['es', 'en'],
@@ -285,11 +336,25 @@ i18n.on('languageChanged', (lng) => {
   void loadLocaleResource(lng);
 });
 
-// If the user's resolved language isn't English, kick off the lazy-load
-// straight away so the UI doesn't sit in English longer than necessary.
-if (initialLanguage !== 'en') {
-  void loadLocaleResource(initialLanguage);
-}
+/**
+ * Resolves once the resources of the *initial* language are in the store,
+ * or ``null`` when there is nothing to wait for (English boot).
+ *
+ * i18next starts with only the bundled English resource; the active locale
+ * arrives in a lazy chunk. Merely kicking that fetch off (`void load...`)
+ * loses the race against React's first paint every single time — the first
+ * frame of every non-English session rendered in English, whatever the cache
+ * state, because the paint is synchronous and the chunk resolve never is.
+ * ``main.tsx`` therefore awaits this promise (with a hard time cap so a
+ * stalled fetch cannot hold the mount hostage) before mounting the app, so
+ * the first frame already speaks the saved language.
+ *
+ * ``loadLocaleResource`` swallows its own failures (English fallback), so
+ * this promise always resolves; it never rejects and never blocks forever.
+ * The English path stays fully synchronous: no promise, no waiting.
+ */
+export const initialLocaleReady: Promise<void> | null =
+  initialLanguage !== 'en' ? loadLocaleResource(initialLanguage) : null;
 
 // Merge module-bundled translations (nav keys for regional modules, etc.)
 import { getModuleTranslations } from '@/modules/_registry';

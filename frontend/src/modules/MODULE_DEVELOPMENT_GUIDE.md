@@ -60,14 +60,6 @@ export const manifest: ModuleManifest = {
     },
   ],
 
-  searchEntries: [
-    {
-      label: 'My Feature',
-      path: '/my-feature',
-      keywords: ['feature', 'custom', 'plugin'],   // fuzzy search terms
-    },
-  ],
-
   // Optional: module-bundled translations (merged into i18next on load)
   translations: {
     en: {
@@ -174,8 +166,6 @@ App startup
     │
     ├── Sidebar.tsx calls getModuleNavItems(groupId) → shows nav links
     │   └── Filtered by isModuleEnabled() from useModuleStore
-    │
-    ├── CommandPalette calls getModuleSearchEntries() → search results
     │
     └── ModulesPage reads MODULE_REGISTRY → renders toggle cards
 ```
@@ -437,16 +427,15 @@ Before submitting your module:
 ```ts
 interface ModuleManifest {
   id: string;                    // Unique kebab-case identifier
-  name: string;                  // Display name (plain text or i18n key starting with 'modules.')
-  description: string;           // Short description (plain text or i18n key)
+  name: string;                  // Display name — i18n key (a literal still renders as itself)
+  description: string;           // Short description — i18n key, same rule
   version: string;               // SemVer: '1.0.0'
   icon: LucideIcon;              // Any icon from 'lucide-react'
   category: 'estimation' | 'planning' | 'procurement' | 'tools';
   defaultEnabled: boolean;       // false = opt-in
   depends?: string[];            // Module IDs this requires
-  routes: ModuleRoute[];         // Pages to register
+  routes: ModuleRoute[];         // Pages to register (route.title is an i18n key too)
   navItems: ModuleNavItem[];     // Sidebar links
-  searchEntries?: ModuleSearchEntry[];  // Command palette entries
   translations?: Record<string, Record<string, string>>;  // Bundled i18n
 }
 ```

@@ -13,7 +13,7 @@ import {
   Layers,
 } from 'lucide-react';
 import { Card } from '@/shared/ui';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtCompact, fmtNumber, getIntlLocale } from '@/shared/lib/formatters';
 
 export interface CompactProjectCardProps {
   id: string;
@@ -51,17 +51,16 @@ function getRegionAvatarClass(region?: string): string {
   return 'bg-oe-blue-subtle text-oe-blue-text';
 }
 
-const currencyFmt = new Intl.NumberFormat(getIntlLocale(), {
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 0,
-});
-
 function formatCompactValue(raw: number | string | null | undefined): string {
   const value = typeof raw === 'number' ? raw : Number(raw ?? 0);
   if (!Number.isFinite(value)) return '0';
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(0)}K`;
-  return currencyFmt.format(value);
+  // Both branches read the locale per call. The small-value branch used to
+  // hold an Intl.NumberFormat built at module scope, which froze the
+  // language at whatever the app started in - the comment here described
+  // that and left it, so the two branches of one tile disagreed after a
+  // language switch.
+  if (Math.abs(value) >= 1_000) return fmtCompact(value);
+  return fmtNumber(value, 0);
 }
 
 export function CompactProjectCard({

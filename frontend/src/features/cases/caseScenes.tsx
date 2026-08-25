@@ -704,33 +704,6 @@ export const CASE_SCENES: Record<string, Scene> = {
     </>
   ),
 
-  // Price a building from a PDF: measure a flat drawing and finish with a priced
-  // bill.
-  'price-from-pdf': (a) => (
-    <>
-      <Sheet x={16} y={16} w={40} h={52} fill={C.panel} />
-      <path d="M24 26 H48 V56 H24 Z M24 40 H40" fill="none" stroke={C.grey1} strokeWidth={1.3} />
-      <rect x={40} y={40} width={8} height={16} fill={a.base} fillOpacity={0.2} stroke={a.base} strokeWidth={1} />
-      <Chip x={18} y={58} w={16} h={8} r={2} fill={C.red} label="PDF" />
-      <path
-        d="M58 42 H68 M64 38 l4 4 l-4 4"
-        stroke={a.base}
-        strokeWidth={2.2}
-        fill="none"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <Sheet x={70} y={18} w={36} h={48} />
-      <HeaderBand x={70} y={18} w={36} h={9} fill={a.base} />
-      <RowBar x={76} y={33} w={16} h={3} fill={C.grey3} />
-      <Chip x={95} y={31} w={8} h={6} fill={C.green} />
-      <RowBar x={76} y={42} w={14} h={3} fill={C.grey3} />
-      <Chip x={95} y={40} w={8} h={6} fill={C.green} />
-      <RowBar x={76} y={51} w={18} h={3} fill={C.grey3} />
-      <Chip x={95} y={49} w={8} h={6} fill={C.green} />
-    </>
-  ),
-
   // Sense-check an estimate against benchmarks: compare priced rates to the
   // reference bars and flag the outlier.
   'sense-check-an-estimate-with-benchmarks': (a) => (

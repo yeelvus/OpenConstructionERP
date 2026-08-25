@@ -57,9 +57,11 @@ import {
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { MoneyDisplay } from '@/shared/ui/MoneyDisplay';
 import { PageHeader } from '@/shared/ui/PageHeader';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useToastStore } from '@/stores/useToastStore';
 import { getErrorMessage, ApiError } from '@/shared/lib/api';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { usePreferencesStore } from '@/stores/usePreferencesStore';
 import {
@@ -99,6 +101,7 @@ import { AssignmentTargetFields } from './AssignmentTargetFields';
 import { resourcesGuide } from './resourcesGuide';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { buildResourcesInsights } from './resourcesInsights';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 type Tab = 'resources' | 'requests' | 'assignments';
 
@@ -410,7 +413,7 @@ export function ResourcesPage() {
   const [newRequestOpen, setNewRequestOpen] = useState(false);
   const qc = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
   const activeProjectName = useProjectContextStore((s) => s.activeProjectName);
   const setActiveProject = useProjectContextStore((s) => s.setActiveProject);
 
@@ -505,7 +508,7 @@ export function ResourcesPage() {
     enabled: tab === 'assignments',
   });
 
-  const allResources: Resource[] = resourcesQ.data ?? [];
+  const allResources: Resource[] = resourcesQ.data?.items ?? [];
 
   // Distinct currencies in the loaded set — drives the currency-filter
   // dropdown. Sorted for stable order across renders.
@@ -892,6 +895,14 @@ export function ResourcesPage() {
               role="status"
               data-testid="resources-result-count"
             >
+              {/* Unfiltered, the count is the register's own size rather than
+                  the loaded page: "200 resources" on an install with 340 is a
+                  false claim, and the truncation notice below would contradict
+                  it. Filtered, it stays the loaded length on purpose, because
+                  the filtering happens on this side over the rows that
+                  arrived, so "12 of 200" describes what was actually
+                  narrowed. How many of the 340 are loaded is the notice's job,
+                  not this line's. */}
               {hasActiveFilters
                 ? t('resources.result_count_filtered', {
                     defaultValue: '{{shown}} of {{total}}',
@@ -900,7 +911,7 @@ export function ResourcesPage() {
                   })
                 : t('resources.result_count', {
                     defaultValue: '{{count}} resources',
-                    count: allResources.length,
+                    count: resourcesQ.data?.total ?? allResources.length,
                   })}
             </div>
           </div>
@@ -924,6 +935,12 @@ export function ResourcesPage() {
               />
             ) : (
               <>
+                {/* Above the rows and above the bulk bar, because the count in
+                    the header and the selection count below both describe the
+                    loaded page rather than the register. */}
+                {resourcesQ.data && (
+                  <TruncationNotice page={resourcesQ.data} className="px-4 pt-3" />
+                )}
                 {/* Bulk action bar — visible when at least one row is selected */}
                 {selectedIds.size > 0 && (
                   <div
@@ -3875,7 +3892,7 @@ function ResourceDrawer({
                   label={t('resources.utilization', { defaultValue: 'Utilization (30d)' })}
                   value={
                     data.utilization_30d
-                      ? `${data.utilization_30d.utilization_percent.toFixed(0)}%`
+                      ? fmtPercent(data.utilization_30d.utilization_percent, 0)
                       : '—'
                   }
                 />
@@ -4461,7 +4478,7 @@ function ProposeAssignmentModal({
   // The project the user is already working in is the overwhelmingly likely
   // answer, so it seeds the picker; the activity is never seeded because
   // nothing says which row of that project's schedule this booking is for.
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
 
   // datetime-local inputs are wall-clock and tz-naive. Seeding them from
   // a UTC ISO string and then re-parsing with `new Date` double-applies

@@ -57,4 +57,31 @@ describe('<POStatusPipeline>', () => {
       expect.stringContaining('Completed'),
     );
   });
+
+  // Counting spans is not enough: the dots were all present in the DOM while
+  // the completed ones painted nothing, so a draft PO showed five visible
+  // pips and an issued one showed three. These two guard the paint, not the
+  // markup.
+  it.each(['draft', 'approved', 'issued', 'partially_received', 'completed', 'cancelled'])(
+    'gives every dot a background to paint (%s)',
+    (status) => {
+      const { container } = render(<POStatusPipeline status={status} />);
+      for (const dot of container.querySelectorAll('span')) {
+        expect(dot.className).toMatch(/\bbg-[a-z-]+/);
+      }
+    },
+  );
+
+  it('distinguishes past, current and future stages from one another', () => {
+    const { container } = render(<POStatusPipeline status="issued" />);
+    const backgrounds = Array.from(container.querySelectorAll('span')).map(
+      (d) => (d.className.match(/\bbg-[a-z-]+\b/) ?? [''])[0],
+    );
+    // draft + approved are past, issued is current, the last two are future.
+    expect(backgrounds[0]).toBe('bg-semantic-success');
+    expect(backgrounds[1]).toBe('bg-semantic-success');
+    expect(backgrounds[2]).toBe('bg-oe-blue');
+    expect(backgrounds[3]).toBe('bg-border');
+    expect(new Set(backgrounds).size).toBe(3);
+  });
 });

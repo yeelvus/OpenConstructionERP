@@ -47,6 +47,10 @@ export interface UseChatFullPageReturn {
   activePanelIndex: number;
   aiConfigured: boolean | null; // null = still loading
   sessions: ChatSession[];
+  /** How many sessions the caller has, as the server counts them. The route
+   *  serves a hardcoded 20 and takes no offset, so this is how the sidebar
+   *  says it is showing a slice - it cannot fetch the rest. */
+  sessionsTotal: number;
   sessionsLoading: boolean;
   loadingSessionId: string | null;
   sendMessage: (text: string) => void;
@@ -99,6 +103,7 @@ export function useChatFullPage(): UseChatFullPageReturn {
   const [activePanelIndex, setActivePanelIndex] = useState(-1);
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [sessionsTotal, setSessionsTotal] = useState(0);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
 
@@ -133,9 +138,11 @@ export function useChatFullPage(): UseChatFullPageReturn {
     try {
       const res = await fetchChatSessions();
       setSessions(res.items ?? []);
+      setSessionsTotal(res.total ?? res.items?.length ?? 0);
     } catch {
       // Non-fatal: the sidebar just stays empty. The chat itself still works.
       setSessions([]);
+      setSessionsTotal(0);
     } finally {
       setSessionsLoading(false);
     }
@@ -560,6 +567,7 @@ export function useChatFullPage(): UseChatFullPageReturn {
     activePanelIndex,
     aiConfigured,
     sessions,
+    sessionsTotal,
     sessionsLoading,
     loadingSessionId,
     sendMessage,

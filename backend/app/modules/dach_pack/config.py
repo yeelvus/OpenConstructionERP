@@ -145,14 +145,14 @@ PACK_CONFIG: dict[str, Any] = {
     "gaeb_formats": [
         {
             "code": "X83",
-            "name": "GAEB XML 3.3 - Angebotsabgabe",
-            "description": "Tender submission (priced bill)",
+            "name": "GAEB XML 3.3 - Angebotsaufforderung",
+            "description": "Call for bids (tender request, unpriced)",
             "supported": True,
         },
         {
             "code": "X84",
-            "name": "GAEB XML 3.3 - Nebenangebot",
-            "description": "Alternative tender submission",
+            "name": "GAEB XML 3.3 - Angebotsabgabe",
+            "description": "Priced bid submission",
             "supported": True,
         },
         {

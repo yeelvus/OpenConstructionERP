@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 1012,
   category: "planning",
   companyTypes: ["general-contractor", "cost-consultant", "developer-client"],
+  roles: ["quantity-surveyor", "planner", "commercial-manager"],
   icon: "Milestone",
   titleKey: "cases.build_a_milestone_payment_schedule.title",
   titleDefault: "Build a milestone payment schedule",
@@ -43,7 +44,7 @@ const playbook: Playbook = {
       whyKey: "cases.build_a_milestone_payment_schedule.step.milestones.why",
       whyDefault:
         "Payment on a verifiable event removes the monthly haggle over percentage complete. Choosing unambiguous milestones is what keeps the cash flowing without a dispute each cycle.",
-      moduleLabel: "Schedule",
+      moduleLabel: "4D Schedule",
       moduleLabelKey: "schedule.title",
       to: "/schedule",
     },

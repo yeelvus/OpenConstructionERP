@@ -46,6 +46,7 @@ import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { BidComparisonChart } from './BidComparisonChart';
 import { AddendumList } from './AddendumList';
+import { AwardRecordPanel } from './AwardRecordPanel';
 import { LevelingMatrix } from './LevelingMatrix';
 import { classifyCell, recommend } from './analysis';
 import { tenderingGuide } from './tenderingGuide';
@@ -54,10 +55,11 @@ import {
   addRecipient,
   removeRecipient,
   distributePackage,
+  getPackageScope,
   type Recipient,
   type DistributeResponse,
 } from './api';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtPercent, getIntlLocale } from '@/shared/lib/formatters';
 import {
   listSubcontractors,
   type Subcontractor,
@@ -65,6 +67,17 @@ import {
 } from '@/features/subcontractors/api';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { buildTenderingInsights } from './tenderingInsights';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
+import { formatCurrency as formatMoney } from '@/shared/lib/money';
+
+// English fallbacks for the computed `tendering.prequal_*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const TENDERING_PREQUAL_LABELS: Record<string, string> = {
+  pending: 'Pending', approved: 'Approved', suspended: 'Suspended', rejected: 'Rejected'
+};
+
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -175,31 +188,26 @@ const STATUS_COLORS: Record<string, 'neutral' | 'blue' | 'success' | 'warning' |
 };
 
 function formatCurrency(amount: number | string, currency?: string): string {
-  const num = typeof amount === 'string' ? parseFloat(amount) || 0 : amount;
-  const code = (currency || '').trim().toUpperCase();
-  // NEVER hard-fallback to EUR (task #217): a project priced in BRL/INR
-  // must not render its tender amounts with a Euro sign. When the currency
-  // is unknown, show a plain decimal number with no symbol.
-  if (!/^[A-Z]{3}$/.test(code)) {
-    return new Intl.NumberFormat(getIntlLocale(), {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(num);
-  }
-  try {
-    return new Intl.NumberFormat(getIntlLocale(), {
-      style: 'currency',
-      currency: code,
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(num);
-  } catch {
-    return `${num.toFixed(0)} ${code}`;
-  }
+  // The strict-currency policy is unchanged and is the shared formatter's
+  // policy too (task #217): a project priced in BRL/INR must never render its
+  // tender amounts with a Euro sign, so an unknown code yields a plain grouped
+  // number with no symbol rather than a substituted one.
+  //
+  // What is removed is the digit count. Both ends were pinned to zero against
+  // a currency arriving as a variable, which posted every tender amount on
+  // this page as a whole unit - the TOTAL row of the comparison table reading
+  // "1.235 €" beneath rate cells written to two decimals. How many minor units
+  // a currency has is a property of the currency, so the shared formatter
+  // answers it; nothing here decides which currency gets how many.
+  //
+  // The unit-rate cells above that footer keep their own two decimals on
+  // purpose. A rate is a derived working figure and a posted amount is not,
+  // and that asymmetry is the one commit 8bbd6daf3 named as deliberate.
+  return formatMoney(amount, currency);
 }
 
 function formatNumber(n: number, decimals: number = 2): string {
-  return new Intl.NumberFormat(getIntlLocale(), {
+  return new Intl.NumberFormat(getNumberLocale(), {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   }).format(n);
@@ -216,13 +224,13 @@ function DeviationBadge({ pct }: { pct: number }) {
   if (pct < 0) {
     return (
       <span className="inline-flex items-center gap-0.5 text-xs font-medium text-semantic-success">
-        <ArrowDownRight size={12} /> {pct.toFixed(1)}%
+        <ArrowDownRight size={12} /> {fmtPercent(pct)}
       </span>
     );
   }
   return (
     <span className="inline-flex items-center gap-0.5 text-xs font-medium text-semantic-error">
-      <ArrowUpRight size={12} /> +{pct.toFixed(1)}%
+      <ArrowUpRight size={12} /> +{fmtPercent(pct)}
     </span>
   );
 }
@@ -389,7 +397,7 @@ function SubcontractorPickerModal({
                 </span>
                 <Badge variant={PREQUAL_PICKER_VARIANT[sub.prequalification_status]} dot>
                   {t(`tendering.prequal_${sub.prequalification_status}`, {
-                    defaultValue: sub.prequalification_status,
+                    defaultValue: TENDERING_PREQUAL_LABELS[sub.prequalification_status] ?? sub.prequalification_status,
                   })}
                 </Badge>
                 {resolvingId === sub.id ? (
@@ -1312,16 +1320,26 @@ function PackageDetail({
   const { confirm, ...confirmProps } = useConfirm();
   const [showAddBid, setShowAddBid] = useState(false);
   // Sub-tab on the package detail view — bids/comparison ↔ distribution ↔
-  // addenda ↔ leveling matrix. Defaults to "bids" so existing muscle memory
-  // keeps working; the other tabs are additive.
+  // addenda ↔ leveling matrix ↔ award record. Defaults to "bids" so existing
+  // muscle memory keeps working; the other tabs are additive. The award record
+  // only loads when its tab is opened, so a package nobody keeps a record for
+  // costs no request and stores nothing.
   const [activeTab, setActiveTab] = useState<
-    'bids' | 'distribution' | 'addenda' | 'leveling'
+    'bids' | 'distribution' | 'addenda' | 'leveling' | 'award-record'
   >('bids');
 
   // Fetch package with bids
   const { data: pkg, isLoading: pkgLoading, isError: pkgError } = useQuery({
     queryKey: ['tendering-package', packageId],
     queryFn: () => apiGet<PackageWithBids>(`/v1/tendering/packages/${packageId}`),
+  });
+
+  // Which part of the bill this package was raised over. Levelling already
+  // narrows to it, so a reader comparing bids is comparing them over this
+  // scope whether or not anyone told them what it is.
+  const { data: scope } = useQuery({
+    queryKey: ['tendering-package-scope', packageId],
+    queryFn: () => getPackageScope(packageId),
   });
 
   // Fetch comparison
@@ -1558,6 +1576,32 @@ function PackageDetail({
               )}
               <span>{t('tendering.bid_count', { defaultValue: '{{count}} bids', count: pkg.bids.length })}</span>
             </div>
+            {/* A package over one trade is compared against that trade, not
+                against the whole bill. That was already true of the numbers
+                and invisible on the screen. */}
+            {scope && !scope.covers_whole_bill && scope.sections.length > 0 && (
+              <p
+                className="mt-2 text-xs text-content-tertiary"
+                title={
+                  scope.sections_recorded
+                    ? undefined
+                    : t('tendering.scope_derived_hint', {
+                        defaultValue:
+                          'This package records the lines it covers rather than the sections, so the sections are read from those lines.',
+                      })
+                }
+              >
+                {t('tendering.scope_partial', {
+                  defaultValue:
+                    'Covers part of the bill: {{sections}} ({{included}} of {{total}} positions)',
+                  sections: scope.sections
+                    .map((s) => [s.ordinal, s.description].filter(Boolean).join(' '))
+                    .join(', '),
+                  included: scope.included_position_count,
+                  total: scope.boq_position_count,
+                })}
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -1662,6 +1706,10 @@ function PackageDetail({
           { id: 'distribution' as const, label: t('tendering.tab_distribution', { defaultValue: 'Distribution' }) },
           { id: 'addenda' as const, label: t('tendering.tab_addenda', 'Addenda') },
           { id: 'leveling' as const, label: t('tendering.tab_leveling', 'Leveling') },
+          {
+            id: 'award-record' as const,
+            label: t('tendering.tab_award_record', { defaultValue: 'Award record' }),
+          },
         ]).map((tab) => (
           <button
             key={tab.id}
@@ -1805,6 +1853,11 @@ function PackageDetail({
       {activeTab === 'leveling' && (
         <LevelingMatrix packageId={packageId} currency={currency} />
       )}
+
+      {/* Award record sub-tab — the written record of how this award was
+          reached, assembled from the procedure. Mounted (and therefore
+          fetched) only when the tab is opened. */}
+      {activeTab === 'award-record' && <AwardRecordPanel packageId={packageId} />}
 
       {/* Award recommendation — see analysis.ts for the confidence rules */}
       {activeTab === 'bids' && recommendation && comparison && (() => {

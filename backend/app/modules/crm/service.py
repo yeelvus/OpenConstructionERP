@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 
-from app.core.events import event_bus
+from app.core.events import event_bus, publish_after_commit
 from app.modules.crm.models import (
     Account,
     CrmActivity,
@@ -827,7 +827,10 @@ class CrmService:
         await self.session.refresh(lead)
 
         if target == "qualified":
-            event_bus.publish_detached(
+            # Deferred to the commit: the property_dev bridge inserts
+            # Buyer(development_id / plot_id) from its own session.
+            publish_after_commit(
+                self.session,
                 "crm.lead.qualified",
                 data={
                     "lead_id": str(lead_id),
@@ -1172,7 +1175,10 @@ class CrmService:
         await self.session.refresh(opp)
 
         payload = convert_opportunity_to_project_payload(opp)
-        event_bus.publish_detached(
+        # Deferred to the commit: the won-opportunity bridge inserts
+        # Contract(project_id=...) from its own session.
+        publish_after_commit(
+            self.session,
             "crm.opportunity.won",
             data={
                 "opportunity_id": str(opportunity_id),
@@ -1362,6 +1368,13 @@ class CrmService:
             won_value=computed["won_value"],
             committed_value=computed["committed_value"],
             computed_at=computed["computed_at"],
+            # Carried through to the snapshot rather than discarded. Without
+            # these two the four scalars above are the only figures stored, and
+            # the response schema fills the gap from its own defaults, so a
+            # forecast blending three currencies answers "mixed_currency: false"
+            # microseconds after computing that it is true.
+            by_currency=[{"currency": row["currency"], "total": str(row["total"])} for row in computed["by_currency"]],
+            mixed_currency=computed["mixed_currency"],
         )
         return await self.forecast_repo.upsert(forecast)
 

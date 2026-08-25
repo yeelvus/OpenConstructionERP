@@ -27,7 +27,7 @@ Identifier namespaces used here:
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
 
@@ -42,6 +42,7 @@ __all__ = [
     "DIRECT_DEBIT_CODES",
     "FATAL",
     "PAYMENT_CARD_CODES",
+    "UNDECIDED_MINOR_UNIT_CODES",
     "UNTDID_4461_CODES",
     "VAT_CATEGORY_CODES",
     "WARNING",
@@ -113,6 +114,17 @@ _CATEGORY_RULE_PREFIX = {
 _ZERO_RATE_CATEGORIES = frozenset({"Z", "E", "AE", "K", "G", "O"})
 _POSITIVE_RATE_CATEGORIES = frozenset({"S", "L", "M"})
 
+# The exemption-reason obligations of the BR-x-10 slot, straight from the
+# EN 16931-1 rule list. A breakdown group in an exempting category must say why
+# no VAT is charged (BT-120 reason text or BT-121 reason code), and a standard
+# or zero-rated group must not carry a reason at all - zero rated is a
+# statement, not an exemption. BR-IG-10 / BR-IP-10 (the Canary Islands and
+# Ceuta/Melilla families) are deliberately not carried: their -10 wording is
+# not verified against the artefact here, and a wrong obligation is worse than
+# a missing one.
+_REASON_REQUIRED_CATEGORIES = frozenset({"E", "AE", "K", "G", "O"})
+_REASON_FORBIDDEN_CATEGORIES = frozenset({"S", "Z"})
+
 # The category codes an invoice may carry, derived from the rule families above
 # so a code and the rules that police it can never drift apart. Anything that
 # accepts a category from a user validates against this.
@@ -129,23 +141,126 @@ class RuleViolation:
             :data:`WARNING` (it will be accepted but something is missing).
         message: what the user has to do about it, in plain language.
         term: the EN 16931 business term at fault, e.g. ``BT-84``.
+        params: the values ``message`` interpolates, under the names a
+            translation of this rule uses for them. A screen that renders the
+            finding in another language looks the rule id up in its catalogue
+            and feeds these in, so the German sentence still names line 3 and
+            still quotes the amount the receiver will expect. Without them a
+            translated catalogue could only carry rules whose wording is
+            constant, which is most of the calculation family gone.
     """
 
     rule_id: str
     severity: str
     message: str
     term: str | None = None
+    params: dict[str, str] = field(default_factory=dict)
 
     def __str__(self) -> str:
         return f"{self.rule_id}: {self.message}"
 
 
+# ── currency minor units, per code and on purpose ─────────────────────────────
+#
+# Two registers publish a digit count per currency and they are not the same
+# list, because they answer different questions. ISO 4217 states how a currency
+# is subdivided. CLDR states how a person in a locale writes it. Measured
+# against ISO 4217 (list-one.xml, Pblshd 2026-01-01) and CLDR 49
+# (common/supplemental/supplementalData.xml, the ``<fractions>`` block), they
+# part company on fourteen of the codes below.
+#
+# Two codes are routinely miscounted into that set and are not in it:
+#
+#   IQD  ISO 3, CLDR 0. A different case entirely: ISO gives the Iraqi dinar
+#        three minor digits, and ``_EN16931_MAX_DECIMALS`` trims that to two
+#        exactly as it trims KWD. Carried below at 3 so that the cap stays the
+#        thing which trims it, rather than the trimming being pre-baked here.
+#   PKR  ISO 2, CLDR 2 - no disagreement at all. Only CLDR's *cashDigits* is 0,
+#        and that governs rounding banknotes at a till, not a written amount.
+#
+# EN 16931 does not settle the remaining fourteen, which is why they need a
+# decision recorded rather than derived. Checked against the CEN validation
+# artefacts v1.3.16 and the XRechnung (KoSIT) schematron v2.5.0:
+#
+#   * the BR-DEC-* family is 21 rules and every one of them is a MAXIMUM
+#     ("at most two decimals"), tested either as
+#     ``string-length(substring-after(amount,'.')) <= 2`` or as
+#     ``. = round(. * 100) div 100``. None imposes a minimum and none looks at
+#     the currency, so ``1000`` and ``1000.00`` both pass every one of them.
+#   * BR-CO-17 and the BR-x-08 family carry a tolerance of one whole currency
+#     unit, which a half-unit rounding cannot exceed.
+#   * the XRechnung CIUS adds no decimals rule of its own.
+#
+# So both answers produce a document that validates where we file it, and the
+# choice is a question about money rather than about conformance.
+#
+# Every value here is the value this module already returned before the table
+# was written, so recording them changed no document. What changed is that each
+# one is now a decision with its reason beside it, instead of a lookup that
+# happened to miss and land on the default.
+_DOCUMENT_MINOR_UNITS: dict[str, int] = {
+    # ISO 2, CLDR 0. All twelve already came out as two, but by two different
+    # routes: COP and MGA were carried in ``CURRENCIES`` at 2, and the other
+    # ten were absent from it and reached 2 only by missing the lookup and
+    # landing on the default. Two is also ISO's count, so naming them here
+    # turns that coincidence into a decision without moving any value.
+    "AFN": 2,
+    "ALL": 2,
+    "COP": 2,
+    "IRR": 2,
+    "KPW": 2,
+    "LAK": 2,
+    "LBP": 2,
+    "MGA": 2,
+    "MMK": 2,
+    "SOS": 2,
+    "SYP": 2,
+    "YER": 2,
+    # ISO 2, CLDR 2 - no disagreement to resolve. Absent from ``CURRENCIES``
+    # and so reached 2 by the default; listed anyway, because reading this
+    # table should answer the question for every code the dispute is said to
+    # cover, including the one that turns out not to be in it.
+    "PKR": 2,
+    # ISO 3, CLDR 0. Capped to 2 by EN 16931, like KWD and the other Gulf codes.
+    "IQD": 3,
+    # ISO 2, CLDR 0, and these two are the only codes in the whole 79-entry
+    # ``CURRENCIES`` registry whose stored count contradicts ISO 4217: it holds
+    # the CLDR zero for them. So a forint invoice is issued without fillér and
+    # a rupiah invoice without sen, in every syntax - CII, UBL and the PDF all
+    # read this one function.
+    # THIS PAIR IS PENDING A DECISION AND IS NOT RATIFIED BY BEING WRITTEN HERE.
+    # The same question is open on the screen side, where two frontend resolvers
+    # disagree for these codes, and answering it in one place only would move
+    # the document and the finance register further apart rather than closer.
+    # The values below are today's behaviour, pinned so that it cannot drift
+    # while the question is outstanding. See ``UNDECIDED_MINOR_UNIT_CODES``.
+    "HUF": 0,
+    "IDR": 0,
+}
+
+# The codes whose minor unit is pinned pending a decision, not settled. A test
+# asserting one of these is recording what ships, not blessing it.
+UNDECIDED_MINOR_UNIT_CODES: frozenset[str] = frozenset({"HUF", "IDR"})
+
+
 def money_decimals(currency_code: str) -> int:
     """Decimal places to write for an amount in ``currency_code``.
 
-    The currency's own minor unit, capped at the two decimals EN 16931 allows
-    for document amounts. A currency with no minor unit yields ``0``, so a yen
-    or peso amount is never printed with cents.
+    The currency's minor unit, capped at the two decimals EN 16931 allows for
+    document amounts. A currency with no minor unit yields ``0``, so a yen or
+    peso amount is never printed with cents.
+
+    This is the document count, and it is not the same number a screen uses.
+    It decides two things at once: how many digits an amount is written with
+    in the XML and on the PDF, and - because :func:`_round` quantises to it -
+    what the totals are rounded to before they are compared. Both callers must
+    see the same value or a document stops agreeing with its own PDF.
+
+    Codes whose two registers disagree are resolved from
+    :data:`_DOCUMENT_MINOR_UNITS` one by one, with the reasoning recorded
+    beside each; anything else takes its count from ``CURRENCIES``, and an
+    unknown code falls back to two. ``HUF`` and ``IDR`` are pinned pending a
+    decision rather than settled - see :data:`UNDECIDED_MINOR_UNIT_CODES`.
 
     Args:
         currency_code: ISO 4217 code, e.g. ``"EUR"`` or ``"JPY"``.
@@ -153,8 +268,11 @@ def money_decimals(currency_code: str) -> int:
     Returns:
         Number of decimal places, between 0 and 2.
     """
-    entry = CURRENCIES.get((currency_code or "").strip().upper())
-    decimals = int(entry.get("decimals", _EN16931_MAX_DECIMALS)) if entry else _EN16931_MAX_DECIMALS
+    code = (currency_code or "").strip().upper()
+    decimals = _DOCUMENT_MINOR_UNITS.get(code)
+    if decimals is None:
+        entry = CURRENCIES.get(code)
+        decimals = int(entry.get("decimals", _EN16931_MAX_DECIMALS)) if entry else _EN16931_MAX_DECIMALS
     return min(max(decimals, 0), _EN16931_MAX_DECIMALS)
 
 
@@ -201,8 +319,15 @@ def _check_header(inv: EInvoice) -> list[RuleViolation]:
 # the contact the invoice is billed to. The engine sees an assembled document
 # and not its direction, so the buyer sentence is written for the receivable
 # case, which is the one that maps a contact onto the buyer at all.
+# ``_INVOICE_HOME`` is the third editor: fields that identify one document
+# (the buyer reference / Leitweg-ID, the VAT declaration) live under
+# ``metadata.einvoice`` on the invoice itself and are edited on the invoice
+# form, never in the settings - the settings model has no such columns by
+# construction (``EInvoiceSettings.as_defaults`` returns seller and payment
+# fields only).
 _SELLER_PARTY_HOME = "in the e-invoice settings"
 _BUYER_PARTY_HOME = "on the contact this invoice bills"
+_INVOICE_HOME = "on this invoice"
 
 
 def _check_parties(inv: EInvoice) -> list[RuleViolation]:
@@ -235,6 +360,10 @@ def _check_parties(inv: EInvoice) -> list[RuleViolation]:
                     FATAL,
                     f"The {who} VAT identifier must start with its country code, for example DE{vat_id}.",
                     term,
+                    # ``party`` is an enumerated value, not prose: a screen
+                    # renders it through its own catalogue rather than printing
+                    # the English word into a translated sentence.
+                    {"party": who, "example": f"DE{vat_id}"},
                 )
             )
     return out
@@ -254,16 +383,38 @@ def _check_lines(inv: EInvoice) -> list[RuleViolation]:
         if not line.line_id:
             out.append(RuleViolation("BR-21", FATAL, "Every invoice line needs a line number.", "BT-126"))
         if not line.name:
-            out.append(RuleViolation("BR-25", FATAL, f"Line {where} needs an item name or description.", "BT-153"))
+            out.append(
+                RuleViolation(
+                    "BR-25", FATAL, f"Line {where} needs an item name or description.", "BT-153", {"line": where}
+                )
+            )
         if not line.unit:
-            out.append(RuleViolation("BR-23", FATAL, f"Line {where} needs a unit of measure.", "BT-130"))
+            out.append(
+                RuleViolation("BR-23", FATAL, f"Line {where} needs a unit of measure.", "BT-130", {"line": where})
+            )
         if line.net_unit_price is None or line.net_unit_price < 0:
-            out.append(RuleViolation("BR-27", FATAL, f"The unit price on line {where} cannot be negative.", "BT-146"))
+            out.append(
+                RuleViolation(
+                    "BR-27", FATAL, f"The unit price on line {where} cannot be negative.", "BT-146", {"line": where}
+                )
+            )
     return out
 
 
 def _check_totals(inv: EInvoice) -> list[RuleViolation]:
-    """The calculation chain (BR-CO-10, BR-CO-13, BR-CO-14, BR-CO-15, BR-CO-16)."""
+    """The calculation chain (BR-CO-10, BR-CO-13, BR-CO-14, BR-CO-15, BR-CO-16).
+
+    Each comparison sums first and rounds once, while a receiver of the emitted
+    document rounds every figure first and then sums the strings it was given.
+    The two agree only when no amount carries anything below the currency's
+    quantum, which is why this is deliberately left as it is rather than
+    tightened: it is the writer's job to hand over amounts already at the
+    quantum, and ``build_einvoice`` now does. Tightening this instead would
+    move the guarantee to whichever caller happened to be checked, and would
+    also judge invoices that reached an :class:`EInvoice` by some other route.
+    What holds the writer to it is a test that parses the document back and
+    adds it up the way its receiver will.
+    """
     out: list[RuleViolation] = []
     cur = inv.currency
     line_sum = sum((ln.line_net_amount for ln in inv.lines), Decimal("0"))
@@ -315,6 +466,7 @@ def _check_vat_breakdown(inv: EInvoice) -> list[RuleViolation]:
                     FATAL,
                     f"The VAT for the {grp.rate}% group must be {expected}, which is {grp.basis} times {grp.rate}%.",
                     "BT-117",
+                    {"rate": str(grp.rate), "expected": str(expected), "basis": str(grp.basis)},
                 )
             )
 
@@ -328,6 +480,7 @@ def _check_vat_breakdown(inv: EInvoice) -> list[RuleViolation]:
                     FATAL,
                     f"Line {line.line_id} has VAT category {line.vat_category!r}, which is not a known code.",
                     "BT-151",
+                    {"line": str(line.line_id), "category": str(line.vat_category)},
                 )
             )
             continue
@@ -365,7 +518,73 @@ def _check_vat_breakdown(inv: EInvoice) -> list[RuleViolation]:
             )
 
     out += _check_breakdown_basis(inv)
+    out += _check_exemption_reasons(inv)
     return out
+
+
+def _check_exemption_reasons(inv: EInvoice) -> list[RuleViolation]:
+    """The BR-x-10 slot: an exemption must be justified, a rating must not be.
+
+    One finding per breakdown group, under the identifier of that group's own
+    family, so the sender reads exactly what a receiver's validator would
+    report. The reason is invoice data (``metadata.einvoice``), which is why
+    the remedy names the invoice and not the settings.
+    """
+    out: list[RuleViolation] = []
+    for grp in inv.tax_subtotals:
+        prefix = _CATEGORY_RULE_PREFIX.get(grp.category)
+        if prefix is None:
+            continue  # unknown category is BR-CL-18 territory, reported above
+        has_reason = bool((grp.exemption_reason or "").strip() or (grp.exemption_reason_code or "").strip())
+        if grp.category in _REASON_REQUIRED_CATEGORIES and not has_reason:
+            out.append(
+                RuleViolation(
+                    f"{prefix}-10",
+                    FATAL,
+                    f"The invoice uses VAT category {grp.category}, so it must state the VAT exemption "
+                    f"reason (BT-120) or reason code (BT-121) {_INVOICE_HOME}.",
+                    "BT-120",
+                )
+            )
+        elif grp.category in _REASON_FORBIDDEN_CATEGORIES and has_reason:
+            out.append(
+                RuleViolation(
+                    f"{prefix}-10",
+                    FATAL,
+                    f"VAT category {grp.category} must not carry a VAT exemption reason. Remove the "
+                    f"reason {_INVOICE_HOME}, or use an exempting category such as E.",
+                    "BT-120",
+                )
+            )
+    return out
+
+
+def _check_vat_declared(inv: EInvoice) -> list[RuleViolation]:
+    """OCE-VAT-01: zero-rating that nobody declared is worth a word.
+
+    When an invoice carries no VAT information anywhere - no explicit rate or
+    category, no line-level VAT, a zero tax amount - the builder can only fall
+    back to a 0% rate and category Z, and every zero-rate rule then holds by
+    construction. The document is formally valid and a receiver will accept
+    it, which is exactly why this is a warning and not a fatal: blocking it
+    would refuse an export the receiver takes. But a document that zero-rates
+    real money because a field was left empty is usually a mistake, so the
+    check says so instead of staying green and silent.
+    """
+    if inv.vat_declared or inv.tax_basis_total == 0:
+        return []
+    if not any(ln.vat_category == "Z" for ln in inv.lines):
+        return []
+    return [
+        RuleViolation(
+            "OCE-VAT-01",
+            WARNING,
+            "This invoice carries no VAT information, so it would be issued as zero rated "
+            f"(category Z). Enter the VAT amount or rate {_INVOICE_HOME}, or declare the zero "
+            "rating or an exemption explicitly.",
+            "BT-118",
+        )
+    ]
 
 
 def _check_breakdown_basis(inv: EInvoice) -> list[RuleViolation]:
@@ -441,6 +660,7 @@ def _check_tax_currency(inv: EInvoice) -> list[RuleViolation]:
                 f"The invoice accounts for VAT in {tax_currency}, so it must also state the VAT "
                 f"total in {tax_currency}.",
                 "BT-111",
+                {"currency": tax_currency},
             )
         ]
     return []
@@ -614,6 +834,7 @@ def _check_de_payment_means(inv: EInvoice) -> list[RuleViolation]:
                 "This platform cannot write that group, so choose a credit transfer code (30 or 58) "
                 f"{_SELLER_PARTY_HOME}.",
                 "BT-81",
+                {"code": code},
             )
         ]
     if code in DIRECT_DEBIT_CODES:
@@ -625,6 +846,7 @@ def _check_de_payment_means(inv: EInvoice) -> list[RuleViolation]:
                 "This platform cannot write that group, so choose a credit transfer code (30 or 58) "
                 f"{_SELLER_PARTY_HOME}.",
                 "BT-81",
+                {"code": code},
             )
         ]
     return []
@@ -666,6 +888,7 @@ def _check_de_contact_shape(inv: EInvoice) -> list[RuleViolation]:
                 WARNING,
                 f"The seller telephone number (BT-42) should hold at least three digits, and {phone!r} does not.",
                 "BT-42",
+                {"phone": phone},
             )
         )
     email = (inv.seller.contact_email or "").strip()
@@ -677,6 +900,7 @@ def _check_de_contact_shape(inv: EInvoice) -> list[RuleViolation]:
                 f"The seller email address (BT-43) should hold exactly one @ with at least two characters "
                 f"either side of it, and {email!r} does not.",
                 "BT-43",
+                {"email": email},
             )
         )
     return out
@@ -694,6 +918,10 @@ def _check_de_type_code(inv: EInvoice) -> list[RuleViolation]:
             WARNING,
             f"XRechnung expects the invoice type code (BT-3) to be one of {known}, and this document says {code}.",
             "BT-3",
+            # The bare codes travel beside the annotated list because the names
+            # in ``known`` are English: a translated sentence can name the
+            # permitted codes without importing that English into itself.
+            {"code": code, "codes": ", ".join(DE_INVOICE_TYPE_CODES)},
         )
     ]
 
@@ -751,7 +979,7 @@ def check_profile(inv: EInvoice, profile: Profile) -> list[RuleViolation]:
             RuleViolation(
                 "BR-DE-15",
                 FATAL,
-                "Add the Buyer reference / Leitweg-ID (BT-10) in the e-invoice settings; XRechnung requires it.",
+                f"Add the Buyer reference / Leitweg-ID (BT-10) {_INVOICE_HOME}; XRechnung requires it.",
                 "BT-10",
             )
         )
@@ -760,8 +988,8 @@ def check_profile(inv: EInvoice, profile: Profile) -> list[RuleViolation]:
             RuleViolation(
                 "PEPPOL-EN16931-R003",
                 FATAL,
-                f"Add a Buyer reference (BT-10) or an Order reference (BT-13) in the e-invoice "
-                f"settings; {label} requires one of them.",
+                f"Add a Buyer reference (BT-10) or an Order reference (BT-13) {_INVOICE_HOME}; "
+                f"{label} requires one of them.",
                 "BT-10",
             )
         )
@@ -770,7 +998,7 @@ def check_profile(inv: EInvoice, profile: Profile) -> list[RuleViolation]:
             RuleViolation(
                 "BR-DE-15",
                 FATAL,
-                f"Add a Buyer reference (BT-10) in the e-invoice settings; {label} requires it.",
+                f"Add a Buyer reference (BT-10) {_INVOICE_HOME}; {label} requires it.",
                 "BT-10",
             )
         )
@@ -796,6 +1024,7 @@ def check(inv: EInvoice) -> list[RuleViolation]:
     out += _check_lines(inv)
     out += _check_totals(inv)
     out += _check_vat_breakdown(inv)
+    out += _check_vat_declared(inv)
     out += _check_payment(inv)
     out += _check_tax_currency(inv)
 
@@ -807,6 +1036,7 @@ def check(inv: EInvoice) -> list[RuleViolation]:
                 FATAL,
                 f"Unknown e-invoice format {inv.profile!r}.",
                 "BT-24",
+                {"profile": str(inv.profile)},
             )
         )
     else:

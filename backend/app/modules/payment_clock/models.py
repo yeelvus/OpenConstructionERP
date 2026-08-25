@@ -82,8 +82,9 @@ DATE_BASES: tuple[str, ...] = ("application_date", "period_end", "due_date")
 #   deemed_dispute - failing to respond disputes the whole claim rather than
 #       conceding it, so the claimant's next step is adjudication, not a debt
 #       claim (Malaysia).
-#   none - the regime has no notice sequence at all and only supplies an
-#       interest basis (the EU Late Payment Directive).
+#   none - the regime has no notice sequence at all and only supplies a
+#       payment period and an interest basis (the EU Late Payment Directive
+#       and the German VOB/B and BGB regimes).
 NO_NOTICE_EFFECTS: tuple[str, ...] = (
     "applied_sum_becomes_notified_sum",
     "evidential_bar",

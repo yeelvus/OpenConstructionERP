@@ -34,8 +34,8 @@ import { Play, Loader2, TrendingUp, AlertTriangle } from 'lucide-react';
 
 import { Button, Card, EmptyState } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
-import { getIntlLocale } from '@/shared/lib/formatters';
 import { toNum } from '@/shared/lib/money';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 import {
   simulateRisk,
@@ -66,7 +66,7 @@ function fmtCurrencyOrPlain(
   const safe = /^[A-Z]{3}$/.test(currency) ? currency : '';
   try {
     if (safe) {
-      return new Intl.NumberFormat(getIntlLocale(), {
+      return new Intl.NumberFormat(getNumberLocale(), {
         style: 'currency',
         currency: safe,
         minimumFractionDigits: 0,
@@ -74,7 +74,7 @@ function fmtCurrencyOrPlain(
       }).format(value);
     }
     // No currency known — render a bare number with locale grouping.
-    return new Intl.NumberFormat(getIntlLocale(), {
+    return new Intl.NumberFormat(getNumberLocale(), {
       maximumFractionDigits: 0,
     }).format(value);
   } catch {
@@ -122,7 +122,7 @@ export function MonteCarloTab({ projectId, currency }: MonteCarloTabProps) {
         }),
         message: t('risk.montecarlo.run_done_detail', {
           defaultValue: '{{iterations}} iterations across {{risks}} risks',
-          iterations: data.iterations.toLocaleString(),
+          iterations: data.iterations.toLocaleString(getNumberLocale()),
           risks: data.risk_count,
         }),
       });
@@ -245,7 +245,7 @@ export function MonteCarloTab({ projectId, currency }: MonteCarloTabProps) {
               {t('risk.montecarlo.last_run', {
                 defaultValue: 'Last run - {{risks}} risks, {{iterations}} iterations',
                 risks: result.risk_count,
-                iterations: result.iterations.toLocaleString(),
+                iterations: result.iterations.toLocaleString(getNumberLocale()),
               })}
             </h3>
           </div>

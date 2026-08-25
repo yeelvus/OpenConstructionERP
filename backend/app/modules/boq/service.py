@@ -21,6 +21,8 @@ import logging
 import math
 import re
 import uuid
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
@@ -259,6 +261,11 @@ async def _safe_audit(
         _logger_audit.debug("Audit log write skipped for %s %s", action, entity_type)
 
 
+# Re-exported under its own name so ``from app.modules.boq.service import
+# DEFAULT_MARKUP_TEMPLATES`` keeps resolving for the readers that predate the
+# move. The table itself lives in a module the methodology catalogue can import.
+from app.modules.boq.markup_templates import DEFAULT_MARKUP_TEMPLATES as DEFAULT_MARKUP_TEMPLATES
+from app.modules.boq.markup_templates import resolve_region_lines
 from app.modules.boq.models import (
     BOQ,
     BOQActivityLog,
@@ -320,603 +327,10 @@ from app.modules.costs.repository import CostItemRepository
 logger = logging.getLogger(__name__)
 
 
-# ── Regional markup templates ────────────────────────────────────────────────
-#
-# Based on industry standards for medium commercial building projects.
-# Percentages applied to direct cost unless noted; tax items are cumulative.
-# Sources: VOB/HOAI, NRM1/RICS, US cost index/AIA, BATIPRIX, FIDIC, CPWD, AIQS,
-# MLIT, TCU/SINAPI, Byggakademin, ГЭСН/МДС, 建标[2013]44号, 조달청.
-
-DEFAULT_MARKUP_TEMPLATES: dict[str, list[dict[str, object]]] = {
-    # ── Germany / Austria / Switzerland ─────────────────────────────────
-    # VOB/B Zuschlagskalkulation, EFB Preisblatt 221
-    "DACH": [
-        {
-            "name": "Baustellengemeinkosten (BGK)",
-            "category": "overhead",
-            "percentage": "10.0",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "Allgemeine Geschäftskosten (AGK)",
-            "category": "overhead",
-            "percentage": "8.0",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "Wagnis (W)",
-            "category": "contingency",
-            "percentage": "2.0",
-            "apply_to": "direct_cost",
-            "sort_order": 2,
-        },
-        {
-            "name": "Gewinn (G)",
-            "category": "profit",
-            "percentage": "3.0",
-            "apply_to": "direct_cost",
-            "sort_order": 3,
-        },
-        {
-            "name": "Mehrwertsteuer (MwSt.)",
-            "category": "tax",
-            "percentage": "19.0",
-            "apply_to": "cumulative",
-            "sort_order": 4,
-        },
-    ],
-    # ── United Kingdom ──────────────────────────────────────────────────
-    # RICS NRM1/NRM2, UK cost index Elemental Standard Form
-    "UK": [
-        {
-            "name": "Main Contractor's Preliminaries",
-            "category": "overhead",
-            "percentage": "13.0",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "Main Contractor's Overheads",
-            "category": "overhead",
-            "percentage": "5.0",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "Main Contractor's Profit",
-            "category": "profit",
-            "percentage": "5.0",
-            "apply_to": "direct_cost",
-            "sort_order": 2,
-        },
-        {
-            "name": "Design Development Risk",
-            "category": "contingency",
-            "percentage": "3.0",
-            "apply_to": "cumulative",
-            "sort_order": 3,
-        },
-        {
-            "name": "Construction Contingency",
-            "category": "contingency",
-            "percentage": "3.0",
-            "apply_to": "cumulative",
-            "sort_order": 4,
-        },
-        {
-            "name": "VAT",
-            "category": "tax",
-            "percentage": "20.0",
-            "apply_to": "cumulative",
-            "sort_order": 5,
-        },
-    ],
-    # ── United States ───────────────────────────────────────────────────
-    # US cost index / AIA / CSI MasterFormat Division 01
-    "US": [
-        {
-            "name": "General Conditions (Div. 01)",
-            "category": "overhead",
-            "percentage": "8.0",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "General Contractor Overhead",
-            "category": "overhead",
-            "percentage": "7.0",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "General Contractor Profit",
-            "category": "profit",
-            "percentage": "5.0",
-            "apply_to": "direct_cost",
-            "sort_order": 2,
-        },
-        {
-            "name": "General Liability Insurance",
-            "category": "insurance",
-            "percentage": "1.0",
-            "apply_to": "direct_cost",
-            "sort_order": 3,
-        },
-        {
-            "name": "Performance & Payment Bond",
-            "category": "bond",
-            "percentage": "1.5",
-            "apply_to": "cumulative",
-            "sort_order": 4,
-        },
-        {
-            "name": "Design Contingency",
-            "category": "contingency",
-            "percentage": "5.0",
-            "apply_to": "cumulative",
-            "sort_order": 5,
-        },
-        {
-            "name": "Construction Contingency",
-            "category": "contingency",
-            "percentage": "3.0",
-            "apply_to": "cumulative",
-            "sort_order": 6,
-        },
-    ],
-    # ── France ──────────────────────────────────────────────────────────
-    # Méthode du Déboursé Sec, BATIPRIX, Code des marchés publics
-    "FR": [
-        {
-            "name": "Frais de chantier (FC)",
-            "category": "overhead",
-            "percentage": "10.0",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "Frais généraux (FG)",
-            "category": "overhead",
-            "percentage": "15.0",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "Bénéfice et aléas (B&A)",
-            "category": "profit",
-            "percentage": "8.0",
-            "apply_to": "direct_cost",
-            "sort_order": 2,
-        },
-        {
-            "name": "TVA",
-            "category": "tax",
-            "percentage": "20.0",
-            "apply_to": "cumulative",
-            "sort_order": 3,
-        },
-    ],
-    # ── Gulf / UAE ──────────────────────────────────────────────────────
-    # FIDIC Red Book, AECOM ME Handbook
-    "GULF": [
-        {
-            "name": "Preliminaries & General (P&G)",
-            "category": "overhead",
-            "percentage": "13.0",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "Contractor Overhead",
-            "category": "overhead",
-            "percentage": "5.0",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "Contractor Profit",
-            "category": "profit",
-            "percentage": "7.0",
-            "apply_to": "direct_cost",
-            "sort_order": 2,
-        },
-        {
-            "name": "Insurance (CAR + TPL)",
-            "category": "insurance",
-            "percentage": "0.5",
-            "apply_to": "cumulative",
-            "sort_order": 3,
-        },
-        {
-            "name": "Performance Bond",
-            "category": "bond",
-            "percentage": "0.5",
-            "apply_to": "cumulative",
-            "sort_order": 4,
-        },
-        {
-            "name": "VAT",
-            "category": "tax",
-            "percentage": "5.0",
-            "apply_to": "cumulative",
-            "sort_order": 5,
-        },
-    ],
-    # ── India ───────────────────────────────────────────────────────────
-    # CPWD Works Manual 2019, DSR, IS:7272
-    "IN": [
-        {
-            "name": "Site Overhead / Establishment",
-            "category": "overhead",
-            "percentage": "7.5",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "Head Office Overhead",
-            "category": "overhead",
-            "percentage": "7.5",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "Contractor's Profit",
-            "category": "profit",
-            "percentage": "7.5",
-            "apply_to": "direct_cost",
-            "sort_order": 2,
-        },
-        {
-            "name": "Contingency",
-            "category": "contingency",
-            "percentage": "3.0",
-            "apply_to": "cumulative",
-            "sort_order": 3,
-        },
-        {
-            "name": "Labour Cess (BOCW)",
-            "category": "other",
-            "percentage": "1.0",
-            "apply_to": "cumulative",
-            "sort_order": 4,
-        },
-        {
-            "name": "GST",
-            "category": "tax",
-            "percentage": "18.0",
-            "apply_to": "cumulative",
-            "sort_order": 5,
-        },
-    ],
-    # ── Australia ───────────────────────────────────────────────────────
-    # AIQS ACMM, AS 4000
-    "AU": [
-        {
-            "name": "Contractor's Preliminaries",
-            "category": "overhead",
-            "percentage": "13.0",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "Contractor's Margin (OH&P)",
-            "category": "profit",
-            "percentage": "10.0",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "Design Contingency",
-            "category": "contingency",
-            "percentage": "5.0",
-            "apply_to": "cumulative",
-            "sort_order": 2,
-        },
-        {
-            "name": "Construction Contingency",
-            "category": "contingency",
-            "percentage": "3.0",
-            "apply_to": "cumulative",
-            "sort_order": 3,
-        },
-        {
-            "name": "Escalation Allowance",
-            "category": "contingency",
-            "percentage": "3.0",
-            "apply_to": "cumulative",
-            "sort_order": 4,
-        },
-        {
-            "name": "GST",
-            "category": "tax",
-            "percentage": "10.0",
-            "apply_to": "cumulative",
-            "sort_order": 5,
-        },
-    ],
-    # ── Japan ───────────────────────────────────────────────────────────
-    # 公共建築工事共通費積算基準 (MLIT)
-    "JP": [
-        {
-            "name": "\u5171\u901a\u4eee\u8a2d\u8cbb (Common Temporary)",
-            "category": "overhead",
-            "percentage": "7.0",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "\u73fe\u5834\u7ba1\u7406\u8cbb (Site Management)",
-            "category": "overhead",
-            "percentage": "12.0",
-            "apply_to": "cumulative",
-            "sort_order": 1,
-        },
-        {
-            "name": "\u4e00\u822c\u7ba1\u7406\u8cbb\u7b49 (General Admin & Profit)",
-            "category": "profit",
-            "percentage": "7.0",
-            "apply_to": "cumulative",
-            "sort_order": 2,
-        },
-        {
-            "name": "\u6d88\u8cbb\u7a0e (Consumption Tax)",
-            "category": "tax",
-            "percentage": "10.0",
-            "apply_to": "cumulative",
-            "sort_order": 3,
-        },
-    ],
-    # ── Brazil ──────────────────────────────────────────────────────────
-    # BDI per TCU Acórdão 2.622/2013, SINAPI
-    "BR": [
-        {
-            "name": "Administra\u00e7\u00e3o Central (AC)",
-            "category": "overhead",
-            "percentage": "5.5",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "Despesas Financeiras (DF)",
-            "category": "other",
-            "percentage": "1.0",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "Seguros (S)",
-            "category": "insurance",
-            "percentage": "0.5",
-            "apply_to": "direct_cost",
-            "sort_order": 2,
-        },
-        {
-            "name": "Garantias (G)",
-            "category": "bond",
-            "percentage": "0.5",
-            "apply_to": "direct_cost",
-            "sort_order": 3,
-        },
-        {
-            "name": "Riscos e Imprevistos (R)",
-            "category": "contingency",
-            "percentage": "1.0",
-            "apply_to": "direct_cost",
-            "sort_order": 4,
-        },
-        {
-            "name": "Lucro (L)",
-            "category": "profit",
-            "percentage": "7.5",
-            "apply_to": "cumulative",
-            "sort_order": 5,
-        },
-        {
-            "name": "PIS + COFINS",
-            "category": "tax",
-            "percentage": "3.65",
-            "apply_to": "cumulative",
-            "sort_order": 6,
-        },
-        {
-            "name": "ISS",
-            "category": "tax",
-            "percentage": "3.0",
-            "apply_to": "cumulative",
-            "sort_order": 7,
-        },
-    ],
-    # ── Scandinavia / Nordic ────────────────────────────────────────────
-    # Byggakademin (SE), AB 04, NS 3420 (NO)
-    "NORDIC": [
-        {
-            "name": "Arbetsplatsomkostnader (APO)",
-            "category": "overhead",
-            "percentage": "15.0",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "Centralomkostnader (CO)",
-            "category": "overhead",
-            "percentage": "8.0",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "Vinst (V)",
-            "category": "profit",
-            "percentage": "5.0",
-            "apply_to": "direct_cost",
-            "sort_order": 2,
-        },
-        {
-            "name": "Risk (R)",
-            "category": "contingency",
-            "percentage": "3.0",
-            "apply_to": "direct_cost",
-            "sort_order": 3,
-        },
-        {
-            "name": "MOMS",
-            "category": "tax",
-            "percentage": "25.0",
-            "apply_to": "cumulative",
-            "sort_order": 4,
-        },
-    ],
-    # ── Russia / CIS ────────────────────────────────────────────────────
-    # МДС 81-35.2004, Приказ Минстроя 812/пр, 774/пр
-    # НР/СП norms applied to ФОТ; effective % of direct costs shown here.
-    "RU": [
-        {
-            "name": "\u041d\u0430\u043a\u043b\u0430\u0434\u043d\u044b\u0435 \u0440\u0430\u0441\u0445\u043e\u0434\u044b (\u041d\u0420)",
-            "category": "overhead",
-            "percentage": "16.0",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "\u0421\u043c\u0435\u0442\u043d\u0430\u044f \u043f\u0440\u0438\u0431\u044b\u043b\u044c (\u0421\u041f)",
-            "category": "profit",
-            "percentage": "7.0",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "\u041d\u0435\u043f\u0440\u0435\u0434\u0432\u0438\u0434\u0435\u043d\u043d\u044b\u0435 \u0440\u0430\u0441\u0445\u043e\u0434\u044b",
-            "category": "contingency",
-            "percentage": "2.0",
-            "apply_to": "cumulative",
-            "sort_order": 2,
-        },
-        {
-            "name": "\u041d\u0414\u0421",
-            "category": "tax",
-            "percentage": "20.0",
-            "apply_to": "cumulative",
-            "sort_order": 3,
-        },
-    ],
-    # ── China ───────────────────────────────────────────────────────────
-    # 建标[2013]44号, regional 定额
-    "CN": [
-        {
-            "name": "\u63aa\u65bd\u9879\u76ee\u8d39 (Temporary Works)",
-            "category": "overhead",
-            "percentage": "8.0",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "\u4f01\u4e1a\u7ba1\u7406\u8d39 (Management Fee)",
-            "category": "overhead",
-            "percentage": "8.0",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "\u5229\u6da6 (Profit)",
-            "category": "profit",
-            "percentage": "5.0",
-            "apply_to": "direct_cost",
-            "sort_order": 2,
-        },
-        {
-            "name": "\u89c4\u8d39 (Statutory Fees)",
-            "category": "other",
-            "percentage": "5.0",
-            "apply_to": "direct_cost",
-            "sort_order": 3,
-        },
-        {
-            "name": "\u589e\u503c\u7a0e (VAT)",
-            "category": "tax",
-            "percentage": "9.0",
-            "apply_to": "cumulative",
-            "sort_order": 4,
-        },
-    ],
-    # ── South Korea ─────────────────────────────────────────────────────
-    # 조달청 예정가격작성기준, 계약예규
-    "KR": [
-        {
-            "name": "\uac04\uc811\ub178\ubb34\ube44 (Indirect Labor)",
-            "category": "overhead",
-            "percentage": "8.0",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "\uc0b0\uc5c5\uc548\uc804\ubcf4\uac74\uad00\ub9ac\ube44 (Safety & Health)",
-            "category": "overhead",
-            "percentage": "2.15",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "\uae30\ud0c0\uacbd\ube44 (Other Expenses)",
-            "category": "overhead",
-            "percentage": "6.5",
-            "apply_to": "direct_cost",
-            "sort_order": 2,
-        },
-        {
-            "name": "\uc77c\ubc18\uad00\ub9ac\ube44 (General Admin)",
-            "category": "overhead",
-            "percentage": "6.0",
-            "apply_to": "cumulative",
-            "sort_order": 3,
-        },
-        {
-            "name": "\uc774\uc724 (Profit)",
-            "category": "profit",
-            "percentage": "10.0",
-            "apply_to": "cumulative",
-            "sort_order": 4,
-        },
-        {
-            "name": "\ubd80\uac00\uac00\uce58\uc138 (VAT)",
-            "category": "tax",
-            "percentage": "10.0",
-            "apply_to": "cumulative",
-            "sort_order": 5,
-        },
-    ],
-    # ── Default (generic international) ─────────────────────────────────
-    "DEFAULT": [
-        {
-            "name": "Site Overhead",
-            "category": "overhead",
-            "percentage": "10.0",
-            "apply_to": "direct_cost",
-            "sort_order": 0,
-        },
-        {
-            "name": "Head Office Overhead",
-            "category": "overhead",
-            "percentage": "5.0",
-            "apply_to": "direct_cost",
-            "sort_order": 1,
-        },
-        {
-            "name": "Profit",
-            "category": "profit",
-            "percentage": "5.0",
-            "apply_to": "direct_cost",
-            "sort_order": 2,
-        },
-        {
-            "name": "Contingency",
-            "category": "contingency",
-            "percentage": "5.0",
-            "apply_to": "cumulative",
-            "sort_order": 3,
-        },
-    ],
-}
+# The regional markup templates moved to app.modules.boq.markup_templates.
+# They are re-exported above so every existing reader keeps working, and they
+# left this file because the methodology catalogue now derives its country
+# templates from them and cannot import a module that pulls in SQLAlchemy.
 
 
 def _to_decimal(
@@ -1262,6 +676,60 @@ def _detect_resource_fx_warnings(
     return missing
 
 
+def resource_fx_factor(
+    currency: str | None,
+    base_currency: str | None,
+    fx_rates_map: dict[str, str] | None,
+) -> float | None:
+    """The multiplier that converts ``currency`` into ``base_currency``.
+
+    This is the project's FX policy stated once, so callers stop restating it.
+    It was written out by hand in at least four places, and an inline copy of a
+    shared rule is a thing that can drift on its own without anybody grepping
+    for it, because there is no shared name to grep.
+
+    Deliberately numeric-type agnostic: it returns a factor rather than a
+    converted amount, so a ``Decimal`` caller and a ``float`` caller can share
+    the decision without either changing its arithmetic.
+
+    Args:
+        currency: The amount's own ISO code. Blank means "already base".
+        base_currency: The project's base ISO code. Blank means "no base
+            declared", in which case nothing can be said to need converting.
+        fx_rates_map: ``{code: rate}``, units of base per 1 unit of foreign.
+
+    Returns:
+        ``1.0`` when no conversion is needed - blank currency, no declared
+        base, or the amount is already in the base currency.
+
+        The rate when a usable one exists. Usable means finite and strictly
+        positive: a zero, negative, infinite or unparseable rate is not a
+        conversion, it is a corrupt table entry.
+
+        ``None`` when a conversion IS needed and no usable rate exists. That
+        is the case the caller has to make a decision about, and returning
+        ``None`` rather than ``1.0`` is the whole point of this function: the
+        two are numerically identical and mean opposite things. Silently
+        multiplying by one is how an unconvertible amount joins a base-currency
+        total without anybody noticing.
+    """
+    code = (currency or "").strip().upper()
+    base = (base_currency or "").strip().upper()
+    if not code or not base or code == base:
+        return 1.0
+
+    raw = (fx_rates_map or {}).get(code)
+    if raw is None:
+        return None
+    try:
+        rate = float(raw)
+    except (ValueError, TypeError):
+        return None
+    if not math.isfinite(rate) or rate <= 0.0:
+        return None
+    return rate
+
+
 def _project_fx_map(project: object | None) -> dict[str, str]:
     """Project the ``Project.fx_rates`` JSON list into ``{code: rate}``.
 
@@ -1461,6 +929,8 @@ def _build_markup_response(markup: BOQMarkup) -> MarkupResponse:
         apply_to=markup.apply_to,
         sort_order=markup.sort_order,
         is_active=markup.is_active,
+        scope_position_id=markup.scope_position_id,
+        overrides_id=markup.overrides_id,
         metadata_=markup.metadata_,
         created_at=markup.created_at,
         updated_at=markup.updated_at,
@@ -1696,24 +1166,232 @@ def _apply_duplicate_warning(metadata: dict[str, Any], dup_ordinal: str) -> None
     metadata["boq_quality_warnings"] = warnings
 
 
+def _coerce_uuid_or_none(value: object) -> uuid.UUID | None:
+    """Read a UUID out of user-supplied JSON, or None when it is not one.
+
+    Markup metadata is written by clients, so a malformed id is data, not a
+    programming error, and it must not raise out of a money rollup.
+    """
+    if isinstance(value, uuid.UUID):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return uuid.UUID(value.strip())
+    except ValueError:
+        return None
+
+
+def _read_bands(metadata: object) -> list[tuple[Decimal | None, Decimal]]:
+    """Read a banded rate card out of a markup's metadata.
+
+    A surety does not quote one number. The rate card reads "the first million
+    at two and a half percent, the next four at one and a half, the rest at
+    one", and each tranche is charged at its own rate rather than the whole
+    contract sum falling into a single band. That is what this shape holds:
+    an ordered list of ``{"up_to": <ceiling or null>, "percentage": <rate>}``
+    where the ceiling is the top of the tranche and the last entry, with no
+    ceiling, takes everything above the one before it.
+
+    Args:
+        metadata: The markup row's ``metadata_`` JSON, or anything at all; a
+            shape this cannot read yields no bands rather than an exception,
+            because a markup row is user data and a malformed one must not take
+            down the rollup for the whole bill.
+
+    Returns:
+        Bands as ``(ceiling or None, rate)`` sorted by ceiling with the
+        open-ended band last. Unreadable entries are dropped.
+    """
+    if not isinstance(metadata, dict):
+        return []
+    raw = metadata.get("bands")
+    if not isinstance(raw, list):
+        return []
+
+    bands: list[tuple[Decimal | None, Decimal]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            rate = Decimal(str(entry.get("percentage", "0") or "0"))
+        except (InvalidOperation, ValueError):
+            continue
+        ceiling_raw = entry.get("up_to")
+        if ceiling_raw is None or str(ceiling_raw).strip() == "":
+            bands.append((None, rate))
+            continue
+        try:
+            bands.append((Decimal(str(ceiling_raw)), rate))
+        except (InvalidOperation, ValueError):
+            continue
+
+    # Ceilings ascending, the open-ended band last however it was written.
+    return sorted(bands, key=lambda band: (band[0] is None, band[0] or Decimal("0")))
+
+
+def _banded_amount(base: Decimal, metadata: object) -> Decimal:
+    """Charge each tranche of ``base`` at its own band rate and add them up.
+
+    Progressive, not flat: a base of 1,500,000 against "first 1,000,000 at
+    2.5 %, rest at 1 %" pays 25,000 on the first million and 5,000 on the
+    remainder, never 15,000 on the whole sum. A base sitting exactly on a band
+    edge belongs entirely to the lower band, which is how a rate card that
+    says "up to" is read.
+
+    Args:
+        base: The amount the bond is written against.
+        metadata: The markup row's ``metadata_`` JSON carrying ``bands``.
+
+    Returns:
+        The premium as an exact ``Decimal``; zero when there are no bands,
+        which is the same thing a rate card with no rates would charge.
+    """
+    total = Decimal("0")
+    lower = Decimal("0")
+    for ceiling, rate in _read_bands(metadata):
+        top = base if ceiling is None else min(base, ceiling)
+        if top <= lower:
+            continue
+        total += (top - lower) * rate / Decimal("100")
+        lower = top
+        if lower >= base:
+            break
+    return total
+
+
+@dataclass(frozen=True)
+class EscalationResolution:
+    """What the index lookup found, and what it could not find.
+
+    Kept as two fields rather than one dictionary because the absence of a
+    factor used to be indistinguishable from an escalation of zero percent, and
+    that is precisely the confusion the split exists to end. A caller that has
+    to produce a number an estimator will sign holds the unresolved lines and
+    refuses; a caller assembling a list of many bills holds them and leaves them
+    out of the cascade entirely. Neither prices them at nothing.
+
+    Attributes:
+        factors: ``{markup id: factor}`` for every line the index answered.
+        unresolved: ``{markup id: reason}`` for every line it did not. The
+            reason names the series and the period so it is actionable in a log
+            line, an error body or a support ticket without a second lookup.
+    """
+
+    factors: dict[uuid.UUID, Decimal]
+    unresolved: dict[uuid.UUID, str]
+
+
+def _escalation_unresolved_detail(series_id: object, base_period: str, target_period: str, reason: str) -> str:
+    """Say which series and which periods failed, in one sentence.
+
+    "Escalation could not be resolved" is a sentence nobody can act on. The
+    estimator needs to know whether the series is gone or one of the two months
+    is missing from it, and which month, because the fix is different in each
+    case and neither is visible from the markup row.
+
+    Args:
+        series_id: The cost-index series the line names.
+        base_period: The starting month, ``YYYY-MM``.
+        target_period: The month being escalated to, ``YYYY-MM``.
+        reason: The underlying failure text.
+
+    Returns:
+        A single line naming all three, safe to put in a 409 body.
+    """
+    return (
+        f"Cost-index series {series_id} cannot escalate from {base_period} to {target_period}: {reason}. "
+        f"Point the markup at a series that carries both periods, or correct the periods."
+    )
+
+
+def _without_unresolved_escalation(markups: list[BOQMarkup], unresolved: Mapping[uuid.UUID, str]) -> list[BOQMarkup]:
+    """Drop the escalation lines no index could answer, before the cascade runs.
+
+    "Never enter the cascade with an unresolvable step" is the rule, and this is
+    where a caller that cannot raise obeys it. A dropped line and a line priced
+    at zero move the same money, so this is not about the arithmetic. It is
+    about what the code says: a stack that never contained the line cannot be
+    read later as a stack where the escalation came to nothing.
+
+    Args:
+        markups: The bill's markup lines.
+        unresolved: Ids from :class:`EscalationResolution.unresolved`.
+
+    Returns:
+        The same list when nothing is unresolved, otherwise a filtered copy.
+    """
+    if not unresolved:
+        return markups
+    return [m for m in markups if m.id is None or m.id not in unresolved]
+
+
 def _calculate_markup_amounts(
     direct_cost: Decimal,
     markups: list[BOQMarkup],
+    escalation_factors: Mapping[uuid.UUID, Decimal] | None = None,
 ) -> list[tuple[BOQMarkup, Decimal]]:
     """Compute the dollar amount for each active markup line.
 
-    This is the AUTHORITATIVE markup cascade. It is mirrored client-side by the
-    ``calcMap`` memo in ``frontend/src/features/boq/MarkupPanel.tsx``, which
-    needs a per-markup amount keyed by markup id (something the
-    ``/cost-breakdown/`` payload does not carry) and has to react to a toggle
-    before the round-trip lands. The two must stay in step: same running sum,
+    OWNERSHIP. This function is authoritative for the markup stack of a bill.
+    Every figure a bill puts its name to (the structured view, the cost
+    breakdown, the exports, the bulk list rollup) resolves its markup amounts
+    here, and :class:`~app.modules.boq.models.BOQMarkup` is the row it reads.
+    The platform has a second markup engine,
+    :func:`app.modules.methodology.cascade.compute_cascade`, and that one is
+    the reusable pricing methodology of a company or a project. It is not the
+    bill's stack. The bridge runs one way: a methodology may seed a bill's
+    markup lines, which is what the regional templates in this file already do
+    in spirit. Nothing computes a bill's total from a cascade. This paragraph
+    exists because neither engine said which was which, and a reader who found
+    the other one first had no way to tell.
+
+    ROUNDING. This cascade carries full ``Decimal`` precision through the whole
+    stack and is quantized once, by the caller, at the rollup. ``compute_cascade``
+    does the opposite: it quantizes every step immediately with ``ROUND_HALF_UP``
+    and feeds the already rounded amount forward. The two therefore disagree by
+    cents on the same numbers, deliberately and knowingly, and they are not
+    reconciled here. Reconciling them changes the total of every estimate
+    already stored in every customer database, so it is its own decision with
+    its own migration, not a side effect of a markup change. Do not "align" one
+    to the other while passing through.
+
+    The client mirrors PART of this. The ``calcMap`` memo in
+    ``frontend/src/features/boq/MarkupPanel.tsx`` needs a per-markup amount
+    keyed by markup id (something the ``/cost-breakdown/`` payload does not
+    carry) and has to react to a toggle before the round-trip lands. It
+    reproduces ``percentage`` and ``fixed`` exactly: same running sum,
     ``cumulative``/``subtotal`` based on direct cost + preceding markups,
-    ``fixed`` taking ``fixed_amount``, inactive lines contributing zero. When
-    they disagree, this one is right.
+    inactive lines contributing zero. It does NOT reproduce ``banded`` or
+    ``escalation`` and must not try. A band table is the surety's rate card and
+    an escalation factor comes from an index series the browser does not hold,
+    so the panel shows the amount the server computed for those and the parity
+    claim is limited to the two types it can actually reproduce. When the two
+    disagree on a type both compute, this one is right.
+
+    ``escalation`` is where this stack meets time. ``apply_to`` still says only
+    what the base is, exactly as before; what changes is the type, and the
+    factor comes from :func:`app.modules.price_index.index_math.resolve_factor`
+    rather than a percentage the estimator types. That is deliberate. Making
+    ``apply_to`` carry "index this line from period A to period B" would turn a
+    one-word statement about a base into a small language, which is the second
+    cascade this module exists to not have. The date-to-date arithmetic is not
+    reimplemented here and must not be: this function receives the resolved
+    factor and multiplies.
 
     Args:
         direct_cost: Sum of all position totals.
         markups: Ordered list of BOQMarkup ORM objects.
+        escalation_factors: Resolved index factors keyed by markup id, from
+            :meth:`BOQService._resolve_escalation_factors`. Every active
+            escalation line reaching this function has a factor, because that
+            method resolves before the cascade runs and either refuses or drops
+            the lines it could not answer. The zero fallback below is the guard
+            behind that promise, not a pricing rule: an escalation nobody could
+            resolve is not an escalation of zero percent, it is an unknown, and
+            a total that quietly absorbs an unknown is a number nobody can
+            check. If this ever produces a zero for a live line, the caller
+            skipped the resolution step.
 
     Returns:
         List of (markup, computed_amount) tuples preserving input order.
@@ -1745,6 +1423,14 @@ def _calculate_markup_amounts(
             amount = base * pct / Decimal("100")
         elif markup_type == "fixed":
             amount = Decimal(str(markup.fixed_amount or "0"))
+        elif markup_type == "banded":
+            amount = _banded_amount(base, markup.metadata_)
+        elif markup_type == "escalation":
+            # ``factor - 1`` because the markup line IS the increase. The base
+            # is already in the bill; multiplying by the factor outright would
+            # add the original money a second time.
+            factor = (escalation_factors or {}).get(markup.id) if markup.id is not None else None
+            amount = Decimal("0") if factor is None else base * (Decimal(str(factor)) - Decimal("1"))
         else:
             # per_unit and unknown types default to zero
             amount = Decimal("0")
@@ -1753,6 +1439,190 @@ def _calculate_markup_amounts(
         results.append((markup, amount))
 
     return results
+
+
+def _scope_chain(
+    position_id: uuid.UUID,
+    parent_of: dict[uuid.UUID, uuid.UUID | None],
+    scope_ids: set[uuid.UUID],
+) -> tuple[uuid.UUID, ...]:
+    """Return the scoping ancestors of a position, outermost first.
+
+    Walks from the position up to the root and keeps every ancestor (the
+    position itself included) that some markup line is scoped to. The result is
+    the bucket key: two leaves share a bucket exactly when the same set of
+    scoped lines applies to both, in the same nesting order.
+
+    Args:
+        position_id: The leaf position to place.
+        parent_of: ``{position id: parent id or None}`` for the whole bill.
+        scope_ids: Position ids that at least one active scoped markup names.
+
+    Returns:
+        A tuple of scoping ancestor ids ordered outermost to innermost. Empty
+        when nothing on the chain is scoped, which is the bill-wide bucket.
+    """
+    chain: list[uuid.UUID] = []
+    seen: set[uuid.UUID] = set()
+    current: uuid.UUID | None = position_id
+    # A corrupt tree can point a position at one of its own descendants. The
+    # ``seen`` guard stops the walk instead of spinning, matching how the
+    # section rollup in ``get_boq_structured`` handles the same hazard.
+    while current is not None and current not in seen:
+        seen.add(current)
+        if current in scope_ids:
+            chain.append(current)
+        current = parent_of.get(current)
+    chain.reverse()
+    return tuple(chain)
+
+
+def _effective_stack(
+    bill_wide: list[BOQMarkup],
+    overrides_by_scope: dict[uuid.UUID, list[BOQMarkup]],
+    chain: tuple[uuid.UUID, ...],
+) -> list[BOQMarkup]:
+    """Build the markup stack that applies inside one scope chain.
+
+    The bill-wide stack is the starting point. Every scope on the chain is then
+    applied in turn, outermost first, so a nearer scope wins on a line an outer
+    scope also overrode. A scoped line that names an ``overrides_id`` stands in
+    for that bill-wide line and inherits its place in the compounding order; a
+    scoped line that names nothing is an addition and takes its own
+    ``sort_order``.
+
+    Args:
+        bill_wide: Markup lines with no scope, in repository order.
+        overrides_by_scope: Scoped lines grouped by the position they name.
+        chain: Scoping ancestors, outermost first (see :func:`_scope_chain`).
+
+    Returns:
+        The ordered stack to hand to :func:`_calculate_markup_amounts`.
+    """
+    if not chain:
+        return list(bill_wide)
+
+    by_id = {m.id: m for m in bill_wide if m.id is not None}
+    replacement: dict[uuid.UUID, BOQMarkup] = {}
+    additions: list[BOQMarkup] = []
+
+    for scope_id in chain:
+        for scoped in overrides_by_scope.get(scope_id, []):
+            target = scoped.overrides_id
+            if target is not None and target in by_id:
+                # Nearer scope last, so it overwrites the outer one's choice.
+                replacement[target] = scoped
+            else:
+                # An override pointing at a line that is not bill-wide on this
+                # bill (deleted, or scoped itself) is treated as an addition
+                # rather than dropped. Money the estimator entered stays in the
+                # stack; the validation rules are where that gets flagged.
+                additions.append(scoped)
+
+    entries: list[tuple[int, int, BOQMarkup]] = []
+    for index, line in enumerate(bill_wide):
+        chosen = replacement.get(line.id) if line.id is not None else None
+        entries.append((line.sort_order, index, chosen or line))
+    for offset, extra in enumerate(additions):
+        entries.append((extra.sort_order, len(bill_wide) + offset, extra))
+
+    # Sorting on (sort_order, arrival index) reproduces the repository order
+    # exactly when there are no additions, so a bill whose overrides only
+    # change rates keeps the compounding order it had.
+    entries.sort(key=lambda entry: (entry[0], entry[1]))
+    return [entry[2] for entry in entries]
+
+
+def _calculate_markup_amounts_scoped(
+    direct_cost: Decimal,
+    markups: list[BOQMarkup],
+    positions: Sequence[Position] = (),
+    leaf_amount: Callable[[Position], Decimal] | None = None,
+    escalation_factors: Mapping[uuid.UUID, Decimal] | None = None,
+) -> list[tuple[BOQMarkup, Decimal]]:
+    """Compute markup amounts honouring per-position and per-section overrides.
+
+    The bill-wide stack is the company standard. A markup line that names a
+    ``scope_position_id`` applies only inside that position's subtree, and when
+    it also names an ``overrides_id`` it stands in there for the bill-wide line
+    it points at. To price that, the direct cost is partitioned into buckets of
+    leaves that see the same set of overrides, and
+    :func:`_calculate_markup_amounts` is run once per bucket. Each line's
+    reported amount is the sum of what it earned across the buckets it applied
+    in, so a bill-wide line overridden in one section still reports the money it
+    made everywhere else.
+
+    The partition composes over the existing cascade rather than restating it.
+    That is the whole reason this lives in the BOQ module: a second markup
+    engine would either reimplement the compounding order, and drift the first
+    time one of the two is fixed, or reach into this module's internals.
+
+    A bill with no active scoped line takes a single call with the whole direct
+    cost and the whole stack, byte for byte what it took before the columns
+    existed. Every estimate stored today is in that case.
+
+    Args:
+        direct_cost: The bill's direct cost, as the caller computed it. This
+            figure is authoritative: the buckets are made to sum to it exactly,
+            with any difference against the walked tree landing in the
+            bill-wide bucket, so no rollup moves because of the partition.
+        markups: All markup lines of the bill in repository order, bill-wide
+            and scoped together.
+        positions: Every position of the bill, sections included. Needed to
+            resolve which leaf sits under which scope; ignored when no line is
+            scoped.
+        leaf_amount: The caller's own money function for one leaf position, so
+            an FX-converting rollup and a raw one each partition the figure
+            they actually reported. Defaults to the raw position total.
+        escalation_factors: Passed straight through to the cascade; an
+            escalation line indexes each bucket's own base.
+
+    Returns:
+        List of (markup, computed_amount) tuples in the input order.
+    """
+    scope_ids: set[uuid.UUID] = {
+        m.scope_position_id for m in markups if m.scope_position_id is not None and m.is_active
+    }
+    if not scope_ids:
+        return _calculate_markup_amounts(direct_cost, markups, escalation_factors)
+
+    bill_wide = [m for m in markups if m.scope_position_id is None]
+    overrides_by_scope: dict[uuid.UUID, list[BOQMarkup]] = {}
+    for markup in markups:
+        if markup.scope_position_id is not None and markup.is_active:
+            overrides_by_scope.setdefault(markup.scope_position_id, []).append(markup)
+
+    parent_of: dict[uuid.UUID, uuid.UUID | None] = {p.id: p.parent_id for p in positions}
+    amount_of = leaf_amount or (lambda p: Decimal(str(_str_to_float(p.total))))
+
+    buckets: dict[tuple[uuid.UUID, ...], Decimal] = {}
+    walked = Decimal("0")
+    for position in positions:
+        if _is_section(position):
+            continue
+        amount = amount_of(position)
+        key = _scope_chain(position.id, parent_of, scope_ids)  # type: ignore[arg-type]
+        buckets[key] = buckets.get(key, Decimal("0")) + amount
+        walked += amount
+
+    # The caller's direct cost wins over the tree walk. They can legitimately
+    # disagree (a caller that filtered positions, or one that has no tree at
+    # all), and when they do the remainder belongs to the bill-wide bucket:
+    # money nobody scoped is money the company standard prices.
+    residual = direct_cost - walked
+    if residual != 0 or not buckets:
+        buckets[()] = buckets.get((), Decimal("0")) + residual
+
+    # Keyed on object identity, not ``markup.id``: the same rows are shared
+    # across bucket stacks, and a caller may hand us lines that were never
+    # flushed and so have no id yet.
+    earned: dict[int, Decimal] = {id(m): Decimal("0") for m in markups}
+    for key, bucket_cost in buckets.items():
+        stack = _effective_stack(bill_wide, overrides_by_scope, key)
+        for markup, amount in _calculate_markup_amounts(bucket_cost, stack, escalation_factors):
+            earned[id(markup)] = earned.get(id(markup), Decimal("0")) + amount
+
+    return [(m, earned.get(id(m), Decimal("0"))) for m in markups]
 
 
 # ── Issue #127: BOQ code reuse / linked positions ────────────────────────
@@ -2547,10 +2417,13 @@ class BOQService:
         byte-identical to the previous raw-SQL behaviour - no regression.
 
         Returns ``{boq_id: {direct_cost, markups_total, grand_total,
-        base_currency, currencies, is_mixed_currency}}``. The three money keys
-        keep their historical ``float`` type and meaning; the trailing keys are
-        additive metadata the callers may surface (a BOQ mixing currencies is
-        flagged so the UI can warn rather than trust a blended sum).
+        base_currency, currencies, is_mixed_currency, has_unresolved_escalation}}``.
+        The three money keys keep their historical ``float`` type and meaning;
+        the trailing keys are additive metadata the callers may surface. Both
+        flags mean the same kind of thing, that the total below is not safe to
+        read as final: one because it blends currencies, the other because an
+        escalation line named an index nobody could resolve and was therefore
+        left out of the cascade instead of being priced at zero.
         """
         if not boq_ids:
             return {}
@@ -2612,7 +2485,20 @@ class BOQService:
                 currencies.add(pos_code or base or "")
 
             markups = markups_by_boq.get(boq_id, [])
-            markup_results = _calculate_markup_amounts(direct_cost, markups)
+            # This rollup cannot refuse: one bill pointing at a deleted index
+            # series would take down a list several other bills are riding on.
+            # So it resolves without raising, keeps the lines that did not
+            # resolve out of the cascade rather than letting them price at zero,
+            # and flags the total as incomplete alongside the mixed-currency
+            # flag that exists for the same reason.
+            escalation = await self._resolve_escalation_factors(markups, strict=False)
+            markup_results = _calculate_markup_amounts_scoped(
+                direct_cost,
+                _without_unresolved_escalation(markups, escalation.unresolved),
+                positions,
+                lambda pos, _fx=fx_map, _base=base: _leaf_total_base_with_resources(pos, _fx, _base),
+                escalation.factors,
+            )
             markup_total = sum((amount for _, amount in markup_results), Decimal("0"))
             grand_total = direct_cost + markup_total
 
@@ -2627,6 +2513,11 @@ class BOQService:
                 # (or alongside another foreign code) - a wholly single-currency
                 # BOQ is never flagged.
                 "is_mixed_currency": bool(non_base) and len(currencies - {""}) > 1,
+                # True when an escalation line named an index this rollup could
+                # not resolve. The money below is then short by that line, and a
+                # caller that prints it as a final figure is printing a number
+                # the bill itself would refuse to produce.
+                "has_unresolved_escalation": bool(escalation.unresolved),
             }
 
         return breakdown
@@ -5026,6 +4917,261 @@ class BOQService:
         """List all markups for a BOQ."""
         return await self.markup_repo.list_for_boq(boq_id)
 
+    async def escalation_factors(self, markups: Sequence[BOQMarkup]) -> dict[uuid.UUID, Decimal]:
+        """Public reader for the resolved index factor of each escalation line.
+
+        The markups list endpoint attaches these to its rows so the editor can
+        mirror the cascade without holding an index series of its own.
+
+        Deliberately not strict. The markups panel is the one screen where the
+        estimator can repair a line pointing at a deleted series, so refusing to
+        list it would leave the row both broken and unreachable. The row comes
+        back without a factor and the panel already renders that as "no index"
+        rather than as a zero, which is the same statement the strict paths make
+        by refusing: this line has no number yet.
+
+        Args:
+            markups: The bill's markup lines.
+
+        Returns:
+            ``{markup id: factor}`` for every escalation line that resolved.
+        """
+        return (await self._resolve_escalation_factors(markups, strict=False)).factors
+
+    @staticmethod
+    def _validate_markup_shape(markup_type: str, metadata: dict[str, Any] | None) -> None:
+        """Refuse a banded or escalation line that carries no configuration.
+
+        Both types take their numbers from ``metadata`` rather than from the
+        percentage box, so a row saved without that block computes to zero.
+        A zero markup line looks exactly like a markup line the estimator meant
+        to be zero, which is the worst kind of wrong: it prices, it exports, and
+        nothing on the screen says the bond premium or the escalation was never
+        configured. Refusing at the door is the only point where the difference
+        is still visible.
+
+        Args:
+            markup_type: The effective type of the row after the update.
+            metadata: The effective metadata of the row after the update.
+
+        Raises:
+            HTTPException 422: If the configuration the type needs is absent
+                or unreadable.
+        """
+        kind = (markup_type or "percentage").lower()
+        meta = metadata if isinstance(metadata, dict) else {}
+
+        if kind == "banded" and not _read_bands(meta):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "A banded markup needs metadata.bands, a list of "
+                    '{"up_to": <ceiling or null>, "percentage": <rate>} tranches.'
+                ),
+            )
+
+        if kind == "escalation":
+            config = meta.get("escalation")
+            series_id = _coerce_uuid_or_none(config.get("series_id")) if isinstance(config, dict) else None
+            base_period = str(config.get("base_period") or "").strip() if isinstance(config, dict) else ""
+            target_period = str(config.get("target_period") or "").strip() if isinstance(config, dict) else ""
+            if series_id is None or not base_period or not target_period:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        "An escalation markup needs metadata.escalation with series_id, "
+                        "base_period and target_period as YYYY-MM."
+                    ),
+                )
+
+    async def _resolve_escalation_factors(
+        self,
+        markups: Sequence[BOQMarkup],
+        *,
+        strict: bool = True,
+    ) -> EscalationResolution:
+        """Resolve the index factor for every escalation line in a stack.
+
+        An escalation markup does not carry a percentage the estimator typed.
+        It names a cost-index series and two months, and the increase is what
+        the index did between them. The date-to-date arithmetic belongs to
+        :mod:`app.modules.price_index.index_math` and is called, not copied,
+        so a bill and a rate library escalated over the same two periods can
+        never disagree about the factor.
+
+        The configuration lives on the row's ``metadata_`` under
+        ``escalation``: ``{"series_id": ..., "base_period": "YYYY-MM",
+        "target_period": "YYYY-MM"}``. Series identity and the two periods, and
+        nothing else. The moment that block starts saying which other lines
+        this one applies to, the stack has grown a second cascade language and
+        the design needs revisiting rather than extending.
+
+        FAILURE HAS TWO CHANNELS AND NEITHER OF THEM IS A ZERO. This function
+        used to log an unresolvable line and leave it out of the result, which
+        made it price at nothing inside a grand total that looked complete. A
+        per-line failure hidden inside a total is a number nobody can trust, so
+        resolution now happens here, before the cascade, and the cascade is
+        never entered with a step that could not resolve:
+
+        * ``strict=True`` refuses. Every path where somebody commits to a
+          figure, the structured view, the cost breakdown, the statistics
+          rollup and the export, takes this one. The 409 names the series and
+          both periods, because the estimator has to know whether the series
+          was deleted or a month is missing from it.
+        * ``strict=False`` reports. The multi-bill totals rollup takes this
+          one, because one bill pointing at a deleted series must not fail a
+          list several other bills are riding on, and so does the markups list
+          endpoint, because refusing there would make the row unrepairable: the
+          editor is the one screen where the estimator can fix the thing being
+          complained about. Both are then obliged to keep the unresolved lines
+          out of the cascade, which is what
+          :func:`_without_unresolved_escalation` is for, and to say the total
+          is incomplete rather than let it read as final.
+
+        WHAT AN ESCALATION LINE CANNOT DO, and why that is the shipped design
+        rather than a gap waiting for a fix. It escalates the base it names,
+        whole. It cannot escalate the labour inside that base on a wage index
+        and the steel on a materials index, which is how a real contract
+        indexation clause is usually written. Expressing that would mean
+        ``apply_to`` naming resource components as well as prior lines, and
+        ``apply_to`` is one word about what the base is: growing it into a
+        thing that also says which components and which index per component
+        makes it the second cascade language this module exists to not have.
+        The line drawn here is deliberate and it is still a large gain on what
+        it replaced, a flat percentage sitting on a template under the name
+        "Escalation Allowance", which states no index, no period and no basis
+        at all. A whole-stack factor resolved from a named series and a real
+        pair of dates is a claim somebody can check. If component-level
+        indexation is wanted, it is a new markup type with its own
+        configuration block, not another meaning for ``apply_to``.
+
+        Args:
+            markups: The bill's markup lines, escalation or otherwise.
+            strict: Raise on the first line that cannot be resolved. Leave it
+                at the default unless the caller genuinely cannot fail, and if
+                it cannot, drop the unresolved lines before pricing.
+
+        Returns:
+            An :class:`EscalationResolution` carrying the factors that resolved
+            and the reasons for those that did not.
+
+        Raises:
+            HTTPException 409: In strict mode, when any active escalation line
+                cannot be resolved. The detail names the series and the periods.
+        """
+        from app.modules.price_index.index_math import PeriodNotFoundError, resolve_factor
+
+        wanted: list[tuple[uuid.UUID, uuid.UUID | None, str, str]] = []
+        for markup in markups:
+            if (markup.markup_type or "").lower() != "escalation" or not markup.is_active or markup.id is None:
+                continue
+            config = (markup.metadata_ or {}).get("escalation") if isinstance(markup.metadata_, dict) else None
+            if not isinstance(config, dict):
+                config = {}
+            wanted.append(
+                (
+                    markup.id,
+                    _coerce_uuid_or_none(config.get("series_id")),
+                    str(config.get("base_period") or "").strip(),
+                    str(config.get("target_period") or "").strip(),
+                )
+            )
+
+        if not wanted:
+            return EscalationResolution(factors={}, unresolved={})
+
+        from app.modules.price_index.service import PriceIndexService
+
+        price_index = PriceIndexService(self.session)
+        # One read per distinct series, not per line: a stack can carry several
+        # escalation lines against the same index.
+        points_by_series: dict[uuid.UUID, dict[str, Decimal]] = {}
+        factors: dict[uuid.UUID, Decimal] = {}
+        unresolved: dict[uuid.UUID, str] = {}
+        for markup_id, series_id, base_period, target_period in wanted:
+            if series_id is None or not base_period or not target_period:
+                unresolved[markup_id] = _escalation_unresolved_detail(
+                    series_id, base_period or "?", target_period or "?", "the line names no series or period pair"
+                )
+                continue
+            if series_id not in points_by_series:
+                try:
+                    points_by_series[series_id] = await price_index.series_points(series_id)
+                except Exception as exc:  # noqa: BLE001 - the reason travels with the line, not the stack trace
+                    logger.warning("Cost-index series %s could not be read: %s", series_id, exc)
+                    points_by_series[series_id] = {}
+            try:
+                factors[markup_id] = resolve_factor(points_by_series[series_id], base_period, target_period)
+            except (PeriodNotFoundError, ValueError) as exc:
+                unresolved[markup_id] = _escalation_unresolved_detail(series_id, base_period, target_period, str(exc))
+
+        if unresolved and strict:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=next(iter(unresolved.values())),
+            )
+        for markup_id, detail in unresolved.items():
+            logger.warning("Escalation markup %s left out of the cascade: %s", markup_id, detail)
+        return EscalationResolution(factors=factors, unresolved=unresolved)
+
+    async def _validate_markup_scope(
+        self,
+        boq_id: uuid.UUID,
+        scope_position_id: uuid.UUID | None,
+        overrides_id: uuid.UUID | None,
+        self_id: uuid.UUID | None = None,
+    ) -> None:
+        """Reject scope and override references that cannot mean anything.
+
+        The database keys guarantee the rows exist somewhere. What they cannot
+        say is that they belong to THIS bill, and a markup scoped to a position
+        on another BOQ would simply never match a leaf and would price at
+        nothing while looking like a live exception on the screen. So it is
+        refused at the door rather than accepted and silently ignored.
+
+        Args:
+            boq_id: The bill the markup belongs to.
+            scope_position_id: Proposed scope, or None for bill-wide.
+            overrides_id: Proposed override target, or None.
+            self_id: The markup being updated, so a row cannot override itself.
+
+        Raises:
+            HTTPException 422: If a reference is off this bill, if an override
+                names a line that is not bill-wide, if a line overrides itself,
+                or if an override is declared without a scope.
+        """
+        if overrides_id is not None and scope_position_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="A markup can only override another line inside a scope; set scope_position_id as well.",
+            )
+
+        if scope_position_id is not None:
+            position = await self.position_repo.get_by_id(scope_position_id)
+            if position is None or position.boq_id != boq_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="scope_position_id must name a position on this BOQ.",
+                )
+
+        if overrides_id is not None:
+            if self_id is not None and overrides_id == self_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="A markup cannot override itself.",
+                )
+            target = await self.markup_repo.get_by_id(overrides_id)
+            if target is None or target.boq_id != boq_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="overrides_id must name a markup on this BOQ.",
+                )
+            if target.scope_position_id is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Only a bill-wide markup can be overridden; that line is itself scoped.",
+                )
+
     async def add_markup(self, boq_id: uuid.UUID, data: MarkupCreate) -> BOQMarkup:
         """Add a markup/overhead line to a BOQ.
 
@@ -5039,8 +5185,12 @@ class BOQService:
         Raises:
             HTTPException 404 if the target BOQ doesn't exist.
             HTTPException 409 if the BOQ is locked.
+            HTTPException 422 if a scope or override reference names something
+                that is not on this BOQ, or is not a bill-wide line.
         """
         await self._ensure_not_locked(boq_id)
+        await self._validate_markup_scope(boq_id, data.scope_position_id, data.overrides_id)
+        self._validate_markup_shape(data.markup_type, data.metadata)
 
         max_order = await self.markup_repo.get_max_sort_order(boq_id)
 
@@ -5054,6 +5204,8 @@ class BOQService:
             apply_to=data.apply_to,
             sort_order=data.sort_order if data.sort_order > 0 else max_order + 1,
             is_active=data.is_active,
+            scope_position_id=data.scope_position_id,
+            overrides_id=data.overrides_id,
             metadata_=data.metadata,
         )
         markup = await self.markup_repo.create(markup)
@@ -5084,6 +5236,8 @@ class BOQService:
         Raises:
             HTTPException 404 if markup not found.
             HTTPException 409 if the owning BOQ is locked.
+            HTTPException 422 if a scope or override reference names something
+                that is not on this BOQ, or is not a bill-wide line.
         """
         markup = await self.markup_repo.get_by_id(markup_id)
         if markup is None:
@@ -5094,6 +5248,29 @@ class BOQService:
         await self._ensure_not_locked(markup.boq_id)
 
         fields = data.model_dump(exclude_unset=True)
+
+        # Validate against the row as it will be, not as it was: a PATCH that
+        # only sets ``overrides_id`` still has to be checked against the scope
+        # already on the row.
+        if "scope_position_id" in fields or "overrides_id" in fields:
+            await self._validate_markup_scope(
+                markup.boq_id,
+                fields.get("scope_position_id", markup.scope_position_id),
+                fields.get("overrides_id", markup.overrides_id),
+                self_id=markup_id,
+            )
+
+        # Same rule for the shape: a PATCH that switches a line to ``banded``
+        # is checked against the metadata the row will end up with, which is
+        # the merge below, not the fragment that arrived.
+        if "markup_type" in fields or "metadata" in fields:
+            existing_meta = markup.metadata_ if isinstance(markup.metadata_, dict) else {}
+            incoming_meta = fields.get("metadata")
+            merged_meta = {**existing_meta, **incoming_meta} if isinstance(incoming_meta, dict) else existing_meta
+            self._validate_markup_shape(
+                fields.get("markup_type") or markup.markup_type,
+                merged_meta,
+            )
 
         # Convert float values to strings for storage
         if "percentage" in fields:
@@ -5185,7 +5362,13 @@ class BOQService:
             if not _is_section(pos):
                 direct_cost += _leaf_total_base_with_resources(pos, fx_map, base_ccy or "")
 
-        calculated = _calculate_markup_amounts(direct_cost, markups)
+        calculated = _calculate_markup_amounts_scoped(
+            direct_cost,
+            markups,
+            positions,
+            lambda pos: _leaf_total_base_with_resources(pos, fx_map, base_ccy or ""),
+            (await self._resolve_escalation_factors(markups)).factors,
+        )
         return direct_cost, calculated
 
     async def apply_default_markups(self, boq_id: uuid.UUID, region: str) -> list[BOQMarkup]:
@@ -5211,9 +5394,7 @@ class BOQService:
         """
         await self._ensure_not_locked(boq_id)
 
-        # Look up template; fall back to DEFAULT
         region_key = region.upper()
-        template = DEFAULT_MARKUP_TEMPLATES.get(region_key, DEFAULT_MARKUP_TEMPLATES["DEFAULT"])
 
         # Resolve the project's per-project VAT override, if any. Loaded
         # via the BOQ → Project chain so we don't need a project_id arg
@@ -5237,24 +5418,23 @@ class BOQService:
         # Remove existing markups
         await self.markup_repo.delete_all_for_boq(boq_id)
 
-        # Create new markups from template, swapping in the override on tax rows
+        # Create new markups from the template. The tax swap and the seeding
+        # order both come from ``resolve_region_lines`` rather than being spelled
+        # out here, because the methodology catalogue reads the same table and a
+        # rule written twice is a rule that will be true in one place.
         new_markups: list[BOQMarkup] = []
-        for entry in template:
-            percentage = str(entry["percentage"])
-            is_tax_override = bool(project_vat_override) and entry.get("category") == "tax"
-            if is_tax_override:
-                percentage = project_vat_override  # type: ignore[assignment]
+        for entry in resolve_region_lines(region_key, vat_rate=project_vat_override or None):
             markup = BOQMarkup(
                 boq_id=boq_id,
                 name=str(entry["name"]),
                 markup_type=str(entry.get("markup_type", "percentage")),
                 category=str(entry["category"]),
-                percentage=percentage,
+                percentage=str(entry["percentage"]),
                 fixed_amount=str(entry.get("fixed_amount", "0")),
                 apply_to=str(entry.get("apply_to", "direct_cost")),
                 sort_order=int(entry["sort_order"]),  # type: ignore[arg-type]
                 is_active=True,
-                metadata_={"vat_override": True} if is_tax_override else {},
+                metadata_={"vat_override": True} if entry["vat_override"] else {},
             )
             new_markups.append(markup)
 
@@ -5450,10 +5630,16 @@ class BOQService:
             if cap["parent_id"] is not None and cap["parent_id"] in old_to_new:
                 await self.position_repo.update_fields(new_id, parent_id=old_to_new[cap["parent_id"]])
 
-        # Copy markups
+        # Copy markups. A scoped line has to point at the COPY of the position
+        # it was confined to, and an override at the COPY of the line it
+        # replaces. Carrying the source bill's ids over would leave the new
+        # bill quietly inheriting where the old one made an exception, which
+        # reads as a working copy and prices as a different job.
         markups = await self.markup_repo.list_for_boq(boq_id)
+        captured_markup_ids: list[uuid.UUID] = []
         new_markups: list[BOQMarkup] = []
         for markup in markups:
+            captured_markup_ids.append(markup.id)
             new_markup = BOQMarkup(
                 boq_id=new_boq_id,
                 name=markup.name,
@@ -5464,12 +5650,26 @@ class BOQService:
                 apply_to=markup.apply_to,
                 sort_order=markup.sort_order,
                 is_active=markup.is_active,
+                # ``old_to_new`` covers every position on the source bill, so a
+                # miss here means the scope pointed off-bill already. Dropping
+                # to NULL makes such a line bill-wide on the copy, which is the
+                # conservative reading: the company standard, not a silent
+                # dangling reference.
+                scope_position_id=old_to_new.get(markup.scope_position_id) if markup.scope_position_id else None,
+                overrides_id=None,  # remapped below, once the copies have ids
                 metadata_=dict(markup.metadata_) if markup.metadata_ else {},
             )
             new_markups.append(new_markup)
 
         if new_markups:
-            await self.markup_repo.bulk_create(new_markups)
+            created_markups = await self.markup_repo.bulk_create(new_markups)
+            markup_old_to_new = dict(zip(captured_markup_ids, [m.id for m in created_markups], strict=False))
+            for source, copy_id in zip(markups, [m.id for m in created_markups], strict=False):
+                if source.overrides_id is not None and source.overrides_id in markup_old_to_new:
+                    await self.markup_repo.update_fields(
+                        copy_id,
+                        overrides_id=markup_old_to_new[source.overrides_id],
+                    )
 
         await _safe_publish(
             "boq.boq.duplicated",
@@ -6337,7 +6537,13 @@ class BOQService:
 
         # Calculate markups
         markups_orm = await self.markup_repo.list_for_boq(boq_id)
-        markup_results = _calculate_markup_amounts(direct_cost, markups_orm)
+        markup_results = _calculate_markup_amounts_scoped(
+            direct_cost,
+            markups_orm,
+            all_positions,
+            _leaf_total_base,
+            (await self._resolve_escalation_factors(markups_orm)).factors,
+        )
 
         markups_calculated: list[MarkupCalculated] = []
         markup_total = Decimal("0")
@@ -6354,6 +6560,8 @@ class BOQService:
                     apply_to=markup_obj.apply_to,
                     sort_order=markup_obj.sort_order,
                     is_active=markup_obj.is_active,
+                    scope_position_id=markup_obj.scope_position_id,
+                    overrides_id=markup_obj.overrides_id,
                     metadata_=markup_obj.metadata_,
                     created_at=markup_obj.created_at,
                     updated_at=markup_obj.updated_at,
@@ -6547,7 +6755,18 @@ class BOQService:
         markup_total = Decimal("0")
 
         if markups_orm:
-            markup_results = _calculate_markup_amounts(Decimal(str(direct_cost_val)), markups_orm)
+            # ``direct_cost_val`` is a float sum built by the category loop
+            # above, and the scoped partition walks the same positions through
+            # the canonical resource-aware conversion. Where the two disagree
+            # by a rounding tail the difference lands in the bill-wide bucket,
+            # so this screen's total is the one it computed for itself.
+            markup_results = _calculate_markup_amounts_scoped(
+                Decimal(str(direct_cost_val)),
+                markups_orm,
+                all_positions,
+                lambda pos: _leaf_total_base_with_resources(pos, fx_map, base_currency),
+                (await self._resolve_escalation_factors(markups_orm)).factors,
+            )
             for markup_obj, amount in markup_results:
                 if markup_obj.is_active:
                     markup_lines.append(
@@ -6649,9 +6868,17 @@ class BOQService:
         completion_pct = (complete_count / item_count * 100.0) if item_count > 0 else 0.0
         classification_pct = (classified_count / item_count * 100.0) if item_count > 0 else 0.0
 
-        # Grand total (direct cost + markups)
+        # Grand total (direct cost + markups). The default leaf amount is the
+        # raw position total, which is exactly what ``direct_cost`` above sums,
+        # so the partition reproduces this rollup's own figure.
         markups_orm = await self.markup_repo.list_for_boq(boq_id)
-        markup_results = _calculate_markup_amounts(direct_cost, markups_orm)
+        markup_results = _calculate_markup_amounts_scoped(
+            direct_cost,
+            markups_orm,
+            all_positions,
+            None,
+            (await self._resolve_escalation_factors(markups_orm)).factors,
+        )
         markup_total = sum(amount for _, amount in markup_results)
         grand_total = float(direct_cost + markup_total)
 

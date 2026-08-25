@@ -293,6 +293,135 @@ async def test_claim_with_zero_net_due(session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_claim_invoice_lines_carry_the_schedule_description_unit_and_rate(session) -> None:
+    """The invoice line is the schedule line, not a provenance sentence.
+
+    Before this, every line read "Progress claim <n> line (contract line
+    <uuid>)" with no unit and a zero unit price - unreadable to a person and
+    rejected line by line by the e-invoice check (BR-23). The schedule of
+    values already holds the description, the unit and, via value / quantity,
+    the billed rate; the invoice inherits all three. The contract's
+    ``metadata.einvoice`` (routing id, VAT treatment - handed over at award)
+    reaches the invoice too instead of being dropped for provenance keys.
+    """
+    project = await _make_project(session, currency="EUR")
+    contract = await _make_contract(session, project, currency="EUR")
+    contract.metadata_ = {"einvoice": {"buyer_reference": "06-4300251-83", "vat_rate": "19"}}
+    await session.flush()
+
+    claim = ProgressClaim(
+        id=uuid.uuid4(),
+        contract_id=contract.id,
+        claim_number="AZ-03",
+        claim_date="2026-04-15",
+        gross_amount=Decimal("82400"),
+        retention_amount=Decimal("4120"),
+        net_due=Decimal("78280"),
+        currency="EUR",
+        status="certified",
+    )
+    session.add(claim)
+    await session.flush()
+    sov = ContractLine(
+        id=uuid.uuid4(),
+        contract_id=contract.id,
+        code="01.02",
+        description="Rohbauarbeiten UG gem. Aufmaß",
+        unit="m3",
+        quantity=Decimal("120"),
+        unit_rate=Decimal("2060"),
+        total_value=Decimal("247200"),
+    )
+    session.add(sov)
+    await session.flush()
+    session.add(
+        ProgressClaimLine(
+            id=uuid.uuid4(),
+            progress_claim_id=claim.id,
+            contract_line_id=sov.id,
+            period_completed_qty=Decimal("40"),
+            period_completed_value=Decimal("82400"),
+            period_completed_pct=Decimal("33.33"),
+            cumulative_completed_value=Decimal("82400"),
+        )
+    )
+    await session.flush()
+
+    svc = FinanceService(session)
+    invoice = await svc.create_receivable_from_claim(claim.id)
+
+    [line] = invoice.line_items
+    assert line.description == "01.02 Rohbauarbeiten UG gem. Aufmaß"
+    assert str(sov.id) not in line.description
+    assert line.unit == "m3"
+    assert Decimal(str(line.quantity)) == Decimal("40")
+    assert Decimal(str(line.unit_rate)) == Decimal("2060.0000")
+    assert Decimal(str(line.amount)) == Decimal("82400.00")
+
+    # The contract's e-invoice block survives beside the provenance keys.
+    assert invoice.metadata_["einvoice"]["buyer_reference"] == "06-4300251-83"
+    assert invoice.metadata_["source"] == "progress_claim"
+    # VAT follows the contract's declared rate: 19% of the gross.
+    assert Decimal(str(invoice.tax_amount)) == Decimal("15656.00")
+    assert Decimal(str(invoice.amount_total)) == Decimal("98056.00")
+    assert Decimal(str(invoice.amount_subtotal)) == Decimal("82400.00")
+
+
+@pytest.mark.asyncio
+async def test_value_only_claim_line_becomes_a_lump_sum(session) -> None:
+    """Percent-complete billing without a measured quantity: 1 psch at the value."""
+    project = await _make_project(session, currency="EUR")
+    contract = await _make_contract(session, project, currency="EUR")
+    claim = ProgressClaim(
+        id=uuid.uuid4(),
+        contract_id=contract.id,
+        claim_number="AZ-04",
+        claim_date="2026-05-15",
+        gross_amount=Decimal("5000"),
+        retention_amount=Decimal("0"),
+        net_due=Decimal("5000"),
+        currency="EUR",
+        status="certified",
+    )
+    session.add(claim)
+    await session.flush()
+    sov = ContractLine(
+        id=uuid.uuid4(),
+        contract_id=contract.id,
+        code="02.01",
+        description="Baustelleneinrichtung",
+        unit=None,
+        total_value=Decimal("15000"),
+    )
+    session.add(sov)
+    await session.flush()
+    session.add(
+        ProgressClaimLine(
+            id=uuid.uuid4(),
+            progress_claim_id=claim.id,
+            contract_line_id=sov.id,
+            period_completed_qty=Decimal("0"),
+            period_completed_value=Decimal("5000"),
+            period_completed_pct=Decimal("33.33"),
+            cumulative_completed_value=Decimal("5000"),
+        )
+    )
+    await session.flush()
+
+    svc = FinanceService(session)
+    invoice = await svc.create_receivable_from_claim(claim.id)
+
+    [line] = invoice.line_items
+    assert line.description == "02.01 Baustelleneinrichtung"
+    assert line.unit == "psch"
+    assert Decimal(str(line.quantity)) == Decimal("1")
+    assert Decimal(str(line.unit_rate)) == Decimal("5000.00")
+    # No einvoice block on the contract: no VAT invented, no einvoice key.
+    assert Decimal(str(invoice.tax_amount)) == Decimal("0.00")
+    assert "einvoice" not in invoice.metadata_
+
+
+@pytest.mark.asyncio
 async def test_claim_certified_event_triggers_invoice_creation(session, monkeypatch) -> None:
     # Exercise the subscriber's core call (the service method it delegates to)
     # — the event-bus → session plumbing is covered separately; here we assert

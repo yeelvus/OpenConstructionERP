@@ -164,7 +164,7 @@ class CostItemResponse(OEBase):
     unit: MeasurementUnit
     rate: Decimal
     currency: str = ""  # No default - set by project or cost database context
-    source: str = "cwicr"  # cwicr, rsmeans, bki, custom
+    source: str = "cwicr"  # cwicr, commercial, benchmark, custom
     classification: Classification = Field(default_factory=Classification)
     components: list[dict[str, Any]] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)

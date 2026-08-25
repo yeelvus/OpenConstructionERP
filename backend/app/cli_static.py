@@ -21,6 +21,26 @@ from starlette.responses import FileResponse, Response
 
 logger = logging.getLogger(__name__)
 
+# Set by ``mount_frontend`` so health checks can report on the dist this
+# process actually serves. A live ``get_frontend_dir()`` probe is not enough:
+# the disk can hold a rebuilt dist while this process mounted nothing (build
+# finished after startup) or mounted a tree whose entry point was deleted by
+# a later build - in both cases the UI is down while the disk looks fine.
+_mounted_frontend_dir: Path | None = None
+
+
+def mounted_frontend_intact() -> bool | None:
+    """Whether the frontend dist mounted by this process still has index.html.
+
+    Returns:
+        True/False for a process that mounted a frontend at startup,
+        None when the frontend was never mounted (API-only mode).
+    """
+    if _mounted_frontend_dir is None:
+        return None
+    return (_mounted_frontend_dir / "index.html").is_file()
+
+
 # Pin JavaScript-family MIME types at import time.
 #
 # Both ``StaticFiles`` (the ``/assets`` mount) and ``FileResponse`` (the root
@@ -92,6 +112,9 @@ def mount_frontend(app: FastAPI) -> None:
     except FileNotFoundError:
         logger.warning("Frontend dist not found - serving API only")
         return
+
+    global _mounted_frontend_dir
+    _mounted_frontend_dir = frontend_dir
 
     logger.info("Serving frontend from %s", frontend_dir)
 

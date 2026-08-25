@@ -121,8 +121,16 @@ def _scan(parquet_path: str) -> Any:
     try:
         import polars as pl
     except ImportError as exc:  # pragma: no cover - optional [semantic] extra
+        # polars is not in requirements-desktop.lock, so this branch is one a
+        # bundle really reaches, and a bundle has no pip to act on the advice.
+        from app.core.self_upgrade import DESKTOP_NO_EXTRA, repair_hint  # noqa: PLC0415
+
         raise RuntimeError(
-            "polars is not installed; install the [semantic] extra: pip install openconstructionerp[semantic]"
+            "polars is not installed; "
+            + repair_hint(
+                "install the [semantic] extra: pip install openconstructionerp[semantic]",
+                DESKTOP_NO_EXTRA,
+            )
         ) from exc
 
     return pl.scan_parquet(parquet_path)
@@ -169,8 +177,10 @@ async def lookup_rows(
 def parquet_root() -> Path:
     """Public accessor for the resolved parquet root.
 
-    Used by smoke-test endpoints to surface the configured path in
-    diagnostics ("/api/v1/costs/qdrant-search/?diag=1").
+    Used by smoke-test endpoints to report whether the configured root is
+    reachable ("/api/v1/costs/qdrant-search/?diag=1"). The path itself is no
+    longer put in that response - the diagnostic answers "is it there", not
+    "where is it".
     """
 
     return _resolve_root()

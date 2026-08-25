@@ -7,6 +7,8 @@ import { X, Clock, RotateCcw, Loader2, Save, History, Undo2 } from 'lucide-react
 import clsx from 'clsx';
 import { boqApi, type BOQSnapshot, type ActivityEntry } from './api';
 import { useToastStore } from '@/stores/useToastStore';
+import { getIntlLocale } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Snapshot diff helpers ─────────────────────────────────────────────── */
 
@@ -222,7 +224,7 @@ export function VersionHistoryDrawer({ boqId, isOpen, onClose }: VersionHistoryD
   const formatDate = useCallback((dateStr: string) => {
     try {
       const d = new Date(dateStr);
-      return d.toLocaleDateString(undefined, {
+      return d.toLocaleDateString(getIntlLocale(), {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
@@ -233,12 +235,12 @@ export function VersionHistoryDrawer({ boqId, isOpen, onClose }: VersionHistoryD
     }
   }, []);
 
-  const fmt = new Intl.NumberFormat(undefined, {
+  const fmt = new Intl.NumberFormat(getNumberLocale(), {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   });
 
-  const fmtSigned = new Intl.NumberFormat(undefined, {
+  const fmtSigned = new Intl.NumberFormat(getNumberLocale(), {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
     signDisplay: 'always',
@@ -389,7 +391,7 @@ export function VersionHistoryDrawer({ boqId, isOpen, onClose }: VersionHistoryD
                 </div>
               ) : isError ? (
                 <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
-                  <Clock size={32} className="text-semantic-error/50 mb-3" />
+                  <Clock size={32} className="text-semantic-error mb-3" />
                   <p className="text-sm text-content-secondary">
                     {t('boq.snapshots_error', { defaultValue: 'Failed to load version history.' })}
                   </p>
@@ -551,7 +553,7 @@ export function VersionHistoryDrawer({ boqId, isOpen, onClose }: VersionHistoryD
               </div>
             ) : isActError ? (
               <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
-                <History size={32} className="text-semantic-error/50 mb-3" />
+                <History size={32} className="text-semantic-error mb-3" />
                 <p className="text-sm text-content-secondary">
                   {t('boq.activity_error', { defaultValue: 'Failed to load field history.' })}
                 </p>

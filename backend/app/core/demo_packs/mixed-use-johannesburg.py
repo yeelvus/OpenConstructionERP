@@ -66,7 +66,7 @@ TEMPLATE = DemoTemplate(
         "level (ZAR)."
     ),
     boq_metadata={
-        "standard": "ASAQS Standard System of Measuring Building Work + CSI MasterFormat 2018",
+        "standard": "ASAQS Standard System of Measuring Building Work + division-based classification",
         "phase": "Detailed Estimate / Tender BoQ",
         "base_date": "2026-Q1",
         "price_level": "Johannesburg 2026 (ZAR, excl. VAT)",

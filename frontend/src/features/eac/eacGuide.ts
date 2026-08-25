@@ -39,7 +39,7 @@ export const eacGuide: ModuleGuideContent = {
       titleDefault: 'Selectors define the set',
       bodyKey: 'guide.eac.selectors.body',
       bodyDefault:
-        'Start with a selector to decide which elements the rule targets. Match by IFC class, Revit category, classification code such as Uniformat or DIN, or by spatial container like level, zone or room. Combine selectors with AND, OR and NOT logic to narrow the set precisely.',
+        'Start with a selector to decide which elements the rule targets. Match by IFC class, Revit® category, classification code such as Uniformat or DIN, or by spatial container like level, zone or room. Combine selectors with AND, OR and NOT logic to narrow the set precisely.',
     },
     {
       icon: 'ListChecks',

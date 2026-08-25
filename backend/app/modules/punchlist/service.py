@@ -13,7 +13,8 @@ Stateless service layer. Handles:
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +23,47 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import event_bus
 from app.core.json_merge import merge_metadata
+from app.core.party_names import resolve_party_names
+from app.core.storage import find_existing_upload, module_uploads_dir
 from app.modules.punchlist.models import PunchItem
 from app.modules.punchlist.repository import PunchListRepository
 from app.modules.punchlist.schemas import PunchItemCreate, PunchItemUpdate, PunchStatusTransition
 
 logger = logging.getLogger(__name__)
 _logger_ev = logging.getLogger(__name__ + ".events")
+
+
+def _party_label(item: PunchItem, names: Mapping[str, str] | None) -> str:
+    """What an export should print in an assignee column.
+
+    Args:
+        item: The punch row.
+        names: Resolved names as ``resolve_party_names`` returns them.
+
+    Returns:
+        The name when one is known, otherwise the column as stored - an id is
+        still better than a blank, because it can at least be looked up.
+    """
+    raw = item.assigned_to or ""
+    return (names or {}).get(raw) or raw
+
+
+def _as_utc(value: object) -> datetime | None:
+    """Return ``value`` as a timezone-aware UTC datetime, or None.
+
+    SQLite hands back naive datetimes where PostgreSQL hands back aware ones,
+    so comparing a stored timestamp against ``datetime.now(UTC)`` raises a
+    ``TypeError`` on one backend and not the other. A naive value is read as
+    already being UTC; an aware one is converted. Anything that is not a
+    datetime at all returns None rather than raising, matching the caution the
+    close-duration loop below already takes with these same columns.
+    """
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
 
 # Hoist heavy optional imports to module top so we pay the import cost once.
 # openpyxl is a soft dependency - the Excel export falls back to CSV when
@@ -60,7 +96,10 @@ _ACTIVE_STATUSES: frozenset[str] = frozenset({"open", "in_progress"})
 
 # Where punchlist photos live on disk. Mirrors the path in router.py - we
 # resolve photo_path entries against this base when embedding into PDFs.
-_PHOTOS_BASE = Path("uploads")
+# Anchored on the platform data dir; ``_resolve_photo_path`` additionally
+# probes the working-directory-relative tree earlier releases wrote to, so a
+# PDF export still embeds photos captured before the roots were anchored.
+_PHOTOS_BASE = module_uploads_dir()
 
 
 async def _safe_publish(name: str, data: dict, source_module: str = "oe_punchlist") -> None:
@@ -143,6 +182,30 @@ class PunchListService:
 
         logger.info("Punch item created: %s for project %s", item.title[:40], data.project_id)
         return item
+
+    async def resolve_party_names(self, values: Iterable[str | None]) -> dict[str, str]:
+        """Map the ids among ``values`` onto readable names.
+
+        ``assigned_to`` and ``verified_by`` are free-text columns, and a name,
+        a contact id and a user id are all legitimate contents. The seeder and
+        the field integrations write a contact id; the assignment control on
+        the punch screen is a list of platform users and writes a user id. The
+        list printed whichever it got, so a row read "Assigned to
+        3f2b8c1e-..." where a name belonged.
+
+        The punch list is where that was first worked out, and every other
+        register with a person column had the same problem and no map at all,
+        so the rule itself now lives in ``app.core.party_names``. This method
+        stays because it is what the module's callers ask, and its tests are
+        the guard that moving the rule changed none of its answers.
+
+        Args:
+            values: Raw column values, ids and names mixed, nulls allowed.
+
+        Returns:
+            ``{raw value: display name}`` for the ids that resolved.
+        """
+        return await resolve_party_names(self.session, values)
 
     # ── Read ──────────────────────────────────────────────────────────────
 
@@ -617,11 +680,18 @@ class PunchListService:
         # closed_timestamps is a list of (created_at, verified_at, resolved_at,
         # updated_at) tuples for closed/verified items only - SQL diff isn't
         # portable across SQLite/PostgreSQL so we still walk in Python.
+        now = datetime.now(UTC)
+        week_ago = now - timedelta(days=7)
+
         closed_durations: list[float] = []
+        closed_last_7_days = 0
         for created_at, verified_at, resolved_at, updated_at in agg["closed_timestamps"]:
+            end_time = verified_at or resolved_at or updated_at
+            end_utc = _as_utc(end_time)
+            if end_utc is not None and end_utc >= week_ago:
+                closed_last_7_days += 1
             if not created_at:
                 continue
-            end_time = verified_at or resolved_at or updated_at
             if end_time is None:
                 continue
             try:
@@ -635,12 +705,28 @@ class PunchListService:
         if closed_durations:
             avg_days_to_close = round(sum(closed_durations) / len(closed_durations), 1)
 
+        # Age of the still-open work. Averaged here rather than in SQL for the
+        # same reason the close durations are: SQLite has no portable date diff.
+        # Clamped at zero so a row stamped in the future cannot pull the mean
+        # negative and report the backlog as younger than it is.
+        open_ages = [
+            max(0.0, (now - created_utc).total_seconds() / 86400.0)
+            for created_utc in (_as_utc(v) for v in agg["open_created_at"])
+            if created_utc is not None
+        ]
+        avg_open_age_days: float | None = None
+        if open_ages:
+            avg_open_age_days = round(sum(open_ages) / len(open_ages), 1)
+
         return {
             "total": agg["total"],
             "by_status": agg["by_status"],
             "by_priority": agg["by_priority"],
             "overdue": overdue,
             "avg_days_to_close": avg_days_to_close,
+            "urgent_open": agg["urgent_open"],
+            "closed_last_7_days": closed_last_7_days,
+            "avg_open_age_days": avg_open_age_days,
         }
 
     # ── PDF Export ────────────────────────────────────────────────────────
@@ -654,11 +740,15 @@ class PunchListService:
         endpoint always returns a valid ``application/pdf``.
         """
         items = await self.repo.all_for_project(project_id)
+        # The exported list is the artefact that leaves the building, so it
+        # has to name the same party the screen names. An id in a printed
+        # column cannot even be clicked.
+        names = await self.resolve_party_names(item.assigned_to for item in items)
 
         if _REPORTLAB_AVAILABLE:
-            pdf = _build_reportlab_pdf(project_id, items)
+            pdf = _build_reportlab_pdf(project_id, items, names)
         else:
-            pdf = _build_minimal_pdf(_render_punchlist_text(project_id, items))
+            pdf = _build_minimal_pdf(_render_punchlist_text(project_id, items, names))
 
         logger.info(
             "Punch list PDF exported for project %s (%d items, reportlab=%s)",
@@ -677,6 +767,7 @@ class PunchListService:
         branch to take without repeatedly catching ``ImportError``.
         """
         items = await self.repo.all_for_project(project_id)
+        names = await self.resolve_party_names(item.assigned_to for item in items)
 
         if _OPENPYXL_AVAILABLE:
             import io
@@ -713,7 +804,7 @@ class PunchListService:
                 ws.cell(row=row_idx, column=4, value=item.priority)
                 ws.cell(row=row_idx, column=5, value=item.category or "")
                 ws.cell(row=row_idx, column=6, value=item.trade or "")
-                ws.cell(row=row_idx, column=7, value=item.assigned_to or "")
+                ws.cell(row=row_idx, column=7, value=_party_label(item, names))
                 ws.cell(row=row_idx, column=8, value=str(item.due_date) if item.due_date else "")
                 ws.cell(row=row_idx, column=9, value=(item.description or "")[:500])
                 ws.cell(row=row_idx, column=10, value=(item.resolution_notes or "")[:500])
@@ -756,7 +847,7 @@ class PunchListService:
                     item.priority,
                     item.category or "",
                     item.trade or "",
-                    item.assigned_to or "",
+                    _party_label(item, names),
                     str(item.due_date) if item.due_date else "",
                     (item.description or "")[:500],
                     (item.resolution_notes or "")[:500],
@@ -829,10 +920,27 @@ def _build_minimal_pdf(text: str) -> bytes:
     # Trailer
     parts.append(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF")
 
-    return "\n".join(parts).encode("latin-1")
+    # Courier is a Type1 base font covering Latin-1 only, and this document is a
+    # single-byte stream, so anything outside Latin-1 in a punch item (a Cyrillic
+    # title, a CJK assignee name, a Polish stroke) has to be substituted rather
+    # than crash the export with a UnicodeEncodeError -> HTTP 500. errors="replace"
+    # emits one '?' byte per unencodable character, which keeps every character one
+    # byte so the /Length written above stays correct.
+    #
+    # This writer is a near-duplicate of the field report one in
+    # app/modules/fieldreports/service.py, which has carried this argument and this
+    # reason from the start. The duplication is known and is deliberately not
+    # resolved here: the shared writer belongs in core rather than in either module,
+    # because a module importing another module's service would make punch list
+    # export stop working depending on which other modules happen to be installed.
+    return "\n".join(parts).encode("latin-1", "replace")
 
 
-def _render_punchlist_text(project_id: uuid.UUID, items: list[PunchItem]) -> str:
+def _render_punchlist_text(
+    project_id: uuid.UUID,
+    items: list[PunchItem],
+    names: Mapping[str, str] | None = None,
+) -> str:
     """Render a flat text view of the punch list - used by the minimal-PDF fallback."""
     lines: list[str] = []
     lines.append("PUNCH LIST REPORT")
@@ -850,7 +958,7 @@ def _render_punchlist_text(project_id: uuid.UUID, items: list[PunchItem]) -> str
         if item.trade:
             lines.append(f"   Trade: {item.trade}")
         if item.assigned_to:
-            lines.append(f"   Assigned to: {item.assigned_to}")
+            lines.append(f"   Assigned to: {_party_label(item, names)}")
         if item.due_date:
             lines.append(f"   Due: {item.due_date}")
         if item.description:
@@ -866,7 +974,10 @@ def _resolve_photo_path(rel_or_abs: str) -> Path | None:
     """Resolve a stored photo path to a readable file or return None.
 
     Photos are persisted as relative paths like ``punchlist/photos/<uuid>.jpg``
-    underneath the ``uploads/`` directory (see ``router.upload_photo``).
+    underneath the ``uploads/`` directory (see ``router.upload_photo``). A
+    relative entry is resolved against the active data-dir root first and then
+    the working-directory-relative tree earlier releases wrote to, so a project
+    whose photos predate the anchoring still renders them.
     Defensive: any error => return None so the PDF builder simply skips the
     thumbnail without breaking export.
     """
@@ -874,14 +985,18 @@ def _resolve_photo_path(rel_or_abs: str) -> Path | None:
         return None
     try:
         p = Path(rel_or_abs)
-        if not p.is_absolute():
-            p = _PHOTOS_BASE / p
-        return p if p.is_file() else None
+        if p.is_absolute():
+            return p if p.is_file() else None
+        return find_existing_upload(p, _PHOTOS_BASE)
     except Exception:  # noqa: BLE001
         return None
 
 
-def _build_reportlab_pdf(project_id: uuid.UUID, items: list[PunchItem]) -> bytes:
+def _build_reportlab_pdf(
+    project_id: uuid.UUID,
+    items: list[PunchItem],
+    names: Mapping[str, str] | None = None,
+) -> bytes:
     """Build a styled PDF using ReportLab.
 
     Layout:
@@ -912,7 +1027,13 @@ def _build_reportlab_pdf(project_id: uuid.UUID, items: list[PunchItem]) -> bytes
         TableStyle,
     )
 
-    from app.core.pdf_fonts import BODY_FONT, BOLD_FONT, register_pdf_fonts
+    from app.core.pdf_fonts import (
+        BODY_FONT,
+        BOLD_FONT,
+        pdf_style_for_text,
+        pdf_table_font_commands,
+        register_pdf_fonts,
+    )
 
     register_pdf_fonts()
 
@@ -972,13 +1093,13 @@ def _build_reportlab_pdf(project_id: uuid.UUID, items: list[PunchItem]) -> bytes
         heading = f"#{idx} - {item.title}"
         if code:
             heading = f"#{idx} · {code} - {item.title}"
-        story.append(Paragraph(heading, h2))
+        story.append(Paragraph(heading, pdf_style_for_text(h2, heading)))
 
         meta_rows = [
             ["Status", item.status or "-", "Priority", item.priority or "-"],
             [
                 "Assignee",
-                item.assigned_to or "-",
+                _party_label(item, names) or "-",
                 "Due Date",
                 item.due_date.strftime("%Y-%m-%d") if item.due_date else "-",
             ],
@@ -1006,6 +1127,12 @@ def _build_reportlab_pdf(project_id: uuid.UUID, items: list[PunchItem]) -> bytes
                         (-1, -1),
                         [colors.white, colors.HexColor("#f6f7f9")],
                     ),
+                    # These cells are bare strings, so the two FONT commands
+                    # above decide their face and no per-paragraph choice can
+                    # reach them. The assignee, the category and the trade are
+                    # user data and are Chinese on a Chinese site; these
+                    # commands come last so they win for exactly those cells.
+                    *pdf_table_font_commands(meta_rows),
                 ]
             )
         )
@@ -1013,7 +1140,8 @@ def _build_reportlab_pdf(project_id: uuid.UUID, items: list[PunchItem]) -> bytes
         story.append(Spacer(1, 2 * mm))
 
         if item.description:
-            story.append(Paragraph(item.description[:1000], body))
+            description = item.description[:1000]
+            story.append(Paragraph(description, pdf_style_for_text(body, description)))
 
         # Sheet-pin caption (sheet-pin style).
         sheet_ref = getattr(item, "document_id", None) or (item.metadata_ or {}).get("sheet_id")
@@ -1048,7 +1176,8 @@ def _build_reportlab_pdf(project_id: uuid.UUID, items: list[PunchItem]) -> bytes
 
         if item.resolution_notes:
             story.append(Spacer(1, 1 * mm))
-            story.append(Paragraph(f"<b>Resolution:</b> {item.resolution_notes[:500]}", small))
+            notes = item.resolution_notes[:500]
+            story.append(Paragraph(f"<b>Resolution:</b> {notes}", pdf_style_for_text(small, notes)))
 
         # Reopen-history chronology (defensive: schema may not yet be migrated).
         history = list(getattr(item, "reopen_history", None) or [])
@@ -1061,7 +1190,7 @@ def _build_reportlab_pdf(project_id: uuid.UUID, items: list[PunchItem]) -> bytes
                 story.append(
                     Paragraph(
                         f"&#8634; reopened from <b>{prev}</b> by {by} at {ts}",
-                        small,
+                        pdf_style_for_text(small, f"{prev}{by}"),
                     )
                 )
 

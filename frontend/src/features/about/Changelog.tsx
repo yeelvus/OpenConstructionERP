@@ -38,6 +38,62 @@ interface ChangelogEntry {
 // date, title and meaning intact; trim the prose, not the facts.
 const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '15.6.0',
+    date: '2026-08-24',
+    tag: 'FIX',
+    summary:
+      'Every document this product generates can now draw Chinese. The typeface was chosen by guessing from the characters in the string, and a table cell that named no face fell back to one with no Chinese glyphs at all, so a Chinese name came out as empty boxes or did not come out; the face is now chosen by asking the font whether it can draw the text. Names reach a document as text rather than as markup, so an ampersand in a company name no longer appears as an escape or takes the rest of the cell with it, and a document says which language it was written in rather than the language of whoever downloaded it. Working calendars are the calendars of the countries they name: Canada was using American holidays, Saudi Arabia was shipping a four day week, the Gulf states shared one holiday set, and the Chinese calendar held the lunisolar festivals of the previous year. A stock cost that averaged two currencies into one number now carries the currency it is in or withholds the number, and the three way match refuses an invoice it cannot compare against its order instead of subtracting one currency from another. An upgraded database now keeps the constraints the model declares, which a repair pass had been leaving off whenever it could not find a value to fill the existing rows with. Payment clocks for Ontario, India, Bulgaria and Nigeria, bill column presets for China and Canada, and a public demo that can be left running: it refuses a websocket it has not allowlisted and can forget the files strangers upload to it.',
+  },
+  {
+    version: '15.5.0',
+    date: '2026-08-23',
+    tag: 'FIX',
+    summary:
+      'Four routes in the requirements module accepted a project identifier from whoever asked and did not check that the asker could reach that project, and because the permission behind them is held across a whole installation rather than per project, a person holding it in one project could reach a requirement set in another. Anyone running a shared installation with more than one project should take this release. The certified payroll module answered every request with a server error and is now reachable, as is the electronic invoice clearance module, which had no way in at all. Approving a change order on a project holding more than one currency no longer guesses the currency, and the same guess is gone from six other places that print money. A goods receipt delivered twice is no longer received twice, expired insurance no longer passes a subcontractor award, and a variation already promoted into a change order is no longer counted a second time. Completing a plot handover, restoring a file from the recycle bin and building a vector index over a cost database all stopped returning errors over work that had in fact succeeded. Persian has its letters back after a check meant to remove invisible characters removed the ones the script needs. The case library can now be filtered by country, and reference data that shipped with the product has been corrected where it carried values no edition of the standard it cited ever had.',
+  },
+  {
+    version: '15.4.0',
+    date: '2026-08-22',
+    tag: 'NEW',
+    summary:
+      'Closing the desktop application no longer stops the local database in the middle of what it was doing, so the next start is an ordinary one rather than a long log replay that looks like an application that will not open, and starting up now measures silence instead of elapsed time, with database recovery reporting progress every fifteen seconds, so a backend that is still working is no longer abandoned. Installing and uninstalling stop only the copy in the directory being installed to, rather than every process on the machine sharing our executable name. Modules can now be installed and removed from Settings and chosen during onboarding, a geographic information system can read the project directly over OGC API - Features with no export step, and a non-conformity can carry the coordinates it was raised at. Two authorisation defects are closed: the endpoints that write exchange rates, work calendars and tax configurations now check what the signed in account is allowed to do rather than only that it is signed in, and four endpoints that answered anyone who asked no longer do. An invoice in a currency written without decimals now adds up the way its receiver adds it up, and events other parts of the system react to are published after the work is saved rather than while it is still being saved.',
+  },
+  {
+    version: '15.3.1',
+    date: '2026-08-21',
+    tag: 'FIX',
+    summary:
+      'The screen shown while the application starts now names the version it is running. Someone whose application will not open has no other way to find that out, since the About screen lives inside the application they cannot reach and the installer is usually long gone by then. It matters because the message shown when starting fails is deliberately general: the same sentence is produced by a fault corrected several releases ago and by one still open, so a report could arrive complete and carefully written and still not be answerable. The version now appears on the screen itself and as the second line of the details the copy button produces, directly under the heading and above the path to the log file, and it is written from the moment the screen first appears rather than only once something has gone wrong. An application that was starting normally is also no longer given up on while it is still working: the window allowed for the whole of startup was the same length as the budget the backend allows for bringing the local database up by itself, so a database that spent that budget recovering left nothing for the migrations, the modules, the tables and the first-run data that follow it. The first start after an upgrade is exactly that case, because the installer ends the running process tree and the database does not get to close cleanly. The window is now twice the budget it waits on, and it costs nothing when a start has genuinely failed, since that is reported the moment it happens.',
+  },
+  {
+    version: '15.3.0',
+    date: '2026-08-21',
+    tag: 'FIX',
+    summary:
+      'A desktop application that had stopped starting begins working again without anyone doing anything. A run that fails after starting the local database leaves it running, and the next start proved the database was there by opening a connection to it, which shows that something holds the address rather than that a database is behind it. The two come apart when the process is still there and can no longer answer, so the application called the database ready and then failed every request to it, on that start and on every one after, and reinstalling could not help because nothing about the installation was wrong. Readiness now means the database answered, a refusal counts as an answer, and one that has stopped answering is cleared so a working one can replace it. A database replaying its log after an unclean shutdown is untouched and still waited for. An entry that cannot be written to the activity record also stops discarding the work it was describing, and an installation told not to fetch the search model no longer goes looking for it, and a database carried across an upgrade keeps the classification times it already recorded rather than reinterpreting them in whatever time zone the server happens to run in, and starting the local database on Windows no longer fails on a directory the application had just made for it, because the database\'s own setup program is now handed a path that does not exist yet and makes it itself, rather than being asked to correct the permissions on one it did not create and is not allowed to change.',
+  },
+  {
+    version: '15.2.0',
+    date: '2026-08-20',
+    tag: 'NEW',
+    summary:
+      'The Windows installer carries the web view runtime instead of fetching it during setup, so an install no longer depends on reaching Microsoft from a site network, and Windows now offers one installer rather than two that each recorded the same application separately. The update notice names the file that fits the machine it is running on and asks this installation\'s own server rather than GitHub from every browser tab, a purchase order commits against the cost line the estimate priced so committed against remaining stops reading zero on every project, and a bill position can be asked in one row what the estimate allowed, what is committed, what was installed and what left the store. Post-calculation covers material as well as labour and refuses to read an earned total against an actual that does not cover the same lines. A backend that has started and reports that it cannot do its job is no longer indistinguishable from one still coming up, so the window stops opening on top of a server whose every action will fail.',
+  },
+  {
+    version: '15.1.0',
+    date: '2026-08-20',
+    tag: 'FIX',
+    summary:
+      'The Windows desktop application starts. 15.0.0 stopped on a missing locales directory before it drew a window, because the catalogue the server reads while starting sits beside the application package rather than inside it, and a test now refuses any release whose frozen build ships less than the wheel declares. Everything else that could block a first run went with it: the server starts where it is allowed to write, ignores a pidfile whose number now belongs to something else, waits for the database to answer before announcing it, asks the cluster on the address family it listens on, and refuses a data directory a new PostgreSQL major cannot open with the routes that keep your data named first. The BCF issue register also stops showing healthy issues as broken pictures, telling a snapshot that failed to load apart from a viewpoint that never carried one.',
+  },
+  {
+    version: '15.0.0',
+    date: '2026-08-18',
+    tag: 'MILESTONE',
+    summary:
+      'The product ships for two markets it could previously only describe: nine American playbooks with Texas and California state rules and a weekly certified payroll, and twelve German ones with the statutory VOB/B and BGB payment clocks and the working time record MiLoG section 17 requires. GAEB became a format the product both reads and writes, where a plain X84 export is a Hauptangebot, imported sections keep their hierarchy, and a bill stops claiming prices it does not carry. Markups are now something an estimator can reason about, with a rate per section, bonds priced off a rate card, escalation off an index, and a stack that reports its own contradictions rather than refusing the work. A register that cannot fit on one screen now says so, with a guard that stops a new one shipping silently truncated, measurement from drawings speaks the reader\'s units and digits throughout, and the semantic encoder downloads in the background while telling you which of five states it is in.',
+  },
+  {
     version: '14.8.1',
     date: '2026-08-12',
     tag: 'NEW',

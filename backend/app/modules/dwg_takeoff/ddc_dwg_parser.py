@@ -152,7 +152,21 @@ def _is_model_space_block_id(block_id: str) -> bool:
     return block_id.strip().lower() == "*model_space"
 
 
-def _owner_is_block_definition(block_id: str, referenced_blocks: set[str]) -> bool:
+def _is_anonymous_block_id(block_id: str) -> bool:
+    """True when a ``BlockId`` names a block-table record AutoCAD wrote itself.
+
+    AutoCAD reserves the ``*`` prefix for records it creates without being
+    asked: ``*D`` per dimension, ``*X`` per hatch, ``*U`` for an unnamed
+    group. Callers must rule out the layouts first - they are ``*`` names too.
+    """
+    return block_id.strip().startswith("*")
+
+
+def _owner_is_block_definition(
+    block_id: str,
+    referenced_blocks: set[str],
+    block_table: dict[str, bool] | None = None,
+) -> bool:
     """Decide whether a row's owner is a block definition rather than a sheet.
 
     ``BlockId`` carries the owning block-table record, and in the DWG object
@@ -160,14 +174,29 @@ def _owner_is_block_definition(block_id: str, referenced_blocks: set[str]) -> bo
     definition**. Filing all three as layouts is what put every door and window
     block in the sheet picker as if it were a drawable sheet.
 
-    The test that decides is positive evidence: a name some block reference
-    actually places is a block definition, whatever it happens to be called.
-    That holds whether the export writes block names or numeric object ids in
-    ``BlockId``, which matters because we have never confirmed which one a real
-    DwgExporter build emits, and a classifier that guessed wrong on that would
-    file *every* entity as a block and leave the viewer with no sheet at all.
+    The export answers this itself when it can. Its ``<AcDbBlockTableRecord>``
+    rows are the drawing's block table, and each carries a ``Layout`` flag that
+    is true for exactly the records AutoCAD built a sheet around. On a real
+    17 MB export 809 records came through with ``Layout`` true for two of them,
+    ``*Model_Space`` and ``*Paper_Space``, and false for the other 807. Nothing
+    needs guessing when that table is present.
 
-    Anything the two tests leave undecided is treated as a sheet. That is the
+    The three heuristics below are for exports that carry no block table, and
+    they run in order. A ``*`` name that is not a layout is one of AutoCAD's own
+    anonymous records and is never a sheet. Otherwise the evidence has to be
+    positive: a name some block reference actually places is a block
+    definition, whatever it happens to be called. That last test holds whether
+    the export writes block names or numeric object ids in ``BlockId``; a real
+    DwgExporter build was since confirmed to write names, with 577 of the 579
+    referenced names appearing there as owners.
+
+    The reference test alone was not enough, which is why the other two exist.
+    A dimension owns its ``*D`` record implicitly rather than placing it
+    through an ``<AcDbBlockReference>`` row, and an unplaced definition is
+    referenced by nothing at all, so both were offered as sheets: one real
+    export listed 1108 of them against a single drawing.
+
+    Anything every test leaves undecided is treated as a sheet. That is the
     conservative direction: misfiling a sheet as a block hides its geometry
     entirely, while misfiling a block as a sheet only puts back the spurious
     entry this function exists to remove.
@@ -175,12 +204,21 @@ def _owner_is_block_definition(block_id: str, referenced_blocks: set[str]) -> bo
     Args:
         block_id: The row's ``BlockId`` cell.
         referenced_blocks: Names placed by an ``<AcDbBlockReference>`` row.
+        block_table: Record name → whether that record is a layout, read from
+            the export's own block table. Empty or ``None`` when the export
+            carries no such rows.
 
     Returns:
         True when the owner is a block definition.
     """
+    if block_table:
+        is_layout = block_table.get(block_id)
+        if is_layout is not None:
+            return not is_layout
     if _is_layout_block_id(block_id):
         return False
+    if _is_anonymous_block_id(block_id):
+        return True
     return block_id in referenced_blocks
 
 
@@ -473,8 +511,16 @@ def parse_ddc_dwg_excel(excel_path: str | Path) -> dict[str, Any]:
     # uses this to tell a block definition from a sheet - see
     # ``_owner_is_block_definition`` for why the evidence has to be positive.
     referenced_blocks: set[str] = set()
+    # The export's own block table: name → whether that record is a layout.
+    # This is the authoritative answer to "block definition or sheet?", and
+    # the heuristics only run for exports that carry no such rows.
+    block_table: dict[str, bool] = {}
     for row in all_rows[1:]:
         desc = str(get(row, "Description") or "")
+        if desc == "<AcDbBlockTableRecord>":
+            name = str(get(row, "Name") or "").strip()
+            if name:
+                block_table[name] = str(get(row, "Layout") or "").strip().lower() == "true"
         if desc == "<AcDbPolyline>":
             eid = str(get(row, "ID") or "")
             layer = str(get(row, "Layer") or "0")
@@ -489,6 +535,15 @@ def parse_ddc_dwg_excel(excel_path: str | Path) -> dict[str, Any]:
             placed = get(row, "BlockTableRecord") or get(row, "Name")
             if placed:
                 referenced_blocks.add(str(placed))
+
+    # A block table that flags nothing as a layout is not a block table we can
+    # read - either the build writes no ``Layout`` column or it spells the flag
+    # some way this does not recognise. Trusting it then would classify every
+    # owner in the drawing as a block definition and leave no sheet at all, so
+    # it is dropped and the heuristics decide instead. A real drawing always
+    # has model space.
+    if not any(block_table.values()):
+        block_table = {}
 
     # ── Pass 3: collect vertices grouped by ParentID ──────────────────
     #
@@ -586,7 +641,7 @@ def parse_ddc_dwg_excel(excel_path: str | Path) -> dict[str, Any]:
         layer = str(get(row, "Layer") or "0")
         ci = get(row, "Color Index")
         block_id = str(get(row, "BlockId") or "*Model_Space")
-        owner_is_block = _owner_is_block_definition(block_id, referenced_blocks)
+        owner_is_block = _owner_is_block_definition(block_id, referenced_blocks, block_table)
         row_sets_extents = not owner_is_block and _is_model_space_block_id(block_id)
         # Resolve color: entity CI, or layer color
         if ci is not None and str(ci) != "256":

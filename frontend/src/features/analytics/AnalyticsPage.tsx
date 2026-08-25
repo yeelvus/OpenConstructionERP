@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '@/shared/lib/api';
-import { fmtCurrency, fmtNumber, getIntlLocale } from '@/shared/lib/formatters';
+import { fmtCurrency, fmtNumber, fmtPercent } from '@/shared/lib/formatters';
 import {
   FolderOpen,
   DollarSign,
@@ -28,6 +28,7 @@ import { Breadcrumb, Button, Card, Badge, Skeleton, EmptyState, ModuleGuideButto
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { DismissibleInfo, IntroRichText } from '@/shared/ui/DismissibleInfo';
 import { analyticsGuide } from './analyticsGuide';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
@@ -40,7 +41,7 @@ const PAGE_SIZE = 50;
 function compactCurrency(value: number, currency = 'EUR'): string {
   const safe = currency && /^[A-Z]{3}$/.test(currency) ? currency : 'EUR';
   try {
-    return new Intl.NumberFormat(getIntlLocale(), {
+    return new Intl.NumberFormat(getNumberLocale(), {
       style: 'currency',
       currency: safe,
       notation: 'compact',
@@ -186,7 +187,7 @@ export function AnalyticsPage() {
       Number(p.budget).toFixed(0),
       Number(p.actual).toFixed(0),
       Number(p.variance).toFixed(0),
-      p.variance_pct == null ? '' : `${Number(p.variance_pct).toFixed(1)}%`,
+      p.variance_pct == null ? '' : fmtPercent(Number(p.variance_pct)),
       p.status,
     ].join(','));
     const csv = [headers.join(','), ...rows].join('\n');
@@ -217,7 +218,7 @@ export function AnalyticsPage() {
 
   const totalVariancePct =
     data && data.total_planned > 0
-      ? `${((data.total_variance / data.total_planned) * 100).toFixed(1)}%`
+      ? fmtPercent((data.total_variance / data.total_planned) * 100)
       : '—';
 
   if (isLoading) {

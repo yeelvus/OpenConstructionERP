@@ -87,6 +87,7 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.core.content_disposition import attachment_disposition
 from app.core.csv_safety import neutralise_formula
 from app.core.file_signature import detect as detect_signature
 from app.core.i18n import get_locale
@@ -197,7 +198,7 @@ from app.modules.boq.schemas import (
     SustainabilityResponse,
     TemplateInfo,
 )
-from app.modules.boq.service import MAX_NESTING_DEPTH, BOQService
+from app.modules.boq.service import MAX_NESTING_DEPTH, BOQService, resource_fx_factor
 from app.modules.costs.repository import CostItemRepository
 
 router = APIRouter(tags=["boq"])
@@ -464,6 +465,8 @@ def _markup_to_response(markup: object) -> MarkupResponse:
         apply_to=markup.apply_to,  # type: ignore[attr-defined]
         sort_order=markup.sort_order,  # type: ignore[attr-defined]
         is_active=markup.is_active,  # type: ignore[attr-defined]
+        scope_position_id=getattr(markup, "scope_position_id", None),
+        overrides_id=getattr(markup, "overrides_id", None),
         metadata_=markup.metadata_,  # type: ignore[attr-defined]
         created_at=markup.created_at,  # type: ignore[attr-defined]
         updated_at=markup.updated_at,  # type: ignore[attr-defined]
@@ -2540,10 +2543,22 @@ async def list_markups(
     session: SessionDep,
     service: BOQService = Depends(_get_service),
 ) -> MarkupListResponse:
-    """List all markups for a BOQ."""
+    """List all markups for a BOQ, with any escalation factor resolved.
+
+    The factor is attached here rather than left to the client because the
+    browser holds no cost-index series. Resolving it once on the way out keeps
+    the date-to-date arithmetic in the price-index module and still lets the
+    markup panel mirror the cascade locally.
+    """
     await _verify_boq_owner(session, boq_id, user_id, payload)
     markups = await service.list_markups(boq_id)
-    return MarkupListResponse(markups=[_markup_to_response(m) for m in markups])
+    factors = await service.escalation_factors(markups)
+    rows: list[MarkupResponse] = []
+    for markup in markups:
+        row = _markup_to_response(markup)
+        row.escalation_factor = factors.get(markup.id)
+        rows.append(row)
+    return MarkupListResponse(markups=rows)
 
 
 @router.post(
@@ -3077,6 +3092,7 @@ async def _run_import_validation(
     """
     from app.config import get_settings
     from app.core.validation.engine import validation_engine
+    from app.core.validation.project_context import with_project_context
     from app.modules.projects.repository import ProjectRepository
 
     settings = get_settings()
@@ -3135,7 +3151,7 @@ async def _run_import_validation(
         )
 
         report = await validation_engine.validate(
-            data={"positions": positions_data},
+            data=await with_project_context(session, boq_data.project_id, {"positions": positions_data}),
             rule_sets=rule_sets,
             target_type="boq_import",
             target_id=str(boq_id),
@@ -3215,6 +3231,7 @@ async def validate_boq(
     and returns a full validation report.
     """
     from app.core.validation.engine import validation_engine
+    from app.core.validation.project_context import with_project_context
     from app.modules.projects.repository import ProjectRepository
 
     await _verify_boq_owner(session, boq_id, _user_id, payload)
@@ -3279,6 +3296,27 @@ async def validate_boq(
         for pos in boq_data.positions
     ]
 
+    # The markup stack, in the shape the boq.markup.* rules read. Without this
+    # key those rules pass vacuously on every bill, which is exactly how a
+    # registered rule ends up dormant: nothing errors, nothing is checked, and
+    # the report says the bill is clean.
+    markups_data = [
+        {
+            "id": str(markup.id),
+            "name": markup.name,
+            "markup_type": markup.markup_type,
+            "category": markup.category,
+            "percentage": markup.percentage,
+            "fixed_amount": markup.fixed_amount,
+            "apply_to": markup.apply_to,
+            "sort_order": markup.sort_order,
+            "is_active": markup.is_active,
+            "scope_position_id": (str(markup.scope_position_id) if markup.scope_position_id else None),
+            "overrides_id": (str(markup.overrides_id) if markup.overrides_id else None),
+        }
+        for markup in await service.list_markups(boq_id)
+    ]
+
     # Determine rule sets from project config. Empty classification /
     # region means "no preference"; the rule registry resolves to a
     # universal rule set (boq_quality only) instead of biasing every
@@ -3291,9 +3329,16 @@ async def validate_boq(
         region=project.region or "",
     )
 
-    # Run validation
+    # Run validation. The rows are this endpoint's own projection; anything
+    # derived from the project comes from the shared builder, so the verdict
+    # behind the Validate button is the one the estimate audit and the seeder
+    # would give the same bill.
     report = await validation_engine.validate(
-        data={"positions": positions_data},
+        data=await with_project_context(
+            session,
+            boq_data.project_id,
+            {"positions": positions_data, "markups": markups_data},
+        ),
         rule_sets=rule_sets,
         target_type="boq",
         target_id=str(boq_id),
@@ -3887,14 +3932,13 @@ async def export_boq_csv(
     content = output.getvalue()
     output.close()
 
-    safe_name = structured.name.encode("ascii", errors="replace").decode("ascii").replace('"', "'")
-    filename = f"{safe_name}.csv"
+    filename = f"{structured.name}.csv"
 
     return StreamingResponse(
         iter([content]),
         media_type="text/csv; charset=utf-8",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": attachment_disposition(filename),
         },
     )
 
@@ -4299,14 +4343,13 @@ async def export_boq_excel(
     wb.save(buffer)
     buffer.seek(0)
 
-    safe_name = boq_data.name.encode("ascii", errors="replace").decode("ascii").replace('"', "'")
-    filename = f"{safe_name}.xlsx"
+    filename = f"{boq_data.name}.xlsx"
 
     return StreamingResponse(
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": attachment_disposition(filename),
         },
     )
 
@@ -4424,8 +4467,7 @@ async def export_boq_pdf(
             "invalid data. Please try exporting as Excel or CSV instead.",
         )
 
-    safe_name = boq_data.name.encode("ascii", errors="replace").decode("ascii").replace('"', "'")
-    filename = f"{safe_name}.pdf"
+    filename = f"{boq_data.name}.pdf"
 
     def _iter_pdf_chunks() -> Iterator[bytes]:
         """Yield PDF bytes in chunks to enable true streaming."""
@@ -4439,8 +4481,18 @@ async def export_boq_pdf(
         _iter_pdf_chunks(),
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": attachment_disposition(filename),
             "Content-Length": str(len(pdf_bytes)),
+            # boq/pdf_export.py writes its labels as English literals and takes
+            # no locale, so English is what this page is. Declaring it stops the
+            # Accept-Language middleware from labelling these bytes with the
+            # language the reader asked for. Worth naming what this does not
+            # cover: the same builder formats money on the currency code and
+            # converts quantities on a query parameter while leaving the
+            # description text in the original system, so a reader is being told
+            # about one axis of three. The other two have nowhere to be declared
+            # in a header and are tracked separately.
+            "Content-Language": "en",
         },
     )
 
@@ -4453,7 +4505,7 @@ async def export_boq_pdf(
 )
 @router.get(
     "/boqs/{boq_id}/export/gaeb/",
-    summary="Export BOQ as GAEB XML 3.3 (X83 default, ?format=x84 for Nebenangebot)",
+    summary="Export BOQ as GAEB XML 3.3 (X83 Angebotsaufforderung default, ?format=x84 for Angebotsabgabe)",
     dependencies=[Depends(RequirePermission("boq.read"))],
 )
 async def export_boq_gaeb(
@@ -4469,10 +4521,20 @@ async def export_boq_gaeb(
         "x83",
         alias="format",
         description=(
-            "GAEB DA phase to emit. ``x83`` = Angebotsabgabe (main bid, DP 83). "
-            "``x84`` = Nebenangebot (alternate bid, DP 84) - adds per-position "
-            "BoQBkUp / BoQBkUpRef alternate markers and an Award/Recommendation "
-            "element listing positions flagged as recommended."
+            "GAEB DA phase to emit. ``x83`` = Angebotsaufforderung (call for "
+            "bids, DP 83, unpriced). ``x84`` = Angebotsabgabe (bid "
+            "submission, DP 84, priced). An X84 is a plain Hauptangebot "
+            "unless ``bid_type=alternate`` is also passed."
+        ),
+    ),
+    bid_type: Literal["main", "alternate"] = Query(
+        "main",
+        description=(
+            "X84 only. ``main`` (default) writes a plain Hauptangebot. "
+            "``alternate`` marks the bid as a Nebenangebot: positions "
+            "carrying ``alt_parent_ref`` / ``alt_markup_reason`` metadata "
+            "get their rationale written as a schema-valid ``BidComm`` "
+            "(Bieter Kommentar). Ignored for X83."
         ),
     ),
 ) -> StreamingResponse:
@@ -4487,7 +4549,9 @@ async def export_boq_gaeb(
     - **DP 83 - Angebotsaufforderung / Request for bid** (default,
       ``?format=x83``). A priced LV is valid in DP 83 (the Einheitspreis is
       optional in the schema, so carrying it does not break conformance).
-    - **DP 84 - Angebotsabgabe / Bid submission** (``?format=x84``).
+    - **DP 84 - Angebotsabgabe / Bid submission** (``?format=x84``). A plain
+      Hauptangebot by default; ``bid_type=alternate`` additionally writes the
+      Nebenangebot rationale of flagged positions as ``BidComm`` elements.
 
     Money: each ``Item`` carries ``UP`` (Einheitspreis, 3 dp) and ``IT``
     (Gesamtbetrag, 2 dp) reconstructed so a consumer recomputing ``Qty x UP``
@@ -4520,17 +4584,17 @@ async def export_boq_gaeb(
         project_name=project_name,
         project_currency=project_currency,
         gaeb_format=gaeb_format,
+        bid_type=bid_type,
     )
 
-    safe_name = boq_data.name.encode("ascii", errors="replace").decode("ascii").replace('"', "'")
     ext = "X84" if gaeb_format == "x84" else "X83"
-    filename = f"{safe_name}.{ext}"
+    filename = f"{boq_data.name}.{ext}"
 
     return StreamingResponse(
         iter([xml_content]),
         media_type="application/xml; charset=utf-8",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": attachment_disposition(filename),
         },
     )
 
@@ -4589,14 +4653,13 @@ async def export_boq_bc3(
         program_version=getattr(get_settings(), "app_version", "") or "",
     )
 
-    safe_name = boq_data.name.encode("ascii", errors="replace").decode("ascii").replace('"', "'")
-    filename = f"{safe_name}.bc3"
+    filename = f"{boq_data.name}.bc3"
 
     return StreamingResponse(
         iter([data]),
         media_type=f"text/plain; charset={http_charset}",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": attachment_disposition(filename),
         },
     )
 
@@ -4607,14 +4670,21 @@ def build_gaeb_xml(
     project_name: str,
     project_currency: str,
     gaeb_format: str,
+    bid_type: str = "main",
 ) -> str:
     """Build a schema-valid GAEB DA XML 3.3 document string.
 
     Pure function (no I/O) so it is unit-testable against the official GAEB
     XSD without booting the app. ``boq_data`` is a ``BOQWithSections`` (or any
     object exposing ``name``, ``sections``, ``positions``, ``markups``,
-    ``direct_cost`` and ``net_total``). ``gaeb_format`` is ``"x83"`` or
-    ``"x84"``.
+    ``direct_cost`` and ``net_total``). ``gaeb_format`` is ``"x83"``
+    (Angebotsaufforderung, unpriced) or ``"x84"`` (Angebotsabgabe, priced).
+
+    ``bid_type`` applies to X84 only: ``"main"`` (default) emits a plain
+    Hauptangebot; ``"alternate"`` marks the bid as a Nebenangebot - positions
+    flagged with ``alt_parent_ref`` / ``alt_markup_reason`` metadata get their
+    rationale written as a ``BidComm`` (Bieter Kommentar), the schema element
+    the X84 Item provides for bidder-side remarks.
     """
     import xml.etree.ElementTree as ET
     from datetime import date
@@ -4947,31 +5017,29 @@ def build_gaeb_xml(
             return mapped
         return unit.strip()
 
-    # ── X84 alternate-bid rationale ────────────────────────────────────────
+    # ── X84 Nebenangebot (alternate-bid) rationale ─────────────────────────
     # The GAEB 3.3 schema has no <BoQBkUp>/<Recommendation> elements - the
     # previous code invented them, which fails XSD validation and silently
-    # drops the data on any conformant re-import. For an X84 alternate we
-    # instead fold the rationale into the (schema-valid) long text as an
-    # extra paragraph, so the information survives a round-trip in a real
-    # GAEB field rather than an invented one.
-    def _description_with_alt(pos: Any) -> str:
-        base = str(getattr(pos, "description", "") or "")
-        if gaeb_format != "x84":
-            return base
+    # drops the data on any conformant re-import. A plain X84 is a
+    # Hauptangebot (Angebotsabgabe per GAEB DA84) and carries NO alternate
+    # markers; only an explicit ``bid_type="alternate"`` writes the rationale
+    # of flagged positions, as a schema-valid <BidComm> (Bieter Kommentar) -
+    # the element the X84 Item provides for bidder-side remarks, so the
+    # information survives a round-trip in a real GAEB field.
+    is_alternate_bid = is_priced and bid_type == "alternate"
+
+    def _alt_rationale_lines(pos: Any) -> list[str]:
         meta = getattr(pos, "metadata", None) or {}
-        reason = ""
-        parent_ref = ""
-        if isinstance(meta, dict):
-            reason = str(meta.get("alt_markup_reason") or "").strip()
-            parent_ref = str(meta.get("alt_parent_ref") or "").strip()
-        extra: list[str] = []
+        if not isinstance(meta, dict):
+            return []
+        reason = str(meta.get("alt_markup_reason") or "").strip()
+        parent_ref = str(meta.get("alt_parent_ref") or "").strip()
+        lines: list[str] = []
         if parent_ref:
-            extra.append(f"Nebenangebot zu Position {parent_ref}")
+            lines.append(f"Nebenangebot zu Position {parent_ref}")
         if reason:
-            extra.append(reason)
-        if extra:
-            return "\n".join([base, *extra]) if base else "\n".join(extra)
-        return base
+            lines.append(reason)
+        return lines
 
     def _emit_item(parent_list: ET.Element, pos: Any, parent_ordinal: str) -> None:
         """Write one schema-valid ``Item`` into an ``Itemlist``.
@@ -4999,7 +5067,12 @@ def build_gaeb_xml(
             ET.SubElement(item, "IT").text = it_s
         else:
             ET.SubElement(item, "QU").text = _gaeb_unit(pos.unit)[:4]
-        _set_description(item, _description_with_alt(pos))
+        _set_description(item, str(getattr(pos, "description", "") or ""))
+        # Schema order: BidComm follows Description in the X84 Item.
+        if is_alternate_bid:
+            rationale = _alt_rationale_lines(pos)
+            if rationale:
+                _set_ml_text(item, "BidComm", "\n".join(rationale))
 
     def _emit_markup_item(parent_list: ET.Element, m: Any, idx: int, base: Decimal) -> None:
         """Write one priced ``MarkupItem`` (Zuschlagsposition) into an Itemlist.
@@ -5456,10 +5529,21 @@ def _dec4(value: Any) -> Decimal | None:
         return None
 
 
-def _prepared_row_to_create(boq_id: uuid.UUID, pr: Mapping[str, Any]) -> PositionCreate:
-    """Map a validated round-trip row to a ``PositionCreate`` (new position)."""
+def _prepared_row_to_create(
+    boq_id: uuid.UUID,
+    pr: Mapping[str, Any],
+    parent_id: uuid.UUID | None = None,
+) -> PositionCreate:
+    """Map a validated round-trip row to a ``PositionCreate`` (new position).
+
+    ``parent_id`` carries the section link resolved by the create loop -
+    without it every imported row landed flat (parent NULL), so an imported
+    GAEB LV kept its section rows but they had zero children and every real
+    item fell into the ungrouped bucket.
+    """
     return PositionCreate(
         boq_id=boq_id,
+        parent_id=parent_id,
         ordinal=pr["ordinal"],
         description=pr.get("description", "") or "",
         unit=pr["unit"],
@@ -5469,6 +5553,51 @@ def _prepared_row_to_create(boq_id: uuid.UUID, pr: Mapping[str, Any]) -> Positio
         source=pr.get("source", "excel_import"),
         metadata=dict(pr.get("metadata") or {}),
     )
+
+
+# Sentinel distinguishing "row carries no section signal at all" (flat Excel /
+# BC3 sheets) from "row explicitly says it is top-level" (a GAEB item outside
+# any BoQCtgy carries ``gaeb_section: ""``).
+_NO_SECTION_SIGNAL: Any = object()
+
+
+def _resolve_import_parent(
+    pr: Mapping[str, Any],
+    section_id_by_ordinal: Mapping[str, uuid.UUID],
+    last_section_id: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """Pick the parent for a freshly imported row from the sections before it.
+
+    Importers emit hierarchy top-down (a section row precedes its children),
+    so by the time a row is created every ancestor it can name already has an
+    id. Three rules, most explicit first:
+
+    * a SECTION nests under the deepest previously created section whose
+      dotted ordinal is a proper prefix of its own ("01.02" under "01");
+      no such ancestor means top-level;
+    * an ITEM that names its enclosing section (the GAEB importer stamps
+      ``gaeb_section`` into metadata/classification) attaches to that
+      section's row; an explicitly empty name means top-level;
+    * an ITEM with no signal at all (flat Excel / BC3 sheets) attaches to
+      the nearest section row above it - exactly how the sheet reads. With
+      no section rows in the upload this stays ``None``, so flat imports
+      keep their historic behaviour.
+    """
+    if pr.get("is_section"):
+        parts = [p for p in str(pr.get("ordinal") or "").strip().split(".") if p]
+        for cut in range(len(parts) - 1, 0, -1):
+            parent = section_id_by_ordinal.get(".".join(parts[:cut]))
+            if parent is not None:
+                return parent
+        return None
+
+    meta = pr.get("metadata") or {}
+    cls = pr.get("classification") or {}
+    explicit = meta.get("gaeb_section", cls.get("gaeb_section", _NO_SECTION_SIGNAL))
+    if explicit is not _NO_SECTION_SIGNAL:
+        key = str(explicit or "").strip()
+        return section_id_by_ordinal.get(key) if key else None
+    return last_section_id
 
 
 def _prepared_row_to_update(pr: Mapping[str, Any], stored: Any) -> PositionUpdate | None:
@@ -5582,10 +5711,27 @@ async def _apply_boq_roundtrip(
         except Exception as exc:  # noqa: BLE001 - surface, never abort
             apply_errors.append({"row": action.row.row_index, "position_id": pid, "error": str(exc)})
 
+    # Section identity threading: ``plan.creates`` preserves document order
+    # and importers emit a section row before its children, so each created
+    # section is remembered by ordinal and every following row can resolve
+    # its parent (see ``_resolve_import_parent``). Without this the entire
+    # imported hierarchy flattened to parent_id NULL.
+    section_id_by_ordinal: dict[str, uuid.UUID] = {}
+    last_section_id: uuid.UUID | None = None
+
     for action in plan.creates:
+        row_payload = action.row.payload
+        parent_id = _resolve_import_parent(row_payload, section_id_by_ordinal, last_section_id)
         try:
-            await service.add_position(_prepared_row_to_create(boq_id, action.row.payload))
+            created_row = await service.add_position(_prepared_row_to_create(boq_id, row_payload, parent_id=parent_id))
             created += 1
+            if row_payload.get("is_section"):
+                created_id = getattr(created_row, "id", None)
+                if created_id is not None:
+                    ordinal_key = str(row_payload.get("ordinal") or "").strip()
+                    if ordinal_key:
+                        section_id_by_ordinal[ordinal_key] = created_id
+                    last_section_id = created_id
         except HTTPException as exc:
             apply_errors.append({"row": action.row.row_index, "error": str(exc.detail)})
         except Exception as exc:  # noqa: BLE001 - surface, never abort
@@ -6101,9 +6247,9 @@ async def import_boq_gaeb(
         response header.
 
     Supports the GAEB DA XML formats used across DACH tendering:
-      - **X83 / DP 83** - Angebotsabgabe (bid submission)
-      - **X84 / DP 84** - Nebenangebote (alternative bids)
-      - **X81** - Leistungsverzeichnis (BOQ skeleton)
+      - **X81 / DP 81** - Leistungsverzeichnis (BOQ skeleton)
+      - **X83 / DP 83** - Angebotsaufforderung (call for bids, unpriced)
+      - **X84 / DP 84** - Angebotsabgabe (priced bid submission)
 
     Namespace-agnostic parser - falls back to tag-local-name matching so
     files from different GAEB toolchains (any mainstream GAEB authoring
@@ -6530,7 +6676,11 @@ async def _persist_imported_markups(
         the subtotal (the unpriced X83 fallback where the file carries a
         Zuschlag percent but no ``<IT>``); clamped to the schema's 0..100 range.
       * a markup that maps to neither (no usable percentage or amount) is
-        skipped with a warning rather than persisted as a zero no-op.
+        skipped SILENTLY here: an unpriced X83 legitimately ships its
+        Zuschlagspositionen as empty placeholders the bidder prices later,
+        and the importer already surfaces every parsed markup as a parse-time
+        warning - repeating it as an import ERROR made the official
+        certification file look broken.
 
     Failures here never abort the import (positions are already committed);
     each is appended to ``errors`` so the caller surfaces it.
@@ -6607,12 +6757,10 @@ async def _persist_imported_markups(
                     },
                 )
             else:
-                errors.append(
-                    {
-                        "ordinal": ordinal,
-                        "error": "GAEB markup carried no usable percentage or amount; skipped.",
-                    }
-                )
+                # No percentage and no amount: an unpriced placeholder
+                # Zuschlagsposition (normal in an X83 Angebotsaufforderung).
+                # The importer's parse-time warning already surfaces it; an
+                # error entry here would flag a conformant file as broken.
                 continue
             await service.add_markup(boq_id, data)
         except Exception as exc:  # noqa: BLE001 - never abort an import on a markup
@@ -7482,6 +7630,9 @@ async def get_resource_summary(
 
     # Aggregation key: (name_lower, type_lower) → accumulator
     agg: dict[tuple[str, str], dict[str, Any]] = {}
+    # Foreign-currency money that reached ``grand_total`` without conversion,
+    # keyed by the currency it is still in. Populated by ``_add_resource``.
+    unconverted: dict[str, float] = {}
 
     def _add_resource(
         raw: dict[str, Any],
@@ -7514,16 +7665,25 @@ async def get_resource_summary(
         # A foreign currency whose rate is missing/non-positive is left in its
         # own units (deterministic, never zeroed) - same policy as
         # BOQService._resource_total_in_base.
+        #
+        # That amount still enters ``grand_total``, so it is recorded here in
+        # the currency it is still denominated in. The total is unchanged by
+        # this; what changes is that the response can now say how much of it
+        # was never converted, instead of leaving the reader to assume none of
+        # it. The missing-rate warning elsewhere carries the code only, and a
+        # code without an amount cannot be weighed.
+        # The policy itself now lives in ``resource_fx_factor`` rather than
+        # being written out again here. This block previously carried its own
+        # copy, including an ``and fx_map`` guard that skipped the whole branch
+        # when a project had no FX table at all - which is the case where the
+        # most value goes unconverted, and so the worst one to stay silent
+        # about. Conversion behaviour is unchanged, since no rate is no rate.
         rcur = str(raw.get("currency") or "").strip().upper()
-        if rcur and _base_cur and rcur != _base_cur and fx_map:
-            _fx = fx_map.get(rcur)
-            if _fx is not None:
-                try:
-                    _fxf = float(_fx)
-                except (ValueError, TypeError):
-                    _fxf = 0.0
-                if _fxf > 0.0 and _fxf < float("inf"):
-                    cost = cost * _fxf
+        factor = resource_fx_factor(rcur, _base_cur, fx_map)
+        if factor is None:
+            unconverted[rcur] = unconverted.get(rcur, 0.0) + cost
+        else:
+            cost = cost * factor
         key = (name.lower(), rtype)
 
         if key not in agg:
@@ -7762,6 +7922,13 @@ async def get_resource_summary(
         by_type=by_type,
         resources=resource_items,
         grand_total=grand_total,
+        # Quantised with the same quantum AND the same rounding mode as
+        # ``grand_total`` just above. A reader subtracting one from the other
+        # is the whole point of publishing it, and two figures rounded
+        # differently do not subtract cleanly.
+        unconverted={
+            code: Decimal(str(amount)).quantize(_Q2, rounding=_RHU) for code, amount in sorted(unconverted.items())
+        },
     )
 
 
@@ -8233,7 +8400,7 @@ async def get_position_price_analysis(
         return StreamingResponse(
             io.BytesIO(text.encode("utf-8")),
             media_type="text/markdown",
-            headers={"Content-Disposition": f'attachment; filename="price_analysis_{safe}.md"'},
+            headers={"Content-Disposition": attachment_disposition(f"price_analysis_{safe}.md")},
         )
 
     result = breakdown.to_dict()
@@ -8252,14 +8419,14 @@ def _measurement_stream(sheet: Any, fmt: str, preset: str, item_ref: str) -> Str
         return StreamingResponse(
             io.BytesIO(body.encode("utf-8")),
             media_type="text/markdown",
-            headers={"Content-Disposition": f'attachment; filename="measurement_{safe}.md"'},
+            headers={"Content-Disposition": attachment_disposition(f"measurement_{safe}.md")},
         )
     if fmt == "csv":
         body = render_csv(sheet, preset=preset)
         return StreamingResponse(
             io.BytesIO(body.encode("utf-8")),
             media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="measurement_{safe}.csv"'},
+            headers={"Content-Disposition": attachment_disposition(f"measurement_{safe}.csv")},
         )
     return None
 

@@ -15,6 +15,21 @@
 // component is purely presentational and side-effect free - it reads the
 // row status string and maps it to the same FSM the backend service
 // enforces (`_PO_STATUS_TRANSITIONS` in procurement/service.py).
+//
+// COLOUR NOTE - the passed stages take their alpha from `opacity-*` rather
+// than from a `bg-semantic-success/70` modifier. They once used the modifier,
+// and the `semantic` palette was then declared in tailwind.config.js as plain
+// `var(--oe-...)` strings instead of the channel-triplet function form, so
+// Tailwind emitted NO rule at all for it. That is not a faint colour, it is
+// no background whatsoever: every completed stage rendered fully transparent,
+// a draft PO showed five visible pips, approved four and issued three, and
+// the further a PO had actually got the less progressed it looked. The
+// cancelled bar was invisible for the same reason.
+//
+// The palette has since been converted to the function form, so the modifier
+// would resolve correctly here today. `opacity-*` stays because it keeps this
+// control legible without depending on the palette declaration staying right,
+// not because the modifier is still broken.
 
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
@@ -80,7 +95,7 @@ export function POStatusPipeline({ status }: { status: string }) {
         aria-label={`${ariaLabel}: ${currentLabel}`}
         className="inline-flex items-center gap-1"
       >
-        <span className="inline-block h-1.5 w-6 rounded-full bg-semantic-error/70" />
+        <span className="inline-block h-1.5 w-6 rounded-full bg-semantic-error opacity-70" />
       </div>
     );
   }
@@ -101,7 +116,7 @@ export function POStatusPipeline({ status }: { status: string }) {
             className={clsx(
               'inline-block h-1.5 rounded-full transition-colors',
               current ? 'w-4' : 'w-2',
-              past && 'bg-semantic-success/70',
+              past && 'bg-semantic-success opacity-70',
               current && 'bg-oe-blue',
               !past && !current && 'bg-border',
             )}

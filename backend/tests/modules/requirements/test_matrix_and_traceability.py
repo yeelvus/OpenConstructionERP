@@ -144,7 +144,22 @@ async def _make_requirement(
     return req
 
 
-def _build_app(db_session, *, caller_id: str, role: str = "admin") -> FastAPI:
+def _build_app(
+    db_session,
+    *,
+    caller_id: str,
+    role: str = "admin",
+    permissions: list[str] | None = None,
+) -> FastAPI:
+    """Build the requirements app with one identity bound to it.
+
+    ``permissions`` exists because ``role`` alone cannot express a caller who
+    is subject to the project gate. ``RequirePermission`` short-circuits for
+    admin, and every other role has to carry the permission either in its
+    payload or in the live registry, so with an empty list admin was the only
+    identity that reached a guarded route at all. A harness for a module whose
+    defects are about identity has to be able to build more than one.
+    """
     from app.modules.requirements.router import router as req_router
 
     app = FastAPI()
@@ -169,7 +184,7 @@ def _build_app(db_session, *, caller_id: str, role: str = "admin") -> FastAPI:
             raise HTTPException(status_code=st.HTTP_404_NOT_FOUND, detail="not found")
 
     async def _payload_override() -> dict:
-        return {"sub": caller_id, "role": role, "permissions": []}
+        return {"sub": caller_id, "role": role, "permissions": list(permissions or [])}
 
     app.dependency_overrides[get_session] = _session_override
     app.dependency_overrides[get_current_user_id] = _user_override
@@ -391,6 +406,7 @@ class TestMatrixRoute:
         assert len(body["rows"]) == 1
         assert "model" in body["deliverable_types"]
 
+    @pytest.mark.tenant_isolation
     @pytest.mark.asyncio
     async def test_matrix_route_cross_tenant_returns_404(self, db_session: AsyncSession) -> None:
         from app.modules.requirements.permissions import register_requirements_permissions
@@ -528,9 +544,21 @@ class TestBimTraceability:
 
 
 class TestPositionTraceabilityCrossTenant:
-    """link_to_position must 404 when the BOQ position doesn't exist
-    (which also covers the cross-tenant case since IDOR would mean the
-    position doesn't exist in the attacker's session).
+    """link_to_position, at the service level and across a tenant boundary.
+
+    The first two tests below are absence tests: a random uuid4 names a row
+    that exists for nobody, and the 404 says so. They do not cover the
+    cross-tenant case, and an earlier version of this docstring claimed they
+    did on the grounds that IDOR would mean the position does not exist in
+    the attacker's session. It does not follow. Absent globally and absent
+    from your tenant produce the same 404 and prove nothing about each other,
+    and the service reaches the position with ``session.get(Position, id)``,
+    which is not scoped to a caller at all.
+
+    The cross-tenant case therefore needs a row that really exists under
+    somebody else, and it needs to go through the route, because the service
+    takes no caller and so has no tenant to be foreign to. That is the third
+    test.
     """
 
     @pytest.mark.asyncio
@@ -559,6 +587,143 @@ class TestPositionTraceabilityCrossTenant:
             await svc.link_to_position(uuid.uuid4(), uuid.uuid4())
         assert exc.value.status_code == 404
         assert "requirement" in exc.value.detail.lower()
+
+    @pytest.mark.tenant_isolation
+    @pytest.mark.asyncio
+    async def test_a_position_in_another_projects_boq_cannot_be_linked(self, db_session: AsyncSession) -> None:
+        """A caller may link only to positions in the project they are linking from.
+
+        The route gates on the requirement's project, so the caller here owns
+        that project outright and passes the gate honestly. The position is the
+        variable: it lives in another owner's BOQ, and nothing on this path
+        compared the two projects until the guard this test covers.
+
+        The control is what makes the 404 mean something. The position's own
+        owner links it first and gets a 200, so the row demonstrably exists and
+        the endpoint demonstrably works on it. Only then is it asked for by a
+        caller from the other project, where a 404 can only be a refusal.
+
+        Both callers are editors carrying the permission explicitly, not
+        admins. An admin would bypass the project gate on the requirement and
+        leave the result resting on a bypass rather than on the boundary.
+        """
+        from app.modules.boq.models import BOQ, Position
+        from app.modules.requirements.permissions import register_requirements_permissions
+
+        register_requirements_permissions()
+
+        owner_a = await _make_user(db_session, email="owner-a@link.test")
+        owner_b = await _make_user(db_session, email="owner-b@link.test")
+        project_a = await _make_project(db_session, owner_a)
+        project_b = await _make_project(db_session, owner_b)
+
+        set_a = await _make_req_set(db_session, project_a, name="Set A")
+        req_a = await _make_requirement(db_session, set_a.id)
+        set_b = await _make_req_set(db_session, project_b, name="Set B")
+        req_b = await _make_requirement(db_session, set_b.id)
+
+        boq_b = BOQ(project_id=project_b, name="B's bill")
+        db_session.add(boq_b)
+        await db_session.flush()
+        position_b = Position(
+            boq_id=boq_b.id,
+            ordinal="1.1",
+            description="B's exterior wall",
+            unit="m2",
+        )
+        db_session.add(position_b)
+        await db_session.flush()
+        await db_session.refresh(position_b)
+
+        path = "/v1/requirements/{s}/requirements/{r}/link/{p}"
+
+        editor = {"role": "editor", "permissions": ["requirements.update"]}
+
+        # Control: the position's own project can link it. Proves existence.
+        app_b = _build_app(db_session, caller_id=str(owner_b), **editor)
+        async with _http(app_b) as client:
+            allowed = await client.post(path.format(s=set_b.id, r=req_b.id, p=position_b.id))
+        assert allowed.status_code == 200, allowed.text
+        assert allowed.json()["linked_position_id"] == str(position_b.id)
+
+        # The boundary: same position, a caller from the other project.
+        app_a = _build_app(db_session, caller_id=str(owner_a), **editor)
+        async with _http(app_a) as client:
+            refused = await client.post(path.format(s=set_a.id, r=req_a.id, p=position_b.id))
+        assert refused.status_code == 404, (
+            "a position in another project's BOQ was linkable across the boundary; "
+            f"got {refused.status_code}: {refused.text}"
+        )
+
+        # The body is a separate assertion from the status, because a 404 that
+        # repeats the identifier back has still confirmed the identifier is
+        # real. That is a smaller leak than the 200 and the same kind of leak,
+        # and it is why the refusal reuses the wording of the not-found case
+        # instead of explaining itself.
+        assert str(position_b.id) not in refused.text, f"the refusal echoed the foreign position id: {refused.text}"
+        assert str(boq_b.id) not in refused.text, f"the refusal echoed the foreign BOQ id: {refused.text}"
+
+        # A refusal must also not have written anything.
+        await db_session.refresh(req_a)
+        assert req_a.linked_position_id is None
+
+    @pytest.mark.tenant_isolation
+    @pytest.mark.asyncio
+    async def test_the_additive_route_refuses_a_foreign_position_too(self, db_session: AsyncSession) -> None:
+        """The same boundary on the newer route, which names the position in the body.
+
+        ``attach_position`` reaches the position through the request body rather
+        than the path. That changes nothing about who may name it, and the two
+        routes had the identical defect, so a guard proven on only one of them
+        would be a guard tested at the call site that was already right. This is
+        the second call site.
+        """
+        from app.modules.boq.models import BOQ, Position
+        from app.modules.requirements.permissions import register_requirements_permissions
+
+        register_requirements_permissions()
+
+        owner_a = await _make_user(db_session, email="owner-a@attach.test")
+        owner_b = await _make_user(db_session, email="owner-b@attach.test")
+        project_a = await _make_project(db_session, owner_a)
+        project_b = await _make_project(db_session, owner_b)
+
+        set_a = await _make_req_set(db_session, project_a, name="Set A")
+        req_a = await _make_requirement(db_session, set_a.id)
+        set_b = await _make_req_set(db_session, project_b, name="Set B")
+        req_b = await _make_requirement(db_session, set_b.id)
+
+        boq_b = BOQ(project_id=project_b, name="B's bill")
+        db_session.add(boq_b)
+        await db_session.flush()
+        position_b = Position(boq_id=boq_b.id, ordinal="2.1", description="B's slab", unit="m3")
+        db_session.add(position_b)
+        await db_session.flush()
+        await db_session.refresh(position_b)
+
+        path = "/v1/requirements/{s}/requirements/{r}/positions/"
+        body = {"position_id": str(position_b.id), "link_source": "manual", "notes": ""}
+        editor = {"role": "editor", "permissions": ["requirements.update"]}
+
+        # Control: the position's own project attaches it and gets a 201.
+        app_b = _build_app(db_session, caller_id=str(owner_b), **editor)
+        async with _http(app_b) as client:
+            allowed = await client.post(path.format(s=set_b.id, r=req_b.id), json=body)
+        assert allowed.status_code == 201, allowed.text
+        assert allowed.json()["position_id"] == str(position_b.id)
+
+        # The boundary: same position, named from the other project.
+        app_a = _build_app(db_session, caller_id=str(owner_a), **editor)
+        async with _http(app_a) as client:
+            refused = await client.post(path.format(s=set_a.id, r=req_a.id), json=body)
+        assert refused.status_code == 404, (
+            f"a foreign position was attachable through the body; got {refused.status_code}: {refused.text}"
+        )
+        assert str(position_b.id) not in refused.text, f"the refusal echoed the foreign position id: {refused.text}"
+
+        # And nothing was linked.
+        links = await RequirementsService(db_session).list_position_links(req_a.id)
+        assert links == []
 
 
 # ── 5. Requirements file upload — Excel magic-byte ────────────────────────────
@@ -604,3 +769,312 @@ class TestRequirementsFileUpload:
         assert len(parsed) == 3
         assert parsed[0]["entity"] == "exterior_wall"
         assert parsed[2]["entity"] == "roof"
+
+
+# ── 6. Text import — the set named in the path must be the caller's ───────────
+
+
+class TestTextImportCrossTenant:
+    """``POST /{set_id}/import/text/`` appends rows to the set the path names.
+
+    This was the one set-scoped route in the module carrying no project check
+    of any kind while thirty of its neighbours carry one. Its own docstring
+    said a new set was created, which would have made the absent check
+    harmless. The service resolves the existing set and appends to it, so the
+    call was a write into another tenant's set that handed back that set's
+    full contents in the 201 body.
+    """
+
+    @pytest.mark.tenant_isolation
+    async def test_text_cannot_be_imported_into_another_projects_set(self, db_session: AsyncSession) -> None:
+        """Both polarities: the owner's import lands, the stranger's 404s and writes nothing."""
+        from sqlalchemy import func, select
+
+        from app.modules.requirements.models import Requirement
+        from app.modules.requirements.permissions import register_requirements_permissions
+
+        register_requirements_permissions()
+
+        owner_a = await _make_user(db_session, email="owner-a@textimport.test")
+        owner_b = await _make_user(db_session, email="owner-b@textimport.test")
+        project_a = await _make_project(db_session, owner_a)
+        project_b = await _make_project(db_session, owner_b)
+
+        set_a = await _make_req_set(db_session, project_a, name="A's set")
+        set_b = await _make_req_set(db_session, project_b, name="B's set")
+
+        path = "/v1/requirements/{s}/import/text/"
+        body = {"text": "exterior_wall | fire_rating | equals | F90 | -"}
+        creator = {"role": "editor", "permissions": ["requirements.create"]}
+
+        async def _rows_in(set_id: uuid.UUID) -> int:
+            result = await db_session.execute(
+                select(func.count()).select_from(Requirement).where(Requirement.requirement_set_id == set_id)
+            )
+            return int(result.scalar_one())
+
+        # Control: B imports into B's own set and the row lands.
+        app_b = _build_app(db_session, caller_id=str(owner_b), **creator)
+        async with _http(app_b) as client:
+            allowed = await client.post(path.format(s=set_b.id), json=body)
+        assert allowed.status_code == 201, allowed.text
+        assert await _rows_in(set_b.id) == 1
+
+        # The boundary: A names B's set. The count taken here is the control's
+        # one row, so an unchanged count is what proves nothing was appended.
+        before = await _rows_in(set_b.id)
+        app_a = _build_app(db_session, caller_id=str(owner_a), **creator)
+        async with _http(app_a) as client:
+            refused = await client.post(path.format(s=set_b.id), json=body)
+        assert refused.status_code == 404, (
+            f"text was importable into a foreign set; got {refused.status_code}: {refused.text}"
+        )
+        assert str(set_b.id) not in refused.text, f"the refusal echoed the foreign set id: {refused.text}"
+        assert await _rows_in(set_b.id) == before, "the refused import still appended rows to the foreign set"
+
+        # A's own set is empty too, which rules out the rows having been
+        # redirected somewhere harmless rather than actually refused.
+        assert await _rows_in(set_a.id) == 0
+
+
+# ── 7. Set creation — the project the caller names must be the caller's ───────
+
+
+class TestSetCreationCrossTenant:
+    """``POST /`` takes its project from the request body or the query string.
+
+    Nothing fetched that project and nothing compared it, so a holder of the
+    global requirements.create role could plant a set inside another tenant's
+    project, where it appears in that tenant's set list under a name a stranger
+    chose. The route reads no row at all, which is why an audit looking for a
+    fetch by identifier walks straight past it. An identifier arriving from
+    outside is enough on its own.
+    """
+
+    @pytest.mark.tenant_isolation
+    async def test_a_set_cannot_be_created_inside_another_projects_id(self, db_session: AsyncSession) -> None:
+        """Both polarities, and both spellings, since the project arrives two ways."""
+        from sqlalchemy import func, select
+
+        from app.modules.requirements.models import RequirementSet
+        from app.modules.requirements.permissions import register_requirements_permissions
+
+        register_requirements_permissions()
+
+        owner_a = await _make_user(db_session, email="owner-a@setcreate.test")
+        owner_b = await _make_user(db_session, email="owner-b@setcreate.test")
+        project_a = await _make_project(db_session, owner_a)
+        project_b = await _make_project(db_session, owner_b)
+
+        creator = {"role": "editor", "permissions": ["requirements.create"]}
+
+        async def _sets_in(project_id: uuid.UUID) -> int:
+            result = await db_session.execute(
+                select(func.count()).select_from(RequirementSet).where(RequirementSet.project_id == project_id)
+            )
+            return int(result.scalar_one())
+
+        app_a = _build_app(db_session, caller_id=str(owner_a), **creator)
+
+        # Control: A creates inside A's own project and it lands.
+        async with _http(app_a) as client:
+            allowed = await client.post(
+                "/v1/requirements/",
+                json={"project_id": str(project_a), "name": "A's own set", "source_type": "manual"},
+            )
+        assert allowed.status_code == 201, allowed.text
+        assert await _sets_in(project_a) == 1
+
+        # The boundary, body spelling.
+        async with _http(app_a) as client:
+            refused_body = await client.post(
+                "/v1/requirements/",
+                json={"project_id": str(project_b), "name": "planted", "source_type": "manual"},
+            )
+        assert refused_body.status_code == 404, (
+            f"a set was creatable inside a foreign project; got {refused_body.status_code}: {refused_body.text}"
+        )
+
+        # The boundary, query spelling. The route accepts the project two ways,
+        # and a guard proved on only one of them is a guard on the spelling.
+        async with _http(app_a) as client:
+            refused_query = await client.post(
+                f"/v1/requirements/?project_id={project_b}",
+                json={"name": "planted", "source_type": "manual"},
+            )
+        assert refused_query.status_code == 404, (
+            f"the query spelling reached a foreign project; got {refused_query.status_code}: {refused_query.text}"
+        )
+
+        assert await _sets_in(project_b) == 0, "a set was planted in the foreign project"
+        assert await _sets_in(project_a) == 1, "the refused calls landed in the caller's own project instead"
+
+
+# -- 6. Containment: the BIM model a set is validated against -------------------
+
+
+class TestTheModelValidatedAgainstBelongsToTheSetsProject:
+    """``validate-bim`` gated the set and never the model.
+
+    The route resolves the requirement set and checks the caller against that
+    set's project, honestly and correctly. Nothing checked the model. So a
+    caller entitled to their own set could name any model id in the
+    installation, and every element of it would be read, measured against
+    their requirements, and folded into a report stored against their project.
+    The stolen data arrives as the report rather than as the response body,
+    which is why a test that only reads the status code would have missed it.
+
+    The refusal is asserted for indistinguishability rather than for the
+    absence of a substring. The model id cannot be kept out of the message -
+    the caller supplied it in the path and already knows it. What must not
+    differ is everything else: a model that belongs to somebody else has to be
+    refused in exactly the words used for a model that never existed, because
+    a refusal that reads differently is an existence oracle that can be walked
+    one identifier at a time.
+    """
+
+    @staticmethod
+    async def _make_model(session: AsyncSession, project_id: uuid.UUID, name: str):
+        from app.modules.bim_hub.models import BIMModel
+
+        model = BIMModel(project_id=project_id, name=name, status="ready")
+        session.add(model)
+        await session.flush()
+        await session.refresh(model)
+        return model
+
+    @staticmethod
+    async def _reports_for(session: AsyncSession, project_id: uuid.UUID) -> int:
+        from sqlalchemy import func, select
+
+        from app.modules.validation.models import ValidationReport
+
+        stmt = select(func.count()).select_from(
+            select(ValidationReport).where(ValidationReport.project_id == project_id).subquery()
+        )
+        return int((await session.execute(stmt)).scalar_one())
+
+    @pytest.mark.tenant_isolation
+    @pytest.mark.asyncio
+    async def test_a_model_in_another_project_cannot_be_validated_against(self, db_session: AsyncSession) -> None:
+        """The boundary, with both controls that make the 404 mean something.
+
+        Two controls, because a 404 on its own proves nothing. The model's own
+        owner validates against it first, so the row demonstrably exists and
+        the endpoint demonstrably works on it. The attacker then validates
+        against their own model, so their identity, permission and set are
+        demonstrably sufficient. Only with both standing can the third call's
+        404 be a refusal rather than a coincidence.
+
+        Both callers are editors carrying the permission explicitly. An admin
+        would pass the project gate by bypass, and the result would rest on the
+        bypass rather than on the boundary. It matters more here than usual:
+        the rule under test is deliberately role-independent, since validating
+        one project's requirements against another project's model files a
+        wrong record whoever asks for it.
+        """
+        from app.modules.requirements.permissions import register_requirements_permissions
+
+        register_requirements_permissions()
+
+        owner_a = await _make_user(db_session, email="owner-a@validate.test")
+        owner_b = await _make_user(db_session, email="owner-b@validate.test")
+        project_a = await _make_project(db_session, owner_a)
+        project_b = await _make_project(db_session, owner_b)
+
+        set_a = await _make_req_set(db_session, project_a, name="A's set")
+        await _make_requirement(db_session, set_a.id)
+        set_b = await _make_req_set(db_session, project_b, name="B's set")
+        await _make_requirement(db_session, set_b.id)
+
+        model_a = await self._make_model(db_session, project_a, "A's model")
+        model_b = await self._make_model(db_session, project_b, "B's model")
+
+        path = "/v1/requirements/{s}/validate-bim/{m}"
+        editor = {"role": "editor", "permissions": ["requirements.read", "validation.create"]}
+
+        app_b = _build_app(db_session, caller_id=str(owner_b), **editor)
+        app_a = _build_app(db_session, caller_id=str(owner_a), **editor)
+
+        # Control one: the model's own project validates against it.
+        async with _http(app_b) as client:
+            owner_call = await client.post(path.format(s=set_b.id, m=model_b.id))
+        assert owner_call.status_code == 200, owner_call.text
+
+        # Control two: the other caller's own tenant still works.
+        async with _http(app_a) as client:
+            own_call = await client.post(path.format(s=set_a.id, m=model_a.id))
+        assert own_call.status_code == 200, (
+            f"the guard refused a model in the caller's own project; got {own_call.status_code}: {own_call.text}"
+        )
+
+        reports_before = await self._reports_for(db_session, project_a)
+
+        # The boundary: A's set, B's model.
+        async with _http(app_a) as client:
+            refused = await client.post(path.format(s=set_a.id, m=model_b.id))
+        assert refused.status_code == 404, (
+            "a model in another project was validated against across the boundary; "
+            f"got {refused.status_code}: {refused.text}"
+        )
+
+        # Nothing about the foreign project may travel back in the refusal.
+        assert str(project_b) not in refused.text, f"the refusal echoed the foreign project id: {refused.text}"
+        assert "B's model" not in refused.text, f"the refusal echoed the foreign model name: {refused.text}"
+
+        # And the read must not have happened: a refusal files no report.
+        assert await self._reports_for(db_session, project_a) == reports_before, (
+            "the refused call still wrote a validation report into the caller's project"
+        )
+
+    @pytest.mark.tenant_isolation
+    @pytest.mark.asyncio
+    async def test_a_foreign_model_is_refused_in_the_same_words_as_a_missing_one(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Indistinguishable, not merely refused.
+
+        Asking for a model that belongs to somebody else and asking for a model
+        that does not exist have to produce the same answer. If they read
+        differently, the endpoint answers "does this id exist somewhere in the
+        installation" for any id the caller cares to try, and a private model
+        list can be enumerated through a pair of 404s.
+
+        The two ids are substituted out before the comparison, because each
+        message quotes back the id the caller themselves put in the path. That
+        one difference is not information the caller did not already have.
+        """
+        from app.modules.requirements.permissions import register_requirements_permissions
+
+        register_requirements_permissions()
+
+        owner_a = await _make_user(db_session, email="owner-a@oracle.test")
+        owner_b = await _make_user(db_session, email="owner-b@oracle.test")
+        project_a = await _make_project(db_session, owner_a)
+        project_b = await _make_project(db_session, owner_b)
+
+        set_a = await _make_req_set(db_session, project_a, name="A's set")
+        await _make_requirement(db_session, set_a.id)
+        model_b = await self._make_model(db_session, project_b, "B's model")
+        never_existed = uuid.uuid4()
+
+        path = "/v1/requirements/{s}/validate-bim/{m}"
+        app_a = _build_app(
+            db_session,
+            caller_id=str(owner_a),
+            role="editor",
+            permissions=["requirements.read", "validation.create"],
+        )
+
+        async with _http(app_a) as client:
+            foreign = await client.post(path.format(s=set_a.id, m=model_b.id))
+            missing = await client.post(path.format(s=set_a.id, m=never_existed))
+
+        assert foreign.status_code == missing.status_code == 404
+
+        foreign_detail = foreign.json()["detail"].replace(str(model_b.id), "<id>")
+        missing_detail = missing.json()["detail"].replace(str(never_existed), "<id>")
+        assert foreign_detail == missing_detail, (
+            "a model owned by another project is refused in different words than a model that "
+            f"never existed, which tells the caller it is real: {foreign_detail!r} vs {missing_detail!r}"
+        )

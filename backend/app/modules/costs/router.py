@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.document_locale import resolve_document_locale
 from app.core.file_signature import (
     SIGNATURE_BYTES_REQUIRED,
     FileSignatureMismatch,
@@ -342,37 +343,28 @@ def _resolve_cost_locale(
 ) -> str:
     """Pick the best CWICR translation locale for an HTTP request.
 
-    Priority:
-      1. ``?locale=ro`` query parameter (explicit, wins over header).
-      2. First language tag of ``Accept-Language`` (RFC 7231, region stripped).
-      3. ``"en"`` fallback.
+    The rule is the shared one in :func:`app.core.document_locale.
+    resolve_document_locale`: explicit ``?locale=`` first, then the first
+    ``Accept-Language`` tag whose primary subtag the catalogue holds, then the
+    catalogue default. What is local to costs is the catalogue, not the rule.
 
-    The CWICR translations module uses its own SUPPORTED_LOCALES (16 entries)
-    independently of ``app.core.i18n`` (20 entries) - they overlap but the
-    CWICR set adds ``ro``, ``bg``, ``hr``, ``id``, ``th``, ``vi`` that the
-    UI-strings i18n doesn't ship yet.  Pulling the locale here keeps the
-    cost-data path decoupled from the broader request-locale middleware so
-    a missing UI locale doesn't accidentally lose a CWICR translation.
+    That distinction is the whole reason this function still exists. The CWICR
+    translations module carries its own SUPPORTED_LOCALES, sixteen entries,
+    independently of ``app.core.i18n`` - the sets overlap but CWICR adds ``ro``,
+    ``bg``, ``hr``, ``id``, ``th`` and ``vi`` that the UI strings do not ship,
+    so resolving cost data against the UI's set would silently lose a
+    translation we hold. Passing the catalogue in keeps that decoupling while
+    leaving one implementation of the resolution itself.
+
+    This body used to be a line-for-line copy of the shared resolver, written
+    before it existed and never folded in. The two were verified to agree on
+    all 340 combinations of a deliberately awkward input matrix before the copy
+    was removed, so this is the same behaviour and not merely the same
+    intention.
     """
     from app.modules.costs.translations import SUPPORTED_LOCALES as COST_LOCALES
 
-    # 1. Explicit query param wins. Strip region (de-DE → de).
-    if locale_param:
-        norm = locale_param.strip().lower().split("-")[0]
-        if norm in COST_LOCALES:
-            return norm
-
-    # 2. First entry of Accept-Language. Quality-weighted parsing isn't
-    #    necessary here - the costs UI only needs a single best-match,
-    #    and the existing AcceptLanguageMiddleware already does the
-    #    full RFC 7231 dance for the rest of the app.
-    if accept_language:
-        for raw in accept_language.split(","):
-            tag = raw.split(";", 1)[0].strip().lower().split("-")[0]
-            if tag in COST_LOCALES:
-                return tag
-
-    return "en"
+    return resolve_document_locale(locale_param, accept_language, COST_LOCALES, "en")
 
 
 def _localize_response_payload(
@@ -1252,10 +1244,38 @@ async def load_base_market(
 
 @router.get("/vector/status/")
 async def get_vector_status() -> dict:
-    """Check vector DB status (LanceDB embedded or Qdrant server)."""
+    """Check vector DB status (LanceDB embedded or Qdrant server).
+
+    Deliberately public - the catalogue installer and the BOQ editor both
+    read it before the user has a project - and deliberately projected. The
+    LanceDB branch of ``vector_status()`` carries ``path``, the absolute
+    directory the embedded database lives in, and returning that dict
+    verbatim handed a stranger the server's filesystem layout.
+    ``/api/system/status`` already projects the same call down to engine plus
+    count; this is that shape, widened only by the fields the three callers
+    named in ``ImportDatabasePage``, ``ModulesPage`` and ``BOQEditorPage``
+    actually read. Anything new that this function starts returning stays out
+    of the response until someone adds it here on purpose.
+    """
     from app.core.vector import vector_status as vs
 
-    return vs()
+    raw = vs()
+    projected: dict = {
+        "connected": bool(raw.get("connected")),
+        "engine": raw.get("engine", "unknown"),
+        "cost_collection": raw.get("cost_collection"),
+    }
+    for key in (
+        "backend",
+        "error",
+        "collections",
+        "can_restore_snapshots",
+        "can_generate_locally",
+        "tables",
+    ):
+        if key in raw:
+            projected[key] = raw[key]
+    return projected
 
 
 @router.get("/vector/download-status/")
@@ -1537,7 +1557,16 @@ async def embedder_status() -> dict[str, Any]:
         "size_mb_int8": int,          # ONNX INT8 footprint
         "size_mb_fp32": int,          # full-precision footprint
         "int8_mode": bool,            # current setting
-        "pip_command": str,           # one-liner the UI shows in a copy box
+        "pip_command": str,           # one-liner the UI shows in a copy box,
+                                      # empty inside a frozen bundle because
+                                      # there is no pip there to run it
+        "install_hint": str,          # what to do, worded for the install
+                                      # this is being read on
+        "install_hint_code": str,     # "pip" | "frozen_no_extra" - which case
+                                      # install_hint is describing, so a client
+                                      # can say it in its own language. Open
+                                      # set: fall back to install_hint on any
+                                      # value you do not recognise
         "missing_packages": list[str],
         "extra_name": "semantic",     # hint for advanced users
     }
@@ -1547,6 +1576,7 @@ async def embedder_status() -> dict[str, Any]:
     install card instead of an error toast.
     """
     from app.config import get_settings  # noqa: PLC0415
+    from app.core.self_upgrade import DESKTOP_NO_EXTRA, repair_hint  # noqa: PLC0415
 
     s = get_settings()
     model_name = getattr(s, "cwicr_embedding_model", "BAAI/bge-m3")
@@ -1589,13 +1619,33 @@ async def embedder_status() -> dict[str, Any]:
         "size_mb_int8": 700,
         "size_mb_fp32": 2300,
         "int8_mode": int8_mode,
-        "pip_command": "pip install --upgrade openconstructionerp[semantic]",
+        # This card is about the BGE-M3 stack, whose library is FlagEmbedding,
+        # and FlagEmbedding is deliberately outside requirements-desktop.lock.
+        # So a bundle reading this really cannot get the encoder, and the empty
+        # frozen branch is the point: a copy box is only honest where the thing
+        # in it can be run. DESKTOP_NO_EXTRA carries the sentence instead.
+        "pip_command": repair_hint("pip install --upgrade openconstructionerp[semantic]", ""),
+        "install_hint": repair_hint("Install it with the command above, then restart the backend.", DESKTOP_NO_EXTRA),
+        # Which of the two cases this is, said as a value rather than left
+        # for the reader to infer from the English prose above. The frontend
+        # translates the sentence, and it can only do that if it is told the
+        # case; parsing the prose would break on the first reword. It comes
+        # off the same repair_hint branch as the command and the prose, so
+        # the three cannot disagree: "pip" is impossible next to an empty
+        # pip_command, because one call decides all three. Treat it as an
+        # open set rather than a closed one - a client that meets a value it
+        # does not know falls back to install_hint, which is why that field
+        # keeps being sent rather than being replaced by this one.
+        "install_hint_code": repair_hint("pip", "frozen_no_extra"),
         "missing_packages": missing,
         "extra_name": "semantic",
     }
 
 
-@router.get("/qdrant-search/")
+@router.get(
+    "/qdrant-search/",
+    dependencies=[Depends(RequirePermission("costs.read"))],
+)
 async def qdrant_smoke_search(
     q: str = Query(..., min_length=1, description="Query text - passed verbatim as the CORE query"),
     country: str = Query("DE", description="Region or country code, e.g. DE, DE_BERLIN, USA_USD"),
@@ -1603,7 +1653,7 @@ async def qdrant_smoke_search(
     is_abstract: bool | None = Query(False, description="Drop aggregator headers (None to leave open)"),
     department_code: str | None = Query(None, description="DIN-276-derived trade bucket (optional)"),
     unit_dim: str | None = Query(None, description="volume / area / length / count (optional)"),
-    diag: bool = Query(False, description="Return diagnostics (resolved collection + parquet path)"),
+    diag: bool = Query(False, description="Return diagnostics (resolved collection + parquet file name)"),
 ) -> dict[str, Any]:
     """Smoke endpoint for the new BGE-M3 + Qdrant CWICR pipeline.
 
@@ -1611,11 +1661,19 @@ async def qdrant_smoke_search(
     then parquet lookup attaches the 84-column rate data. Use this to
     verify the new pipeline before wiring it into ``/match-elements``.
 
+    Gated on ``costs.read`` rather than rate-limited. The catalogue browse
+    routes beside it are a public product surface and stay open, but this one
+    is not a browse: every call runs a BGE-M3 embedding and a hybrid search at
+    a caller-chosen limit of up to 500, and it is a smoke probe by its own
+    name, with no frontend caller and no QA harness behind it. A rate limit
+    would have priced the anonymous compute rather than removed it, and there
+    is nobody anonymous who needs this route.
+
     Example:
         GET /api/v1/costs/qdrant-search/?q=Stahlbetonwand%20C30/37&country=DE
     """
 
-    from app.modules.costs.parquet_lookup import parquet_path_for_country, parquet_root
+    from app.modules.costs.parquet_lookup import parquet_path_for_country
     from app.modules.costs.qdrant_adapter import (
         country_to_collection,
         lookup_full_rows,
@@ -1643,11 +1701,19 @@ async def qdrant_smoke_search(
         # search() raised a bare ModuleNotFoundError - never echo the raw
         # "No module named 'qdrant_client'" text to the client (NEW-B-105).
         logger.info("CWICR Qdrant search unavailable (optional extra missing): %s", exc)
+        # The CWICR store's encoder is FlagEmbedding, which is deliberately not
+        # in requirements-desktop.lock, so a bundle genuinely cannot switch this
+        # on and DESKTOP_NO_EXTRA is the truthful wording.
+        from app.core.self_upgrade import DESKTOP_NO_EXTRA, repair_hint  # noqa: PLC0415
+
         raise HTTPException(
             status_code=503,
             detail=(
                 "Semantic search is not available on this deployment. "
-                "Install the optional extra: pip install openconstructionerp[semantic]"
+                + repair_hint(
+                    "Install the optional extra: pip install openconstructionerp[semantic]",
+                    DESKTOP_NO_EXTRA,
+                )
             ),
         ) from exc
     except RuntimeError as exc:
@@ -1674,10 +1740,17 @@ async def qdrant_smoke_search(
 
     body: dict[str, Any] = {"hits": response_hits, "count": len(response_hits)}
     if diag:
+        # The two fields this used to carry were ``str(parquet_root())`` and
+        # the absolute path of the resolved file. What the diagnostic is for
+        # is knowing WHICH file answered, not where the server keeps it, and
+        # the basename says that without handing out the filesystem layout.
+        # An unresolvable root needs no field of its own: it surfaces here as
+        # an empty ``parquet_file``, and a resolved file that answered nothing
+        # surfaces as ``parquet_rows_attached: 0``.
+        parquet_file = parquet_path_for_country(country)
         body["diagnostics"] = {
             "collection": country_to_collection(country),
-            "parquet_root": str(parquet_root()),
-            "parquet_file": str(parquet_path_for_country(country) or ""),
+            "parquet_file": parquet_file.name if parquet_file else "",
             "parquet_rows_attached": len(full_rows),
         }
     return body
@@ -1749,12 +1822,17 @@ async def vectorize_region(
     try:
         embedder = await asyncio.wait_for(asyncio.to_thread(get_embedder), timeout=30)
         if embedder is None:
+            # get_embedder() loads sentence-transformers, which the desktop lock
+            # resolves through [semantic-encoder]. A bundle without it is damaged
+            # rather than lean, so the reader gets the repair wording and not an
+            # invitation to add a package the build already carries.
+            from app.core.self_upgrade import repair_hint  # noqa: PLC0415
+
             return JSONResponse(
                 content={
                     "indexed": 0,
-                    "message": "Vector indexing is not available: no embedding model "
-                    "found. Install sentence-transformers (pip install "
-                    "sentence-transformers).",
+                    "message": "Vector indexing is not available: no embedding model found. "
+                    + repair_hint("Install sentence-transformers (pip install sentence-transformers)."),
                 },
                 status_code=503,
             )
@@ -2597,11 +2675,17 @@ async def semantic_search(
     to the query, even if the exact words don't match.
     E.g. "concrete wall" finds "reinforced partition C30/37".
 
-    Degrades gracefully (NEW-B-105): when the optional ``[semantic]``
-    extra is not installed (no embedding model / no ``qdrant_client``)
-    the endpoint returns an empty result list with HTTP 200 instead of
-    leaking an ``ImportError`` / ``RuntimeError`` as a 500. The lexical
-    SQL search (``/costs/?q=``) remains the always-available path.
+    Degrades by saying so. When the optional ``[semantic]`` extra is not
+    installed, or no embedding model has been fetched, the endpoint answers 503
+    with a sentence the caller can show, the way the CWICR search above it
+    already does. It used to answer 200 with an empty list, which the grid drew
+    as "nothing matched your query": the reader was told their search had no
+    results when in truth it had never run. The lexical SQL search
+    (``/costs/?q=``) remains the always-available path and the client is
+    expected to fall back to it, but a fallback the reader is not told about is
+    a different answer wearing the same clothes.
+
+    The raw import text is still never echoed to the caller (NEW-B-105).
     """
     try:
         from app.core.vector import encode_texts, vector_search
@@ -2609,10 +2693,25 @@ async def semantic_search(
         query_vector = encode_texts([q])[0]
         return vector_search(query_vector, region=region, limit=limit)
     except (ImportError, ModuleNotFoundError, RuntimeError) as exc:
-        # Optional semantic stack absent / no embedding model loaded.
-        # Never surface the raw import text to the client.
-        logger.info("Semantic search unavailable, returning empty result: %s", exc)
-        return []
+        from app.core.vector import embedder_status
+
+        state = embedder_status()
+        logger.info("Semantic search unavailable (%s): %s", state["state"], exc)
+        # encode_texts() is the sentence-transformers path, and that one is in
+        # requirements-desktop.lock, so the frozen reader is looking at a
+        # damaged bundle rather than a lean one. Note this is the opposite
+        # constant from the CWICR/Qdrant handler above, which reaches for
+        # FlagEmbedding: the two look alike and need different advice.
+        from app.core.self_upgrade import repair_hint  # noqa: PLC0415
+
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Semantic search is not available on this deployment. "
+                + repair_hint("Install the optional extra: pip install openconstructionerp[semantic]")
+            ),
+            headers={"X-Semantic-State": str(state["state"])},
+        ) from exc
 
 
 # ── Categories (distinct classification.collection values) ───────────────

@@ -47,6 +47,7 @@ import { ConfirmDialog } from '@/shared/ui/ConfirmDialog';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 import {
   clashApi,
   type ClashProfile,
@@ -129,7 +130,7 @@ export default function ClashProfileManager() {
   const addToast = useToastStore((s) => s.addToast);
   const { confirm, ...confirmProps } = useConfirm();
 
-  const ctxProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const ctxProjectId = useActiveProjectId();
   const ctxProjectName = useProjectContextStore((s) => s.activeProjectName);
   const projectId = ctxProjectId ?? params.get('project') ?? '';
 

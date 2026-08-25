@@ -3,7 +3,7 @@
 import clsx from 'clsx';
 import type { ReactNode } from 'react';
 
-type BadgeVariant = 'neutral' | 'blue' | 'success' | 'warning' | 'error';
+export type BadgeVariant = 'neutral' | 'blue' | 'purple' | 'success' | 'warning' | 'error';
 type BadgeSize = 'sm' | 'md';
 
 interface BadgeProps {
@@ -21,6 +21,9 @@ interface BadgeProps {
 const variantStyles: Record<BadgeVariant, string> = {
   neutral: 'bg-surface-secondary text-content-secondary',
   blue: 'bg-oe-blue-subtle text-oe-blue-text',
+  // Added so two states that are not the same thing stop sharing blue. See
+  // index.css `--oe-purple` for the contrast measurements in both themes.
+  purple: 'bg-oe-purple-subtle text-oe-purple-text',
   success: 'bg-semantic-success-bg text-semantic-success',
   warning: 'bg-semantic-warning-bg text-[#b45309]',
   error: 'bg-semantic-error-bg text-semantic-error',
@@ -29,6 +32,7 @@ const variantStyles: Record<BadgeVariant, string> = {
 const dotColors: Record<BadgeVariant, string> = {
   neutral: 'bg-content-tertiary',
   blue: 'bg-oe-blue',
+  purple: 'bg-oe-purple',
   success: 'bg-semantic-success',
   warning: 'bg-semantic-warning',
   error: 'bg-semantic-error',

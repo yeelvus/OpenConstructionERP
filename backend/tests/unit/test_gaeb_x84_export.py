@@ -11,8 +11,11 @@ conformance suite in ``test_gaeb_export_xsd.py``:
   opaque xs:ID handle and never the OZ.
 - The exporter emits only schema elements: no invented ``BoQBkUp`` /
   ``BoQBkUpRef`` / ``Recommendation`` (those are not in the GAEB 3.3 schema
-  and were dropped in the spec-valid rewrite). An X84 alternate's rationale
-  is folded into the (schema-valid) item Description instead.
+  and were dropped in the spec-valid rewrite).
+- A plain X84 is a Hauptangebot (Angebotsabgabe per GAEB DA84) and carries
+  no alternate markers. Only ``bid_type="alternate"`` writes a Nebenangebot
+  rationale, as a schema-valid ``BidComm`` (Bieter Kommentar) on the flagged
+  items.
 
 The tests drive the pure builder directly (no app / DB), so they run anywhere.
 
@@ -63,8 +66,8 @@ def _boq(positions: list[SimpleNamespace]) -> SimpleNamespace:
     )
 
 
-def _export_x84(boq: SimpleNamespace) -> ET.Element:
-    xml = build_gaeb_xml(boq, project_name="X84 Project", project_currency="EUR", gaeb_format="x84")
+def _export_x84(boq: SimpleNamespace, bid_type: str = "main") -> ET.Element:
+    xml = build_gaeb_xml(boq, project_name="X84 Project", project_currency="EUR", gaeb_format="x84", bid_type=bid_type)
     return ET.fromstring(xml)
 
 
@@ -115,9 +118,9 @@ def test_x84_oz_in_rnopart_not_id() -> None:
     assert item.get("RNoPart") == "001"
 
 
-def test_x84_alternate_rationale_folded_into_description() -> None:
-    """An X84 alternate's rationale lands in the (schema-valid) Description."""
-    boq = _boq(
+def _alt_boq() -> SimpleNamespace:
+    """One flagged alternate position and one plain position."""
+    return _boq(
         [
             _pos(
                 "01.001",
@@ -127,16 +130,45 @@ def test_x84_alternate_rationale_folded_into_description() -> None:
                 "165.50",
                 alt_markup_reason="Cuts site curing time by 9 days.",
                 alt_parent_ref="01.001",
-            )
+            ),
+            _pos("01.002", "Glulam beams", "m3", "18.75", "1320.00"),
         ]
     )
-    # The X84 Item Description is intentionally empty (long text lives in the
-    # paired X83), so the rationale is folded into the description string the
-    # builder produces - assert it does not raise and produces valid XML.
-    xml = build_gaeb_xml(boq, project_name="P", project_currency="EUR", gaeb_format="x84")
-    root = ET.fromstring(xml)
+
+
+def test_x84_default_is_plain_hauptangebot() -> None:
+    """Without ``bid_type=alternate`` an X84 is a plain Angebotsabgabe.
+
+    Even when positions carry alternate metadata, the default (main bid)
+    export writes NO Nebenangebot rationale and no BidComm elements.
+    """
+    root = _export_x84(_alt_boq())
+    assert root.find(f".//{GNS}BidComm") is None
+    flat = ET.tostring(root, encoding="unicode")
+    assert "Nebenangebot" not in flat
     # Description present and well formed for every priced item.
     for item in root.findall(f".//{GNS}Item"):
         desc = item.find(f"{GNS}Description")
         assert desc is not None
         assert desc.find(f"{GNS}CompleteText/{GNS}DetailTxt") is not None
+
+
+def test_x84_alternate_writes_bidcomm_rationale() -> None:
+    """``bid_type=alternate`` writes the rationale as a BidComm element.
+
+    ``BidComm`` (Bieter Kommentar) is the schema element the X84 Item
+    provides for bidder-side remarks - the rationale survives a conformant
+    re-import, unlike the invented ``BoQBkUp`` markers of the old exporter.
+    Only the flagged position gets one.
+    """
+    root = _export_x84(_alt_boq(), bid_type="alternate")
+    items = root.findall(f".//{GNS}Item")
+    assert len(items) == 2
+    flagged = [i for i in items if i.find(f"{GNS}BidComm") is not None]
+    assert len(flagged) == 1, "exactly the flagged position must carry a BidComm"
+    comm_text = "".join((flagged[0].find(f"{GNS}BidComm")).itertext())
+    assert "Nebenangebot zu Position 01.001" in comm_text
+    assert "Cuts site curing time by 9 days." in comm_text
+    # Schema order: BidComm follows Description inside the Item.
+    child_tags = [c.tag for c in flagged[0]]
+    assert child_tags.index(f"{GNS}BidComm") > child_tags.index(f"{GNS}Description")

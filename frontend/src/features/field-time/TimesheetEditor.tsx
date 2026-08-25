@@ -20,6 +20,7 @@ import { getErrorMessage } from '@/shared/lib/api';
 import { listResources } from '@/features/resources/api';
 import { listEquipment } from '@/features/equipment/api';
 import { listVariationRequests } from '@/features/variations/api';
+import { listSubcontractors } from '@/features/subcontractors/api';
 import { TimesheetLineRow, type PickOption } from './TimesheetLineRow';
 import { LineComposer } from './LineComposer';
 import { ValidationPanel } from './ValidationPanel';
@@ -34,6 +35,7 @@ import {
   submitTimesheet,
   approveTimesheet,
   reverseTimesheet,
+  listWorkingTimeRegimes,
   formatHours,
   type FieldTimesheet,
   type TimesheetStatus,
@@ -58,10 +60,21 @@ function joinLabel(...parts: (string | null | undefined)[]): string {
 export interface TimesheetEditorProps {
   timesheetId: string;
   projectId: string;
+  /**
+   * The statutory working-time regime the page is set to, or '' for none. It
+   * only decides whether the controls for one are offered here; what the sheet
+   * is actually recorded under is its own `working_time_regime`.
+   */
+  workingTimeRegime?: string;
   onClose: () => void;
 }
 
-export function TimesheetEditor({ timesheetId, projectId, onClose }: TimesheetEditorProps) {
+export function TimesheetEditor({
+  timesheetId,
+  projectId,
+  workingTimeRegime = '',
+  onClose,
+}: TimesheetEditorProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
@@ -81,8 +94,12 @@ export function TimesheetEditor({ timesheetId, projectId, onClose }: TimesheetEd
   });
 
   const resourcesQ = useQuery({
-    queryKey: ['resources', 'list', 'field-time'],
-    queryFn: () => listResources({ limit: 500 }),
+    // Same scoping as the day recorder, and the same key: a timesheet line
+    // belongs to one project, so the picker must offer that project's roster
+    // and the unhomed company pool, nothing else.
+    queryKey: ['resources', 'list', 'field-time', projectId],
+    queryFn: () => listResources({ limit: 500, project_id: projectId }),
+    enabled: !!projectId,
   });
 
   const equipmentQ = useQuery({
@@ -98,20 +115,43 @@ export function TimesheetEditor({ timesheetId, projectId, onClose }: TimesheetEd
 
   const labour: PickOption[] = useMemo(
     () =>
-      (resourcesQ.data ?? [])
+      (resourcesQ.data?.items ?? [])
         .filter((r) => r.resource_type !== 'equipment')
         .map((r) => ({ id: r.id, label: joinLabel(r.code, r.name) || r.id })),
     [resourcesQ.data],
   );
 
   const plant: PickOption[] = useMemo(
-    () => (equipmentQ.data ?? []).map((e) => ({ id: e.id, label: joinLabel(e.code, e.name) || e.id })),
+    () => (equipmentQ.data?.items ?? []).map((e) => ({ id: e.id, label: joinLabel(e.code, e.name) || e.id })),
     [equipmentQ.data],
   );
 
   const variations: PickOption[] = useMemo(
-    () => (variationsQ.data ?? []).map((v) => ({ id: v.id, label: joinLabel(v.code, v.title) || v.id })),
+    () => (variationsQ.data?.items ?? []).map((v) => ({ id: v.id, label: joinLabel(v.code, v.title) || v.id })),
     [variationsQ.data],
+  );
+
+  // The working-time controls appear when this sheet is recorded under a regime,
+  // or when the page is set to record new days under one. Everywhere else the
+  // editor is the editor it has always been.
+  const showWorkingTime = !!(detailQ.data?.working_time_regime || workingTimeRegime);
+
+  const regimesQ = useQuery({
+    queryKey: ['field-time', 'working-time-regimes'],
+    queryFn: listWorkingTimeRegimes,
+    staleTime: Infinity,
+    enabled: showWorkingTime,
+  });
+
+  const subcontractorsQ = useQuery({
+    queryKey: ['subcontractors', 'list', 'field-time'],
+    queryFn: () => listSubcontractors({ limit: 500, active_only: true }),
+    enabled: showWorkingTime,
+  });
+
+  const employers: PickOption[] = useMemo(
+    () => (subcontractorsQ.data ?? []).map((s) => ({ id: s.id, label: s.legal_name || s.id })),
+    [subcontractorsQ.data],
   );
 
   // Shared post-mutation cache sync: adopt the returned timesheet as the
@@ -128,7 +168,7 @@ export function TimesheetEditor({ timesheetId, projectId, onClose }: TimesheetEd
   };
 
   const headerMut = useMutation({
-    mutationFn: (payload: { date?: string; note?: string | null }) =>
+    mutationFn: (payload: { date?: string; note?: string | null; working_time_regime?: string | null }) =>
       updateTimesheet(timesheetId, payload),
     onSuccess: applyUpdated,
     onError: onMutationError,
@@ -353,6 +393,68 @@ export function TimesheetEditor({ timesheetId, projectId, onClose }: TimesheetEd
               </label>
             </div>
 
+            {/* Statutory working-time record, offered only where it applies */}
+            {showWorkingTime && (
+              <div className="rounded-lg border border-border-light bg-surface-secondary/40 p-3">
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="flex flex-col">
+                    <span className="mb-1 text-2xs font-medium text-content-tertiary">
+                      {/* Which regime this timesheet is already tracked under, a
+                          different question from field_time.working_time.regime
+                          in WorkingTimeRecord.tsx, which asks under which regime
+                          new days get filed. The two shared one key until the
+                          drift was caught: once a locale answers a key, its
+                          value wins over either call site's own defaultValue,
+                          so one of the two screens was silently speaking the
+                          other's sentence. */}
+                      {t('field_time.working_time.timesheet_regime', { defaultValue: 'Recording regime' })}
+                    </span>
+                    <select
+                      value={timesheet.working_time_regime ?? ''}
+                      disabled={!isDraft}
+                      className="h-9 rounded-lg border border-border-light bg-surface-primary px-3 text-sm text-content-primary disabled:opacity-60"
+                      onChange={(e) => headerMut.mutate({ working_time_regime: e.target.value || null })}
+                    >
+                      <option value="">
+                        {t('field_time.working_time.regime_none', { defaultValue: 'None' })}
+                      </option>
+                      {(regimesQ.data ?? []).map((r) => (
+                        <option key={r.code} value={r.code}>
+                          {t(`field_time.working_time.regime_${r.code}`, { defaultValue: r.label })}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {timesheet.working_time && (
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-2xs text-content-tertiary">
+                      <span>
+                        {t('field_time.working_time.due_by', { defaultValue: 'Record due by' })}{' '}
+                        <DateDisplay value={timesheet.working_time.deadline} format="numeric" />
+                      </span>
+                      <span>
+                        {t('field_time.working_time.retain_until', { defaultValue: 'Keep until' })}{' '}
+                        <DateDisplay value={timesheet.working_time.retain_until} format="numeric" />
+                      </span>
+                      {timesheet.working_time.late && (
+                        <Badge variant="warning" size="sm">
+                          {t('field_time.working_time.late', {
+                            defaultValue: 'written up after {{count}} days',
+                            count: timesheet.working_time.days_taken,
+                          })}
+                        </Badge>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <p className="mt-2 text-2xs leading-relaxed text-content-tertiary">
+                  {t('field_time.working_time.line_hint', {
+                    defaultValue:
+                      'Give each labour line a start and an end and its hours come from them, less the break. A worker booked to two cost codes needs two segments that do not overlap, not the same hours twice.',
+                  })}
+                </p>
+              </div>
+            )}
+
             {/* Hours rollup */}
             <div className="grid grid-cols-3 gap-3">
               <RollupTile
@@ -395,6 +497,9 @@ export function TimesheetEditor({ timesheetId, projectId, onClose }: TimesheetEd
                     labour={labour}
                     plant={plant}
                     variations={variations}
+                    employers={employers}
+                    workingTime={showWorkingTime}
+                    timesheetDate={timesheet.date}
                     busy={updateLineMut.isPending || deleteLineMut.isPending}
                     onUpdate={(lineId, payload) => updateLineMut.mutate({ lineId, payload })}
                     onDelete={(lineId) => deleteLineMut.mutate(lineId)}

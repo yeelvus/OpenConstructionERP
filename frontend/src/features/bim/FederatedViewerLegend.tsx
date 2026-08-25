@@ -14,6 +14,7 @@
 import { useTranslation } from 'react-i18next';
 
 import { DISCIPLINE_PALETTE } from './FederatedViewerScene';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 export interface LegendDiscipline {
   modelId: string;
@@ -72,7 +73,7 @@ export function FederatedViewerLegend({ disciplines, onToggleVisible }: Props) {
               </span>
               {typeof d.elementCount === 'number' ? (
                 <span className="font-mono text-[10px] text-slate-400">
-                  {d.elementCount.toLocaleString()}
+                  {d.elementCount.toLocaleString(getNumberLocale())}
                 </span>
               ) : null}
             </li>

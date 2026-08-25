@@ -404,6 +404,7 @@ class TestRBACManager:
 
         register_integrations_permissions()
 
+    @pytest.mark.tenant_isolation
     def test_editor_cannot_create_integration(self) -> None:
         self._ensure_registered()
         from app.core.permissions import Role, permission_registry
@@ -417,6 +418,7 @@ class TestRBACManager:
             "that require manager-or-higher RBAC."
         )
 
+    @pytest.mark.tenant_isolation
     def test_editor_cannot_update_integration(self) -> None:
         self._ensure_registered()
         from app.core.permissions import Role, permission_registry
@@ -426,6 +428,7 @@ class TestRBACManager:
             "integrations.update",
         )
 
+    @pytest.mark.tenant_isolation
     def test_editor_cannot_delete_integration(self) -> None:
         self._ensure_registered()
         from app.core.permissions import Role, permission_registry
@@ -435,6 +438,7 @@ class TestRBACManager:
             "integrations.delete",
         )
 
+    @pytest.mark.tenant_isolation
     def test_manager_can_create_integration(self) -> None:
         self._ensure_registered()
         from app.core.permissions import Role, permission_registry
@@ -449,6 +453,7 @@ class TestRBACManager:
                 perm,
             ), f"MANAGER must carry {perm}"
 
+    @pytest.mark.tenant_isolation
     def test_viewer_can_read_integration(self) -> None:
         self._ensure_registered()
         from app.core.permissions import Role, permission_registry
@@ -458,6 +463,7 @@ class TestRBACManager:
             "integrations.read",
         )
 
+    @pytest.mark.tenant_isolation
     def test_viewer_cannot_write_integration(self) -> None:
         self._ensure_registered()
         from app.core.permissions import Role, permission_registry
@@ -479,6 +485,7 @@ class TestRBACManager:
 class TestIDORShape:
     """Router-level IDOR checks return 404 (not 403) for foreign rows."""
 
+    @pytest.mark.tenant_isolation
     def test_router_returns_404_for_foreign_config(self) -> None:
         """Static guard: the router still uses the 404-not-403 pattern.
 
@@ -494,12 +501,31 @@ class TestIDORShape:
         # The handler raises 404 on the user-id mismatch — assert the
         # pattern survives.
         assert "Config not found" in source, "404 leak-safe response must remain"
-        # Belt-and-braces — there must be NO ``status_code=403`` in this
-        # router. Any 403 in an IDOR handler is by definition a leak.
-        assert "status_code=403" not in source, (
-            "router uses 403 somewhere — IDOR handlers must 404 to avoid leaking UUID existence"
-        )
+        # Belt-and-braces on the 403s. This used to ban them outright, which
+        # was the right rule while every 403 would have been a resource
+        # verdict. What actually leaks a UUID is a 403 whose answer DEPENDS
+        # on the row: "this exists but is not yours" is distinguishable from
+        # "this does not exist". A 403 that refuses the CALLER, decided from
+        # the credential alone before any row is read, answers identically for
+        # a real id and a made-up one and so tells an attacker nothing.
+        #
+        # So the rule is now: every 403 here must be a permission denial. Its
+        # detail has to name the permission, which a resource verdict never
+        # does. The calendar feed relies on this — it refuses a key that does
+        # not declare ``integrations.calendar_feed`` before it looks at the
+        # project at all (see tests/unit/test_api_key_scopes.py, which proves
+        # the refusal happens without the project ever being read).
+        lines = source.splitlines()
+        for idx, line in enumerate(lines):
+            if "status_code=403" not in line:
+                continue
+            window = " ".join(lines[idx : idx + 3])
+            assert "permission" in window.lower(), (
+                f"line {idx + 1}: a 403 in this router must refuse the caller by permission, "
+                "not a row by ownership — IDOR handlers must 404 to avoid leaking UUID existence"
+            )
 
+    @pytest.mark.tenant_isolation
     def test_webhook_router_returns_404_for_foreign_webhook(self) -> None:
         from pathlib import Path
 

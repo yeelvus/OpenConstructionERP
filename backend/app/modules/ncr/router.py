@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
 from app.modules.ncr.schemas import (
     NCRCreate,
+    NCRListResponse,
     NCRResponse,
     NCRUpdate,
 )
@@ -82,6 +83,9 @@ def _to_response(item: object) -> NCRResponse:
         cost_impact=item.cost_impact,  # type: ignore[attr-defined]
         schedule_impact_days=item.schedule_impact_days,  # type: ignore[attr-defined]
         location_description=item.location_description,  # type: ignore[attr-defined]
+        location_lat=item.location_lat,  # type: ignore[attr-defined]
+        location_lon=item.location_lon,  # type: ignore[attr-defined]
+        location_accuracy_m=item.location_accuracy_m,  # type: ignore[attr-defined]
         linked_inspection_id=item.linked_inspection_id,  # type: ignore[attr-defined]
         change_order_id=item.change_order_id,  # type: ignore[attr-defined]
         created_by=item.created_by,  # type: ignore[attr-defined]
@@ -91,7 +95,7 @@ def _to_response(item: object) -> NCRResponse:
     )
 
 
-@router.get("/", response_model=list[NCRResponse])
+@router.get("/", response_model=NCRListResponse)
 async def list_ncrs(
     session: SessionDep,
     project_id: uuid.UUID = Query(...),
@@ -102,10 +106,15 @@ async def list_ncrs(
     status_filter: str | None = Query(default=None, alias="status"),
     severity: str | None = Query(default=None),
     service: NCRService = Depends(_get_service),
-) -> list[NCRResponse]:
-    """List non-conformance reports for a project."""
+) -> NCRListResponse:
+    """List non-conformance reports for a project, with the size of the set.
+
+    The service has always returned the count and this route has always
+    dropped it, so a quality register that only ever grows presented its
+    first page as the whole of itself.
+    """
     await verify_project_access(project_id, user_id, session)
-    ncrs, _ = await service.list_ncrs(
+    ncrs, total = await service.list_ncrs(
         project_id,
         offset=offset,
         limit=limit,
@@ -113,7 +122,12 @@ async def list_ncrs(
         status_filter=status_filter,
         severity=severity,
     )
-    return [_to_response(n) for n in ncrs]
+    return NCRListResponse(
+        items=[_to_response(n) for n in ncrs],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.post("/", response_model=NCRResponse, status_code=201)

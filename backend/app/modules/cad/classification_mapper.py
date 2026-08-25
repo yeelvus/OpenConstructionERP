@@ -414,30 +414,27 @@ MATERIAL_AWARE_NRM: dict[tuple[str, str], str] = {
 # Format: (category, material_canonical_key) -> deeper_code.
 # Codes follow the standard MasterFormat 2020 6-digit form.
 # ---------------------------------------------------------------------------
+# Codes are interoperability facts (category + material -> section number).
+# Deliberately uncommented beyond that: pairing each number with the official
+# section title would reproduce the proprietary classification tables, which
+# the licensing denylist forbids bundling.
 MATERIAL_AWARE_MASTERFORMAT: dict[tuple[str, str], str] = {
-    # 03 = Concrete; 04 = Masonry; 05 = Metals; 06 = Wood/Plastics
-    ("Walls", "concrete"): "03 30 00",  # Cast-in-Place Concrete
-    ("Walls", "masonry"): "04 22 00",  # Concrete Unit Masonry / brick masonry
-    ("Walls", "timber"): "06 11 00",  # Wood Framing
-    ("Walls", "drywall"): "09 21 00",  # Plaster and Gypsum Board Assemblies
-    ("Curtain Walls", "aluminium"): "08 44 00",  # Curtain Wall and Glazed Assemblies
+    ("Walls", "concrete"): "03 30 00",
+    ("Walls", "masonry"): "04 22 00",
+    ("Walls", "timber"): "06 11 00",
+    ("Walls", "drywall"): "09 21 00",
+    ("Curtain Walls", "aluminium"): "08 44 00",
     ("Curtain Walls", "glass"): "08 44 00",
-    # 03 30 = Cast-in-Place Concrete; 03 40 = Precast
     ("Floors", "concrete"): "03 30 00",
-    # 07 = Thermal and Moisture Protection
     ("Roofs", "concrete"): "03 30 00",
-    ("Roofs", "timber"): "06 15 00",  # Wood Decking
-    # 03 30 / 31 = Cast-in-Place foundation
+    ("Roofs", "timber"): "06 15 00",
     ("Structural Foundations", "concrete"): "03 30 00",
-    # 03 30 = concrete columns; 05 12 = structural-steel framing
     ("Columns", "concrete"): "03 30 00",
     ("Columns", "steel"): "05 12 00",
     ("Structural Framing", "concrete"): "03 30 00",
     ("Structural Framing", "steel"): "05 12 00",
-    # 08 14 = Wood doors; 08 11 = Steel doors
     ("Doors", "timber"): "08 14 00",
     ("Doors", "steel"): "08 11 00",
-    # 08 51 = Metal windows; 08 52 = Wood windows
     ("Windows", "aluminium"): "08 51 00",
     ("Windows", "timber"): "08 52 00",
 }

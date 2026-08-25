@@ -24,6 +24,7 @@ import {
   fmtCompactNumber,
   num,
 } from './_shared';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 interface BrokerPerformanceWidgetProps {
   since?: string;
@@ -216,7 +217,7 @@ export function BrokerPerformanceWidget({
                   {r.sales_closed}
                 </td>
                 <td className="px-2 py-1.5 text-right text-content-secondary">
-                  {num(r.conversion_rate_pct).toFixed(1)}%
+                  {fmtPercent(num(r.conversion_rate_pct))}
                 </td>
                 <td className="px-2 py-1.5 text-right">
                   <CurrencyStack rows={r.gmv} />

@@ -17,8 +17,10 @@ All tests are pure-function tests — no DB, no I/O.
 
 from __future__ import annotations
 
+import re
 from datetime import date as dt_date
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 from app.modules.bid_management.service import BidManagementService
@@ -157,9 +159,33 @@ class TestContractStandards:
         assert any("JCT" in s for s in std)
         assert any("NEC4" in s for s in std)
 
+    def test_every_standard_the_seed_writes_is_offered_back(self) -> None:
+        """The edit form must offer the value the row already holds.
+
+        The German seed writes ``"contract_standard": "VOB_B"`` on dozens of
+        variation rows, and the registry did not carry VOB_B at all. Nothing
+        failed: the rows saved, the clause reference rendered, and the only
+        symptom was that opening a seeded row for editing offered a list of
+        standards which did not include the one that row is under, so any save
+        silently moved it to a different contract.
+
+        Read from the seed source rather than a second hardcoded list here,
+        because a list written twice is the shape of the bug being pinned.
+        """
+        seed_source = Path(__file__).resolve().parents[2] / "app" / "modules" / "variations" / "seed.py"
+        written = set(re.findall(r'"contract_standard":\s*"([^"]+)"', seed_source.read_text(encoding="utf-8")))
+        assert written, "no contract standards found in the variations seed - the scan broke, not the seed"
+        offered = set(supported_contract_standards())
+        assert written <= offered, f"the seed writes standards the server does not offer: {sorted(written - offered)}"
+
     def test_default_clause_for_fidic_red_book(self) -> None:
         # FIDIC variation clause is 13.
         assert "13" in default_clause_for_standard("FIDIC_RED_2017")
+
+    def test_default_clause_for_vob_b(self) -> None:
+        # VOB/B — the price consequence of an ordered change is § 2 Abs. 5.
+        assert "2" in default_clause_for_standard("VOB_B")
+        assert "VOB/B" in default_clause_for_standard("VOB_B")
 
     def test_default_clause_for_jct(self) -> None:
         # JCT SBC 2016 — Clause 5 (Variations / Changes).

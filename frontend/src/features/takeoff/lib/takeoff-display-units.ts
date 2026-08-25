@@ -28,6 +28,7 @@ import { convertUnit, getDisplayUnit } from '@/shared/lib/unitConversion';
 import type { Measurement } from './takeoff-types';
 import {
   type ScaleConfig,
+  formatFeetInches,
   formatMeasurement,
   polygonPerimeterPixels,
   toRealDistance,
@@ -99,6 +100,20 @@ export function formatQuantity(
   system: MeasurementSystem,
 ): string {
   const d = convertQuantity(value, metricUnit, system);
+  // A LINEAR dimension in the imperial system is written the way it is written
+  // on a drawing: 12'-6 3/4", not 41.01 ft. Only the linear case. Nobody
+  // dimensions a slab as four hundred square feet and three quarters, so area
+  // and volume keep decimal ft² / ft³ and fall through to the shared
+  // formatter. `d.unit` is the seam that tells the two apart, because it is
+  // already the result of the metric-to-imperial mapping.
+  //
+  // `value` rather than `d.value` is passed on purpose: formatFeetInches takes
+  // metres and does its own conversion, in integer sixteenths. Handing it the
+  // already-converted decimal feet would convert twice and reintroduce exactly
+  // the float rounding the integer path exists to avoid.
+  if (system === 'imperial' && d.unit === 'ft') {
+    return formatFeetInches(value);
+  }
   return formatMeasurement(d.value, d.unit);
 }
 
@@ -106,13 +121,17 @@ export function formatQuantity(
  * Recompute the on-canvas value label for a measurement in the target
  * measurement system.
  *
- * Takeoff stores the label string baked at create time in metres
- * (D-TKC-016). For a `metric` system this reproduces that exact string
- * (same geometry, same `scale`, same `formatMeasurement` rules), so the
- * metric display is unchanged. For `imperial` it rebuilds the label with
- * converted numbers + ft / ft² / ft³ units. Counts and annotation markups
- * carry no convertible quantity, so their stored label / annotation is
- * returned untouched.
+ * Takeoff stores quantities in metres (D-TKC-016) and this recomputes
+ * the label from `value` + geometry through the same `formatMeasurement`
+ * rules used at create time. Since K-12 the digits render in the READER's
+ * app language, so the recomputed string equals a string the author saw
+ * only when their locales agree - which is why quantity labels are no
+ * longer persisted into `annotation` (K-13, see
+ * `useMeasurementPersistence.annotationForWire`): display is always
+ * recomputed, never read back from a stored render. For `imperial` the
+ * label is rebuilt with converted numbers + ft / ft² / ft³ units. Counts
+ * and annotation markups carry no convertible quantity, so their stored
+ * label / annotation is returned untouched.
  *
  * The compound area / volume breakdowns mirror the create-time formats:
  *   area   -> "{area} u² (P: {perimeter} u)"

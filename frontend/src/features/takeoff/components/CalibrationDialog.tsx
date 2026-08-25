@@ -25,6 +25,8 @@ import {
 } from '../../../modules/pdf-takeoff/data/scale-helpers';
 import { WideModal } from '@/shared/ui/WideModal';
 import { Button } from '@/shared/ui';
+import { formatFixedDigits, formatMaxDigits } from '../lib/measurement-format';
+import { fmtFixed } from '@/shared/lib/formatters';
 
 /** What the user actually typed, for honest badge display.
  *
@@ -58,11 +60,13 @@ export interface CalibrationDialogProps {
   initialUnit?: CalibrationUnit;
 }
 
-const UNIT_OPTIONS: { value: CalibrationUnit; label: string }[] = [
-  { value: 'm', label: 'm (meters)' },
-  { value: 'mm', label: 'mm (millimeters)' },
-  { value: 'ft', label: 'ft (feet)' },
-  { value: 'in', label: 'in (inches)' },
+// Labels resolve through i18n inside the component (the dialog is otherwise
+// fully localised; hardcoded English words here leaked into every locale).
+const UNIT_OPTIONS: { value: CalibrationUnit; labelKey: string; labelDefault: string }[] = [
+  { value: 'm', labelKey: 'takeoff_viewer.calibrate_unit_m', labelDefault: 'm (meters)' },
+  { value: 'mm', labelKey: 'takeoff_viewer.calibrate_unit_mm', labelDefault: 'mm (millimeters)' },
+  { value: 'ft', labelKey: 'takeoff_viewer.calibrate_unit_ft', labelDefault: 'ft (feet)' },
+  { value: 'in', labelKey: 'takeoff_viewer.calibrate_unit_in', labelDefault: 'in (inches)' },
 ];
 
 export function CalibrationDialog({
@@ -106,7 +110,7 @@ export function CalibrationDialog({
           {t('takeoff_viewer.calibrate_desc', {
             defaultValue:
               'You picked a line of {{pixels}} pixels. Enter its real-world length:',
-            pixels: pixelDistance.toFixed(0),
+            pixels: fmtFixed(pixelDistance, 0),
           })}
         </span>
       }
@@ -155,7 +159,7 @@ export function CalibrationDialog({
           >
             {UNIT_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
-                {opt.label}
+                {t(opt.labelKey, { defaultValue: opt.labelDefault })}
               </option>
             ))}
           </select>
@@ -168,9 +172,12 @@ export function CalibrationDialog({
             {t('takeoff_viewer.calibrate_metric_note', {
               defaultValue:
                 '{{value}} {{unit}} = {{meters}} m - measurements display in metres (metric-canonical).',
-              value: parsed,
+              // Both sides of the equation carry locale digits: a raw
+              // "12000 mm" next to a grouped "12,000 m" reads as two
+              // different numbers in German.
+              value: formatMaxDigits(parsed, 3),
               unit,
-              meters: toMeters(parsed, unit).toFixed(3),
+              meters: formatFixedDigits(toMeters(parsed, unit), 3),
             })}
           </p>
         )}

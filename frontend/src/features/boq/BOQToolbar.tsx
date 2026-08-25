@@ -61,6 +61,8 @@ import {
   ListCollapse,
 } from 'lucide-react';
 import { Button } from '@/shared/ui';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
+import { formatCurrency } from '@/shared/lib/money';
 import { useBoqDescDensityStore, type BoqDescDensity } from '@/stores/useBoqDescDensityStore';
 
 export interface BOQToolbarProps {
@@ -666,7 +668,7 @@ export function BOQToolbar({
                       'Whole BOQ rendered in {{disp}} at rate {{rate}} ({{base}} → {{disp}}). View-only - server keeps base values. Switch to "Base" to edit prices.',
                     base: summary.currencyCode || summary.currencySymbol,
                     disp: summary.displayCurrency,
-                    rate: summary.displayRate.toLocaleString(undefined, {
+                    rate: summary.displayRate.toLocaleString(getNumberLocale(), {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 6,
                     }),
@@ -679,15 +681,24 @@ export function BOQToolbar({
               // truth; printing a client-side approximation under the same
               // label is what audit #156 removed.
               <span className="text-content-tertiary">—</span>
-            ) : (
-              <>
-                {summary.displaySymbol}{' '}
-                {summary.grandTotalDisplay.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}
-              </>
-            )}
+            ) : (() => {
+              // Locale-aware money: the grid rows already format as
+              // "133.000,00 €" under de-DE, so the headline total must not
+              // fall back to the browser default ("€ 12,550,880.81").
+              const code = summary.displayCurrency || summary.currencyCode;
+              if (/^[A-Z]{3}$/.test(code)) {
+                return <>{formatCurrency(summary.grandTotalDisplay, code)}</>;
+              }
+              return (
+                <>
+                  {summary.displaySymbol}{' '}
+                  {summary.grandTotalDisplay.toLocaleString(getNumberLocale(), {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
+                </>
+              );
+            })()}
           </span>
 
           {/* Meta line: counts + quality status badges */}

@@ -55,6 +55,7 @@ import {
   CollapsibleSection,
 } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { useCreateShortcut } from '@/shared/hooks/useCreateShortcut';
 import { useToastStore } from '@/stores/useToastStore';
@@ -1503,7 +1504,7 @@ export function ContactsPage() {
 
   // Data
   const {
-    data: contacts = [],
+    data: contactsPage,
     isLoading,
     isError,
     error,
@@ -1520,6 +1521,7 @@ export function ContactsPage() {
         limit: 500,
       }),
   });
+  const contacts = useMemo(() => contactsPage?.items ?? [], [contactsPage]);
 
   // CRM tag facets — feeds the chip strip above the search bar.
   const { data: tagFacets = [] } = useQuery({
@@ -2072,6 +2074,15 @@ export function ContactsPage() {
 
       {/* Results */}
       <div>
+        {/* How much of the directory the server sent, above the branches
+            rather than inside the results one. The search and country boxes
+            filter the loaded rows, so a directory cut at 500 can answer "no
+            matching contacts" about a contact that exists at row 700 - that
+            branch is exactly where the reader needs to be told the set was
+            already cut. Fed the SERVER page, never `filtered`: a notice
+            reading a client-filtered array prints a true-looking sentence
+            about a set nobody asked about. */}
+        {contactsPage && <TruncationNotice page={contactsPage} className="mb-3" />}
         {isLoading ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 6 }).map((_, i) => (

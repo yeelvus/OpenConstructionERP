@@ -134,12 +134,13 @@ def _split_camelcase(s: str) -> str:
 
 
 def _mf_label(mf: str) -> str:
-    """Render a MasterFormat division code as the canonical label.
+    """Render a US division/section code as a passage-ready label.
 
-    Maps the leading 2-digit prefix (``03``) to its human name
-    (``Concrete``) so the cross-encoder sees the discipline keyword,
-    not just digits. Falls back to a digits-only render when the prefix
-    is unknown — better than dropping the signal entirely.
+    Maps the leading 2-digit prefix (``03``) to our scope description
+    (``Cast-in-place and precast concrete work``) so the cross-encoder
+    sees the discipline keywords, not just digits. Falls back to a
+    digits-only render when the prefix is unknown — better than dropping
+    the signal entirely.
     """
     if not mf:
         return ""
@@ -147,48 +148,48 @@ def _mf_label(mf: str) -> str:
     head = mf_clean.split()[0] if " " in mf_clean else mf_clean[:2]
     label = _MF_DIVISION_LABELS.get(head)
     if label:
-        return f"MasterFormat {mf_clean} {label}"
-    return f"MasterFormat {mf_clean}"
+        return f"Division {mf_clean} {label}"
+    return f"Division {mf_clean}"
 
 
-# MasterFormat 2018 divisions (49-division spec). Source: CSI
-# MasterFormat 2018 numbers & titles. Reproduced from public-domain
-# division headings.
+# Division scope descriptions. Numbers are interoperability facts; the
+# wording is our own and matches us_pack/config.py - the proprietary
+# division titles must never be bundled (licensing denylist).
 _MF_DIVISION_LABELS: dict[str, str] = {
-    "01": "General Requirements",
-    "02": "Existing Conditions",
-    "03": "Concrete",
-    "04": "Masonry",
-    "05": "Metals",
-    "06": "Wood Plastics Composites",
-    "07": "Thermal and Moisture Protection",
-    "08": "Openings",
-    "09": "Finishes",
-    "10": "Specialties",
-    "11": "Equipment",
-    "12": "Furnishings",
-    "13": "Special Construction",
-    "14": "Conveying Equipment",
-    "21": "Fire Suppression",
-    "22": "Plumbing",
-    "23": "Heating Ventilating Air Conditioning",
-    "25": "Integrated Automation",
-    "26": "Electrical",
-    "27": "Communications",
-    "28": "Electronic Safety Security",
-    "31": "Earthwork",
-    "32": "Exterior Improvements",
-    "33": "Utilities",
-    "34": "Transportation",
-    "35": "Waterway and Marine Construction",
-    "40": "Process Integration",
-    "41": "Material Processing Handling",
-    "42": "Process Heating Cooling Drying",
-    "43": "Process Gas Liquid Handling",
-    "44": "Pollution Waste Control",
-    "45": "Industry Specific Manufacturing",
-    "46": "Water Wastewater Equipment",
-    "48": "Electrical Power Generation",
+    "01": "General project requirements and temporary provisions",
+    "02": "Demolition, site assessment and existing structures",
+    "03": "Cast-in-place and precast concrete work",
+    "04": "Brick, block and stone work",
+    "05": "Structural and miscellaneous metal work",
+    "06": "Carpentry, millwork and composite framing",
+    "07": "Roofing, waterproofing and insulation",
+    "08": "Doors, windows and glazed assemblies",
+    "09": "Interior finishing: drywall, flooring, painting",
+    "10": "Built-in specialty items and signage",
+    "11": "Fixed building equipment",
+    "12": "Furniture, casework and window treatments",
+    "13": "Pre-engineered and special-purpose structures",
+    "14": "Elevators, escalators and lifts",
+    "21": "Sprinkler and fire-suppression systems",
+    "22": "Piping systems and sanitary fixtures",
+    "23": "Heating, cooling and ventilation systems",
+    "25": "Building automation and controls integration",
+    "26": "Power distribution and lighting systems",
+    "27": "Voice, data and network cabling",
+    "28": "Fire alarm, access control and surveillance",
+    "31": "Excavation, grading and earth support",
+    "32": "Paving, landscaping and site amenities",
+    "33": "Site water, sewer, storm and power services",
+    "34": "Rail, transit and transportation infrastructure",
+    "35": "Marine, dredging and waterfront work",
+    "40": "Industrial process piping and interconnections",
+    "41": "Bulk material handling and processing plant",
+    "42": "Industrial process thermal equipment",
+    "43": "Industrial gas and liquid handling plant",
+    "44": "Emissions, effluent and waste treatment plant",
+    "45": "Industry-specific process equipment",
+    "46": "Water and wastewater treatment plant",
+    "48": "On-site power generation plant",
 }
 
 

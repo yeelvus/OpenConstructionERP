@@ -52,7 +52,7 @@ import {
   type SearchableSelectOption,
 } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
-import { getErrorMessage } from '@/shared/lib/api';
+import { getErrorMessage, type Page } from '@/shared/lib/api';
 import {
   listResources,
   resourceHistogram,
@@ -160,7 +160,7 @@ export function ScheduleResourcePanel({
       </div>
 
       {tab === 'histogram' ? (
-        <HistogramTab />
+        <HistogramTab projectId={projectId} />
       ) : (
         <LevelingTab
           scheduleId={scheduleId}
@@ -175,7 +175,7 @@ export function ScheduleResourcePanel({
 
 /* ── Tab 1: Resource histogram ───────────────────────────────────────────── */
 
-function HistogramTab() {
+function HistogramTab({ projectId }: { projectId: string }) {
   const { t } = useTranslation();
 
   const win = useMemo(defaultWindow, []);
@@ -185,15 +185,22 @@ function HistogramTab() {
   const [bucket, setBucket] = useState<HistogramBucket>('week');
   const [rateType, setRateType] = useState<HistogramRateType>('cost');
 
-  const resourcesQ = useQuery<ResourceListItem[]>({
-    queryKey: ['schedule', 'resources', 'list'],
-    queryFn: () => listResources({ limit: 500 }),
+  // Narrowed to the project the schedule belongs to: the crews homed here plus
+  // the unhomed company pool. Tenant-wide, the picker listed every project's
+  // roster and defaulted to whoever sorted first across all of them, so the
+  // histogram opened on a resource that has never worked on this schedule.
+  const resourcesQ = useQuery<Page<ResourceListItem>>({
+    queryKey: ['schedule', 'resources', 'list', projectId],
+    queryFn: () => listResources({ limit: 500, project_id: projectId }),
   });
 
   // Once the list loads, default the picker to the first resource so the
-  // histogram has something to show without an extra click.
-  const resolvedResourceId =
-    resourceId || (resourcesQ.data && resourcesQ.data.length > 0 ? resourcesQ.data[0]!.id : '');
+  // histogram has something to show without an extra click. Chained through
+  // rather than guarded on the length, because reading the first element after
+  // a length test asks the compiler to carry a narrowing across two separate
+  // reads of a property on the query result, and an empty page then resolves
+  // to '' either way.
+  const resolvedResourceId = resourceId || (resourcesQ.data?.items?.[0]?.id ?? '');
 
   const datesValid = !!start && !!end && start < end;
 
@@ -233,7 +240,7 @@ function HistogramTab() {
     })[v] ?? v;
 
   const resourceOptions = useMemo<SearchableSelectOption[]>(() => {
-    const list = resourcesQ.data ?? [];
+    const list = resourcesQ.data?.items ?? [];
     const order: Record<string, number> = { crew: 0, person: 1, equipment: 2, subcontractor: 3 };
     return [...list]
       .sort((a, b) => {
@@ -377,7 +384,11 @@ function HistogramTab() {
         <Card padding="md">
           <RecoveryCard error={resourcesQ.error} onRetry={() => resourcesQ.refetch()} />
         </Card>
-      ) : !resourcesQ.isLoading && (resourcesQ.data?.length ?? 0) === 0 ? (
+      ) : /* total rather than items.length: the empty state means the project
+             has no resources, not that this page happened to carry none. The
+             two agree at offset 0 and only one of them stays true if this
+             panel ever pages. */
+      !resourcesQ.isLoading && (resourcesQ.data?.total ?? 0) === 0 ? (
         <Card padding="md">
           <EmptyState
             icon={<Users size={28} strokeWidth={1.5} />}

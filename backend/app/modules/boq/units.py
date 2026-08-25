@@ -10,7 +10,7 @@ strict allowlist meant every regional CWICR import re-surfaced the same
 422.  Policy is now **sanitise, don't gate**:
 
 * canonicalise common synonyms via the alias table so aggregations don't
-  fragment ("ton" / "tonne" / "tonnes" → "t"),
+  fragment ("tonne" / "tonnes" / "mt" → "t"),
 * otherwise return the input lowercased and stripped, regardless of
   script (Latin, Cyrillic, Greek, CJK, accented),
 * reject only the genuinely unsafe shapes - empty, > 30 chars,
@@ -62,10 +62,19 @@ APPROVED_UNITS: Final[frozenset[str]] = frozenset(
         # US trade volume units - GitHub #320
         "cy",
         "bdft",
-        # mass / weight
+        # mass / weight - metric
         "kg",
         "g",
         "t",
+        # mass / weight - imperial.  "lb" is the pound (0.45359237 kg
+        # exactly) and "ton_us" the US short ton (2000 lb = 907.18474 kg
+        # exactly), which is 9.3% lighter than the metric tonne "t" above.
+        # They are separate canonicals on purpose: this table used to have no
+        # imperial mass unit at all, so every US weight either fell through
+        # into its own bucket ("lbs") or, worse, was folded into "t" and read
+        # 10.2% heavy.  See the alias table for how "ton" resolves.
+        "lb",
+        "ton_us",
         # counts / lump
         "pcs",
         "ea",
@@ -96,12 +105,38 @@ APPROVED_UNITS: Final[frozenset[str]] = frozenset(
 # (Cyrillic / CJK / accented) deliberately don't appear here: we keep them
 # verbatim so the BOQ shows what the estimator typed.
 _UNIT_ALIASES: Final[dict[str, str]] = {
-    # mass - metric tonne synonyms
-    "ton": "t",
-    "tons": "t",
+    # mass - metric tonne synonyms.  "ton" / "tons" deliberately do NOT
+    # appear here; see the imperial block below.
     "tonne": "t",
     "tonnes": "t",
+    "metric ton": "t",
+    "metric tons": "t",
+    "metric tonne": "t",
     "mt": "t",
+    # mass - imperial.  A US estimator who types "ton" means the short ton
+    # (2000 lb = 907.18474 kg), not the 1000 kg tonne, so "ton" resolves to
+    # "ton_us" and never to "t".  This is the reading the rest of the
+    # platform already uses: core/unit_conversion.py, the frontend
+    # unitConversion.ts twin, the BOQ unit-system validation rules and the
+    # IFC unit parser all treat a bare "ton" as 907.18474 kg.  Anyone who
+    # means the tonne has "t", "tonne" or "mt" above, none of which is
+    # ambiguous in any market.
+    #
+    # Migration note: rows stored before this change may carry the literal
+    # string "ton" meaning the tonne (the demo catalogue and cost-model
+    # seeds do - EU material prices per tonne).  Those strings are inert:
+    # units are normalised only on write, through PositionCreate /
+    # PositionUpdate, never on read, so no stored quantity changes meaning.
+    # A stored "ton" is re-read only if a user edits that row and resubmits
+    # the unit, and then the new answer applies.
+    "ton": "ton_us",
+    "tons": "ton_us",
+    "short ton": "ton_us",
+    "short tons": "ton_us",
+    "shortton": "ton_us",
+    "lbs": "lb",
+    "pound": "lb",
+    "pounds": "lb",
     # length - meter / metre
     "metre": "m",
     "metres": "m",
@@ -112,10 +147,16 @@ _UNIT_ALIASES: Final[dict[str, str]] = {
     "sq.m": "m2",
     "sqft": "ft2",
     "sq.ft": "ft2",
+    # "sf" is the everyday US abbreviation and the area default declared by
+    # us_pack - without this alias that default never resolved.
+    "sf": "ft2",
     "cum": "m3",
     "cu.m": "m3",
     "cuft": "ft3",
     "cu.ft": "ft3",
+    # "cf" is the volume half of the same story - the us_pack volume default,
+    # which the normaliser passed through verbatim next to canonical ft3.
+    "cf": "ft3",
     # US trade units - GitHub #320
     "cuyd": "cy",
     "cu.yd": "cy",
@@ -199,10 +240,10 @@ def normalise_unit(unit: str | None) -> str | None:
     None.
 
     Resolution order:
-      1. canonical alias from :data:`_UNIT_ALIASES` (e.g. "ton" → "t",
-         "hour" → "hr") - aliases are checked first so synonyms collapse
-         into one bucket regardless of whether they happen to also appear
-         in the catalogue
+      1. canonical alias from :data:`_UNIT_ALIASES` (e.g. "tonne" → "t",
+         "ton" → "ton_us", "hour" → "hr") - aliases are checked first so
+         synonyms collapse into one bucket regardless of whether they
+         happen to also appear in the catalogue
       2. exact match in :data:`APPROVED_UNITS` (case-insensitive)
       3. CWICR-style multi-prefix forms like "100 EA", "1000 m" - returned
          as ``"<N> <unit>"`` with the trailing token canonicalised through

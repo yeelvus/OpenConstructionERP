@@ -50,7 +50,7 @@ import { useConfirm } from '@/shared/hooks/useConfirm';
 import { useDisplayQuantity } from '@/shared/hooks/useDisplayQuantity';
 import { DateDisplay } from '@/shared/ui/DateDisplay';
 import { useToastStore } from '@/stores/useToastStore';
-import { useProjectContextStore } from '@/stores/useProjectContextStore';
+import { useActiveProjectId } from '@/shared/hooks/useActiveProjectId';
 import { apiGet, getErrorMessage } from '@/shared/lib/api';
 import { onlyChangedFields } from '@/shared/lib/apiHelpers';
 import {
@@ -107,6 +107,8 @@ import {
   type Scope3Entry,
   type MaterialCarbonFactor,
 } from './api';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 type Tab = 'inventory' | 'wholelife' | 'epds' | 'targets' | 'reports';
 
@@ -130,9 +132,9 @@ function toNum(v: number | string | null | undefined): number {
 }
 
 function formatKg(kg: number): string {
-  if (Math.abs(kg) >= 1_000_000) return `${(kg / 1_000_000).toFixed(2)} kt`;
-  if (Math.abs(kg) >= 1_000) return `${(kg / 1_000).toFixed(2)} t`;
-  return `${kg.toFixed(0)} kg`;
+  if (Math.abs(kg) >= 1_000_000) return `${fmtFixed(kg / 1_000_000, 2)} kt`;
+  if (Math.abs(kg) >= 1_000) return `${fmtFixed(kg / 1_000, 2)} t`;
+  return `${fmtFixed(kg, 0)} kg`;
 }
 
 type TFn = ReturnType<typeof useTranslation>['t'];
@@ -226,7 +228,7 @@ export function CarbonPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('inventory');
-  const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
+  const activeProjectId = useActiveProjectId();
   const [inventoryDrawerId, setInventoryDrawerId] = useState<string | null>(null);
   const [createInvOpen, setCreateInvOpen] = useState(false);
   const [createTargetOpen, setCreateTargetOpen] = useState(false);
@@ -852,7 +854,7 @@ function EPDTable({
                 </Badge>
               </td>
               <td className="px-4 py-2 text-right tabular-nums font-medium">
-                {toNum(r.gwp_a1a3).toFixed(3)}
+                {fmtFixed(toNum(r.gwp_a1a3), 3)}
               </td>
               <td className="px-4 py-2 text-xs text-content-tertiary">kg/{r.declared_unit}</td>
               <td className="px-4 py-2 text-right">
@@ -1013,7 +1015,7 @@ function TargetRow({
             {t('carbon.baseline', { defaultValue: 'Baseline' })}
           </p>
           <p className="font-medium tabular-nums">
-            {toNum(target.baseline_value).toFixed(0)}
+            {fmtFixed(toNum(target.baseline_value), 0)}
           </p>
         </div>
         <div>
@@ -1021,7 +1023,7 @@ function TargetRow({
             {t('carbon.current', { defaultValue: 'Current' })}
           </p>
           <p className="font-medium tabular-nums">
-            {p ? toNum(p.current_value).toFixed(0) : '—'}
+            {p ? fmtFixed(toNum(p.current_value), 0) : '—'}
           </p>
         </div>
         <div>
@@ -1029,7 +1031,7 @@ function TargetRow({
             {t('carbon.target_label', { defaultValue: 'Target' })}
           </p>
           <p className="font-medium tabular-nums">
-            {toNum(target.target_value).toFixed(0)}
+            {fmtFixed(toNum(target.target_value), 0)}
           </p>
         </div>
       </div>
@@ -1043,7 +1045,7 @@ function TargetRow({
         />
       </div>
       <p className="mt-1 text-xs text-content-tertiary tabular-nums">
-        {pct.toFixed(0)}%
+        {fmtPercent(pct, 0)}
         {met && (
           <span className="ms-1 inline-flex items-center gap-0.5 text-semantic-success">
             <CheckCircle2 size={11} />
@@ -1789,7 +1791,7 @@ function TopEmitterRow({
                   >
                     {toNum(opt.savings_kg) > 0 ? '−' : ''}
                     {formatKg(Math.abs(toNum(opt.savings_kg)))}{' '}
-                    ({Number(opt.savings_pct).toFixed(0)}%)
+                    ({fmtPercent(Number(opt.savings_pct), 0)})
                   </span>
                 </li>
               ))}
@@ -1863,7 +1865,7 @@ function ScopeKpi({
         </span>
       </div>
       <p className="mt-0.5 text-sm font-medium tabular-nums">{formatKg(kg)}</p>
-      <p className="text-xs text-content-tertiary tabular-nums">{pct.toFixed(0)}%</p>
+      <p className="text-xs text-content-tertiary tabular-nums">{fmtPercent(pct, 0)}</p>
     </div>
   );
 }
@@ -2677,7 +2679,7 @@ function EmbodiedEntryModal({
               value={form.carbon_kg}
               onChange={(e) => setForm({ ...form, carbon_kg: e.target.value })}
               className={inputCls}
-              placeholder={autoCarbon.toFixed(2)}
+              placeholder={fmtFixed(autoCarbon, 2)}
             />
           </div>
         </div>
@@ -2946,7 +2948,7 @@ function AssignBoqModal({
                           <td className="px-3 py-2 text-right tabular-nums text-content-secondary whitespace-nowrap align-top">
                             {(() => {
                               const d = displayQty.convert(toNum(p.quantity), p.unit || '');
-                              return `${d.value.toLocaleString()} ${d.unit}`;
+                              return `${d.value.toLocaleString(getNumberLocale())} ${d.unit}`;
                             })()}
                           </td>
                         </tr>

@@ -15,6 +15,7 @@ const playbook: Playbook = {
   order: 255,
   category: "site",
   companyTypes: ["designer", "general-contractor", "bim-consultant"],
+  roles: ["design-lead", "site-manager", "document-controller"],
   icon: "GitCompare",
   titleKey: "cases.track_a_design_change_to_site_record.title",
   titleDefault: "Track a design change through to the site record",
@@ -98,7 +99,7 @@ const playbook: Playbook = {
       whyKey: "cases.track_a_design_change_to_site_record.step.instruct.why",
       whyDefault:
         "Tying the instruction to the exact revision is what stops a dispute later over which version of the change was actually agreed.",
-      moduleLabel: "Change orders",
+      moduleLabel: "Change Orders",
       moduleLabelKey: "nav.change_orders",
       to: "/change-orders",
     },

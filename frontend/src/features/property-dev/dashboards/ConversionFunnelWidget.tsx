@@ -18,6 +18,7 @@ import {
   type ConversionFunnelStep,
 } from '../api';
 import { DashboardEmpty, DashboardSkeleton, num } from './_shared';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
 
 interface ConversionFunnelWidgetProps {
   since?: string;
@@ -116,7 +117,7 @@ export function ConversionFunnelWidget({
             {t('propdev.dashboards.cf.subtitle', {
               defaultValue:
                 'Leads → Qualified → Reservation → Sale → Handover. {{conv}}% end-to-end.',
-              conv: num(data.overall_conversion_pct).toFixed(1),
+              conv: fmtFixed(num(data.overall_conversion_pct), 1),
             })}
           </p>
         </div>
@@ -175,9 +176,9 @@ export function ConversionFunnelWidget({
                   fontSize="10"
                   className="fill-current text-content-tertiary"
                 >
-                  {num(s.conversion_from_top_pct).toFixed(1)}% of top
+                  {fmtPercent(num(s.conversion_from_top_pct))} of top
                   {i > 0 && (
-                    <tspan> · ↓{num(s.drop_pct).toFixed(1)}%</tspan>
+                    <tspan> · ↓{fmtPercent(num(s.drop_pct))}</tspan>
                   )}
                 </text>
               </g>
@@ -194,8 +195,8 @@ export function ConversionFunnelWidget({
                 '{{label}}: {{count}} ({{conv}}% of top{{drop}})',
               label: STEP_LABEL[s.code] ?? s.label,
               count: s.count,
-              conv: num(s.conversion_from_top_pct).toFixed(1),
-              drop: i === 0 ? '' : `, ${num(s.drop_pct).toFixed(1)}% drop`,
+              conv: fmtFixed(num(s.conversion_from_top_pct), 1),
+              drop: i === 0 ? '' : `, ${fmtPercent(num(s.drop_pct))} drop`,
             })}
           </li>
         ))}

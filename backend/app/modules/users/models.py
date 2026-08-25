@@ -52,12 +52,26 @@ class User(Base):
         String(20), nullable=False, default="metric", server_default="metric"
     )
     paper_size: Mapped[str] = mapped_column(String(10), nullable=False, default="A4", server_default="A4")
-    number_format: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="1.234,56", server_default="1.234,56"
-    )
-    date_format: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="DD.MM.YYYY", server_default="DD.MM.YYYY"
-    )
+    # "auto" means numbers follow the interface language, the same neutral
+    # start the date_format below already takes. The old default handed every
+    # new account in the world German grouping, and because the column is
+    # free-form nothing downstream could tell that seeded "1.234,56" apart from
+    # a reader who deliberately picked German. server_default stays "1.234,56"
+    # for the reason spelled out under date_format: changing it alters the
+    # table DDL and needs a migration for no functional gain, because ORM
+    # inserts always supply the Python-side default. Accounts created before
+    # this still carry "1.234,56"; the frontend store treats that exact value
+    # as "never chose" so their rendering does not change.
+    number_format: Mapped[str] = mapped_column(String(20), nullable=False, default="auto", server_default="1.234,56")
+    # "auto" means the UI follows the interface language when rendering dates.
+    # New accounts start there so the stored value is only ever an order the
+    # user actually picked. server_default stays "DD.MM.YYYY" for the same
+    # reason as currency_code below - changing it would alter the table DDL and
+    # require a migration for no functional gain, because ORM inserts always
+    # supply the Python-side default. Accounts created before the automatic
+    # option still carry "DD.MM.YYYY"; the frontend store treats that exact
+    # value as "never chose" so their rendering does not change.
+    date_format: Mapped[str] = mapped_column(String(20), nullable=False, default="auto", server_default="DD.MM.YYYY")
     # No EUR bias for new accounts: empty string means "not chosen yet" and
     # the UI falls back to the project currency / local preference store.
     # server_default stays "EUR" on purpose - changing it would alter the

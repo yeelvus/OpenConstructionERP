@@ -29,10 +29,12 @@ import {
   YAxis,
 } from 'recharts';
 import { useTranslation } from 'react-i18next';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtCompact, fmtPercent, fmtFixed } from '@/shared/lib/formatters';
+import { formatCompactCurrency } from '@/shared/lib/money';
 import { hasEnoughPoints } from '@/shared/lib/chartDataFloor';
 import type { SeriesPoint } from './aggregate';
 import type { ChartKind, ValueFormat } from './types';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 export const CHART_HEIGHT = 216;
 
@@ -62,20 +64,18 @@ const MARGIN = { top: 8, right: 12, left: 0, bottom: 4 };
 /** Compact form for axis ticks and KPI tiles: 12.3K, 1.2M, 45%. */
 export function formatCompact(v: number, format: ValueFormat = 'number', currency?: string): string {
   if (!Number.isFinite(v)) return '-';
-  if (format === 'percent') return `${v.toFixed(Math.abs(v) < 10 ? 1 : 0)}%`;
+  if (format === 'percent') return `${fmtFixed(v, Math.abs(v) < 10 ? 1 : 0)}%`;
+  if (format === 'currency' && currency) return formatCompactCurrency(v, currency);
   const abs = Math.abs(v);
-  let s: string;
-  if (abs >= 1_000_000) s = `${(v / 1_000_000).toFixed(1)}M`;
-  else if (abs >= 1_000) s = `${(v / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}K`;
-  else s = `${Math.round(v * 100) / 100}`;
-  return format === 'currency' && currency ? `${s} ${currency}` : s;
+  if (abs < 1_000) return `${Math.round(v * 100) / 100}`;
+  return fmtCompact(v);
 }
 
 /** Full form for tooltips: locale grouping and a real currency symbol. */
 export function formatFull(v: number, format: ValueFormat = 'number', currency?: string): string {
   if (!Number.isFinite(v)) return '-';
-  if (format === 'percent') return `${v.toFixed(1)}%`;
-  const locale = getIntlLocale();
+  if (format === 'percent') return fmtPercent(v);
+  const locale = getNumberLocale();
   if (format === 'currency') {
     const code = (currency || '').trim().toUpperCase();
     if (/^[A-Z]{3}$/.test(code)) {

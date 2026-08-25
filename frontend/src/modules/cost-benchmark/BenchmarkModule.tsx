@@ -23,13 +23,25 @@ import {
 import { useProjectBenchmarkData } from './hooks/useProjectBenchmarkData';
 import { fetchOwnPortfolio, type BenchmarkResponse } from './api';
 import { useDisplayQuantity } from '@/shared/hooks/useDisplayQuantity';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
+import { formatCurrency as formatMoney } from '@/shared/lib/money';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
+/**
+ * Whole-unit money for the benchmark tables.
+ *
+ * Delegates to the shared formatter rather than calling `toLocaleString` with
+ * `style: 'currency'` directly. That call raises a RangeError on a blank or
+ * malformed code, and every caller here renders inside JSX, so the cost of a
+ * bad code was the whole panel rather than one figure. `formatCurrency`
+ * validates the code and falls back to a grouped number with no symbol, which
+ * is also the policy `money.ts` documents: a euro sign on a non-euro amount
+ * misinforms the reader more than a missing symbol does.
+ */
 function formatCurrency(value: number, currency: string): string {
-  return value.toLocaleString('en', {
-    style: 'currency',
-    currency,
+  return formatMoney(value, currency, getNumberLocale(), {
     maximumFractionDigits: 0,
   });
 }
@@ -109,7 +121,7 @@ function ElementRow({
         <div className={`h-full rounded-sm ${barClass}`} style={{ width: `${widthPct}%` }} />
       </div>
       <span className="w-9 shrink-0 text-right tabular-nums text-content-tertiary">
-        {(row.pct * 100).toFixed(0)}%
+        {fmtPercent(row.pct * 100, 0)}
       </span>
       <span className="w-20 shrink-0 text-right tabular-nums font-medium text-content-primary">
         {/* RATE (reciprocal): EUR/m2 element share -> EUR/ft2 for imperial */}
@@ -484,7 +496,7 @@ export default function BenchmarkModule() {
             {t('benchmarks.percentile_industry', { defaultValue: 'Percentile vs Industry' })}
           </p>
           <p className={`text-2xl font-bold ${getPercentileColor(analysis.percentile)}`}>
-            P{analysis.percentile.toFixed(0)}
+            P{fmtFixed(analysis.percentile, 0)}
           </p>
           <p className="text-xs text-content-tertiary mt-1">
             {(() => { const lbl = getPercentileLabelKey(analysis.percentile); return t(lbl.key, { defaultValue: lbl.defaultValue }); })()}
@@ -500,7 +512,7 @@ export default function BenchmarkModule() {
           {ownPortfolio && percentileVsOwn !== null ? (
             <>
               <p className={`text-2xl font-bold ${getPercentileColor(percentileVsOwn)}`}>
-                P{percentileVsOwn.toFixed(0)}
+                P{fmtFixed(percentileVsOwn, 0)}
               </p>
               <p className="text-xs text-content-tertiary mt-1">
                 {t('benchmarks.portfolio_basis', {
@@ -535,7 +547,7 @@ export default function BenchmarkModule() {
           </p>
           <p className="text-xs text-content-tertiary mt-1">
             {/* diffPct is a percentage - passes through unchanged in both systems */}
-            {analysis.diffPct > 0 ? '+' : ''}{analysis.diffPct.toFixed(1)}% {t('benchmarks.vs_median', { defaultValue: 'vs median' })}
+            {analysis.diffPct > 0 ? '+' : ''}{fmtPercent(analysis.diffPct)} {t('benchmarks.vs_median', { defaultValue: 'vs median' })}
           </p>
         </div>
       </div>
@@ -561,14 +573,14 @@ export default function BenchmarkModule() {
                 unit: rateUnit,
                 type: buildingInfo.label,
                 region: regionInfo.label,
-                pct: analysis.percentile.toFixed(0),
+                pct: fmtFixed(analysis.percentile, 0),
                 // Not lowercased: the label is a translated string, and casing is
                 // not a safe transform across locales. German keeps nouns capital
                 // mid-sentence, and Turkish maps I to i rather than the dotless
                 // form. It follows a dash here, so sentence case reads correctly.
                 label: t(pctLabel.key, { defaultValue: pctLabel.defaultValue }),
                 sign: analysis.diffPct > 0 ? '+' : '',
-                diff: analysis.diffPct.toFixed(1),
+                diff: fmtFixed(analysis.diffPct, 1),
                 median: fmtRate(benchmarkRange.median, regionInfo.currency),
                 source: benchmarkRange.source,
               })}
@@ -822,7 +834,7 @@ export default function BenchmarkModule() {
                   (multiply) to ft2 for imperial; the unit label follows. */}
               {t('benchmarks.secondary_basis_v2', {
                 defaultValue: 'Median basis, about {{area}} {{unit}} GFA per unit.',
-                area: q.convert(benchmarkRange.secondary.areaPerUnit, 'm²').value.toLocaleString('en', { maximumFractionDigits: 0 }),
+                area: q.convert(benchmarkRange.secondary.areaPerUnit, 'm²').value.toLocaleString(getNumberLocale(), { maximumFractionDigits: 0 }),
                 unit: rateUnit,
               })}
             </p>

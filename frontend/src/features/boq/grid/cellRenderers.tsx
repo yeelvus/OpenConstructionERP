@@ -43,14 +43,16 @@ import {
   hasContributingResources,
   saveCustomUnit,
 } from '../boqHelpers';
-import { RESOURCE_TYPES, getResourceTypeLabel } from '../boqResourceTypes';
+import { RESOURCE_TYPES, getResourceTypeLabel, getResourceTypeShortCode } from '../boqResourceTypes';
 import { countComments } from '../CommentDrawer';
 import { BIMQuantityPicker } from './BIMQuantityPicker';
 import { resolveRowModelId } from './resolveRowModelId';
 import { MiniGeometryPreview } from '@/shared/ui/MiniGeometryPreview';
 import { fetchBIMElementsByIds, fetchBIMElementProperties } from '@/features/bim/api';
 import type { BIMElementData } from '@/shared/ui/BIMViewer/ElementManager';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtFixed } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
+import { localizedUnitCode } from '@/shared/lib/unitLabels';
 import type { DisplayQuantityApi } from '@/shared/hooks/useDisplayQuantity';
 import { useFxRatesStore, getFxRate } from '@/stores/useFxRatesStore';
 import { isFormula, evaluateFormula } from './cellEditors';
@@ -215,8 +217,8 @@ export function SectionFullWidthRenderer(params: ICellRendererParams) {
   const displayedSubtotal = dc && dc.rate > 0 ? subtotal / dc.rate : subtotal;
   const displayCode = dc && dc.rate > 0 ? dc.code : (ctx.currencyCode ?? 'EUR');
   const formattedSubtotal = ctx.fmt
-    ? fmtWithCurrency(displayedSubtotal, ctx.locale ?? 'de-DE', displayCode)
-    : `${displayedSubtotal.toFixed(2)}`;
+    ? fmtWithCurrency(displayedSubtotal, ctx.locale ?? getNumberLocale(), displayCode)
+    : `${fmtFixed(displayedSubtotal, 2)}`;
 
   const t = ctx.t ?? ((key: string, opts?: Record<string, string | number>) =>
     (opts?.defaultValue as string) ?? key);
@@ -1136,9 +1138,11 @@ export function DescriptionCellRenderer(params: ICellRendererParams) {
         })}
         data-testid="boq-resource-breakdown-pill"
       >
+        {/* Localised driver codes (de: MAT/LOH/GER) so the pill matches the
+            resource-split toolbar toggle's vocabulary on the same screen. */}
         {breakdownEntries
           .slice(0, 3)
-          .map((e) => `${e.pct}% ${e.rt.slice(0, 3).toUpperCase()}`)
+          .map((e) => `${e.pct}% ${getResourceTypeShortCode(e.rt, t)}`)
           .join(' · ')}
       </span>
     ) : null;
@@ -1217,7 +1221,7 @@ export function DescriptionCellRenderer(params: ICellRendererParams) {
 
   const fmt = (n: number) => {
     try {
-      return new Intl.NumberFormat(getIntlLocale(), {
+      return new Intl.NumberFormat(getNumberLocale(), {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       }).format(n);
@@ -2027,7 +2031,7 @@ const BimLinkPopover = forwardRef<
                           </span>
                           <div className="flex items-center gap-1 shrink-0">
                             <span className="text-[10px] font-mono text-content-primary tabular-nums font-medium">
-                              {value.toLocaleString(getIntlLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                              {value.toLocaleString(getNumberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
                             </span>
                             {canApply && (
                               isCurrent ? (
@@ -2212,8 +2216,8 @@ const BimLinkPopover = forwardRef<
                 if (s.agg === 'sum') {
                   const isCurrent = Math.abs(s.sum - currentQuantity) < 0.001;
                   const fmt = Number.isInteger(s.sum)
-                    ? s.sum.toLocaleString(getIntlLocale())
-                    : s.sum.toLocaleString(getIntlLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+                    ? s.sum.toLocaleString(getNumberLocale())
+                    : s.sum.toLocaleString(getNumberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 4 });
                   return (
                     <div
                       key={s.key}
@@ -2274,8 +2278,8 @@ const BimLinkPopover = forwardRef<
                 const sortedUnique = [...unique].sort((a, b) => a - b);
                 const fmtVal = (n: number) =>
                   Number.isInteger(n)
-                    ? n.toLocaleString(getIntlLocale())
-                    : n.toLocaleString(getIntlLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+                    ? n.toLocaleString(getNumberLocale())
+                    : n.toLocaleString(getNumberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 4 });
                 return (
                   <div key={s.key} className="px-3 py-1.5 border-b border-border-light/30 dark:border-border-dark/30 last:border-b-0 hover:bg-sky-50/40 dark:hover:bg-sky-950/20 transition-colors">
                     <div className="flex items-center gap-1 mb-0.5">
@@ -2556,7 +2560,7 @@ function PdfDwgSourcePopover(props: PdfDwgSourcePopoverProps) {
           {measurementValue !== null ? (
             <div className="flex items-baseline gap-1.5">
               <span className="text-[20px] font-semibold tabular-nums text-content-primary leading-none">
-                {(displayMeasurementValue ?? measurementValue).toLocaleString(getIntlLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                {(displayMeasurementValue ?? measurementValue).toLocaleString(getNumberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
               </span>
               {displayMeasurementUnit && (
                 <span className="text-[11px] text-content-secondary font-medium">{displayMeasurementUnit}</span>
@@ -3836,7 +3840,7 @@ export function EditableResourceRow({ data, ctx, slots, leftPad }: { data: Recor
     const meanRate = Number(availableVariantStats!.mean);
     const minRate = Number(availableVariantStats!.min);
     const maxRate = Number(availableVariantStats!.max);
-    const range = `${minRate.toFixed(2)} – ${maxRate.toFixed(2)} ${resourceCurrency}`;
+    const range = `${fmtFixed(minRate, 2)} – ${fmtFixed(maxRate, 2)} ${resourceCurrency}`;
     if (resourceVariant) {
       const delta =
         meanRate > 0
@@ -3848,7 +3852,7 @@ export function EditableResourceRow({ data, ctx, slots, leftPad }: { data: Recor
         defaultValue:
           'Variant: {{label}} @ {{price}} {{currency}}{{delta}}. Click to switch.',
         label: resourceVariant.label,
-        price: Number(resourceVariant.price).toFixed(2),
+        price: fmtFixed(Number(resourceVariant.price), 2),
         currency: resourceCurrency,
         delta: deltaStr,
       });
@@ -3927,9 +3931,9 @@ export function EditableResourceRow({ data, ctx, slots, leftPad }: { data: Recor
     [resourceCurrency, baseCurrency, ratesVsUsd, setGlobalRate, ctx],
   );
 
-  const formattedTotal = fmtWithCurrency(total, ctx.locale ?? 'de-DE', resourceCurrency);
+  const formattedTotal = fmtWithCurrency(total, ctx.locale ?? getNumberLocale(), resourceCurrency);
   const formattedTotalInBase = isForeign && hasFxRate
-    ? fmtWithCurrency(totalInBase, ctx.locale ?? 'de-DE', baseCurrency)
+    ? fmtWithCurrency(totalInBase, ctx.locale ?? getNumberLocale(), baseCurrency)
     : null;
 
   const posId = data._parentPositionId as string;
@@ -4968,7 +4972,7 @@ export function ResourceFullWidthRenderer(params: ICellRendererParams) {
           style={{ width: `${width}px` }}
           title={ctx.t('boq.resources_total', { defaultValue: 'Resources total' })}
         >
-          {fmtWithCurrency(shown, ctx.locale ?? 'de-DE', code)}
+          {fmtWithCurrency(shown, ctx.locale ?? getNumberLocale(), code)}
         </span>
       );
     };
@@ -5085,7 +5089,7 @@ export function QuantityCellRenderer(params: ICellRendererParams) {
       }
       // Always use a dedicated formatter with the computed maxFrac
       // (ctx.fmt is fixed at 2 decimals and would hide small values)
-      const f = new Intl.NumberFormat(ctx?.locale ?? 'en', {
+      const f = new Intl.NumberFormat(ctx?.locale ?? getNumberLocale(), {
         minimumFractionDigits: 2,
         maximumFractionDigits: maxFrac,
       });
@@ -5240,7 +5244,12 @@ export function UnitRateCellRenderer(params: ICellRendererParams) {
     : numericVal;
   const formatted = (() => {
     try {
-      return new Intl.NumberFormat(getIntlLocale(), {
+      // Same source as the total column beside it. Reading the snapshot here
+      // instead would agree with it today and drift the moment the grid changes
+      // how it supplies the locale, which is the shape of the defect this cell
+      // was part of: the rate asked the UI language while the total asked the
+      // project, and one table printed two.
+      return new Intl.NumberFormat(ctx?.locale ?? getNumberLocale(), {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       }).format(isNaN(displayRate) ? 0 : displayRate);
@@ -5354,7 +5363,7 @@ export function UnitRateCellRenderer(params: ICellRendererParams) {
   // Variant cache present — render number + pill.  When resource-driven,
   // suppress the pill (rate is computed from resources, not a variant).
   const optsCount = stats!.count;
-  const minMax = `${stats!.min.toFixed(2)} – ${stats!.max.toFixed(2)} ${currency}`;
+  const minMax = `${fmtFixed(stats!.min, 2)} – ${fmtFixed(stats!.max, 2)} ${currency}`;
   const tooltip = variant
     ? t('boq.unit_rate_variant_pill_tooltip_picked', {
         defaultValue:
@@ -5453,6 +5462,7 @@ export function UnitRateCellRenderer(params: ICellRendererParams) {
 
 export function UnitCellRenderer(params: ICellRendererParams) {
   const { data, value, context } = params;
+  const { i18n } = useTranslation();
   // Bug 9: render the raw unit code (e.g. "m2") with NO casing transform — must match
   // the agSelectCellEditor dropdown which lists lowercase values.
   if (!data || data._isSection || data._isFooter) {
@@ -5465,8 +5475,11 @@ export function UnitCellRenderer(params: ICellRendererParams) {
   // editor / valueSetter keep writing the metric token, never 'ft'.
   // ``unitFor`` is identity for metric and for any unit with no imperial
   // mapping (pcs, %, hr ...), so a plain code passes straight through.
+  // On top of the system seam, apply the locale trade spelling (de:
+  // "lsum" -> "psch") — display-only, storage keeps the canonical token.
   const rawUnit = value == null ? '' : String(value);
-  const displayUnit = ctx?.displayQuantity ? ctx.displayQuantity.unitFor(rawUnit) : rawUnit;
+  const systemUnit = ctx?.displayQuantity ? ctx.displayQuantity.unitFor(rawUnit) : rawUnit;
+  const displayUnit = localizedUnitCode(systemUnit, i18n.language);
 
   const meta = (data.metadata ?? {}) as Record<string, unknown>;
   const bimSource = meta.bim_qty_source as string | undefined;

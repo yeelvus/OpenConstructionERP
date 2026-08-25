@@ -13,6 +13,7 @@ import {
   apiDelete,
   getAuthToken,
   triggerDownload,
+  type Page,
 } from '@/shared/lib/api';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
@@ -222,14 +223,14 @@ export function listDiaries(params: {
   date_to?: string;
   status?: string;
   limit?: number;
-}): Promise<DailyDiary[]> {
+}): Promise<Page<DailyDiary>> {
   const qs = new URLSearchParams();
   qs.set('project_id', params.project_id);
   if (params.date_from) qs.set('date_from', params.date_from);
   if (params.date_to) qs.set('date_to', params.date_to);
   if (params.status) qs.set('status', params.status);
   if (params.limit !== undefined) qs.set('limit', String(params.limit));
-  return apiGet<DailyDiary[]>(`/v1/daily-diary/diaries/?${qs.toString()}`);
+  return apiGet<Page<DailyDiary>>(`/v1/daily-diary/diaries/?${qs.toString()}`);
 }
 
 export function createDiary(data: {
@@ -402,8 +403,8 @@ export function fetchWeather(data: {
 
 /* ── Entries ───────────────────────────────────────────────────────────── */
 
-export function listEntries(diaryId: string): Promise<DiaryEntry[]> {
-  return apiGet<DiaryEntry[]>(
+export function listEntries(diaryId: string): Promise<Page<DiaryEntry>> {
+  return apiGet<Page<DiaryEntry>>(
     `/v1/daily-diary/diaries/${encodeURIComponent(diaryId)}/entries`,
   );
 }
@@ -434,13 +435,13 @@ export function listPhotos(params: {
   date_from?: string;
   date_to?: string;
   limit?: number;
-}): Promise<DiaryPhoto[]> {
+}): Promise<Page<DiaryPhoto>> {
   const qs = new URLSearchParams();
   qs.set('project_id', params.project_id);
   if (params.date_from) qs.set('date_from', params.date_from);
   if (params.date_to) qs.set('date_to', params.date_to);
   if (params.limit !== undefined) qs.set('limit', String(params.limit));
-  return apiGet<DiaryPhoto[]>(`/v1/daily-diary/photos/?${qs.toString()}`);
+  return apiGet<Page<DiaryPhoto>>(`/v1/daily-diary/photos/?${qs.toString()}`);
 }
 
 /**

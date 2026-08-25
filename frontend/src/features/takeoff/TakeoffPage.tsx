@@ -32,9 +32,9 @@ import {
   FolderOpen,
 } from 'lucide-react';
 
-import { Button, Card, Badge, Input, Skeleton, DismissibleInfo, IntroRichText, Breadcrumb, ModuleGuideButton, ProjectFilePicker } from '@/shared/ui';
+import { Button, Card, Badge, Input, Skeleton, DismissibleInfo, IntroRichText, Breadcrumb, ModuleGuideButton, ProjectFilePicker, type PickedProjectFile } from '@/shared/ui';
 import { PDF_TAKEOFF_FORMATS } from '@/shared/lib/projectFileFormats';
-import type { DocumentItem } from '@/features/documents/api';
+import type { FileKind } from '@/features/file-manager/types';
 import { PdfCompareDrawer } from './PdfCompareDrawer';
 import { takeoffGuide } from './takeoffGuide';
 import { apiGet, apiPost } from '@/shared/lib/api';
@@ -49,6 +49,11 @@ import { aiApi } from '@/features/ai/api';
 import { hasLlmKey } from '@/features/ai-estimator/useAiReadiness';
 
 const TakeoffViewerModule = lazy(() => import('@/modules/pdf-takeoff/TakeoffViewerModule'));
+
+/** The module's own file store, listed in the picker beside the project's
+ *  documents area. Module scope, so a stable reference the picker can key its
+ *  query on rather than a fresh array every render. */
+const TAKEOFF_PICKER_KINDS: readonly FileKind[] = ['takeoff'];
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -1748,37 +1753,61 @@ export function TakeoffPage() {
   const [showProjectFilePicker, setShowProjectFilePicker] = useState(false);
   const [pickingFileId, setPickingFileId] = useState<string | null>(null);
 
-  // Open a PDF that is already filed in the project instead of asking the
-  // user to find it on their own disk again.
+  // Open a PDF that is already in the project instead of asking the user to
+  // find it on their own disk again.
   //
-  // This does NOT re-upload the bytes. It asks the backend to find-or-create
-  // the takeoff_document that belongs to this stored file, exactly like the
-  // `?doc=X&source=document` deep-link above, and then drives the viewer off
-  // the returned takeoff id. Two reasons that matters. Downloading the blob
-  // and pushing it back through the upload path would leave a second copy of
-  // the same drawing under a new id every time the user picked it. And a
-  // takeoff document owns the page rasters, annotations and AI recognition
-  // state that scale-detect, recognize and table-extract are keyed by, so the
-  // viewer needs a real takeoff id - handing it the CDE document id would
-  // render the sheet and then 404 every AI call on it.
+  // The picker federates two stores, so a pick arrives in one of three states.
+  //
+  //  * A takeoff document (kind `takeoff`): it already exists with its
+  //    measurements and page scales, so it just opens. No request at all.
+  //  * A project file the module has already been given (`takeoff_document_id`
+  //    set): same thing - open the takeoff document that exists rather than
+  //    asking for another one.
+  //  * A project file seen for the first time: ask the backend to
+  //    find-or-create the takeoff_document behind it, exactly like the
+  //    `?doc=X&source=document` deep-link above.
+  //
+  // This never re-uploads the bytes. Downloading the blob and pushing it back
+  // through the upload path would leave a second copy of the same drawing
+  // under a new id every time the user picked it. And a takeoff document owns
+  // the page rasters, annotations and AI recognition state that scale-detect,
+  // recognize and table-extract are keyed by, so the viewer needs a real
+  // takeoff id - handing it the CDE document id would render the sheet and
+  // then 404 every AI call on it.
   //
   // The endpoint is idempotent, so picking the same file twice reopens the
   // same takeoff document with its measurements intact.
+  const openTakeoffDocument = useCallback(
+    (id: string, name: string) => {
+      setShowProjectFilePicker(false);
+      setActiveDocId(id);
+      setViewerDoc({
+        url: `/api/v1/takeoff/documents/${encodeURIComponent(id)}/download/`,
+        name,
+        id,
+      });
+      setActiveTab('measurements');
+    },
+    [],
+  );
+
   const handlePickProjectFile = useCallback(
-    async (doc: DocumentItem) => {
-      setPickingFileId(doc.id);
+    async (file: PickedProjectFile) => {
+      if (file.kind === 'takeoff') {
+        openTakeoffDocument(file.id, file.name);
+        return;
+      }
+      if (file.takeoff_document_id) {
+        openTakeoffDocument(file.takeoff_document_id, file.name);
+        void refetchServerDocuments();
+        return;
+      }
+      setPickingFileId(file.id);
       try {
         const takeoff = await apiPost<{ id: string; filename?: string; status?: string }>(
-          `/v1/takeoff/documents/from-source/${encodeURIComponent(doc.id)}`,
+          `/v1/takeoff/documents/from-source/${encodeURIComponent(file.id)}`,
         );
-        setShowProjectFilePicker(false);
-        setActiveDocId(takeoff.id);
-        setViewerDoc({
-          url: `/api/v1/takeoff/documents/${encodeURIComponent(takeoff.id)}/download/`,
-          name: takeoff.filename || doc.name,
-          id: takeoff.id,
-        });
-        setActiveTab('measurements');
+        openTakeoffDocument(takeoff.id, takeoff.filename || file.name);
         // The catalogue now holds one more takeoff document, so refresh it or
         // the sidebar list stays a step behind what the viewer is showing.
         void refetchServerDocuments();
@@ -1799,7 +1828,7 @@ export function TakeoffPage() {
         setPickingFileId(null);
       }
     },
-    [refetchServerDocuments, t],
+    [openTakeoffDocument, refetchServerDocuments, t],
   );
 
   const handleRemoveDocument = useCallback(
@@ -2353,7 +2382,7 @@ export function TakeoffPage() {
               <p className="text-sm font-medium text-semantic-error flex-1">{uploadErrorToast}</p>
               <button
                 onClick={() => setUploadErrorToast(null)}
-                className="shrink-0 rounded-md p-1 text-semantic-error/60 hover:text-semantic-error transition-colors"
+                className="shrink-0 rounded-md p-1 text-semantic-error transition-colors"
               >
                 <X size={14} />
               </button>
@@ -2385,6 +2414,10 @@ export function TakeoffPage() {
             onClose={() => setShowProjectFilePicker(false)}
             projectId={selectedProjectId}
             accepted={PDF_TAKEOFF_FORMATS}
+            // Takeoff keeps its own sheets, so "project files" has to mean both
+            // stores here or the dialog cannot find the plan this very module
+            // has open.
+            moduleKinds={TAKEOFF_PICKER_KINDS}
             onPick={handlePickProjectFile}
             busyId={pickingFileId}
           />

@@ -50,6 +50,7 @@ from app.modules.methodology.models import (
 from app.modules.methodology.schemas import (
     ComputeEstimateRequest,
     DimensionCreate,
+    EffectiveVat,
     FundingSourceCreate,
     FundingSourceUpdate,
     MethodologyCreate,
@@ -67,6 +68,25 @@ ACTIVE_METHODOLOGY_META_KEY = "methodology_slug"
 # Where the project's per-position resource totals come from when the caller
 # does not pass ``resource_totals`` explicitly to compute_estimate.
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _rate_to_decimal(raw: object) -> Decimal | None:
+    """Read a percentage that is stored as a string, without inventing a number.
+
+    Rates travel as decimal strings ("19", "8.1") through the cascade JSON and
+    through the project column alike. A value that cannot be read is returned
+    as ``None`` rather than as nought: a rate nobody could parse is unknown,
+    and nought is a rate somebody chose.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def _slugify(value: str) -> str:
@@ -648,6 +668,107 @@ class MethodologyService:
             detail=f"Methodology '{slug}' not found for this project",
         )
 
+    async def _project_vat_rate(self, project_id: uuid.UUID) -> str | None:
+        """The project's own consumption-tax rate, or ``None`` if it set none.
+
+        ``default_vat_rate`` is a decimal-string percentage (e.g. ``"21"``),
+        the same column :meth:`BOQService.apply_default_markups` reads when it
+        seeds a bill. Best-effort by design: a project that cannot be loaded
+        must leave the catalogue rate standing rather than fail a computation,
+        because the template rate is a correct answer and an error is not.
+        """
+        try:
+            project = await self._get_project(project_id)
+        except Exception:  # noqa: BLE001 - best-effort, never break a computation
+            logger.debug("default_vat_rate lookup failed for project %s", project_id, exc_info=True)
+            return None
+        raw = getattr(project, "default_vat_rate", None) if project is not None else None
+        if raw is None or str(raw).strip() == "":
+            return None
+        return str(raw).strip()
+
+    @staticmethod
+    def _with_project_vat(cascade_steps: list[Any], vat_rate: str) -> list[Any]:
+        """Return the steps with the single tax line moved to ``vat_rate``.
+
+        Keyed on the steps carrying exactly one ``tax`` category, not on the
+        methodology's region. A region is the wrong handle here: a clone the
+        user has edited has no region to consult, and the property that decides
+        whether one rate is a complete swap is a property of the steps alone.
+        Where a stack carries no tax line, or more than one, a single project
+        rate cannot stand in for it and the steps are returned untouched. That
+        is the same rule the bill side applies through
+        :data:`~app.modules.boq.markup_templates.NON_SINGLE_TAX_REGIONS`, and
+        ``test_a_single_tax_step_is_exactly_a_single_tax_line`` holds the two
+        statements of it together.
+
+        The step dicts are shared with the module-level template catalogue, so
+        the one being changed is copied. Mutating it in place would re-rate
+        every later computation in the process, including other projects'.
+        """
+        index = MethodologyService._single_tax_index(cascade_steps)
+        if index is None:
+            return cascade_steps
+
+        patched = list(cascade_steps)
+        patched[index] = {**patched[index], "rate": vat_rate}
+        return patched
+
+    @staticmethod
+    def _single_tax_index(cascade_steps: list[Any]) -> int | None:
+        """Position of the one ``tax`` step, or ``None`` when there is not exactly one.
+
+        Both the override and the effective-rate signal have to answer "can one
+        project figure stand in for this stack", and they have to answer it the
+        same way every time. Two conditions that agree today are one condition
+        written twice, so the condition lives here and is read, never restated.
+        """
+        tax_positions = [
+            index
+            for index, step in enumerate(cascade_steps)
+            if isinstance(step, dict) and str(step.get("category", "")).strip().lower() == "tax"
+        ]
+        return tax_positions[0] if len(tax_positions) == 1 else None
+
+    async def effective_vat(self, methodology: Methodology, project_id: uuid.UUID) -> EffectiveVat:
+        """Which VAT rate this methodology is priced at for this project, and why.
+
+        The read side of the substitution :meth:`compute_estimate` performs. It
+        exists because the two used to disagree in silence: the computation and
+        both exports have honoured the project's rate since ``e7dbcded9``,
+        while a read returned the stored steps, so an editor showing a tax line
+        at nought belonged to a bill costed at the project's rate with nothing
+        on screen saying so. A hand-made methodology is the sharp case, since
+        the create form seeds exactly one tax step at nought and that is
+        precisely the shape the override replaces.
+
+        This resolves rather than decides: it applies the same rule as the
+        override, through the same helper, and does not itself change a price.
+        """
+        steps = list(methodology.cascade_steps or [])
+        index = self._single_tax_index(steps)
+        stored = _rate_to_decimal(steps[index].get("rate")) if index is not None else None
+
+        if index is None:
+            # No single tax line, so no one rate describes this stack. Say that
+            # plainly rather than reporting a nought somebody would read as
+            # zero-rated.
+            return EffectiveVat(rate=None, source="none", stored_rate=None, differs_from_stored=False)
+
+        project_rate = _rate_to_decimal(await self._project_vat_rate(project_id))
+        if project_rate is None:
+            return EffectiveVat(rate=stored, source="methodology", stored_rate=stored, differs_from_stored=False)
+
+        return EffectiveVat(
+            rate=project_rate,
+            source="project",
+            stored_rate=stored,
+            # A project on the same rate as the template is not an override
+            # worth announcing, which is why this compares figures instead of
+            # simply reporting that a project rate exists.
+            differs_from_stored=stored is None or project_rate != stored,
+        )
+
     async def _aggregate_boq_resource_totals(self, boq_id: uuid.UUID) -> dict[str, Decimal]:
         """Sum a BOQ's resource costs per resource type via the BOQ service.
 
@@ -692,12 +813,27 @@ class MethodologyService:
         Returns a plain dict matching
         :class:`app.modules.methodology.schemas.ComputeEstimateResponse`.
 
+        VAT comes from the project, not from the template, whenever the project
+        states one. A template's rate is a catalogue fact about a country and it
+        stays the default; but this method is given a ``project_id``, and
+        through :meth:`build_export_data` a ``boq_id``, so at that point it is
+        pricing one project's bill and has to answer what the bill answers. The
+        bill engine has honoured ``default_vat_rate`` since issue #89, and one
+        bill asked two ways cannot cost two amounts. A project that set no rate
+        of its own is not moved by a cent, and the pure catalogue path,
+        :func:`~app.modules.methodology.templates.build_cascade_spec_from_template`,
+        does not consult a project at all and is unaffected.
+
         Raises:
             HTTPException 404: Methodology slug not resolvable for the project.
             HTTPException 422: The methodology's cascade spec is invalid.
         """
         slug = data.methodology_slug or await self.get_active_slug(data.project_id)
         config = await self._resolve_methodology_config(data.project_id, slug)
+
+        project_vat = await self._project_vat_rate(data.project_id)
+        if project_vat is not None:
+            config["cascade_steps"] = self._with_project_vat(config["cascade_steps"], project_vat)
 
         # Source the per-resource-type totals.
         if data.resource_totals is not None:
@@ -835,10 +971,14 @@ class MethodologyService:
 
     @staticmethod
     def export_filename(data: dict[str, Any], ext: str) -> str:
-        """ASCII-safe download filename derived from the methodology name."""
+        """Download filename derived from the methodology name.
+
+        Returns the real (possibly non-ASCII) name; the router wraps it in
+        :func:`app.core.content_disposition.attachment_disposition`, which
+        derives the RFC 6266 ASCII fallback and UTF-8 ``filename*`` pair.
+        """
         raw = str(data.get("methodology_name") or "methodology")
-        safe = raw.encode("ascii", errors="replace").decode("ascii").replace('"', "'")
-        safe = safe.strip() or "methodology"
+        safe = raw.strip() or "methodology"
         return f"{safe}.{ext}"
 
     def generate_excel_export(self, data: dict[str, Any]) -> bytes:

@@ -62,7 +62,7 @@ TEMPLATE = DemoTemplate(
         "utilidad se aplican como sobrecostos."
     ),
     boq_metadata={
-        "standard": "Analisis de Precios Unitarios (APU) - LOPSRM + CSI MasterFormat",
+        "standard": "Analisis de Precios Unitarios (APU) - LOPSRM + division-based classification",
         "phase": "Proyecto ejecutivo - presupuesto de obra",
         "base_date": "2026-Q1",
         "price_level": "Monterrey 2026 (MXN, sin IVA)",

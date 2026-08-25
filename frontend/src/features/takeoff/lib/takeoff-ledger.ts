@@ -14,6 +14,7 @@ import { ANNOTATION_TYPES } from './takeoff-groups';
 import type { MeasurementSystem } from '@/stores/usePreferencesStore';
 import { convertQuantity } from './takeoff-display-units';
 import { effectiveQuantity } from './takeoff-quantity';
+import { fmtFixed } from '@/shared/lib/formatters';
 
 /** Sortable column keys exposed by the ledger table. */
 export type LedgerSortColumn =
@@ -49,6 +50,9 @@ export interface GroupSubtotal {
   totals: Record<string, number>;
   /** Count of measurements in the group (annotation types counted). */
   count: number;
+  /** Per unit key: true while every contribution came from count-type
+   *  measurements — that subtotal is whole pieces (K-14), not a figure. */
+  countOnly: Record<string, boolean>;
 }
 
 /** Grand total row rendered at the footer, keyed by measurement type. */
@@ -150,7 +154,7 @@ export function groupSubtotals(measurements: Measurement[]): GroupSubtotal[] {
     const group = m.group || 'General';
     let entry = byGroup.get(group);
     if (!entry) {
-      entry = { group, totals: {}, count: 0 };
+      entry = { group, totals: {}, count: 0, countOnly: {} };
       byGroup.set(group, entry);
     }
     entry.count += 1;
@@ -160,6 +164,7 @@ export function groupSubtotals(measurements: Measurement[]): GroupSubtotal[] {
       // opening-deduction sign (net area = gross - openings), keyed by the
       // stored unit so m + m2 + m3 stay distinct.
       entry.totals[unit] = (entry.totals[unit] ?? 0) + effectiveQuantity(m);
+      entry.countOnly[unit] = (entry.countOnly[unit] ?? true) && m.type === 'count';
     }
   }
   return Array.from(byGroup.values()).sort((a, b) =>
@@ -289,9 +294,9 @@ function formatNumber(value: number): string {
   // in Excel without scientific notation.
   if (value === 0) return '0';
   const abs = Math.abs(value);
-  if (abs < 1) return value.toFixed(3);
-  if (abs < 100) return value.toFixed(2);
-  return value.toFixed(1);
+  if (abs < 1) return fmtFixed(value, 3);
+  if (abs < 100) return fmtFixed(value, 2);
+  return fmtFixed(value, 1);
 }
 
 /** Convert a filter payload to the union of unique tokens found in the

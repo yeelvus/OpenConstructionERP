@@ -297,6 +297,28 @@ function displayUnit(unit: string): string {
 
 /* ── Convert between frontend Measurement and backend API format ─────── */
 
+/** Quantity types whose `label` is a machine-derived string (built by
+ *  `formatMeasurement` from value + geometry). */
+const QUANTITY_TYPES = new Set(['distance', 'polyline', 'area', 'volume']);
+
+/** The annotation to persist for a measurement (audit case-2 K-13).
+ *
+ *  Quantity labels stopped being safe to bake into `annotation`: since
+ *  K-12 they render in the AUTHOR's app language, so persisting them
+ *  froze "248,5 m²" into data a reader in another locale then saw next
+ *  to freshly recomputed "248.5 m²". The viewer recomputes quantity
+ *  labels from `value` + geometry anyway (`measurementLabel` never reads
+ *  `m.label`), so only a real user-typed `annotation` goes to the wire.
+ *
+ *  Non-quantity marks (counts, text / cloud / arrow markups) keep the
+ *  label fallback: there the label IS the user's content, not a number
+ *  render.
+ */
+function annotationForWire(m: Measurement): string | null {
+  if (QUANTITY_TYPES.has(m.type)) return m.annotation || null;
+  return m.annotation || m.label || null;
+}
+
 function toApiFormat(
   m: Measurement,
   projectId: string,
@@ -336,7 +358,7 @@ function toApiFormat(
     // default - would wrongly override the group colour on a measurement the
     // user never recoloured.
     group_color: m.color || undefined,
-    annotation: m.annotation || m.label || null,
+    annotation: annotationForWire(m),
     points: m.points,
     measurement_value: m.value || null,
     measurement_unit: canonicalUnit(m.unit),
@@ -460,7 +482,10 @@ function syncSignature(m: Measurement): string {
     // Paint (z) order (issue #379): a bring-to-front / send-to-back changes
     // only this key, so include it here or the reorder would never re-sync.
     ord: m.order ?? null,
-    a: m.annotation || m.label || null,
+    // Same rule as the wire (K-13): a quantity label is not content, so
+    // it must not mark the row dirty either - signature and PATCH body
+    // have to agree or edits would re-sync forever / never.
+    a: annotationForWire(m),
     n: m.text ?? null,
   });
 }
@@ -554,7 +579,7 @@ function toApiUpdate(
     // "leave unchanged" and would preserve a pin the user just cleared. Send
     // the clear explicitly.
     group_color: m.color || null,
-    annotation: m.annotation || m.label || null,
+    annotation: annotationForWire(m),
     linked_boq_position_id: m.linkedPositionId ?? null,
     is_deduction: m.type === 'area' ? Boolean(m.isDeduction) : false,
     metadata,

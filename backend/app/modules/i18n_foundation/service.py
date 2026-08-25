@@ -17,6 +17,7 @@ from decimal import Decimal, InvalidOperation
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.provenance import declared, fell_back
 from app.modules.i18n_foundation.models import (
     ExchangeRate,
     TaxConfiguration,
@@ -28,9 +29,24 @@ from app.modules.i18n_foundation.repository import (
     TaxConfigRepository,
     WorkCalendarRepository,
 )
-from app.modules.i18n_foundation.schemas import ConvertResponse, WorkingDaysResponse
+from app.modules.i18n_foundation.schemas import ConvertResponse, WorkingDaysResponse, WorkingDaysYear
 
 logger = logging.getLogger(__name__)
+
+#: Axis token for "which country's calendar answered". The per-year axes that
+#: :class:`WorkingDaysYear` already reports are about time, not jurisdiction.
+_JURISDICTION = "jurisdiction"
+
+#: What the hardcoded week is called when a provenance has to name it.
+#:
+#: Named for what it is rather than for the slot it fills. A reader seeing this
+#: token knows precisely which five days were assumed, and can tell at once that
+#: the answer is wrong for a country working Sunday to Thursday. "DEFAULT" would
+#: have told them only that no country answered, which ``answered`` already says.
+#: Not a country code: this week belongs to nobody.
+#:
+#: Descriptive, never a discriminant. Branch on ``source`` or ``answered``.
+_MONDAY_TO_FRIDAY = "MONDAY_TO_FRIDAY"
 
 
 def _parse_stored_rate(raw: str, from_code: str, to_code: str) -> Decimal:
@@ -220,9 +236,13 @@ class I18nFoundationService:
         is one calendar day.
 
         Each date is judged against its own year's work week. A year with no
-        calendar of its own carries the work week forward from the nearest
-        year that has one, and falls back to Monday-Friday when the country
-        has no calendar at all in the range.
+        calendar of its own uses the nearest year that has one, looking outside
+        the requested range when no spanned year declares a calendar, and falls
+        back to Monday-Friday only when the country has no calendar at all.
+
+        Holidays are not carried across years the way the work week is. They
+        come only from the calendars inside the range, so a range reaching past
+        the last seeded year is counted with no holidays at all.
 
         Args:
             country_code: Two-letter ISO country code (e.g. "DE").
@@ -266,7 +286,24 @@ class I18nFoundationService:
             calendar = await self.work_calendar_repo.get_for_country(code, str(year))
             if calendar is None:
                 continue
-            declared_work_days[year] = set(calendar.work_days)
+            week = set(calendar.work_days or [])
+            if not week:
+                # A row that names no working day at all states no working
+                # week, and counting with it would make every date in the year
+                # a non-working day: a plausible zero rather than a complaint.
+                # Treated as absent entirely, holidays included, so the year
+                # carries a week from elsewhere and reports both that and
+                # holidays_applied False. Taking the holidays while refusing
+                # the week would make holidays_applied disagree with the row
+                # it is describing.
+                logger.warning(
+                    "Work calendar %s for %s %s declares no working days; ignoring it",
+                    calendar.id,
+                    code,
+                    year,
+                )
+                continue
+            declared_work_days[year] = week
             # Parse holiday exceptions
             for exc_entry in calendar.exceptions or []:
                 exc_date_str = exc_entry.get("date")
@@ -283,16 +320,82 @@ class I18nFoundationService:
         # Resolve a work week for every spanned year: its own if declared,
         # otherwise the nearest declared year (ties go to the earlier one),
         # otherwise Monday-Friday.
+        #
+        # When no spanned year declares a calendar, look outside the range
+        # before giving up. The seeded file covers a single year, so a range
+        # past it used to be judged Monday-Friday even for a country whose
+        # declared week is not Monday-Friday: Saudi Arabia's Sunday-Thursday
+        # came back exactly inverted, Friday counted as working and Sunday as
+        # weekend. Both weeks are five days, so the yearly total was unchanged
+        # and only the individual days were wrong.
+        #
+        # A working week is a rule and can be carried forward. A holiday is a
+        # date and cannot, which is why the lookup below covers only the week.
         default_work_days = {1, 2, 3, 4, 5}
+        fallback_work_days = declared_work_days
+        if not fallback_work_days:
+            fallback_work_days = {}
+            for other in await self.work_calendar_repo.list(country_code=code):
+                try:
+                    declared_year = int(other.year)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Work calendar %s has an unparseable year: %r",
+                        other.id,
+                        other.year,
+                    )
+                    continue
+                other_week = set(other.work_days or [])
+                if not other_week:
+                    # Same reasoning as above, and this is the branch that made
+                    # it dangerous: the mapping would be non-empty while the
+                    # week inside it was not, so the year reported a week
+                    # carried from a real calendar and then counted no working
+                    # days in any range, for ever, without a failure anywhere.
+                    logger.warning(
+                        "Work calendar %s for %s %s declares no working days; ignoring it",
+                        other.id,
+                        code,
+                        declared_year,
+                    )
+                    continue
+                fallback_work_days[declared_year] = other_week
+
+        # Whether this country is known at all, which is a different question
+        # from the per-year ones below. By this point the lookup has been
+        # widened past the requested range, so an empty mapping here means no
+        # calendar exists for the country in any year and the Monday-Friday
+        # week about to be used belongs to nobody.
+        jurisdiction = (
+            declared(_JURISDICTION, code) if fallback_work_days else fell_back(_JURISDICTION, code, _MONDAY_TO_FRIDAY)
+        )
+
         work_days_by_year: dict[int, set[int]] = {}
+        resolved_years: list[WorkingDaysYear] = []
         for year in spanned_years:
+            carried_from: int | None = None
             if year in declared_work_days:
                 work_days_by_year[year] = declared_work_days[year]
-            elif declared_work_days:
-                nearest = min(declared_work_days, key=lambda y, target=year: (abs(y - target), y))
-                work_days_by_year[year] = declared_work_days[nearest]
+                source = "declared"
+            elif fallback_work_days:
+                nearest = min(fallback_work_days, key=lambda y, target=year: (abs(y - target), y))
+                work_days_by_year[year] = fallback_work_days[nearest]
+                source = "carried"
+                carried_from = nearest
             else:
                 work_days_by_year[year] = default_work_days
+                source = "default"
+
+            # Holidays come only from a year's own calendar, never carried, so
+            # this is not the same question as where the week came from.
+            resolved_years.append(
+                WorkingDaysYear(
+                    year=year,
+                    work_week_source=source,
+                    work_week_from_year=carried_from,
+                    holidays_applied=year in declared_work_days,
+                )
+            )
 
         # Count working days
         working_days = 0
@@ -307,10 +410,12 @@ class I18nFoundationService:
 
         return WorkingDaysResponse(
             country_code=code,
+            jurisdiction=jurisdiction,
             from_date=from_date,
             to_date=to_date,
             working_days=working_days,
             calendar_days=calendar_days,
+            years=resolved_years,
         )
 
     # ── ECB Rate Fetching ──────────────────────────────────────────────────

@@ -542,12 +542,22 @@ class ResourcesService:
         limit: int = 100,
         resource_type: str | None = None,
         resource_status: str | None = None,
+        project_id: uuid.UUID | None = None,
     ) -> tuple[list[Resource], int]:
+        """List resources, optionally narrowed to one project's own roster.
+
+        ``project_id`` keeps the resources whose home is that project plus the
+        unhomed company-wide pool, which is the filter the repository has
+        always implemented. Without it, a site picker offers the whole
+        tenant: a German supervisor recording a day was choosing between
+        crews from every other project on the install.
+        """
         return await self.resource_repo.list_all(
             offset=offset,
             limit=limit,
             resource_type=resource_type,
             status=resource_status,
+            project_id=project_id,
         )
 
     async def update_resource(self, resource_id: uuid.UUID, data: ResourceUpdate) -> Resource:

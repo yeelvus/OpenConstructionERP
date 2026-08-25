@@ -20,6 +20,9 @@ import { PLAYBOOKS } from '@/features/cases/playbooks';
 import { useCasesStore } from '@/features/cases/useCasesStore';
 import { completedCount } from '@/features/cases/progress';
 import { tintFor } from '@/features/cases/categories';
+import { dealCaseFaces } from '@/features/cases/caseFaces';
+
+import { HEX_PORTRAIT_ASPECT, HEX_PORTRAIT_CLIP } from '@/shared/lib/honeycomb';
 import { rolesForPlaybook, ROLE_BY_ID } from '@/features/cases/roles';
 import { iconFor } from '@/features/cases/icons';
 import { CaseArt } from '@/features/cases/CaseArt';
@@ -93,6 +96,10 @@ export function DashboardCasesCard() {
     : roles.length > 0
       ? t('cases.dashboard_card.for_role', { defaultValue: 'Picked for you' })
       : t('cases.dashboard_card.popular', { defaultValue: 'Popular starting points' });
+
+  // Dealt from the same helper the Cases hub uses, so a case wears the same
+  // person in both places rather than two different ones.
+  const faces = useMemo(() => dealCaseFaces(picks.map(({ pb }) => pb)), [picks]);
 
   return (
     <div
@@ -168,6 +175,7 @@ export function DashboardCasesCard() {
               reflowing to six, four or two on narrower screens. */}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-11">
           {picks.map(({ pb, best, total, inProgress }) => {
+            const face = faces.get(pb.id);
             const Icon = iconFor(pb.icon);
             const tint = tintFor(pb.category);
             const title = t(pb.titleKey, { defaultValue: pb.titleDefault });
@@ -187,7 +195,43 @@ export function DashboardCasesCard() {
                 {/* Line-art banner on an always-light tile so the linework reads
                     the same in light and dark theme. */}
                 <div className="relative aspect-[16/9] w-full overflow-hidden border-b border-border-light bg-white ring-1 ring-inset ring-slate-900/[0.04]">
-                  <CaseArt id={pb.id} category={pb.category} fallbackIcon={Icon} fallbackClass={tint.text} alt={title} />
+                  {/* Nudged off the inline-start edge so the portrait below sits
+                      beside the drawing rather than on top of it. */}
+                  <CaseArt
+                    id={pb.id}
+                    category={pb.category}
+                    fallbackIcon={Icon}
+                    fallbackClass={tint.text}
+                    alt={title}
+                    className={face ? 'ps-[14%]' : undefined}
+                  />
+                  {/* The specialist the case is written for, cut to the same
+                      honeycomb cell the Cases hub and the marketing site use.
+                      It sits over a corner rather than beside the diagram:
+                      these tiles are a sixth of a row wide, and a band would
+                      leave the drawing too narrow to read at all. Decorative -
+                      the case title below carries the meaning. */}
+                  {face && (
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute bottom-1 start-1 block w-[30%] max-w-[2.75rem]"
+                    >
+                      <span
+                        className="block bg-white/90 p-[2px] shadow-sm shadow-slate-900/20"
+                        style={{ aspectRatio: HEX_PORTRAIT_ASPECT, clipPath: HEX_PORTRAIT_CLIP }}
+                      >
+                        <img
+                          src={face}
+                          alt=""
+                          loading="lazy"
+                          decoding="async"
+                          draggable={false}
+                          className="h-full w-full object-cover object-[50%_18%]"
+                          style={{ clipPath: HEX_PORTRAIT_CLIP }}
+                        />
+                      </span>
+                    </span>
+                  )}
                   {inProgress && (
                     <span
                       className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-oe-blue shadow-sm ring-2 ring-white"

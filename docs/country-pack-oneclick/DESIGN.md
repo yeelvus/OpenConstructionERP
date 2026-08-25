@@ -22,7 +22,7 @@ So: pick a country/partner pack in onboarding → **one click installs everythin
 2. **Both databases**: the *simple/relational* cost DB (CWICR) **and** the *vector* DB (embeddings for semantic search).
 3. **2 example projects from that country**, each **fully worked through every module** so a new user immediately sees how to operate the whole platform.
 
-And the **partner packs we actually built** (the 12 in `packs/`) must be the thing shown in onboarding — not a separate hardcoded list.
+And the **partner packs we actually built** (17 in `packs/` as of 2026-08) must be the thing shown in onboarding — not a separate hardcoded list.
 
 ## 2. Current state and the three gaps
 
@@ -190,7 +190,7 @@ Each onboarding country needs **2** demos. Inventory by country:
 |---------|--------------------------------------|---------|
 | DE      | residential-berlin (built-in)        | office-frankfurt (bimhessen-de pack) ✓ |
 | GB      | office-london (built-in)             | commercial-london (uk-jct pack) ✓ |
-| US      | medical-us (built-in)                | commercial-denver (us-rsmeans pack) ✓ |
+| US      | medical-us (built-in)                | commercial-denver (us-costdata pack) ✓ |
 | FR      | school-paris (built-in)              | **AUTHOR** |
 | AE      | warehouse-dubai (built-in)           | **AUTHOR** |
 | CA      | office-montreal (batimatech pack)    | **AUTHOR** |

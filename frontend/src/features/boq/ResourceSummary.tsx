@@ -18,10 +18,12 @@ import {
 } from 'lucide-react';
 import { boqApi, type ResourceSummaryItem, type ResourceSummaryResponse } from './api';
 import { apiPost } from '@/shared/lib/api';
+import { currencyFractionDigits } from '@/shared/lib/money';
 import { useToastStore } from '@/stores/useToastStore';
 import { getResourceTypeLabel } from './boqResourceTypes';
 import { VariantPicker } from '@/features/costs/VariantPicker';
 import type { CostVariant } from '@/features/costs/api';
+import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
 
 /* ── Constants ──────────────────────────────────────────────────────── */
 
@@ -48,10 +50,41 @@ const TYPE_ICONS: Record<string, React.ReactNode> = {
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
+/**
+ * Quantities, and only quantities.
+ *
+ * Two decimals here is a plain-number convention, not a claim about money, so
+ * this one is deliberately NOT currency-aware. It used to serve both, which is
+ * how a money column came to be written in a digit count nobody chose: four of
+ * its five call sites were costs and rates.
+ */
 function createRSFormatter(locale: string) {
   return new Intl.NumberFormat(locale, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
+  });
+}
+
+/**
+ * Money, written the way its currency is written.
+ *
+ * The currency has to be handed in, and it has to be the PROJECT's base
+ * currency rather than any `resource.currency` on the rows. The rollup
+ * endpoint converts every resource subtotal into the project base before it
+ * aggregates, and leaves `currency` on each item set to the currency the
+ * resource was priced in originally. Reading the digit count off that field
+ * would ask about the source and answer about the converted figure - two
+ * different currencies whenever an FX rate was applied.
+ *
+ * With no currency this falls through to the shared resolver's plain default,
+ * which is the two decimals this component printed before, so a caller that
+ * cannot name one is no worse off than it was.
+ */
+function createRSMoneyFormatter(locale: string, currency?: string) {
+  const digits = currencyFractionDigits(currency);
+  return new Intl.NumberFormat(locale, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
   });
 }
 
@@ -71,10 +104,22 @@ function toNum(value: number | string | null | undefined): number {
 
 /* ── Component ───────────────────────────────────────────────────────── */
 
-export function ResourceSummary({ boqId, locale = 'de-DE' }: { boqId: string; locale?: string }) {
+export function ResourceSummary({
+  boqId,
+  locale = 'de-DE',
+  currency,
+}: {
+  boqId: string;
+  locale?: string;
+  /** The project's base currency - see `createRSMoneyFormatter`. */
+  currency?: string;
+}) {
   const { t } = useTranslation();
   const fmt = useMemo(() => createRSFormatter(locale), [locale]);
-  const [collapsed, setCollapsed] = useState(false);
+  const fmtMoney = useMemo(() => createRSMoneyFormatter(locale, currency), [locale, currency]);
+  // Collapsed by default - the rollup request fires on first expand (see
+  // the query below), keeping it out of the editor's first-paint burst.
+  const [collapsed, setCollapsed] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [typeFilter, setTypeFilter] = useState<ResourceTypeFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -192,10 +237,13 @@ export function ResourceSummary({ boqId, locale = 'de-DE' }: { boqId: string; lo
     [addToast, boqId, queryClient, t],
   );
 
+  // Fetched on expand only: the resource rollup is one of the heavy calls
+  // that used to fire in the editor's first-paint request burst, and its
+  // figures are consumed only inside this panel.
   const { data, isLoading, isError } = useQuery({
     queryKey: ['boq-resource-summary', boqId],
     queryFn: () => boqApi.getResourceSummary(boqId),
-    enabled: !!boqId,
+    enabled: !!boqId && !collapsed,
   });
 
   const summary: ResourceSummaryResponse = data ?? {
@@ -233,7 +281,10 @@ export function ResourceSummary({ boqId, locale = 'de-DE' }: { boqId: string; lo
     return items;
   }, [summary.resources, typeFilter, searchQuery, sortBy, locale]);
 
-  if (summary.total_resources === 0 && !isLoading && !isError) {
+  // Hide only when the server confirmed there is nothing to show. While the
+  // panel is collapsed the query has not run yet (lazy fetch), and returning
+  // null then would remove the header the user needs to click to load it.
+  if (data && summary.total_resources === 0 && !isLoading && !isError) {
     return null;
   }
 
@@ -281,9 +332,11 @@ export function ResourceSummary({ boqId, locale = 'de-DE' }: { boqId: string; lo
           <span className="text-xs font-semibold text-content-primary">
             {t('boq.resource_summary', { defaultValue: 'Resource Summary' })}
           </span>
-          <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-oe-blue/10 px-1.5 text-2xs font-medium text-oe-blue tabular-nums">
-            {summary.total_resources}
-          </span>
+          {data != null && (
+            <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-oe-blue/10 px-1.5 text-2xs font-medium text-oe-blue tabular-nums">
+              {summary.total_resources}
+            </span>
+          )}
 
           {/* Inline type badges */}
           {!collapsed && summary.total_resources > 0 && (
@@ -321,7 +374,7 @@ export function ResourceSummary({ boqId, locale = 'de-DE' }: { boqId: string; lo
                   {typeFilterLabel(type as ResourceTypeFilter)}
                 </span>
                 <span className="text-xs font-medium tabular-nums ml-1">
-                  {fmt.format(toNum(info.total_cost))}
+                  {fmtMoney.format(toNum(info.total_cost))}
                 </span>
               </div>
             ))}
@@ -485,6 +538,7 @@ export function ResourceSummary({ boqId, locale = 'de-DE' }: { boqId: string; lo
                               key={`${res.name}-${res.type}-${idx}`}
                               resource={res}
                               fmt={fmt}
+                              fmtMoney={fmtMoney}
                               onSaveToCatalog={handleSaveToCatalog}
                               isSaved={savedResources.has(`${res.type}:${res.name}`)}
                               onRepickVariant={handleRepickVariant}
@@ -508,7 +562,7 @@ export function ResourceSummary({ boqId, locale = 'de-DE' }: { boqId: string; lo
                             <td />
                             <td />
                             <td className="px-3 py-2 text-right text-xs font-bold text-content-primary tabular-nums">
-                              {fmt.format(
+                              {fmtMoney.format(
                                 filteredResources.reduce((sum, r) => sum + toNum(r.total_cost), 0),
                               )}
                             </td>
@@ -518,10 +572,10 @@ export function ResourceSummary({ boqId, locale = 'de-DE' }: { boqId: string; lo
                                   remaining sum is shown so the user can see how
                                   much budget the current filter selection
                                   covers. */}
-                              {filteredResources
-                                .reduce((sum, r) => sum + (r.abc_percentage ?? 0), 0)
-                                .toFixed(1)}
-                              %
+                              {fmtPercent(
+                                filteredResources.reduce((sum, r) => sum + (r.abc_percentage ?? 0), 0),
+                                1,
+                              )}
                             </td>
                             <td />
                             <td />
@@ -573,13 +627,17 @@ export function ResourceSummary({ boqId, locale = 'de-DE' }: { boqId: string; lo
 function ResourceRow({
   resource,
   fmt,
+  fmtMoney,
   onSaveToCatalog,
   isSaved,
   onRepickVariant,
   abcDividerAbove,
 }: {
   resource: ResourceSummaryItem;
+  /** Quantities. */
   fmt: Intl.NumberFormat;
+  /** Costs and rates. Separate because the two answer to different rules. */
+  fmtMoney: Intl.NumberFormat;
   onSaveToCatalog: (resource: ResourceSummaryItem) => void;
   isSaved: boolean;
   onRepickVariant: (resource: ResourceSummaryItem, chosen: CostVariant) => void;
@@ -705,7 +763,7 @@ function ResourceRow({
       </td>
       <td className="px-3 py-2 text-right text-content-secondary tabular-nums">
         <div className="inline-flex items-center justify-end gap-1.5">
-          <span>{fmt.format(toNum(resource.avg_unit_rate))}</span>
+          <span>{fmtMoney.format(toNum(resource.avg_unit_rate))}</span>
           {canRepick && (
             <>
               <button
@@ -754,7 +812,7 @@ function ResourceRow({
         </div>
       </td>
       <td className="px-3 py-2 text-right text-content-primary font-semibold tabular-nums">
-        {fmt.format(toNum(resource.total_cost))}
+        {fmtMoney.format(toNum(resource.total_cost))}
       </td>
       <td className="px-3 py-2 text-right tabular-nums">
         <span
@@ -765,13 +823,13 @@ function ResourceRow({
                   defaultValue:
                     'Class {{cls}} · {{pct}}% of project resource cost',
                   cls: abcClass,
-                  pct: abcPct.toFixed(2),
+                  pct: fmtFixed(abcPct, 2),
                 })
               : ''
           }
         >
           {abcClass && <span className="font-bold">{abcClass}</span>}
-          <span>{abcPct.toFixed(1)}%</span>
+          <span>{fmtPercent(abcPct)}</span>
         </span>
       </td>
       <td className="px-3 py-2 text-center text-content-tertiary tabular-nums">

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, BarChart3, Loader2, Inbox } from 'lucide-react';
 import { boqApi, type SensitivityItem } from './api';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
@@ -31,12 +32,16 @@ function fmtCompact(n: number, fmt: Intl.NumberFormat): string {
 export function SensitivityChart({ boqId, locale = 'de-DE' }: { boqId: string; locale?: string }) {
   const { t } = useTranslation();
   const fmt = useMemo(() => createSCFormatter(locale), [locale]);
-  const [collapsed, setCollapsed] = useState(false);
+  // Collapsed by default and fetched on expand: the sensitivity run is one
+  // of the heavy analysis calls that used to fire in a 7-request burst on
+  // the editor's first paint (~4s queueing on a local stand). The analysis
+  // is only consumed inside this panel, so it loads when the panel opens.
+  const [collapsed, setCollapsed] = useState(true);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['boq-sensitivity', boqId],
     queryFn: () => boqApi.getSensitivity(boqId),
-    enabled: !!boqId,
+    enabled: !!boqId && !collapsed,
   });
 
   const items: SensitivityItem[] = data?.items ?? [];
@@ -137,7 +142,7 @@ export function SensitivityChart({ boqId, locale = 'de-DE' }: { boqId: string; l
                       {t('boq.sensitivity_ranked_by', { defaultValue: 'Ranked by variance' })}{' '}
                       <span className="font-semibold text-content-primary">
                         ({t('boq.sensitivity_montecarlo', { defaultValue: 'Monte Carlo' })},{' '}
-                        {iterations.toLocaleString()}{' '}
+                        {iterations.toLocaleString(getNumberLocale())}{' '}
                         {t('boq.cost_risk_iterations_label', { defaultValue: 'iter.' })}, r={correlation})
                       </span>
                     </span>

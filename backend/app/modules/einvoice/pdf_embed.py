@@ -38,9 +38,19 @@ from pypdf.generic import (
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
 
-from app.modules.einvoice.cii import EInvoice, _money, build_cii_xml
+from app.core.pdf_fonts import pdf_font_for_text
+from app.modules.einvoice.cii import EInvoice, build_cii_xml
+from app.modules.einvoice.pdf_translations import (
+    DEFAULT_PDF_LOCALE,
+    fmt_date,
+    fmt_money,
+    fmt_number,
+    normalize_pdf_locale,
+    tr,
+)
 from app.modules.einvoice.profiles import get_profile
 
 # Factur-X / ZUGFeRD attachment filename (2.1 uses factur-x.xml for both).
@@ -55,68 +65,180 @@ _CONFORMANCE = {
 }
 
 
-def _readable_pdf(inv: EInvoice) -> bytes:
-    """Render a compact one-page, international invoice PDF (reportlab)."""
+def _readable_pdf(inv: EInvoice, locale: str = DEFAULT_PDF_LOCALE) -> bytes:
+    """Render the compact one-page invoice PDF (reportlab) in ``locale``.
+
+    Only the page is localised - labels, date shape, decimal separators and
+    thousands grouping. The embedded CII is standard-prescribed and never
+    changes with the reader's language.
+    """
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     width, height = A4
     left = 20 * mm
     top = height - 25 * mm
 
+    def put(x: float, y: float, text: str, *, base: str, size: int, align_right: bool = False) -> None:
+        """Draw one string, in another face only if this one cannot draw it.
+
+        The page is set in Helvetica and stays set in Helvetica. When a string
+        needs a different face - a Chinese company name, a squared-metre unit -
+        that face is selected for the one string and the Helvetica state is put
+        back straight away, so the next string is unaffected.
+
+        The test is which face can draw the characters, not which script they
+        belong to, so an invoice that was already all-Latin takes the early
+        return on every string and emits exactly the operators it emitted
+        before any of this existed. That matters more than it looks: reportlab
+        writes a Tf operator for every setFont call without checking whether
+        the font actually changed, so selecting a face per string
+        unconditionally would move the bytes of every invoice we have ever
+        issued, and the two faces do not share a width table.
+        """
+        draw = c.drawRightString if align_right else c.drawString
+        face = pdf_font_for_text(text, base=base)
+        if face == base:
+            draw(x, y, text)
+            return
+        c.setFont(face, size)
+        draw(x, y, text)
+        c.setFont(base, size)
+
+    def fit(text: str, *, base: str, size: int, budget: float, cap: int | None = None) -> str:
+        """Clip a string to the narrower of its character cap and its width.
+
+        The character cap is applied first, so this can only ever shorten what
+        the page drew before and never lengthen it. A Latin string that fits
+        its column comes back untouched, byte for byte; one that already
+        overran is now cut at the column edge instead of running across the
+        columns to its right.
+
+        The width is measured in the face that will actually draw the string,
+        which is the whole point: the two faces do not share a width table, and
+        a Han character is close to a full em where a Latin one is about half.
+        Measuring in Helvetica would under-count a Chinese name by nearly half
+        and clip it in the wrong place.
+
+        No ellipsis is appended. Adding one would move the bytes of any Latin
+        invoice whose description is cut at the character cap but still fits
+        its column, and that is exactly the case that has to stay identical.
+
+        Args:
+            text: the string as it would be drawn.
+            base: the face the page is currently set in.
+            size: point size the string is drawn at.
+            budget: horizontal space to the next fixed offset, in points.
+            cap: existing character cap, applied before the width test.
+
+        Returns:
+            ``text`` unchanged, or the longest leading run of it that fits.
+        """
+        clipped = text[:cap] if cap is not None else text
+        face = pdf_font_for_text(clipped, base=base)
+        if pdfmetrics.stringWidth(clipped, face, size) <= budget:
+            return clipped
+        # Narrow from the right; the face can change as characters leave, so
+        # it is re-asked rather than assumed to stay what it started as.
+        while clipped:
+            clipped = clipped[:-1]
+            if pdfmetrics.stringWidth(clipped, pdf_font_for_text(clipped, base=base), size) <= budget:
+                break
+        return clipped
+
     def line(y: float, text: str, *, size: int = 9, bold: bool = False) -> None:
-        c.setFont("Helvetica-Bold" if bold else "Helvetica", size)
-        c.drawString(left, y, text)
+        base = "Helvetica-Bold" if bold else "Helvetica"
+        c.setFont(base, size)
+        put(left, y, text, base=base, size=size)
 
     def right(y: float, text: str, *, size: int = 9, bold: bool = False) -> None:
-        c.setFont("Helvetica-Bold" if bold else "Helvetica", size)
-        c.drawRightString(width - 20 * mm, y, text)
+        base = "Helvetica-Bold" if bold else "Helvetica"
+        c.setFont(base, size)
+        put(width - 20 * mm, y, text, base=base, size=size, align_right=True)
 
-    line(top, "INVOICE", size=16, bold=True)
+    line(top, tr(locale, "doc_title"), size=16, bold=True)
     right(top, f"{inv.invoice_number}", size=12, bold=True)
     y = top - 8 * mm
-    right(y, f"Date: {inv.issue_date}")
+    right(y, tr(locale, "date", value=fmt_date(inv.issue_date, locale)))
     if inv.due_date:
-        right(y - 5 * mm, f"Due: {inv.due_date}")
+        right(y - 5 * mm, tr(locale, "due", value=fmt_date(inv.due_date, locale)))
 
     # Parties
     y = top - 20 * mm
-    line(y, "From", bold=True)
-    line(y - 5 * mm, inv.seller.name)
+    line(y, tr(locale, "from"), bold=True)
+    # The seller block runs to the bill-to column at left + 90mm, the buyer
+    # block from there to the right margin, and the description column to the
+    # quantity figure at left + 95mm. Those are the three strings a party can
+    # make arbitrarily long, so each is clipped at the offset that follows it.
+    line(y - 5 * mm, fit(inv.seller.name, base="Helvetica", size=9, budget=90 * mm))
     seller_loc = " ".join(x for x in (inv.seller.postcode, inv.seller.city) if x)
     if seller_loc:
         line(y - 10 * mm, seller_loc)
     if inv.seller.vat_id:
-        line(y - 15 * mm, f"VAT: {inv.seller.vat_id}")
+        line(y - 15 * mm, tr(locale, "vat_id", value=inv.seller.vat_id))
 
     c.setFont("Helvetica-Bold", 9)
-    c.drawString(left + 90 * mm, y, "Bill to")
+    put(left + 90 * mm, y, tr(locale, "bill_to"), base="Helvetica-Bold", size=9)
     c.setFont("Helvetica", 9)
-    c.drawString(left + 90 * mm, y - 5 * mm, inv.buyer.name)
+    buyer_budget = (width - 20 * mm) - (left + 90 * mm)
+    put(
+        left + 90 * mm,
+        y - 5 * mm,
+        fit(inv.buyer.name, base="Helvetica", size=9, budget=buyer_budget),
+        base="Helvetica",
+        size=9,
+    )
     buyer_loc = " ".join(x for x in (inv.buyer.postcode, inv.buyer.city) if x)
     if buyer_loc:
-        c.drawString(left + 90 * mm, y - 10 * mm, buyer_loc)
+        put(left + 90 * mm, y - 10 * mm, buyer_loc, base="Helvetica", size=9)
     if inv.buyer_reference:
-        c.drawString(left + 90 * mm, y - 15 * mm, f"Ref: {inv.buyer_reference}")
+        put(left + 90 * mm, y - 15 * mm, tr(locale, "ref", value=inv.buyer_reference), base="Helvetica", size=9)
 
     # Line table header
     ty = y - 30 * mm
     c.setFont("Helvetica-Bold", 8)
-    c.drawString(left, ty, "Description")
-    c.drawRightString(left + 95 * mm, ty, "Qty")
-    c.drawString(left + 100 * mm, ty, "Unit")
-    c.drawRightString(left + 140 * mm, ty, "Unit price")
-    c.drawRightString(width - 20 * mm, ty, f"Net ({inv.currency})")
+    put(left, ty, tr(locale, "th_description"), base="Helvetica-Bold", size=8)
+    put(left + 95 * mm, ty, tr(locale, "th_qty"), base="Helvetica-Bold", size=8, align_right=True)
+    put(left + 100 * mm, ty, tr(locale, "th_unit"), base="Helvetica-Bold", size=8)
+    put(left + 140 * mm, ty, tr(locale, "th_unit_price"), base="Helvetica-Bold", size=8, align_right=True)
+    put(
+        width - 20 * mm,
+        ty,
+        tr(locale, "th_net", currency=inv.currency),
+        base="Helvetica-Bold",
+        size=8,
+        align_right=True,
+    )
     c.setLineWidth(0.4)
     c.line(left, ty - 2 * mm, width - 20 * mm, ty - 2 * mm)
 
     c.setFont("Helvetica", 8)
     ry = ty - 7 * mm
     for ln in inv.lines:
-        c.drawString(left, ry, (ln.name or "-")[:60])
-        c.drawRightString(left + 95 * mm, ry, _num(ln.quantity))
-        c.drawString(left + 100 * mm, ry, (ln.unit or "")[:8])
-        c.drawRightString(left + 140 * mm, ry, _money(ln.net_unit_price, inv.currency))
-        c.drawRightString(width - 20 * mm, ry, _money(ln.line_net_amount, inv.currency))
+        put(
+            left,
+            ry,
+            fit(ln.name or "-", base="Helvetica", size=8, budget=95 * mm, cap=60),
+            base="Helvetica",
+            size=8,
+        )
+        put(left + 95 * mm, ry, fmt_number(ln.quantity, locale), base="Helvetica", size=8, align_right=True)
+        put(left + 100 * mm, ry, (ln.unit or "")[:8], base="Helvetica", size=8)
+        put(
+            left + 140 * mm,
+            ry,
+            fmt_money(ln.net_unit_price, inv.currency, locale),
+            base="Helvetica",
+            size=8,
+            align_right=True,
+        )
+        put(
+            width - 20 * mm,
+            ry,
+            fmt_money(ln.line_net_amount, inv.currency, locale),
+            base="Helvetica",
+            size=8,
+            align_right=True,
+        )
         ry -= 5 * mm
         if ry < 40 * mm:  # keep it one page for the v1 layout
             break
@@ -128,49 +250,57 @@ def _readable_pdf(inv: EInvoice) -> bytes:
 
     def total_row(label: str, amount: Decimal, *, bold: bool = False) -> None:
         nonlocal ry
-        c.setFont("Helvetica-Bold" if bold else "Helvetica", 9)
-        c.drawRightString(left + 140 * mm, ry, label)
-        c.drawRightString(width - 20 * mm, ry, f"{_money(amount, inv.currency)} {inv.currency}")
+        base = "Helvetica-Bold" if bold else "Helvetica"
+        c.setFont(base, 9)
+        put(left + 140 * mm, ry, label, base=base, size=9, align_right=True)
+        amount_text = f"{fmt_money(amount, inv.currency, locale)} {inv.currency}"
+        put(width - 20 * mm, ry, amount_text, base=base, size=9, align_right=True)
         ry -= 5 * mm
 
-    total_row("Net total", inv.tax_basis_total)
-    total_row("VAT", inv.tax_total)
-    total_row("Grand total", inv.grand_total, bold=True)
+    total_row(tr(locale, "net_total"), inv.tax_basis_total)
+    total_row(tr(locale, "vat_total"), inv.tax_total)
+    total_row(tr(locale, "grand_total"), inv.grand_total, bold=True)
     if inv.prepaid_amount:
-        total_row("Retention / prepaid", inv.prepaid_amount)
-    total_row("Amount due", inv.due_payable, bold=True)
+        total_row(tr(locale, "retention_prepaid"), inv.prepaid_amount)
+    total_row(tr(locale, "amount_due"), inv.due_payable, bold=True)
 
     # Where to pay. The embedded XML carries BT-84 for the buyer's software;
     # a person reading the page needs to see the same account.
     if inv.payee_iban:
         ry -= 4 * mm
         c.setFont("Helvetica-Bold", 8)
-        c.drawString(left, ry, "Payment")
+        put(left, ry, tr(locale, "payment"), base="Helvetica-Bold", size=8)
         c.setFont("Helvetica", 8)
         ry -= 5 * mm
-        c.drawString(left, ry, f"IBAN: {inv.payee_iban}")
+        put(left, ry, tr(locale, "iban", value=inv.payee_iban), base="Helvetica", size=8)
         if inv.payee_bic:
-            c.drawString(left + 70 * mm, ry, f"BIC: {inv.payee_bic}")
+            put(left + 70 * mm, ry, tr(locale, "bic", value=inv.payee_bic), base="Helvetica", size=8)
         if inv.payee_account_name:
             ry -= 5 * mm
-            c.drawString(left, ry, f"Account holder: {inv.payee_account_name}")
+            # The fourth party-controlled string, and the widest budget on the
+            # page: this row is alone, so it runs from the left margin to the
+            # right one. The label is ours and stays whole, only the name the
+            # payee supplied is clipped.
+            holder_budget = (width - 20 * mm) - left
+            put(
+                left,
+                ry,
+                fit(
+                    tr(locale, "account_holder", value=inv.payee_account_name),
+                    base="Helvetica",
+                    size=8,
+                    budget=holder_budget,
+                ),
+                base="Helvetica",
+                size=8,
+            )
 
     c.setFont("Helvetica-Oblique", 7)
     c.setFillColor(colors.grey)
-    c.drawString(
-        left,
-        20 * mm,
-        "This PDF carries an embedded EN 16931 e-invoice (Factur-X / ZUGFeRD). "
-        "The embedded XML is the operative document.",
-    )
+    put(left, 20 * mm, tr(locale, "footer"), base="Helvetica-Oblique", size=7)
     c.showPage()
     c.save()
     return buf.getvalue()
-
-
-def _num(value: Decimal) -> str:
-    q = value.normalize()
-    return f"{q:f}"
 
 
 def _xmp(profile_name: str) -> bytes:
@@ -253,13 +383,20 @@ def _embed_cii(pdf_bytes: bytes, xml_bytes: bytes, profile_name: str) -> bytes:
     return out.getvalue()
 
 
-def build_facturx_pdf(inv: EInvoice, *, strict: bool = True) -> bytes:
-    """Build a Factur-X / ZUGFeRD hybrid PDF for a CII-profile invoice."""
+def build_facturx_pdf(inv: EInvoice, *, strict: bool = True, locale: str = DEFAULT_PDF_LOCALE) -> bytes:
+    """Build a Factur-X / ZUGFeRD hybrid PDF for a CII-profile invoice.
+
+    Args:
+        inv: the fully populated invoice.
+        strict: refuse to render an invoice that fails validation.
+        locale: language of the readable page (``"en"`` or ``"de"``); the
+            embedded CII XML is locale-independent by design.
+    """
     profile = get_profile(inv.profile)
     if profile is None or profile.syntax != "cii":
         from app.modules.einvoice.cii import EInvoiceError
 
         raise EInvoiceError(f"hybrid PDF needs a CII profile (zugferd/facturx/xrechnung/en16931), got {inv.profile!r}")
     xml_bytes = build_cii_xml(inv, strict=strict)
-    pdf_bytes = _readable_pdf(inv)
+    pdf_bytes = _readable_pdf(inv, normalize_pdf_locale(locale))
     return _embed_cii(pdf_bytes, xml_bytes, inv.profile)

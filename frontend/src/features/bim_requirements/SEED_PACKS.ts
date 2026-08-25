@@ -338,7 +338,7 @@ pack:
   id: revit_cost_classification
   name: DIN 276 Cost-Group Completeness (Revit)
   description: |
-    Verifies that every Revit wall carries a DIN 276 cost-group code in the
+    Verifies that every Revit® wall carries a DIN 276 cost-group code in the
     300, 400 or 500 ranges, stored in the DIN_276_Code shared parameter, so
     cost-group rollups are well-defined.
   source: openconstructionerp
@@ -400,7 +400,7 @@ pack:
   id: revit_corridor_door_clearance
   name: Corridor and Door Clearance (Revit)
   description: |
-    Validates barrier-free clearance for Revit Rooms tagged as corridors
+    Validates barrier-free clearance for Revit® Rooms tagged as corridors
     and for Doors on accessible routes, per DIN 18040-1 (public buildings).
   source: openconstructionerp
   version: "1.0.0"
@@ -469,7 +469,7 @@ pack:
   id: revit_fire_rating
   name: Interior Wall Fire-Rating Completeness (Revit)
   description: |
-    Validates that every interior Revit wall declares a Fire Rating value
+    Validates that every interior Revit® wall declares a Fire Rating value
     drawn from the DIN 4102-2 / EN 13501-2 vocabulary.
   source: openconstructionerp
   version: "1.0.0"
@@ -536,7 +536,7 @@ pack:
   id: revit_mep_clearance
   name: MEP-to-Structure Clearance (Revit)
   description: |
-    Validates that Revit pipes maintain a minimum 100 mm clearance from
+    Validates that Revit® pipes maintain a minimum 100 mm clearance from
     structural framing per VDI 2055.
   source: openconstructionerp
   version: "1.0.0"
@@ -584,7 +584,7 @@ pack:
   name: Room-Number Naming Convention (Revit)
   description: |
     Enforces the canonical "<DEPT>.<LEVEL>.<ROOM>" room-code pattern on the
-    Revit Rooms "Number" parameter so downstream FM exports parse cleanly.
+    Revit® Rooms "Number" parameter so downstream FM exports parse cleanly.
   source: openconstructionerp
   version: "1.0.0"
   applies_to:
@@ -685,7 +685,7 @@ export const SEED_PACKS: SeedPack[] = [
     id: 'revit_cost_classification',
     name: 'DIN 276 Cost-Group Completeness (Revit)',
     description:
-      'Verifies that every Revit wall carries a DIN 276 cost-group code in the 300, 400 or 500 ranges, stored in the DIN_276_Code shared parameter, so cost-group rollups are well-defined.',
+      'Verifies that every Revit® wall carries a DIN 276 cost-group code in the 300, 400 or 500 ranges, stored in the DIN_276_Code shared parameter, so cost-group rollups are well-defined.',
     source: 'openconstructionerp',
     version: '1.0.0',
     regions: ['DE', 'AT', 'CH', 'LU'],
@@ -699,7 +699,7 @@ export const SEED_PACKS: SeedPack[] = [
     id: 'revit_corridor_door_clearance',
     name: 'Corridor and Door Clearance (Revit)',
     description:
-      'Validates barrier-free clearance for Revit Rooms tagged as corridors and for Doors on accessible routes, per DIN 18040-1 (public buildings).',
+      'Validates barrier-free clearance for Revit® Rooms tagged as corridors and for Doors on accessible routes, per DIN 18040-1 (public buildings).',
     source: 'openconstructionerp',
     version: '1.0.0',
     regions: ['DE', 'AT', 'CH'],
@@ -713,7 +713,7 @@ export const SEED_PACKS: SeedPack[] = [
     id: 'revit_fire_rating',
     name: 'Interior Wall Fire-Rating Completeness (Revit)',
     description:
-      'Validates that every interior Revit wall declares a Fire Rating value drawn from the DIN 4102-2 / EN 13501-2 vocabulary.',
+      'Validates that every interior Revit® wall declares a Fire Rating value drawn from the DIN 4102-2 / EN 13501-2 vocabulary.',
     source: 'openconstructionerp',
     version: '1.0.0',
     regions: ['DE', 'AT', 'CH'],
@@ -727,7 +727,7 @@ export const SEED_PACKS: SeedPack[] = [
     id: 'revit_mep_clearance',
     name: 'MEP-to-Structure Clearance (Revit)',
     description:
-      'Validates that Revit pipes maintain a minimum 100 mm clearance from structural framing per VDI 2055.',
+      'Validates that Revit® pipes maintain a minimum 100 mm clearance from structural framing per VDI 2055.',
     source: 'openconstructionerp',
     version: '1.0.0',
     regions: ['DE', 'AT', 'CH'],
@@ -741,7 +741,7 @@ export const SEED_PACKS: SeedPack[] = [
     id: 'revit_room_naming',
     name: 'Room-Number Naming Convention (Revit)',
     description:
-      'Enforces the canonical "<DEPT>.<LEVEL>.<ROOM>" room-code pattern on the Revit Rooms "Number" parameter so downstream FM exports parse cleanly.',
+      'Enforces the canonical "<DEPT>.<LEVEL>.<ROOM>" room-code pattern on the Revit® Rooms "Number" parameter so downstream FM exports parse cleanly.',
     source: 'openconstructionerp',
     version: '1.0.0',
     regions: ['INT'],

@@ -16,7 +16,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2, X, Layers, Inbox } from 'lucide-react';
 
 import { Button } from '@/shared/ui';
+import { getIntlLocale } from '@/shared/lib/formatters';
 import { useToastStore } from '@/stores/useToastStore';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 import {
   deleteSnapshot,
@@ -32,12 +34,12 @@ interface BIMSnapshotsPopoverProps {
 }
 
 function formatNumber(n: number): string {
-  return new Intl.NumberFormat('en-US').format(n);
+  return new Intl.NumberFormat(getNumberLocale()).format(n);
 }
 
 function formatDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleString('en-US', {
+    return new Date(iso).toLocaleString(getIntlLocale(), {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',

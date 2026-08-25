@@ -1143,6 +1143,37 @@ class FinanceService:
         line_repo = ProgressClaimLineRepository(self.session)
         claim_lines = await line_repo.list_for_claim(claim_id)
 
+        # The schedule-of-values lines the claim bills against supply what the
+        # claim rows do not carry: the human description of the work, its unit
+        # of measure and, via value / quantity, its billed rate. Without them
+        # every invoice line used to read "Progress claim <n> line (contract
+        # line <uuid>)" with no unit and a zero unit price, which no reader can
+        # parse and an e-invoice check rejects line by line (BR-23).
+        from sqlalchemy import select as _select
+
+        from app.modules.contracts.models import ContractLine as _ContractLine
+
+        sov_by_id: dict[uuid.UUID, _ContractLine] = {}
+        contract_line_ids = {cl.contract_line_id for cl in claim_lines}
+        if contract_line_ids:
+            rows = await self.session.execute(_select(_ContractLine).where(_ContractLine.id.in_(contract_line_ids)))
+            sov_by_id = {row.id: row for row in rows.scalars()}
+
+        # E-invoice metadata is contract data here: a public buyer hands the
+        # routing id (Leitweg-ID / buyer reference) and the agreed VAT
+        # treatment over at award, so they live under the contract's
+        # ``metadata.einvoice`` and every invoice raised from one of its claims
+        # inherits them. Writing provenance-only metadata used to drop this
+        # key, so the compliance check opened with findings (BR-DE-15) the
+        # invoice could have answered from data the platform already had.
+        contract_einvoice = dict((contract.metadata_ or {}).get("einvoice") or {})
+        vat_rate = _safe_decimal(contract_einvoice.get("vat_rate"), Decimal("0"))
+        tax_base = (
+            (gross_base * vat_rate / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if vat_rate > 0
+            else Decimal("0")
+        )
+
         invoice_number = await self.invoices.next_invoice_number(project_id, "receivable")
         invoice = Invoice(
             project_id=project_id,
@@ -1153,9 +1184,9 @@ class FinanceService:
             due_date=None,
             currency_code=invoice_currency,
             amount_subtotal=gross_base,
-            tax_amount=Decimal("0"),
+            tax_amount=tax_base,
             retention_amount=retention_base,
-            amount_total=gross_base,
+            amount_total=gross_base + tax_base,
             status="draft",
             source_claim_id=claim_id,
             notes=f"Auto-created from certified progress claim {claim.claim_number}",
@@ -1168,19 +1199,42 @@ class FinanceService:
                 "claim_currency": claim_currency,
                 "gross_amount": str(gross_base),
                 "net_due": str(net_base),
+                **({"einvoice": contract_einvoice} if contract_einvoice else {}),
             },
         )
         invoice = await self.invoices.create(invoice)
 
         for idx, cl in enumerate(claim_lines):
             amount_base = _to_base(cl.period_completed_value)
+            sov = sov_by_id.get(cl.contract_line_id)
+            code = (sov.code or "").strip() if sov else ""
+            text = (sov.description or "").strip() if sov else ""
+            description = " ".join(part for part in (code, text) if part)
+            if not description:
+                # Degenerate schedule row with neither code nor text: name the
+                # claim and the position, never a raw id.
+                description = f"{claim.claim_number}, item {idx + 1}"
+            quantity = _safe_decimal(cl.period_completed_qty, Decimal("0"))
+            unit = ((sov.unit or "").strip() if sov else "") or None
+            if quantity > 0:
+                # Billed rate for the period, derived so quantity x rate is the
+                # billed value rather than restating the full contract rate on
+                # a partially completed line.
+                unit_rate = (amount_base / quantity).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            else:
+                # Value-only billing (percent complete without a measured
+                # quantity): one lump sum at the billed amount. "psch" is the
+                # schedule's own lump-sum token (UNECE LS).
+                quantity = Decimal("1")
+                unit = unit or "psch"
+                unit_rate = amount_base
             await self.line_items.create(
                 InvoiceLineItem(
                     invoice_id=invoice.id,
-                    description=(f"Progress claim {claim.claim_number} line (contract line {cl.contract_line_id})"),
-                    quantity=_safe_decimal(cl.period_completed_qty, Decimal("1")) or Decimal("1"),
-                    unit=None,
-                    unit_rate=Decimal("0"),
+                    description=description,
+                    quantity=quantity,
+                    unit=unit,
+                    unit_rate=unit_rate,
                     amount=amount_base,
                     wbs_id=None,
                     cost_category=None,
@@ -1513,6 +1567,16 @@ class FinanceService:
                     f"'{data.category}' already exists for this project."
                 ),
             ) from exc
+        # Read the row back so the response carries the stored form of every
+        # money column. ``create`` only flushes, and a flush does not expire
+        # attributes, so the instance still holds the caller's own unrounded
+        # values. Without this the POST response is the one place in the module
+        # where a budget serialises differently from every later read of the
+        # same row, because MoneyType is NUMERIC(18, 2) on PostgreSQL.
+        # ``refresh`` rather than ``expire``: expiry defers the load to
+        # attribute access during serialisation, and a lazy load at that point
+        # is where MissingGreenlet comes from under async SQLAlchemy.
+        await self.session.refresh(budget)
         logger.info("Budget created: project=%s cat=%s", data.project_id, data.category)
         return budget
 
@@ -1859,14 +1923,23 @@ class FinanceService:
         total_budget_revised = _to_base(budget_agg["revised_by_currency"])
         total_committed = _to_base(budget_agg["committed_by_currency"])
         total_actual = _to_base(budget_agg["actual_by_currency"])
+        # Summed per row by the repository, following the rule in `variance.py`,
+        # so this header agrees with the column of variances under it. It used
+        # to subtract spend alone and report money that was already on order as
+        # headroom still available.
+        total_outturn = _to_base(budget_agg["outturn_by_currency"])
 
-        total_variance = total_budget_revised - total_actual
+        total_variance = total_budget_revised - total_outturn
+        # The bar stays on spend and the flag moves to outturn, the same split
+        # the individual rows make: how much has gone, against how much is
+        # spoken for.
         budget_consumed_pct = total_actual / total_budget_revised * 100 if total_budget_revised > 0 else Decimal("0")
+        committed_pct = total_outturn / total_budget_revised * 100 if total_budget_revised > 0 else Decimal("0")
 
         # Budget warning level
-        if budget_consumed_pct >= 95:
+        if committed_pct >= 95:
             warning_level = "critical"
-        elif budget_consumed_pct >= 80:
+        elif committed_pct >= 80:
             warning_level = "caution"
         else:
             warning_level = "normal"

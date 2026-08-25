@@ -4,11 +4,15 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { History, Trash2, Loader2, Plus } from 'lucide-react';
 import { ModuleGuideButton } from '@/shared/ui';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import type { ChatSession } from '../../types';
 import { erpChatGuide } from '../../erpChatGuide';
 
 interface ChatHistoryProps {
   sessions: ChatSession[];
+  /** Sessions the caller has in total. The route serves 20 and takes no
+   *  offset, so the drawer can only say how much of the history is here. */
+  sessionsTotal: number;
   sessionsLoading: boolean;
   loadingSessionId: string | null;
   activeSessionId: string | null;
@@ -37,6 +41,7 @@ function relativeTime(iso: string, label: (k: string, d: string) => string): str
  */
 export default function ChatHistory({
   sessions,
+  sessionsTotal,
   sessionsLoading,
   loadingSessionId,
   activeSessionId,
@@ -184,6 +189,11 @@ export default function ChatHistory({
                 </div>
               );
             })
+          )}
+          {!sessionsLoading && sessions.length > 0 && (
+            <div style={{ padding: '4px 8px 0' }}>
+              <TruncationNotice page={{ items: sessions, total: sessionsTotal }} />
+            </div>
           )}
         </div>
       )}

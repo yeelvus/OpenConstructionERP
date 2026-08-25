@@ -13,6 +13,7 @@ const playbook: Playbook = {
   order: 316,
   category: "bim",
   companyTypes: ["general-contractor", "bim-consultant", "designer"],
+  roles: ["bim-coordinator", "document-controller", "design-lead"],
   icon: "Database",
   titleKey: "cases.set_up_the_common_data_environment.title",
   titleDefault: "Set up the common data environment",
@@ -58,7 +59,7 @@ const playbook: Playbook = {
       whyKey: "cases.set_up_the_common_data_environment.step.define-states.why",
       whyDefault:
         "If everyone reads and writes to their own copies, someone builds from a superseded drawing. The states tell you what is safe to use and what is still a draft.",
-      moduleLabel: "CDE",
+      moduleLabel: "Common Data Environment",
       moduleLabelKey: "cde.title",
       to: "/projects/:projectId/cde",
     },
@@ -99,7 +100,7 @@ const playbook: Playbook = {
       whyKey: "cases.set_up_the_common_data_environment.step.assign-roles.why",
       whyDefault:
         "These are responsibilities in the document workflow, not job titles. One person can author their own discipline and only view another. Fixing who holds each role is what makes a gate crossing accountable instead of anonymous.",
-      moduleLabel: "CDE",
+      moduleLabel: "Common Data Environment",
       moduleLabelKey: "cde.title",
       to: "/projects/:projectId/cde",
     },
@@ -222,7 +223,7 @@ const playbook: Playbook = {
       whyKey: "cases.set_up_the_common_data_environment.step.federate.why",
       whyDefault:
         "Clash checking against private working models finds clashes that are already fixed and misses the ones that are not. The shared area is the single source everyone federates from.",
-      moduleLabel: "Coordination",
+      moduleLabel: "Coordination Hub",
       moduleLabelKey: "nav.coordination_hub",
       to: "/coordination",
     },

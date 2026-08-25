@@ -7,7 +7,7 @@
  * backend/app/modules/schedule_advanced/router.py
  */
 
-import { apiGet, apiPost, apiPatch, apiDelete } from '@/shared/lib/api';
+import { apiGet, apiPost, apiPatch, apiDelete, type Page } from '@/shared/lib/api';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -1460,18 +1460,31 @@ export interface ResourceHistogramParams {
   hours_per_day?: number;
 }
 
-/** List the tenant's resources (for the histogram resource picker). */
+/** List resources for the histogram picker.
+ *
+ *  `project_id` narrows to that project's own roster plus the unhomed company
+ *  pool, which is what a picker on a project's schedule wants. Without it the
+ *  server answers tenant-wide.
+ */
 export function listResources(params?: {
   type?: string;
   status?: string;
   limit?: number;
-}): Promise<ResourceListItem[]> {
+  project_id?: string;
+}): Promise<Page<ResourceListItem>> {
   const qs = new URLSearchParams();
   if (params?.type) qs.set('type', params.type);
   if (params?.status) qs.set('status', params.status);
   if (params?.limit !== undefined) qs.set('limit', String(params.limit));
-  const suffix = qs.toString() ? `?${qs.toString()}` : '';
-  return apiGet<ResourceListItem[]>(`/v1/resources/resources/${suffix}`);
+  if (params?.project_id) qs.set('project_id', params.project_id);
+  const q = qs.toString();
+  /* Same route as listResources in features/resources/api.ts, which is why
+     both moved to the envelope together. The `?` is inside the template
+     rather than in a conditional suffix so the URL scan in
+     scripts/check_page_envelope_consumers.py can see the route at all: it
+     stops at the first whitespace, and the suffix idiom puts one inside the
+     literal. */
+  return apiGet<Page<ResourceListItem>>(`/v1/resources/resources/?${q}`);
 }
 
 /** Time-phased demand / availability / cost histogram for one resource. */

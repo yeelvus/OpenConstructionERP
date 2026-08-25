@@ -19,6 +19,7 @@ const playbook: Playbook = {
     "owner-operator",
     "bim-consultant",
   ],
+  roles: ["document-controller", "bim-coordinator", "project-manager"],
   icon: "BookOpen",
   titleKey: "cases.as_built_and_om_handover.title",
   titleDefault: "As-built and O and M handover",
@@ -97,7 +98,7 @@ const playbook: Playbook = {
       whyKey: "cases.as_built_and_om_handover.step.quality.why",
       whyDefault:
         "The quality file is the evidence the building is safe and fit to occupy. A missing fire-damper certificate is exactly the gap an insurer or the client lawyer turns up long after the crew has gone.",
-      moduleLabel: "Quality management",
+      moduleLabel: "Quality Management",
       moduleLabelKey: "nav.qms",
       to: "/projects/:projectId/qms",
     },

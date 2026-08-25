@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 1009,
   category: "tendering",
   companyTypes: ["general-contractor", "project-manager", "cost-consultant"],
+  roles: ["procurement-buyer", "contract-administrator", "commercial-manager"],
   icon: "Handshake",
   titleKey: "cases.raise_a_subcontract_order_from_the_award.title",
   titleDefault: "Raise a subcontract order from the award",
@@ -86,7 +87,7 @@ const playbook: Playbook = {
       whyKey: "cases.raise_a_subcontract_order_from_the_award.step.terms.why",
       whyDefault:
         "A price with no dates and no terms is where disputes start. Pinning the programme and the payment mechanism to the order now saves the argument later.",
-      moduleLabel: "Subcontractors",
+      moduleLabel: "Subcontractor Directory",
       moduleLabelKey: "nav.subcontractors",
       to: "/projects/:projectId/subcontractors",
     },

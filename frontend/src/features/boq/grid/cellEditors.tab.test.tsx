@@ -127,7 +127,7 @@ describe('Tab direction in the two numeric editors', () => {
       column: { getColId: () => 'unit_rate' },
     } as unknown as FormulaCellEditorParams;
     render(<RateCellEditor {...params} />);
-    return { input: screen.getByRole('spinbutton') as HTMLInputElement, api };
+    return { input: screen.getByRole('textbox') as HTMLInputElement, api };
   }
 
   // Both attach native listeners rather than React synthetic ones, because the

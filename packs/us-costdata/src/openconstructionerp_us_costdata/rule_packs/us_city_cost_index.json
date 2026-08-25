@@ -1,0 +1,26 @@
+{
+  "rule_pack_id": "us_city_cost_index",
+  "name": "US City Cost Index — Regional Localization",
+  "standard": "City cost index (user-supplied)",
+  "jurisdiction": "US/CA",
+  "edition": "Whichever release the user's own index subscription provides",
+  "description": "Enables OCERP validation rules that apply a city cost index to localise national average unit prices, validate that the chosen city and ZIP3 are within the coverage of the index the user imported, confirm the index period currency (must be within 12 months for unit costs, 24 for installed costs), enforce material/labor/equipment factor application, and flag estimates that diverge from indexed benchmarks beyond a configurable band. No index data ships with this pack; the rules run against the figures the user imports.",
+  "issuer": "The index publisher the user subscribes to",
+  "metrics_referenced": "Total Index, Material Index, Labor Index, Equipment Index, Installed Index — all relative to the index base = 100.0",
+  "enables_rule_ids": [
+    "city_index.city_selected",
+    "city_index.zip3_within_city_coverage",
+    "city_index.index_period_within_12_months",
+    "city_index.material_index_applied",
+    "city_index.labor_index_applied",
+    "city_index.equipment_index_applied",
+    "city_index.installed_index_applied_when_total_only",
+    "city_index.unit_rate_within_indexed_band",
+    "city_index.total_cost_within_benchmark_band",
+    "city_index.crew_productivity_assumed_documented",
+    "city_index.regional_overhead_profit_applied",
+    "city_index.bare_costs_vs_o_and_p_costs_distinguished",
+    "city_index.subscription_status_acknowledged",
+    "city_index.multi_city_average_when_project_spans_metros"
+  ]
+}

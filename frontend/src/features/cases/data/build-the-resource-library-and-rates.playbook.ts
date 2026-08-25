@@ -13,6 +13,7 @@ const playbook: Playbook = {
   order: 318,
   category: "estimating",
   companyTypes: ["cost-consultant", "general-contractor", "subcontractor"],
+  roles: ["estimator", "quantity-surveyor", "planner"],
   icon: "Calculator",
   titleKey: "cases.build_the_resource_library_and_rates.title",
   titleDefault: "Build the resource library and rates",
@@ -64,7 +65,7 @@ const playbook: Playbook = {
         "cases.build_the_resource_library_and_rates.step.define-resources.why",
       whyDefault:
         "One clean resource list is what every rate and every programme leans on. Change a base rate once and everything built from it updates.",
-      moduleLabel: "Resources",
+      moduleLabel: "Resources & Crew",
       moduleLabelKey: "nav.resources",
       to: "/resources",
     },
@@ -153,7 +154,7 @@ const playbook: Playbook = {
         "cases.build_the_resource_library_and_rates.step.load-programme.why",
       whyDefault:
         "When the estimate and the programme share resources, the labour histogram and the cost match reality. Separate lists drift, and the plan stops agreeing with the price.",
-      moduleLabel: "Schedule Advanced",
+      moduleLabel: "Advanced Schedule",
       moduleLabelKey: "nav.schedule_advanced",
       to: "/schedule-advanced",
     },

@@ -26,6 +26,7 @@ from app.core.i18n import get_locale
 from app.core.json_merge import merge_metadata
 from app.core.sql_numeric import numeric_value
 from app.core.validation.engine import ValidationReport, validation_engine
+from app.modules.procurement.cost_spine import resolve_cost_line_ids
 from app.modules.procurement.models import (
     GoodsReceipt,
     GoodsReceiptItem,
@@ -401,6 +402,19 @@ class ProcurementService:
         * ``prequalification_<status>`` - the vendor's prequal is rejected /
           suspended; the gate does NOT block, it returns a non-blocking
           warning so the buyer can still raise the PO with eyes open.
+        * an expired / revoked / missing required compliance document. Same
+          treatment as prequal: a warning, not a block. A purchase order that
+          succeeded yesterday and 409s today because a certificate lapsed
+          overnight is an interface change, and the subcontract-award and
+          payment gates - which are what "award" means - already hard-block on
+          it. Promoting this to a block is a policy decision, not a bug fix.
+
+        Expiry is judged as at ``date.today()``, server-local, which is the
+        same convention ``next_payment_blocked`` already applies by default.
+        One clock convention across the three gates matters more than which
+        one: two gates disagreeing about whether a document had lapsed on a
+        given day would be worse than either answer being off by an offset.
+        Only calendar dates are compared, never a date against a timestamp.
 
         Returns ``(is_blocked, reasons)``. An unknown / ad-hoc vendor (no
         linked subcontractor, or no contact at all) yields ``(False, [])`` -
@@ -416,7 +430,7 @@ class ProcurementService:
         try:
             from sqlalchemy import select
 
-            from app.modules.subcontractors.models import Subcontractor
+            from app.modules.subcontractors.models import Certificate, Subcontractor
             from app.modules.subcontractors.service import subcontractor_award_block
 
             stmt = (
@@ -429,11 +443,20 @@ class ProcurementService:
                 .limit(1)
             )
             sub = (await self.session.execute(stmt)).scalar_one_or_none()
+            if sub is None:
+                return False, []
+            certs = list(
+                (
+                    await self.session.execute(
+                        select(Certificate).where(Certificate.subcontractor_id == sub.id),
+                    )
+                )
+                .scalars()
+                .all(),
+            )
         except Exception:  # noqa: BLE001 - resolution is non-critical
             return False, []
-        if sub is None:
-            return False, []
-        verdict = subcontractor_award_block(sub)
+        verdict = subcontractor_award_block(sub, certificates=certs, as_at=date.today())
         is_blocked = "subcontractor_blocked" in verdict.reasons
         return is_blocked, verdict.reasons
 
@@ -535,6 +558,18 @@ class ProcurementService:
                 proj_currency = None
             currency_code = proj_currency or ""
 
+        # Resolve every line's cost-spine link before the PO row exists, so a
+        # bad or foreign position id is a 404 over a request that wrote
+        # nothing, rather than a 404 with a numbered PO already behind it. The
+        # answer is frozen here and copied onto the items below: an order
+        # commits against the scope as it stood on the day it was raised, and
+        # re-pointing the position tomorrow must not rewrite that.
+        item_cost_line_ids = await resolve_cost_line_ids(
+            self.session,
+            data.project_id,
+            [(item.cost_line_id, item.boq_position_id) for item in data.items],
+        )
+
         explicit_po_number = data.po_number
         # Mirrors changeorders BUG-354: MAX(po_number)+1 is not atomic, so two
         # concurrent creates can compute the same suffix and one would 500 on
@@ -560,6 +595,7 @@ class ProcurementService:
                 amount=item_data.amount,
                 wbs_id=item_data.wbs_id,
                 cost_category=item_data.cost_category,
+                cost_line_id=item_cost_line_ids[idx],
                 sort_order=item_data.sort_order if item_data.sort_order else idx,
             )
             await self.po_item_repo.create(item)
@@ -767,6 +803,23 @@ class ProcurementService:
                         "the received quantities are linked to the existing line items."
                     ),
                 )
+            # Resolve the spine links before the existing rows are destroyed,
+            # for the same reason create_po resolves before the PO exists: a
+            # foreign position id must refuse the PATCH rather than take the
+            # old line items down with it.
+            #
+            # This replace is why the resolution cannot live only in create_po.
+            # The rows are rebuilt from scratch, so a rebuild that did not
+            # resolve would strip the cost line off every line of the order the
+            # first time somebody corrected a quantity, and that order would
+            # drop out of the committed report for good. The link has to be
+            # re-derived on every write that recreates the row, not only on the
+            # first one.
+            item_cost_line_ids = await resolve_cost_line_ids(
+                self.session,
+                po.project_id,
+                [(item.cost_line_id, item.boq_position_id) for item in data.items],
+            )
             await self.po_item_repo.delete_by_po(po_id)
             item_amounts: list[Decimal] = []
             for idx, item_data in enumerate(data.items):
@@ -794,6 +847,7 @@ class ProcurementService:
                     amount=item_data.amount,
                     wbs_id=item_data.wbs_id,
                     cost_category=item_data.cost_category,
+                    cost_line_id=item_cost_line_ids[idx],
                     sort_order=item_data.sort_order if item_data.sort_order else idx,
                 )
                 await self.po_item_repo.create(item)
@@ -2224,6 +2278,17 @@ class MaterialRequisitionService:
             project_id: the project this requisition belongs to.
             items: optional list of dicts with keys description, quantity_requested,
                    unit_cost - extended_cost is computed as qty * unit_cost.
+                   An item may also carry ``boq_position_id`` or ``cost_line_id``
+                   to link the line to the cost spine, resolved on write by
+                   :func:`app.modules.procurement.cost_spine.resolve_cost_line_ids`
+                   exactly as a purchase-order line is.
+
+        Requisition lines take their spine link from a dict rather than from a
+        schema because this path has no schema and no HTTP surface: the module
+        exposes no requisition endpoint, so there is no ``RequisitionItemCreate``
+        to add a field to. The resolution is wired here so the link is already
+        correct on the day the endpoint lands, rather than being a second
+        omission to discover then.
         """
         est_delivery = _compute_delivery_date(required_date, lead_time_days)
         # Insert the requisition with a per-project sequential req_number, retrying
@@ -2242,7 +2307,12 @@ class MaterialRequisitionService:
 
         # Optionally create line items
         if items:
-            for item_data in items:
+            cost_line_ids = await resolve_cost_line_ids(
+                self.session,
+                project_id,
+                [(item.get("cost_line_id"), item.get("boq_position_id")) for item in items],
+            )
+            for idx, item_data in enumerate(items):
                 qty = _safe_decimal_str(item_data.get("quantity_requested", "0"))
                 ucost = _safe_decimal_str(item_data.get("unit_cost", "0"))
                 extended = str(Decimal(qty) * Decimal(ucost) if (qty and ucost) else Decimal("0"))
@@ -2253,6 +2323,7 @@ class MaterialRequisitionService:
                     unit_cost=Decimal(ucost) if ucost else Decimal("0"),
                     extended_cost=Decimal(extended),
                     currency_code=item_data.get("currency_code", ""),
+                    cost_line_id=cost_line_ids[idx],
                 )
                 self.session.add(mr_item)
             await self.session.flush()

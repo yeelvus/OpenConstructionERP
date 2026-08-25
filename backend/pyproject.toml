@@ -1,6 +1,6 @@
 [project]
 name = "openconstructionerp"
-version = "14.8.1"
+version = "15.6.0"
 description = "Open-source construction cost estimation, multi-currency BOQ, AI vector matching, CAD/BIM takeoff without IfcOpenShell, resource-based cost DB import with example templates, 48 regional catalogues, 29 locales. AGPL-3.0. After install, run: openconstructionerp"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
@@ -141,6 +141,86 @@ vector = [
     "lancedb>=0.17.0",
     "fastembed>=0.4.0",
 ]
+# The vector-store client, without any embedding model. qdrant-client talks to
+# the CWICR match store (app/modules/costs/qdrant_adapter.py) and was reachable
+# only through [semantic], so the standard docker image and the frozen desktop
+# sidecar both shipped without it and /match-elements answered an empty 200 on
+# every stock install. Not because results were poor: _get_client() raised
+# ImportError, the hybrid search failed, the ranker's encoder-free metadata
+# fallback called _get_client() too and raised again, and both failures were
+# logged and swallowed into an empty candidate list. It lives in its own extra
+# so the docker image can carry the client without torch, which matters on a
+# 2 GB VPS. The desktop lock used to resolve this extra for the same reason and
+# now resolves [semantic-encoder] instead, so torch is no longer what separates
+# the two; the model is.
+#
+# Deliberately NOT here, each measured or traced rather than assumed:
+#
+# * FlagEmbedding - the CWICR bge-m3 stack. It is the encoder for the 30
+#   cwicr_<lang> collections and it needs a ~700 MB model nothing downloads on
+#   a stock install, so shipping the library alone buys nothing. The local
+#   encoder the desktop actually loads is sentence-transformers, and that now
+#   has its own extra, [semantic-encoder], below. sentence-transformers used to
+#   be listed here as unreachable on the grounds that the PyInstaller spec
+#   excluded torch outright; that stopped being a reason and became a bug once
+#   the encoder download went default-on, see [semantic-encoder].
+# * polars - only reads an operator-supplied CWICR rate parquet from
+#   ~/.openestimator/cwicr, and nothing ships or downloads that file (the
+#   snapshot loader restores Qdrant collections, not parquet). Weight no code
+#   path on a stock install would reach.
+# * fastembed - an ONNX encoder nothing in the tree imports. core/vector.py's
+#   get_embedder() only ever tries sentence-transformers, so fastembed is
+#   weight with no reachable caller. It stays in [vector] with no reader,
+#   which is why [vector] cannot simply be installed wholesale by a deploy
+#   that only wants the store.
+#
+# lancedb was in this list too, then removed on measurement: 157 MB on Linux and
+# 196 MB on Windows, against 21 MB for qdrant-client. Three things have changed
+# and all three were re-measured rather than recalled.
+#
+# The weight is now 62 MB on Linux, 68 MB on Windows and 56 MB on macOS, for
+# lancedb 0.37.1 and the five small packages it pulls. That is under half what
+# the old figure said, so the number above is kept only to show what it was
+# compared against. Re-measure before citing either.
+#
+# The second argument was that the generic semantic store has no encoder, so
+# installing the backend would buy nothing. That was true while the encoder was
+# excluded everywhere; the desktop now ships one through [semantic-encoder].
+#
+# The third was that VECTOR_BACKEND=lancedb pointing at an uninstalled backend
+# was a separate decision. It has now been taken, the other way round: the
+# default in deploy/docker/.env.example stays and the backend gets installed,
+# because a shipped default nobody installed does not save the megabytes, it
+# moves the failure from build time to the user's first query.
+semantic-clients = [
+    "qdrant-client>=1.12.0",
+    "lancedb>=0.17.0",
+]
+# The vector-store client plus a local encoder, and nothing else. This is what
+# the desktop build installs, and it exists because the encoder download became
+# default-on for desktop_mode while the library that loads the weights was not
+# shipped anywhere near it.
+#
+# The failure was quiet in both directions. start_background_download() asks
+# semantic_library_available() first, that asks for a sentence_transformers
+# spec, the frozen sidecar had none, so the download it advertises never even
+# started: the desktop install logged one INFO line and behaved exactly like a
+# build with the feature switched off. Adding the weights without the loader
+# would have been the mirror image of the same bug.
+#
+# FlagEmbedding and polars stay out. They serve the CWICR bge-m3 store, whose
+# model is a separate ~700 MB asset no desktop install downloads, so they would
+# be weight with no reachable code path. The encoder this extra exists for is
+# intfloat/multilingual-e5-small, fetched by app/core/embedding_installer.py and
+# loaded through sentence_transformers.SentenceTransformer in core/vector.py.
+#
+# It costs real gigabytes, mostly torch, and the desktop lock is the only place
+# that consumes it. Do not fold it into [semantic-clients]: the docker image and
+# the 2 GB VPS resolve that one, and they must keep resolving it without torch.
+semantic-encoder = [
+    "openconstructionerp[semantic-clients]",
+    "sentence-transformers>=3.3.0",
+]
 # Semantic search: Qdrant vector DB + sentence-transformers embeddings.
 # Used by the cost-database semantic-match endpoints and the RAG layer.
 #
@@ -150,8 +230,7 @@ vector = [
 # of dead wheels on the user's disk. API keys live in the database and
 # `~/.openestimate/config.json`, not in SDK clients.
 semantic = [
-    "qdrant-client>=1.12.0",
-    "sentence-transformers>=3.3.0",
+    "openconstructionerp[semantic-encoder]",
     # BAAI/bge-m3 multilingual encoder — 1024-dim dense + sparse + colbert
     # in one forward pass, MIT license, 100+ languages. Powers the CWICR
     # 30-collection Qdrant store (cwicr_<lang>) where every point holds
@@ -193,6 +272,24 @@ cv = [
 pointcloud = [
     "pye57>=0.4.0",
 ]
+# Coordinate transforms outside the built-in pairs, plus upstream EPSG display
+# names. Two shipped modules already read pyproj and both degrade rather than
+# crash without it: geo_hub/coord_transforms falls through to it for any pair it
+# has no built-in fast path for, and cad/crs_detector uses it to label a
+# detected CRS from the EPSG registry instead of the built-in name table.
+#
+# This adds no dependency. pyproj was already what those two ask for, and
+# coord_transforms has been telling operators to run
+# ``pip install openconstructionerp[geo]`` since before any such extra existed,
+# which pip answers with a warning and no package - so the instruction read as
+# followed and the capability was still missing. The extra gives the thing they
+# were already being sent to fetch a name they can actually ask for.
+#
+# The floor is measured rather than guessed: 3.6.1 is the first release with
+# cp312 wheels, and this backend requires Python >= 3.12.
+geo = [
+    "pyproj>=3.6.1",
+]
 # Deprecated alias since v2.5.0 — `duckdb` is in base deps now.
 # Kept so existing `pip install openconstructionerp[analytics]` commands
 # continue to work without failing.
@@ -205,7 +302,7 @@ s3 = [
 ]
 # Everything
 all = [
-    "openconstructionerp[server,vector,semantic,cv,s3,pointcloud,analytics]",
+    "openconstructionerp[server,vector,semantic,cv,s3,pointcloud,geo,analytics]",
 ]
 # Development tools
 dev = [
@@ -270,7 +367,27 @@ packages = ["app", "openconstructionerp"]
 # package walk so a stray one under ``app/`` can never reach the wheel even
 # when it is still on disk. scripts/check_repo_hygiene.py enforces the same
 # rule on the built wheel via ``--zip`` as a backstop.
-exclude = ["**/_*.md", "**/_*.txt"]
+exclude = ["**/_*.md", "**/_*.txt", "**/__pycache__/**", "**/*.pyc"]
+
+# The twelve bundled demo site photos are real shipped seed assets, and the
+# package walk was dropping every one of them. .gitignore carries a global
+# ``*.jpg`` for dev screenshots and negates it for exactly this directory with
+# ``!backend/app/scripts/flagship_assets/site_photos/*.jpg``. Git honours that
+# negation, so all twelve are tracked and a CI checkout has them; hatchling's
+# VCS walker reads the same file and does NOT honour negation, so it dropped
+# the photos while ``captions.json`` survived by not matching the glob. The
+# result was a wheel that shipped the captions for twelve pictures it did not
+# carry, and a first run that logged sixty "photos seed: asset missing" lines
+# and left the demo galleries empty.
+#
+# ``artifacts`` is hatchling's mechanism for exactly this: files the VCS
+# ignores that the build must ship anyway. Not force-include, which bypasses
+# the walker altogether, because force-including the directory would add
+# ``captions.json`` a second time on top of the copy the walker already
+# collects, and a duplicate ZIP entry is rejected by PyPI with a 400
+# "Duplicate filename in local headers" at upload time, on a tag that cannot
+# be taken back.
+artifacts = ["app/scripts/flagship_assets/site_photos/*.jpg"]
 
 # Bundle pre-built frontend into the wheel for pip install
 # Build frontend first: cd frontend && npm run build
@@ -281,14 +398,31 @@ exclude = ["**/_*.md", "**/_*.txt"]
 # directory that sits NEXT TO the installed ``app`` package (site-packages/
 # locales), not inside it. Living outside every packaged directory, it is not
 # picked up by the ``app`` package walk, so without this line a ``pip install``
-# wheel ships none of them: load_translations() then finds the directory
-# missing and regenerates only the 20 languages hard-coded in
-# _generate_default_locales, silently dropping the six that exist solely as
-# JSON here (bg, hr, id, ro, th, vi). Force-including the folder at the same
-# top-level ``locales`` path the runtime looks up ships all 26. Unlike the
+# wheel ships none of them and load_translations() raises FileNotFoundError on
+# a directory it cannot find. It used to regenerate the catalogue from an
+# embedded copy instead, which was worse: the copy carried 20 of the languages
+# and a much smaller key set, so a wheel built without this line started
+# cleanly and served a catalogue missing most of its strings. Force-including
+# the folder at the same top-level ``locales`` path the runtime looks up ships
+# all 28, and a wheel that misses it now fails at startup. Unlike the
 # flagship assets noted below, this path is OUTSIDE the ``app`` tree, so it is
 # not also added by the package walk and does not trip the double-add guard.
 "locales" = "locales"
+# The migration chain, and the ini that names where it lives. Without these a
+# pip install can never stamp ``alembic_version``: the stamp helper looks for
+# ``alembic.ini`` next to the installed ``app`` package
+# (app/core/alembic_version_table.py resolves ``parent.parent.parent``), finds
+# nothing, and returns None. What that leaves behind is not a fresh database
+# and not a stamped one: ``create_all`` builds every ``oe_*`` table and the
+# version table is absent, which ``alembic/env.py`` documents by name as the
+# state it cannot serve and cannot repair itself out of. It also means
+# ``alembic_head_matches`` in ``/api/health`` answers ``null`` forever, so the
+# one signal an operator has for "is this schema current" can never say yes.
+# ``script_location`` is ``%(here)s/alembic``, so the two have to land beside
+# each other at the install root, which is what these two lines do. Neither
+# path sits inside the ``app`` package walk, so neither is added twice.
+"alembic.ini" = "alembic.ini"
+"alembic" = "alembic"
 # NOTE: the baked flagship/demo assets live at app/scripts/flagship_assets,
 # which is already inside the ``app`` package above, so the package walk
 # ships those tracked bytes (flagship.json, the .dae.gz geometry, the
@@ -456,6 +590,26 @@ markers = [
     "integration: Integration tests (requires database)",
     "slow: Slow tests (>5s)",
     "benchmark: Recall/perf benchmarks — opt-in via `pytest -m benchmark`",
+    # A test earns `tenant_isolation` by what it exercises, not by what it is named.
+    # It qualifies when identity is the variable under test: the test establishes who
+    # is asking, meaning a particular project, company, user, role, or a token minted
+    # for a particular subject, and asserts what that identity may or may not reach.
+    # Both polarities belong in this lane. The outsider's denial is the obvious half,
+    # asserted as a 401/403/404, an empty or filtered collection, an absent field, or
+    # a row that did not change. The allow side belongs too, because a lane holding
+    # only denials is satisfied by a gate that denies everyone, exactly as a lane
+    # holding only grants is satisfied by a gate that grants everyone. A permitted
+    # access test earns the marker by pairing: it is the allow side of the same gate
+    # that a denial test in its file exercises. A happy path in a file with no denial
+    # test is scaffolding rather than a control, and does not qualify.
+    # Two close neighbours stay out. A test where the identity is incidental setup
+    # rather than the thing under test, and a test that only borrows the vocabulary,
+    # which covers foreign currency, a memory leak, index scoping, a report period's
+    # scope, and a soft-deleted row being invisible to the default read.
+    # This marker replaces a 26 word `-k` chain. Because `-k` matches the module
+    # filename as well as the test name, that chain pulled in whole unrelated files
+    # and still missed boundary tests whose names happen to read plainly.
+    "tenant_isolation: identity is the variable under test (definition above)",
 ]
 
 [tool.mypy]

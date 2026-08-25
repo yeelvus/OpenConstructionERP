@@ -79,6 +79,8 @@ import {
 } from './thresholds';
 import { ThresholdRulesModal } from './ThresholdRulesModal';
 import { cadExplorerGuide } from './cadExplorerGuide';
+import { fmtPercent, getIntlLocale } from '@/shared/lib/formatters';
+import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Recharts - lazy-loaded so the initial Data Explorer bundle stays lean.
       Charts live in a ~38 kB gzipped chunk that only loads once the user
@@ -131,9 +133,9 @@ const AGG_FUNCTION_LABELS: Record<(typeof AGG_FUNCTIONS)[number], string> = {
 
 function formatNumber(n: number | null | undefined): string {
   if (n == null) return '-';
-  if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 1 });
-  if (Math.abs(n) >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  if (Math.abs(n) >= 1000) return n.toLocaleString(getNumberLocale(), { maximumFractionDigits: 1 });
+  if (Math.abs(n) >= 1) return n.toLocaleString(getNumberLocale(), { maximumFractionDigits: 2 });
+  return n.toLocaleString(getNumberLocale(), { maximumFractionDigits: 4 });
 }
 
 /* ── Describe-fetch error classification ───────────────────────────────────
@@ -655,7 +657,7 @@ function DataTableTab({ sessionId, describe }: { sessionId: string; describe: De
 
         {/* Row count */}
         <span className="text-2xs text-content-tertiary tabular-nums shrink-0">
-          {globalSearch ? `${displayRows.length}/` : ''}{data?.total.toLocaleString() ?? '...'} {t('explorer.rows', { defaultValue: 'rows' })}
+          {globalSearch ? `${displayRows.length}/` : ''}{data?.total.toLocaleString(getNumberLocale()) ?? '...'} {t('explorer.rows', { defaultValue: 'rows' })}
         </span>
       </div>
 
@@ -1590,8 +1592,8 @@ function PivotTab({ sessionId, describe, thresholdRules, setThresholdRules }: Pi
           <span>
             {t('explorer.count_sampled', {
               defaultValue: 'Counts based on the first {{used}} of {{total}} rows.',
-              used: sampled.used.toLocaleString(),
-              total: sampled.total.toLocaleString(),
+              used: sampled.used.toLocaleString(getNumberLocale()),
+              total: sampled.total.toLocaleString(getNumberLocale()),
             })}
           </span>
         </div>
@@ -1623,7 +1625,7 @@ function PivotTab({ sessionId, describe, thresholdRules, setThresholdRules }: Pi
           </div>
           <div className="flex items-center justify-between px-4 py-2 bg-surface-secondary/30 border-t border-border-light">
             <span className="text-2xs text-content-quaternary">
-              {sortedGroups.length} {t('explorer.groups', { defaultValue: 'groups' })} · {result.total_count.toLocaleString()} {t('explorer.elements', { defaultValue: 'elements' })}
+              {sortedGroups.length} {t('explorer.groups', { defaultValue: 'groups' })} · {result.total_count.toLocaleString(getNumberLocale())} {t('explorer.elements', { defaultValue: 'elements' })}
             </span>
             <Button variant="primary" size="sm" onClick={() => setShowCreateBOQ(true)} className="shrink-0 whitespace-nowrap">
               {t('explorer.create_boq_from_pivot', { defaultValue: 'Create BOQ' })}
@@ -1675,7 +1677,7 @@ function PivotTab({ sessionId, describe, thresholdRules, setThresholdRules }: Pi
                             </span>
                           </td>
                           {groupBy.slice(1).map((col) => <td key={col} className="px-3 py-2 text-content-tertiary">—</td>)}
-                          <td className="px-3 py-2 text-right font-semibold tabular-nums">{parentCount.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right font-semibold tabular-nums">{parentCount.toLocaleString(getNumberLocale())}</td>
                           {aggCols.map((col) => {
                             // Roll up with the SAME aggregation the user
                             // picked (count-weighted mean for avg, min of
@@ -1738,7 +1740,7 @@ function PivotTab({ sessionId, describe, thresholdRules, setThresholdRules }: Pi
                           <tr key={Object.values(g.key).join('-')} className="border-b border-border-light">
                             <td className="px-3 py-1.5 pl-8 text-content-quaternary">{g.key[groupBy[0]!]}</td>
                             {groupBy.slice(1).map((col) => <td key={col} className="px-3 py-1.5 text-content-secondary">{g.key[col] || '—'}</td>)}
-                            <td className="px-3 py-1.5 text-right tabular-nums text-content-secondary">{g.count.toLocaleString()}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-content-secondary">{g.count.toLocaleString(getNumberLocale())}</td>
                             {aggCols.map((col) => {
                               const raw = g.results[col] ?? 0;
                               const bar = computeDataBar(raw, maxByAgg.get(col) ?? 0);
@@ -1782,7 +1784,7 @@ function PivotTab({ sessionId, describe, thresholdRules, setThresholdRules }: Pi
                   sortedGroups.map((g) => (
                     <tr key={Object.values(g.key).join('-')} className="border-b border-border-light hover:bg-surface-secondary/30">
                       {groupBy.map((col) => <td key={col} className="px-3 py-2 text-content-primary">{g.key[col] || '—'}</td>)}
-                      <td className="px-3 py-2 text-right tabular-nums text-content-secondary">{g.count.toLocaleString()}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-content-secondary">{g.count.toLocaleString(getNumberLocale())}</td>
                       {aggCols.map((col) => {
                         const raw = g.results[col] ?? 0;
                         const bar = computeDataBar(raw, maxByAgg.get(col) ?? 0);
@@ -1823,7 +1825,7 @@ function PivotTab({ sessionId, describe, thresholdRules, setThresholdRules }: Pi
                 {/* Totals */}
                 <tr className="bg-surface-secondary/60 font-semibold border-t-2 border-border">
                   <td className="px-3 py-2.5 text-content-primary" colSpan={groupBy.length}>{t('explorer.total', { defaultValue: 'Total' })}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{result.total_count.toLocaleString()}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{result.total_count.toLocaleString(getNumberLocale())}</td>
                   {aggCols.map((col) => <td key={col} className="px-3 py-2.5 text-right tabular-nums text-oe-blue">{isCategoricalAggFn(aggFn) ? formatCount(result.totals[col]) : formatNumber(result.totals[col])}</td>)}
                 </tr>
               </tbody>
@@ -1831,7 +1833,7 @@ function PivotTab({ sessionId, describe, thresholdRules, setThresholdRules }: Pi
           </div>
           <div className="flex items-center justify-between px-4 py-2 bg-surface-secondary/30 border-t border-border-light">
             <span className="text-2xs text-content-quaternary">
-              {sortedGroups.length} {t('explorer.groups', { defaultValue: 'groups' })} · {result.total_count.toLocaleString()} {t('explorer.elements', { defaultValue: 'elements' })} · {t('explorer.click_header_sort', { defaultValue: 'Click column headers to sort' })}
+              {sortedGroups.length} {t('explorer.groups', { defaultValue: 'groups' })} · {result.total_count.toLocaleString(getNumberLocale())} {t('explorer.elements', { defaultValue: 'elements' })} · {t('explorer.click_header_sort', { defaultValue: 'Click column headers to sort' })}
             </span>
             <button
               onClick={() => {
@@ -2179,8 +2181,8 @@ function ChartsTab({ sessionId, describe }: { sessionId: string; describe: Descr
           <span>
             {t('explorer.count_sampled', {
               defaultValue: 'Counts based on the first {{used}} of {{total}} rows.',
-              used: sampled.used.toLocaleString(),
-              total: sampled.total.toLocaleString(),
+              used: sampled.used.toLocaleString(getNumberLocale()),
+              total: sampled.total.toLocaleString(getNumberLocale()),
             })}
           </span>
         </div>
@@ -2618,7 +2620,7 @@ function ViewsDrawer({ open, onClose }: ViewsDrawerProps) {
               >
                 <p className="text-sm font-medium text-content-primary truncate">{v.name}</p>
                 <p className="text-2xs text-content-quaternary">
-                  {new Date(v.createdAt).toLocaleString()} · {v.slicers.length} filters · {v.chart.kind}
+                  {new Date(v.createdAt).toLocaleString(getIntlLocale())} · {v.slicers.length} filters · {v.chart.kind}
                 </p>
                 <div className="mt-2 flex gap-2">
                   <Button
@@ -2746,7 +2748,7 @@ function DescribeSummary({
         <div className="rounded-xl border border-border-light bg-surface-elevated/90 p-3 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
           <p className="text-2xs text-content-tertiary uppercase">{t('explorer.data_completeness', { defaultValue: 'Data Completeness' })}</p>
           <p className={`text-lg font-bold tabular-nums ${qualityScore > 50 ? 'text-green-600' : qualityScore > 20 ? 'text-amber-600' : 'text-red-500'}`}>
-            {qualityScore.toFixed(1)}%
+            {fmtPercent(qualityScore)}
           </p>
         </div>
         <div className="rounded-xl border border-border-light bg-surface-elevated/90 p-3 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
@@ -2796,8 +2798,8 @@ function DescribeSummary({
                   <td className="px-3 py-2">
                     <Badge variant={col.dtype === 'number' ? 'blue' : 'neutral'} size="sm">{col.dtype}</Badge>
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums text-content-secondary">{col.non_null.toLocaleString()}</td>
-                  <td className="px-3 py-2 text-right tabular-nums text-content-secondary">{col.unique.toLocaleString()}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-content-secondary">{col.non_null.toLocaleString(getNumberLocale())}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-content-secondary">{col.unique.toLocaleString(getNumberLocale())}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{col.min != null ? formatNumber(col.min) : '—'}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{col.max != null ? formatNumber(col.max) : '—'}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{col.mean != null ? formatNumber(col.mean) : '—'}</td>
@@ -2817,7 +2819,7 @@ function DescribeSummary({
         <Card className="p-4">
           <h3 className="text-xs font-semibold text-content-primary mb-3">
             {t('explorer.value_counts_for', { defaultValue: 'Value Counts: {{column}}', column: selectedCol })}
-            <span className="ml-2 text-content-tertiary font-normal">({vcData.total.toLocaleString()} total)</span>
+            <span className="ml-2 text-content-tertiary font-normal">({vcData.total.toLocaleString(getNumberLocale())} total)</span>
           </h3>
           <div className="space-y-1.5 max-h-[300px] overflow-y-auto">
             {vcData.values.map((v) => (
@@ -2829,8 +2831,8 @@ function DescribeSummary({
                     style={{ width: `${v.percentage}%` }}
                   />
                 </div>
-                <span className="text-2xs text-content-primary tabular-nums w-16 text-right shrink-0">{v.count.toLocaleString()}</span>
-                <span className="text-2xs text-content-quaternary tabular-nums w-12 text-right shrink-0">{v.percentage.toFixed(1)}%</span>
+                <span className="text-2xs text-content-primary tabular-nums w-16 text-right shrink-0">{v.count.toLocaleString(getNumberLocale())}</span>
+                <span className="text-2xs text-content-quaternary tabular-nums w-12 text-right shrink-0">{fmtPercent(v.percentage)}</span>
               </div>
             ))}
           </div>
@@ -3571,7 +3573,7 @@ function KpiStrip({ describe }: { describe: DescribeResponse }) {
     out.push({
       icon: Hash,
       label: t('explorer.kpi_elements', { defaultValue: 'Elements' }),
-      value: describe.total_elements.toLocaleString(),
+      value: describe.total_elements.toLocaleString(getNumberLocale()),
       accent: 'text-oe-blue',
     });
 
@@ -3624,7 +3626,7 @@ function KpiStrip({ describe }: { describe: DescribeResponse }) {
       out.push({
         icon: Layers,
         label: t('explorer.kpi_categories', { defaultValue: 'Categories' }),
-        value: categories.toLocaleString(),
+        value: categories.toLocaleString(getNumberLocale()),
         accent: 'text-indigo-600 dark:text-indigo-400',
       });
     }
@@ -3634,7 +3636,7 @@ function KpiStrip({ describe }: { describe: DescribeResponse }) {
       out.push({
         icon: Building2,
         label: t('explorer.kpi_levels', { defaultValue: 'Levels' }),
-        value: levels.toLocaleString(),
+        value: levels.toLocaleString(getNumberLocale()),
         accent: 'text-sky-600 dark:text-sky-400',
       });
     }
@@ -3846,7 +3848,7 @@ export function CadDataExplorerPage() {
   const handleSaveView = useCallback(() => {
     const name = window.prompt(
       t('explorer.save_view_prompt', { defaultValue: 'Name this view' }),
-      new Date().toLocaleString(),
+      new Date().toLocaleString(getIntlLocale()),
     );
     if (!name) return;
     saveAnalysisView(name);
@@ -4009,8 +4011,8 @@ export function CadDataExplorerPage() {
               ))}
             </g>
           </svg>
-          <div aria-hidden className="pointer-events-none absolute -top-32 -left-32 w-[520px] h-[520px] rounded-full bg-blue-200/25 dark:bg-blue-500/8 blur-[140px]" />
-          <div aria-hidden className="pointer-events-none absolute -bottom-32 -right-32 w-[520px] h-[520px] rounded-full bg-violet-200/20 dark:bg-violet-500/8 blur-[140px]" />
+          <div aria-hidden className="pointer-events-none absolute -top-32 -left-32 w-[520px] h-[520px] rounded-full bg-blue-200/25 dark:bg-blue-500/10 blur-[140px]" />
+          <div aria-hidden className="pointer-events-none absolute -bottom-32 -right-32 w-[520px] h-[520px] rounded-full bg-violet-200/20 dark:bg-violet-500/10 blur-[140px]" />
           <div className="absolute inset-0 overflow-y-auto overflow-x-hidden scrollbar-none z-10">
           <div className="relative max-w-7xl mx-auto px-6 pt-6 pb-4">
 
@@ -4039,10 +4041,10 @@ export function CadDataExplorerPage() {
                     {t('nav.cad_bim_explorer', { defaultValue: 'CAD-BIM BI Explorer' })}
                   </h1>
                   <p className="text-base text-content-secondary mt-3 leading-relaxed">
-                    {t('explorer.hero_subtitle', { defaultValue: 'Analyze building element data in a powerful spreadsheet interface. Filter, pivot, chart, and export quantities from your IFC and Revit models.' })}
+                    {t('explorer.hero_subtitle', { defaultValue: 'Analyze building element data in a powerful spreadsheet interface. Filter, pivot, chart, and export quantities from your IFC and Revit® models.' })}
                   </p>
                   <p className="text-xs text-content-tertiary mt-3 leading-relaxed">
-                    IFC 2x3, 4.0, 4.1, 4.3 &middot; Revit 2015–2026 &middot; DWG &middot; DGN &middot; DXF &middot; RFA
+                    IFC 2x3, 4.0, 4.1, 4.3 &middot; Revit® 2015–2026 &middot; DWG &middot; DGN &middot; DXF &middot; RFA
                   </p>
                   <div className="mt-4 flex items-center justify-start">
                     <div className="inline-flex flex-wrap items-center gap-2 px-4 py-2 rounded-full bg-emerald-500/10 border border-emerald-500/20">
@@ -4142,7 +4144,7 @@ export function CadDataExplorerPage() {
                         <span className="text-xs font-semibold text-content-primary truncate">{s.display_name}</span>
                       </div>
                       <div className="flex items-center gap-2.5 text-[11px] text-content-tertiary">
-                        <span className="font-medium tabular-nums">{s.element_count.toLocaleString()} {t('explorer.elements_short', { defaultValue: 'elements' })}</span>
+                        <span className="font-medium tabular-nums">{s.element_count.toLocaleString(getNumberLocale())} {t('explorer.elements_short', { defaultValue: 'elements' })}</span>
                         {s.is_permanent && <span className="text-emerald-500 font-medium">{t('explorer.saved_badge', { defaultValue: 'saved' })}</span>}
                         {timeAgo && <span className="ml-auto text-content-quaternary">{timeAgo}</span>}
                       </div>
@@ -4199,7 +4201,7 @@ export function CadDataExplorerPage() {
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-secondary border border-border-light">
                 <Hash size={12} className="text-content-quaternary" />
                 <span className="text-[10px] font-medium text-content-tertiary">{t('explorer.elements', { defaultValue: 'Elements' })}</span>
-                <span className="text-[10px] font-bold text-content-primary tabular-nums">{describe.total_elements.toLocaleString()}</span>
+                <span className="text-[10px] font-bold text-content-primary tabular-nums">{describe.total_elements.toLocaleString(getNumberLocale())}</span>
               </div>
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-secondary border border-border-light">
                 <Columns3 size={12} className="text-content-quaternary" />
@@ -4404,7 +4406,7 @@ export function CadDataExplorerPage() {
                     <span className={`ml-1 px-1.5 py-0.5 rounded-full text-2xs tabular-nums ${
                       activeTab === id ? 'bg-oe-blue/10' : 'bg-surface-secondary'
                     }`}>
-                      {describe.total_elements.toLocaleString()}
+                      {describe.total_elements.toLocaleString(getNumberLocale())}
                     </span>
                   )}
                 </button>

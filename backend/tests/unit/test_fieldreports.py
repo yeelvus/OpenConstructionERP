@@ -16,9 +16,12 @@ from typing import Any
 import pytest
 
 from app.modules.fieldreports.schemas import (
+    DEFAULT_WEATHER_CONDITION,
+    WEATHER_CONDITIONS,
     FieldReportCreate,
     FieldReportUpdate,
     WorkforceEntry,
+    weather_condition_from_cell,
 )
 from app.modules.fieldreports.service import FieldReportService
 
@@ -367,3 +370,63 @@ async def test_delete_report_removes_from_repo() -> None:
     with pytest.raises(HTTPException) as exc_info:
         await service.get_report(report.id)
     assert exc_info.value.status_code == 404
+
+
+# ── Weather on an imported row ───────────────────────────────────────────
+
+
+@pytest.mark.parametrize("word", WEATHER_CONDITIONS)
+def test_every_word_of_the_vocabulary_survives_the_import(word: str) -> None:
+    assert weather_condition_from_cell(word) == word
+    # A spreadsheet hands over whatever the site clerk typed.
+    assert weather_condition_from_cell(f"  {word.upper()}  ") == word
+
+
+@pytest.mark.parametrize("cell", [None, "", "   ", "	"])
+def test_a_cell_that_states_nothing_takes_the_default(cell: object) -> None:
+    assert weather_condition_from_cell(cell) == DEFAULT_WEATHER_CONDITION
+
+
+@pytest.mark.parametrize(
+    "cell",
+    ["rainy", "sunny", "Regen", "partly cloudy", "drizzle", "heavy rain", "-", "n/a"],
+)
+def test_a_word_the_module_does_not_know_is_refused_not_rewritten(cell: str) -> None:
+    """The import used to turn any of these into a clear day and say nothing.
+
+    ``partly cloudy`` with a space rather than an underscore is the one a
+    real clerk types, and it is the one that used to file a covered sky as
+    a clear one.
+    """
+    with pytest.raises(ValueError) as exc_info:
+        weather_condition_from_cell(cell)
+    message = str(exc_info.value)
+    assert cell in message, "the row is refused, so the message has to name what was in the cell"
+    for word in WEATHER_CONDITIONS:
+        assert word in message, f"the message has to offer {word} as a spelling the import accepts"
+
+
+def test_the_default_is_a_word_the_schema_accepts() -> None:
+    # Nothing else would notice a default the pattern refuses until an import
+    # with no weather column reached the schema layer.
+    assert DEFAULT_WEATHER_CONDITION in WEATHER_CONDITIONS
+    report = FieldReportCreate(project_id=uuid.uuid4(), report_date=date(2026, 4, 13))
+    assert report.weather_condition == DEFAULT_WEATHER_CONDITION
+
+
+def test_the_import_body_cap_is_the_number_the_module_states() -> None:
+    """The cap that governs the import, pinned where the push gate can see it.
+
+    This number is a limit, so something has to hold it still. The integration
+    test that used to hold it sent 26 MB and expected a refusal, which was
+    right when the cap was 25 MB; the limits sweep of 2026-06-11 moved it to
+    100 MB and left that test behind, asserting a rule the code no longer had.
+    Nobody saw the red, because the integration tree runs nightly and the push
+    gate runs the unit tree only. So the pin lives here instead.
+
+    Changing the cap is a decision, not a refactor: raise this number and this
+    test fails until somebody writes the new one down on purpose.
+    """
+    from app.modules.fieldreports.router import IMPORT_MAX_BYTES
+
+    assert IMPORT_MAX_BYTES == 100 * 1024 * 1024

@@ -1,0 +1,17 @@
+# Binary formats git's NUL-byte heuristic can misread as text. A vector
+# PDF built from plain-text object streams has no NUL in its first block,
+# so without this rule diff/apply run CRLF normalisation over it and
+# corrupt the byte-exact fixture (seen live on grundriss_erdgeschoss.pdf).
+*.pdf binary
+*.xlsx binary
+*.docx binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.zip binary

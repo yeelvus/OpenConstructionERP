@@ -12,13 +12,22 @@ Usage:
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 block_cipher = None
 
 # Paths
 ROOT = Path(SPECPATH).parent
 BACKEND = ROOT / "backend"
 FRONTEND_DIST = ROOT / "frontend" / "dist"
-DATA_CATALOG = ROOT / "data" / "catalog"
+# NOTE: do not add ``data/catalog`` to ``datas`` below. There used to be a
+# DATA_CATALOG constant here, defined and never used, which read like a
+# bundling step somebody had started. It is 77 MB of regional cost catalogues
+# derived from public sector norm systems, and the sidecar deliberately does
+# not carry it: the catalog module downloads a region on demand and caches it
+# under ~/.openestimator. Putting it in the installer would ship that data
+# inside a signed artifact, which is a licensing decision and not a packaging
+# one. See the Data Sources section of NOTICE before changing this.
 
 # Collect all backend module packages for hidden imports
 modules_dir = BACKEND / "app" / "modules"
@@ -79,20 +88,75 @@ hidden_imports = [
     "pypdf",  # PDF stamping / merge (pdf_stamp, property_dev exports)
 ]
 
-# Auto-discover modules
+# The CWICR vector-store client, in the lock since the [semantic-clients] extra
+# landed. It is imported inside a function body (qdrant_adapter._get_client),
+# which the static graph does follow, so the top-level package would arrive on
+# its own. What would not arrive is what the code then reaches for: those
+# submodules are themselves lazy (qdrant_client.http.models, and
+# qdrant_client.local for the embedded on-disk store), named nowhere
+# modulegraph can read. collect_submodules walks the whole package so the
+# frozen sidecar carries the same client the wheel does. Without it the build
+# keeps a client that cannot open a store, which is the behaviour the extra
+# just fixed, wearing the shape of a working install.
+hidden_imports += collect_submodules("qdrant_client")
+
+# The local encoder, in the lock since the [semantic-encoder] extra landed.
+# Every import of it sits inside a function body (core/vector.py get_embedder,
+# costs/matcher.py), which is thinner than it looks rather than invisible: the
+# static graph does follow imports inside function bodies, and a Windows build
+# with this line deleted still collected 167 sentence_transformers modules off
+# those two call sites. collect_submodules supplies the remaining 18.
+#
+# It has to be named here for a second reason that has nothing to do with
+# imports. embedding_installer.start_background_download() asks
+# semantic_library_available() before it fetches anything, and that answers by
+# looking up a sentence_transformers spec. A frozen sidecar that carries the
+# weights-downloader but not the library would find no spec, decline to start
+# the download, and log a single INFO line - the desktop build advertising an
+# encoder it had already decided not to fetch.
+#
+# torch and transformers arrive on their own as module-level imports of
+# sentence_transformers, and their binary payloads are collected by the
+# pyinstaller-hooks-contrib hooks once the packages are in the graph. They are
+# named anyway, because what drags them in is one import statement inside
+# somebody else's package and that is a thin thread to hang a gigabyte on.
+hidden_imports += collect_submodules("sentence_transformers")
+hidden_imports += ["torch", "transformers"]
+
+# Auto-discover modules.
+#
+# The layers below are the ones the module loader reaches for by name rather
+# than by import statement, so they have to be declared here. Not every module
+# has every layer: 191 module packages carry 188 manifests, 187 routers, 173
+# services, 171 schemas, 150 models and 110 repositories. Naming all six for
+# all of them regardless produced 167 lines of
+#
+#   ERROR: Hidden import 'app.modules.<name>.repository' not found
+#
+# on every desktop build, one per name that was never on disk. They were
+# harmless - PyInstaller carries on and the bundle is complete - and that was
+# the problem: a genuinely missing dependency reports itself with the same
+# words, so the one line worth reading arrived as line 168 of a list nobody
+# could read. The count is not a coincidence; the set of errors in the CI log
+# for the 15.4.0 sidecar build is exactly the set of these names that no file
+# backs.
+#
+# So ask the disk. A layer is declared when it exists as ``<layer>.py`` or as a
+# ``<layer>/`` package, and is not mentioned at all otherwise, which leaves the
+# hidden-import channel free to mean what it says. Excluding the absent names
+# instead would have been wrong twice over: the ``excludes`` list below means
+# "nothing in the sidecar imports this", and the list would need editing every
+# time a module gained a file.
+_MODULE_LAYERS = ("models", "schemas", "router", "service", "repository", "manifest")
+
 if modules_dir.is_dir():
     for mod_dir in sorted(modules_dir.iterdir()):
         if mod_dir.is_dir() and (mod_dir / "__init__.py").exists():
             mod_name = mod_dir.name
-            hidden_imports.extend([
-                f"app.modules.{mod_name}",
-                f"app.modules.{mod_name}.models",
-                f"app.modules.{mod_name}.schemas",
-                f"app.modules.{mod_name}.router",
-                f"app.modules.{mod_name}.service",
-                f"app.modules.{mod_name}.repository",
-                f"app.modules.{mod_name}.manifest",
-            ])
+            hidden_imports.append(f"app.modules.{mod_name}")
+            for layer in _MODULE_LAYERS:
+                if (mod_dir / f"{layer}.py").is_file() or (mod_dir / layer / "__init__.py").is_file():
+                    hidden_imports.append(f"app.modules.{mod_name}.{layer}")
 
 # Data files to include
 datas = []
@@ -101,8 +165,40 @@ datas = []
 if FRONTEND_DIST.is_dir():
     datas.append((str(FRONTEND_DIST), "app/_frontend_dist"))
 
-# Translation files, validation rules, etc. from backend
+# Translation files, validation rules, etc. from backend.
+#
+# This ships the app package directory as it stands on the machine doing the
+# building, so anything sitting in backend/app at that moment is baked into the
+# artefact. A local build was measured carrying app/_frontend_dist_prev, 700
+# files and 14.9 MB of gitignored leftover, which no release has ever contained
+# because CI checks out clean. That is also why it has never been visible.
+# Build from a clean tree before weighing an artefact or quoting what it holds.
 datas.append((str(BACKEND / "app"), "app"))
+
+# The backend UI locale catalogue. app/core/i18n.py resolves it as
+# ``Path(__file__).parent.parent.parent / "locales"``, a directory that sits
+# NEXT TO the app package rather than inside it, so shipping backend/app just
+# above does not carry it: in a frozen bundle that path is
+# ``sys._MEIPASS/locales``, and no desktop build had ever contained it.
+#
+# It survived that long because a missing catalogue used to be a warning that
+# refilled the directory from an embedded copy, so the sidecar started and
+# served a partial catalogue instead of failing. The copy knew 20 of the
+# languages and a much smaller key set, which is why refilling was replaced by
+# a hard error, and the error is right: recovering the wrong catalogue is
+# worse than not recovering. What it also did was convert this omission from a
+# quietly degraded desktop build into one that exits during startup, with the
+# launcher able to report only that the backend did not start in time.
+#
+# The wheel force-includes the same folder at the same top-level path for the
+# same reason (backend/pyproject.toml), and the two have to stay in step;
+# backend/tests/unit/test_desktop_spec_ships_wheel_data.py checks that they do.
+#
+# Deliberately unconditional, unlike the frontend dist above. That one is
+# absent on a tree nobody has built yet, this one is tracked in git, so a
+# missing directory here means the build is wrong and PyInstaller should stop
+# rather than produce another bundle that cannot start.
+datas.append((str(BACKEND / "locales"), "locales"))
 
 # Ship pyproject.toml next to the bundled app package. _detect_version()
 # reads the version from the source tree first and only falls back to the
@@ -111,6 +207,16 @@ datas.append((str(BACKEND / "app"), "app"))
 # openconstructionerp version happens to be pip-installed on the build
 # machine instead of the real product version. Landing it at the bundle root
 # (one level above app/) is exactly where _read_pyproject_version walks to.
+#
+# Stronger than that, and the reason not to tidy this away as redundant: this
+# spec calls copy_metadata nowhere, so a frozen bundle carries dist-info only
+# for whatever an upstream hook pulls in on its own. importlib.metadata is a
+# source-install instrument and answers no for openconstructionerp here, which
+# means the fallback this line feeds is the only branch that can answer at all.
+# It also covers a second reader by accident: sarif_exporter walks
+# parents[3] / "pyproject.toml", which is backend/pyproject.toml in the source
+# tree and the bundle root here, because app/ sits at the root. That coincidence
+# breaks the day app/ moves one level down, so move the two together.
 _pyproject = BACKEND / "pyproject.toml"
 if _pyproject.is_file():
     datas.append((str(_pyproject), "."))
@@ -129,19 +235,45 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     # numpy / pandas / openpyxl / pyarrow are base runtime deps (cost-DB
-    # Excel/CSV/Parquet import), so they must NOT be excluded. Only the
-    # genuinely-unused heavy science / GUI stacks are dropped to slim the build.
-    # The Qt bindings are excluded because the sidecar is a headless HTTP
-    # server with no GUI; they are never imported at runtime. The exclusion
+    # Excel/CSV/Parquet import), so they must NOT be excluded. What is left here
+    # is dropped because nothing in the sidecar imports it, and that is the only
+    # thing this list is allowed to mean.
+    #
+    # torch and scipy used to sit here, and the comment above them called the
+    # whole list genuinely unused. That was true when it was written and stopped
+    # being true when the encoder download went default-on for desktop_mode: the
+    # feature ships an embedding model, the model is loaded through
+    # sentence_transformers, and sentence_transformers imports torch at module
+    # level and pulls scipy through scikit-learn. Excluding them did not slim a
+    # build that used them, it removed a feature the same release advertises,
+    # and it removed it only on the desktop channel, where nobody installing a
+    # wheel would ever see it. Both names are now in requirements-desktop.lock
+    # and both are gone from this list.
+    #
+    # It costs what a machine-learning runtime costs, and the number depends on
+    # a decision made in the lock rather than here. torch's Linux wheels on PyPI
+    # declare the whole nvidia CUDA stack, so a lock compiled without
+    # --torch-backend=cpu adds about 2.7 GB there against about 190 MB on
+    # Windows. The lock pins the CPU build, which brings Linux back in line and
+    # costs the other two platforms nothing, because their PyPI wheels were
+    # CPU-only to begin with. It is worth more than a download counter: the EXE
+    # below is a onefile build that unpacks its entire payload to a temporary
+    # directory on every launch, so this weight is paid at every start.
+    #
+    # The Qt bindings stay excluded because the sidecar is a headless HTTP
+    # server with no GUI; they are never imported at runtime. That exclusion
     # also avoids PyInstaller's hard abort when a build machine happens to have
     # more than one Qt binding installed (it refuses to bundle both PyQt and
     # PySide), which would otherwise break the build on developer machines that
     # carry a full scientific Python stack.
+    #
+    # Nothing here may also appear in requirements-desktop.lock. A name in both
+    # files is the exact shape of the bug above: a dependency deliberately
+    # installed and then deliberately thrown away. That pairing is checked by
+    # backend/tests/unit/test_desktop_lock_deps.py.
     excludes=[
         "tkinter",
         "matplotlib",
-        "scipy",
-        "torch",
         "tensorflow",
         "PyQt5",
         "PyQt6",

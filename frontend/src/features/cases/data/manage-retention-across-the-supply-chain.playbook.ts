@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 1025,
   category: "commercial",
   companyTypes: ["general-contractor", "cost-consultant", "subcontractor"],
+  roles: ["commercial-manager", "quantity-surveyor", "accountant"],
   icon: "Percent",
   titleKey: "cases.manage_retention_across_the_supply_chain.title",
   titleDefault: "Manage retention across the supply chain",
@@ -65,7 +66,7 @@ const playbook: Playbook = {
       whyKey: "cases.manage_retention_across_the_supply_chain.step.track.why",
       whyDefault:
         "Retention held is your cash and your liability at once. Knowing the live figure per sub is what lets you release fairly and avoid paying out more than you ever withheld.",
-      moduleLabel: "Subcontractors",
+      moduleLabel: "Subcontractor Directory",
       moduleLabelKey: "nav.subcontractors",
       to: "/projects/:projectId/subcontractors",
     },
@@ -108,7 +109,7 @@ const playbook: Playbook = {
       whyKey: "cases.manage_retention_across_the_supply_chain.step.reconcile.why",
       whyDefault:
         "The retention nobody reconciles is the retention nobody recovers. A clean ledger is what turns a forgotten liability into cash that actually finds its way back to the business.",
-      moduleLabel: "Reconciliation",
+      moduleLabel: "Event Reconciliation",
       moduleLabelKey: "nav.reconciliation",
       to: "/projects/:projectId/reconciliation",
     },

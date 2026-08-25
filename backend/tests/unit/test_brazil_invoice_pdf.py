@@ -7,6 +7,10 @@ the end-to-end render which must produce a non-empty PDF binary.
 
 from __future__ import annotations
 
+import asyncio
+import uuid
+from decimal import Decimal
+
 from app.modules.finance.br_invoice_pdf import (
     _br_date,
     _brl,
@@ -206,24 +210,18 @@ def test_render_br_invoice_pdf_escapes_html_in_description() -> None:
 
 # ── Content-Disposition filename sanitisation ────────────────────────────
 # These tests cover the inline sanitisation applied in finance/router.py
-# *before* the invoice_number is embedded in the quoted Content-Disposition
-# header.  We replicate the exact transformation here so a future router
-# refactor can't quietly re-introduce the injection surface without a red
-# test.
+# *before* the invoice_number is embedded in the download filename.  We
+# replicate the exact transformation here so a future router refactor can't
+# quietly re-introduce the injection surface without a red test.  The header
+# itself is built by app.core.content_disposition.attachment_disposition,
+# which emits the RFC 6266 pair, so non-ASCII invoice numbers survive to the
+# browser instead of becoming question marks.
 
 
 def _sanitise_invoice_number(raw: str | None) -> str:
     """Mirror of the sanitisation logic in ``finance/router.py``."""
     _raw_num = raw or "invoice"
-    _safe = (
-        _raw_num.encode("ascii", errors="replace")
-        .decode("ascii")
-        .replace("\r", "")
-        .replace("\n", "")
-        .replace('"', "'")
-        .replace("/", "-")
-        .strip()
-    )[:80] or "invoice"
+    _safe = (_raw_num.replace("\r", "").replace("\n", "").replace('"', "'").replace("/", "-").strip())[:80] or "invoice"
     return _safe
 
 
@@ -258,3 +256,105 @@ def test_invoice_number_fallback_on_empty() -> None:
 def test_invoice_number_caps_at_80_chars() -> None:
     long_num = "A" * 120
     assert len(_sanitise_invoice_number(long_num)) == 80
+
+
+def test_invoice_number_keeps_accents_for_the_rfc6266_header() -> None:
+    """Brazilian series names carry accents; they must reach filename* intact.
+
+    The old code turned every non-ASCII character into ``?`` before the name
+    hit the header. Now the sanitiser keeps the real characters and the
+    header helper carries them in the RFC 5987 parameter, with a readable
+    ASCII fallback beside it.
+    """
+    from urllib.parse import unquote
+
+    from app.core.content_disposition import attachment_disposition
+
+    number = _sanitise_invoice_number("NF-São-Paulo/0042")
+    assert number == "NF-São-Paulo-0042"
+
+    header = attachment_disposition(f"RPS_{number}.pdf")
+    fallback = header.split('filename="', 1)[1].split('"', 1)[0]
+    assert fallback == "RPS_NF-Sao-Paulo-0042.pdf"
+    assert unquote(header.split("filename*=UTF-8''", 1)[1]) == "RPS_NF-São-Paulo-0042.pdf"
+
+
+# ── What the route declares about the document ───────────────────────────
+# The renderer above writes Portuguese unconditionally. These test the route
+# that serves it, because the language of a document is something a client
+# reads off the response, not out of the file.
+
+
+class _StubInvoice:
+    """Only the columns the RPS route reads off the row."""
+
+    invoice_number = "RPS-2026-0044"
+    invoice_direction = "receivable"
+    invoice_date = "2026-04-15"
+    due_date = "2026-05-15"
+    project_id = None
+    amount_subtotal = Decimal("1000.00")
+    tax_amount = Decimal("50.00")
+    retention_amount = Decimal("0")
+    amount_total = Decimal("1050.00")
+    notes = None
+    metadata_: dict = {}
+    line_items: list = []
+
+
+class _StubService:
+    async def get_invoice(self, _invoice_id):
+        return _StubInvoice()
+
+
+def _export_rps(monkeypatch):
+    """Run the real RPS route with everything but the header wiring stubbed."""
+    import app.modules.finance.br_invoice_pdf as br
+    import app.modules.finance.router as finance_router
+
+    async def _allow(*_args: object, **_kwargs: object):
+        return _StubInvoice()
+
+    monkeypatch.setattr(finance_router, "_require_invoice_access", _allow)
+    monkeypatch.setattr(finance_router, "_line_item_dicts", lambda _items: [])
+    monkeypatch.setattr(br, "render_br_invoice_pdf", lambda **_kwargs: b"%PDF-1.4 pagina")
+
+    return asyncio.run(
+        finance_router.export_invoice_br_pdf(
+            invoice_id=uuid.UUID("00000000-0000-0000-0000-0000000000bb"),
+            session=None,
+            user_id=None,
+            _perm=None,
+            service=_StubService(),
+        )
+    )
+
+
+def test_the_rps_declares_the_language_it_is_written_in(monkeypatch) -> None:
+    """An RPS is Portuguese by construction, so it says so.
+
+    The builder has no locale input of any kind: its labels are Portuguese
+    literals and its money formatter is an unconditional pt-BR separator
+    swap. A literal header is therefore the whole of the fix - there is no
+    reader preference that could ever change the answer.
+    """
+    response = _export_rps(monkeypatch)
+    assert response.headers["content-language"] == "pt-BR"
+
+
+def test_the_route_declares_the_language_rather_than_leaving_it_to_the_middleware(
+    monkeypatch,
+) -> None:
+    """The route must be the author of this header, not merely agree with it.
+
+    This is the property the fix actually restores. The route takes no
+    Accept-Language and resolves nothing, so whenever it declares nothing the
+    AcceptLanguageMiddleware supplies the reader's requested language instead
+    and Portuguese bytes go out labelled German. Asserting the header is
+    present on the response the handler returns - before any middleware has
+    seen it - is what distinguishes "the route said so" from "something
+    downstream happened to say the same thing".
+    """
+    response = _export_rps(monkeypatch)
+    assert response.headers.get("content-language") == "pt-BR"
+    assert response.media_type == "application/pdf"

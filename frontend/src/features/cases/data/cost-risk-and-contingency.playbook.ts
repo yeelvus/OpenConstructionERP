@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 80,
   category: "estimating",
   companyTypes: ["cost-consultant", "general-contractor", "developer-client"],
+  roles: ["estimator", "quantity-surveyor", "commercial-manager"],
   icon: "Dice5",
   titleKey: "cases.cost_risk_and_contingency.title",
   titleDefault: "Set contingency from cost risk",
@@ -55,8 +56,8 @@ const playbook: Playbook = {
       whyKey: "cases.cost_risk_and_contingency.step.baseline.why",
       whyDefault:
         "Running risk over a bill with gaps or errors just dresses that error up in a confident looking curve. A clean, complete base estimate is the only thing that makes the resulting range worth trusting.",
-      moduleLabel: "BOQ",
-      moduleLabelKey: "nav.boq",
+      moduleLabel: "Bill of Quantities",
+      moduleLabelKey: "boq.title",
       to: "/boq",
     },
     {
@@ -92,8 +93,8 @@ const playbook: Playbook = {
       whyKey: "cases.cost_risk_and_contingency.step.simulate.why",
       whyDefault:
         "A single headline figure hides how much the outturn could swing. The P50 to P90 curve tells you plainly how much cover you need to carry to hit a confidence level you are willing to sign up to.",
-      moduleLabel: "Cost risk",
-      moduleLabelKey: "nav.risks",
+      moduleLabel: "Risk Register",
+      moduleLabelKey: "nav.risk_register",
       to: "/risks?tab=montecarlo",
     },
     {

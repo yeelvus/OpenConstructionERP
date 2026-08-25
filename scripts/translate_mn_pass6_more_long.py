@@ -71,8 +71,8 @@ FULL_TRANSLATIONS: dict[str, str] = {
     "Apply the average rate without picking a specific variant. You can refine later by clicking the row.":
         "Тодорхой хувилбар сонгохгүйгээр дундаж тарифыг хэрэглэнэ. Та мөрийг дарж дараа нь сайжруулж болно.",
 
-    "Unit rates and composite prices for materials, labor, and equipment. Import regional databases (CWICR, BKI, RSMeans) from Modules or add custom rates. Toggle AI Semantic Search for natural-language queries.":
-        "Материал, хөдөлмөр, тоног төхөөрөмжийн нэгж тариф, нийлмэл үнэ. Модулиудаас бүс нутгийн өгөгдлийн сан (CWICR, BKI, RSMeans) импортлох эсвэл захиалгат тариф нэмнэ үү. Байгалийн хэлний асуулгад AI семантик хайлтыг идэвхжүүлнэ үү.",
+    "Unit rates and composite prices for materials, labor, and equipment. Import regional databases (CWICR) from Modules or add custom rates. Toggle AI Semantic Search for natural-language queries.":
+        "Материал, хөдөлмөр, тоног төхөөрөмжийн нэгж тариф, нийлмэл үнэ. Модулиудаас бүс нутгийн өгөгдлийн сан (CWICR) импортлох эсвэл захиалгат тариф нэмнэ үү. Байгалийн хэлний асуулгад AI семантик хайлтыг идэвхжүүлнэ үү.",
 
     "Custom deployment, training, and enterprise solutions worldwide":
         "Дэлхий даяар захиалгат байршуулалт, сургалт, аж ахуйн нэгжийн шийдлүүд",

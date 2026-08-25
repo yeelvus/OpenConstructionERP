@@ -13,6 +13,7 @@ const playbook: Playbook = {
   order: 314,
   category: "quality",
   companyTypes: ["general-contractor", "subcontractor", "designer"],
+  roles: ["document-controller", "design-lead", "procurement-buyer"],
   icon: "ClipboardList",
   titleKey: "cases.run_the_submittals_register.title",
   titleDefault: "Run the submittals register",
@@ -91,7 +92,7 @@ const playbook: Playbook = {
       whyKey: "cases.run_the_submittals_register.step.attach-spec.why",
       whyDefault:
         "A reviewer needs the spec next to the submittal, or the approval is just an opinion. It also settles later arguments about what was actually specified.",
-      moduleLabel: "QMS",
+      moduleLabel: "Quality Management",
       moduleLabelKey: "nav.qms",
       to: "/projects/:projectId/qms",
     },

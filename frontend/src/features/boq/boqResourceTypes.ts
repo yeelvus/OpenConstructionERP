@@ -79,3 +79,32 @@ export function getResourceTypeLabel(
   if (t) return t(opt.i18nKey, { defaultValue: opt.fallback });
   return opt.fallback;
 }
+
+/**
+ * i18n keys for the compact three-letter cost-driver codes shown in the
+ * resource-split pill. Localised so the pill speaks the same vocabulary as
+ * the toolbar toggle (`boq.resource_split_short`): de shows MAT/LOH/GER,
+ * not the English MAT/LAB/EQU next to a German button.
+ */
+const RESOURCE_TYPE_SHORT_KEYS: Record<string, { key: string; fallback: string }> = {
+  material: { key: 'boq.resource_code_material', fallback: 'MAT' },
+  labor: { key: 'boq.resource_code_labor', fallback: 'LAB' },
+  equipment: { key: 'boq.resource_code_equipment', fallback: 'EQU' },
+};
+
+/**
+ * Compact, localised cost-driver code for a resource-type value.
+ *
+ * Known driver types resolve through i18n; anything else falls back to the
+ * first three letters uppercased (the pill's historical behaviour), so
+ * legacy or exotic types still render something recognisable.
+ */
+export function getResourceTypeShortCode(
+  value: string,
+  t?: (key: string, opts?: Record<string, string>) => string,
+): string {
+  const entry = RESOURCE_TYPE_SHORT_KEYS[value];
+  if (!entry) return value.slice(0, 3).toUpperCase();
+  if (t) return t(entry.key, { defaultValue: entry.fallback });
+  return entry.fallback;
+}

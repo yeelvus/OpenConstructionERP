@@ -25,6 +25,7 @@ import uuid
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse, Response
 
+from app.core.content_disposition import attachment_disposition
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
 from app.modules.reporting.schemas import (
     GeneratedReportResponse,
@@ -441,8 +442,15 @@ async def download_report(
         content=blob,
         media_type=media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": attachment_disposition(filename),
             "Content-Length": str(len(blob)),
+            # Every format this endpoint serves is built from the same English
+            # literals in reporting/exporters.py, and no locale reaches any of
+            # them, so the declaration holds whichever format was asked for
+            # rather than only for the PDF. Without it the Accept-Language
+            # middleware names the reader's language on a document written in
+            # ours.
+            "Content-Language": "en",
         },
     )
 
@@ -483,7 +491,7 @@ async def download_cobie(
         content=blob,
         media_type=media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": attachment_disposition(filename),
             "Content-Length": str(len(blob)),
         },
     )

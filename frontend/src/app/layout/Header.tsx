@@ -32,18 +32,29 @@ import { SupportUsButton } from './SupportUsButton';
 import { SubscribeButton } from './SubscribeButton';
 import { ProjectJourneyButton } from './ProjectJourney';
 import { getRouteIcon } from './routeIcons';
+import { isModuleI18nKey } from '@/modules/_i18n';
 
 /**
  * Map the English page titles passed from App.tsx routes to i18n keys.
  *
- * The keys mirror the labelKey the Sidebar uses for the same destination, so
- * the on-screen page heading, the browser tab title and the sidebar entry all
- * resolve through the same locale bundle and can never disagree. When a title
- * has no entry here the heading falls back to the English `defaultValue`
- * (current behaviour), so adding a route without a mapping degrades gracefully
- * rather than showing a raw key.
+ * An entry must name the same key the screen's own `<h1>` uses, so the top bar,
+ * the browser tab title and the page heading say one word. `titleKeyAgreement`
+ * in `Header.titleKeys.test.ts` checks every route and fails on a disagreement,
+ * on a route neither map knows, and on a stale exemption.
+ *
+ * This paragraph used to assert the three "can never disagree" and nothing
+ * measured it. Nine of them did: the top bar read "Site Mobilisation" over a
+ * page whose heading said "Site prep", and "PDF Takeoff" over "PDF
+ * Measurements". Because the h1 is `sr-only`, that shipped as one product for a
+ * sighted reader and a different one for a screen reader, and no reader saw
+ * both halves to notice. An invariant worth stating in prose is worth a test;
+ * without one this comment reads as verified and stops the next person looking.
+ *
+ * When a title has no entry here the heading falls back to the English
+ * `defaultValue`, so adding a route without a mapping degrades gracefully
+ * rather than showing a raw key. The test is what stops it staying that way.
  */
-const TITLE_I18N_MAP: Record<string, string> = {
+export const TITLE_I18N_MAP: Record<string, string> = {
   // Overview
   'Dashboard': 'nav.dashboard',
   'Projects': 'nav.projects',
@@ -58,19 +69,27 @@ const TITLE_I18N_MAP: Record<string, string> = {
   'Match Elements': 'match_elements.title',
   'AI Quick Estimate': 'nav.ai_estimate',
   'New BOQ': 'boq.new_estimate',
-  'Bill of Quantities': 'nav.boq',
+  'Bill of Quantities': 'boq.title',
   'BOQ Editor': 'boq.editor',
   'BOQ Templates': 'nav.templates',
   // Catalogues
-  'Cost Database': 'nav.costs',
+  'Cost Database': 'costs.title',
+  'Cost Explorer': 'nav.cost_explorer',
   'Import Cost Database': 'costs.import_title',
-  'Resource Catalog': 'nav.resource_catalog',
+  // First-party module routes now state their title as a key, so these entries
+  // only catch a module that still ships the English literal.
+  'GAEB Exchange': 'nav.gaeb_exchange',
+  'Resource Catalog': 'catalog.title',
   'Assemblies': 'nav.assemblies',
-  'New Assembly': 'assemblies.new',
-  'Assembly Editor': 'assemblies.editor',
+  'New Assembly': 'assemblies.new_assembly',
+  // No locale names the single-assembly editor, so it takes the module's own
+  // name. The keys these two used to point at, assemblies.new and
+  // assemblies.editor, exist in no locale at all, which the defaultValue
+  // fallback turned into a silently English heading.
+  'Assembly Editor': 'assemblies.title',
   // Takeoff & CAD/BIM
   'Quantity Takeoff': 'nav.takeoff_overview',
-  'PDF Takeoff': 'nav.takeoff',
+  'PDF Takeoff': 'nav.pdf_measurements',
   'DWG Takeoff': 'nav.dwg_takeoff',
   'CAD/BIM Takeoff': 'nav.cad_takeoff',
   // #149: keyed on the <P title> App.tsx passes for /data-explorer. Both sides
@@ -158,19 +177,132 @@ const TITLE_I18N_MAP: Record<string, string> = {
   'Audit Log': 'sidebar.admin_grid.audit',
   'Governance': 'sidebar.admin_grid.governance',
   'Modules': 'nav.modules',
+  // A module installed from the catalogue renders under a route that titles
+  // every one of them "Module". The word was translated everywhere already, as
+  // a filter label over in quantities, but a page heading has no business
+  // reading its name out of another module's namespace, so the modules
+  // namespace now carries it too.
+  'Module': 'modules.module_title',
+  'E-invoice Clearance': 'nav.einvoice_clearance',
   'Settings': 'nav.settings',
   'About': 'nav.about',
   'Not Found': 'error.not_found',
+
+  /* The map had grown to cover about half the routes, and the half it missed
+     included the opening screen of most modules: the heading and the browser
+     tab printed English on an otherwise German session. Everything below is a
+     route whose words are already translated under some key, so these are
+     mappings and not new strings. Where the sidebar names the destination a
+     little differently - "Allowances & Contingency" for the route titled
+     "Allowances" - the sidebar wins, because the point of this map is that the
+     two can never disagree. */
+
+  // Estimation
+  'AI Estimate Builder': 'nav.ai_estimator',
+  'Assembly Library': 'nav.assembly_library',
+  'Basis of Estimate': 'nav.estimate_basis',
+  'Conceptual Estimate': 'nav.rom_estimate',
+  'Estimate Copilot': 'nav.estimate_copilot',
+  'Allowances': 'nav.allowances',
+  'Preliminaries': 'nav.preliminaries',
+  'Waste Factors': 'nav.waste_factors',
+  'Production Norms': 'nav.norm_expansion',
+  'Resource Summary': 'nav.resource_summary',
+  'Cost Match': 'nav.cost_match',
+  'Price Index': 'nav.price_index',
+  'Source Data': 'source_data.title',
+  'Databases & Resources': 'nav.setup_databases',
+  'Currencies': 'nav.fx',
+  // Takeoff & CAD/BIM
+  'Point Cloud': 'nav.point_cloud',
+  'Model Review': 'nav.model_review',
+  'Model Issues': 'nav.model_issues',
+  'Issues': 'nav.issues',
+  'Clash Profiles': 'clash.profiles.title',
+  'Design Options': 'nav.design_options',
+  'Drawing Sheets': 'sheets.page_title',
+  'Plan Room': 'nav.plan_room',
+  'Project map': 'geo_hub.project_title',
+  'Development map': 'geo_hub.development_title',
+  // Commercial
+  'Change Intelligence': 'nav.change_intelligence',
+  'Claims Evidence': 'nav.claims_evidence',
+  'Progress Claim': 'contracts.claim',
+  'Withholding Tax': 'nav.tax_withholding',
+  'Authority Submissions': 'authority_submission.title',
+  'Review Authority': 'review_authority.title',
+  'Interface Register': 'interface_management.title',
+  'Management of Change': 'moc.title',
+  'Event Reconciliation': 'nav.reconciliation',
+  // Planning
+  'Takt Planning': 'nav.takt',
+  'Capacity Planning': 'nav.capacity_planning',
+  'Resource Leveling': 'nav.resource_leveling',
+  'Progress': 'nav.progress',
+  'Construction Control': 'construction_control.title',
+  // Field & site
+  'Field Time': 'nav.field_time',
+  'Labor Rates': 'nav.labor_rates',
+  'Payroll': 'nav.payroll',
+  'Certified Payroll': 'nav.certified_payroll',
+  'Site Supervision': 'site_supervision.title',
+  'Site Mobilisation': 'site_prep.title',
+  'Site Logistics': 'nav.site_logistics',
+  'Site Inventory': 'site_inventory.title',
+  'Temporary Works': 'temporary_works.title',
+  'Formwork': 'formwork.title',
+  'Off-site / Prefab': 'nav.prefab',
+  'Forms & checklists': 'nav.forms',
+  // Quality, handover & sustainability
+  'Commissioning': 'nav.commissioning',
+  'Handover & Closeout': 'closeout.title',
+  'Defects Liability': 'defects_liability.title',
+  'ESG Site Performance': 'nav.esg',
+  // Communication & documentation
+  'Inbox': 'inbox.title',
+  'Notifications': 'nav.notifications',
+  'Deadlines': 'deadlines.title',
+  'Phone Log': 'nav.phone_log',
+  'Inbound Capture': 'nav.inbound_capture',
+  'Email Delay Scan': 'nav.inbound_email',
+  'Document Connectors': 'nav.connectors',
+  'Approvals register': 'files.approvals.register_title',
+  'Recycle Bin': 'files.trash.title',
+  'Find Records': 'nav.find_records',
+  'E-Signatures': 'signing.title',
+  // Finance & analytics
+  'Payment Clock': 'nav.payment_clock',
+  'Cost-Value Reconciliation': 'nav.cvr',
+  'Earned Value': 'nav.full_evm',
+  'EAC Block Editor': 'eac.editor.title',
+  'Value Realized': 'nav.value',
+  'Portfolio': 'portfolio.title',
+  'Route Classifier': 'project_route.title',
+  'Post-calculation': 'postcalc.title',
+  // Learning & admin
+  'Cases': 'nav.cases',
+  'How it works': 'howto.page_title',
+  'Inside track': 'inside.page_title',
+  'Module Builder': 'nav.module_builder',
+  'Pipelines': 'nav.pipelines',
+  'Integrations': 'nav.integrations',
+  'Credentials': 'nav.credentials',
+  'Teams and Visibility': 'teams.title',
 };
 
 /**
  * Resolve the i18n key for a page title (or `null` when there is no mapping).
  * Shared with AppLayout so the browser-tab `document.title` translates the
  * same way the on-screen heading does.
+ *
+ * A module route states its title as a key already (`ModuleRoute.title`), so
+ * such a title is its own answer. Without this the map would miss it, the tab
+ * would print the raw key, and the heading and the tab would disagree about
+ * the same page.
  */
 export function resolvePageTitleKey(title: string | undefined): string | null {
   if (!title) return null;
-  return TITLE_I18N_MAP[title] ?? null;
+  return TITLE_I18N_MAP[title] ?? (isModuleI18nKey(title) ? title : null);
 }
 
 interface HeaderProps {
@@ -196,7 +328,7 @@ export function Header({ title, onMenuClick }: HeaderProps) {
   const packActive = usePartnerPack().data?.active === true;
   const location = useLocation();
   const translatedTitle = title
-    ? t(TITLE_I18N_MAP[title] ?? title, { defaultValue: title })
+    ? t(resolvePageTitleKey(title) ?? title, { defaultValue: title })
     : undefined;
   // Icon for the active module, mirroring the matching sidebar row. Shown as
   // a small chip before the top-bar title so each module is identifiable at
@@ -1454,7 +1586,7 @@ function ProjectSwitcher() {
           )}
           title={activeProjectId
             ? t('projects.open_current', { defaultValue: 'Open this project' })
-            : t('schedule.select_project', { defaultValue: 'Select Project' })}
+            : t('projects.select_active', { defaultValue: 'Select Project' })}
         >
           {/* Leading icon square — colored tile in active mode; pulsing
               dot in CTA mode so the eye is drawn to "act here". */}
@@ -1474,7 +1606,7 @@ function ProjectSwitcher() {
             'truncate',
             activeProjectId ? 'font-semibold' : 'font-medium',
           )}>
-            {activeProjectName || t('schedule.select_project', { defaultValue: 'Select Project' })}
+            {activeProjectName || t('projects.select_active', { defaultValue: 'Select Project' })}
           </span>
         </button>
         <button

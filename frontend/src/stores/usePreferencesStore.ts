@@ -14,12 +14,47 @@
 
 import { create } from 'zustand';
 import { apiGet } from '@/shared/lib/api';
+import { getIntlLocale, useIntlLocale } from '@/shared/lib/intlLocale';
 
 const STORAGE_KEY = 'oe_preferences';
 
+/**
+ * Bumped when a stored value has to be re-read rather than merged. Rides in the
+ * same blob as the preferences so one localStorage entry still holds the whole
+ * cache. See `LEGACY_NUMBER_LOCALE` for the migration this version guards.
+ */
+const SCHEMA_VERSION = 2;
+
 export type MeasurementSystem = 'metric' | 'imperial';
-export type DateFormat = 'DD.MM.YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD';
-export type NumberLocale = 'de-DE' | 'en-US' | 'en-GB' | 'fr-FR' | 'ru-RU' | 'ar-SA' | 'ja-JP' | 'zh-CN' | 'es-MX';
+/**
+ * Date-format preference. `'auto'` means "follow the UI language" and is the
+ * default: it renders exactly what the app rendered before the preference was
+ * wired into the date surfaces, so an account that never picked a format sees
+ * no change. See `formatDateWithPreference` in `@/shared/lib/formatters`.
+ */
+export type DateFormat = 'auto' | 'DD.MM.YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD';
+/**
+ * Number-format preference. `'auto'` means "follow the UI language" and is the
+ * default, for the same reason `DateFormat` defaults that way: every other
+ * number surface in the app resolves through `getIntlLocale()`, so a
+ * preference that defaulted to one fixed locale put the money surfaces on a
+ * different answer from the rest of the product. That is what wrote the same
+ * amount as `$180,174.28` on the bill of quantities and `180.174,28 $` on the
+ * finance register inside one English UI. Resolve it with
+ * `resolveNumberLocale` or, in a component, `useNumberLocale`.
+ */
+export type NumberLocale =
+  | 'auto'
+  | 'de-DE'
+  | 'en-US'
+  | 'en-GB'
+  | 'fr-FR'
+  | 'ru-RU'
+  | 'ar-SA'
+  | 'ja-JP'
+  | 'zh-CN'
+  | 'es-MX'
+  | 'en-IN';
 
 interface Preferences {
   currency: string;
@@ -35,19 +70,42 @@ interface Preferences {
 const DEFAULTS: Preferences = {
   currency: 'EUR',
   measurementSystem: 'metric',
-  dateFormat: 'DD.MM.YYYY',
-  numberLocale: 'de-DE',
+  dateFormat: 'auto',
+  numberLocale: 'auto',
   vatRate: 19,
   defaultRegion: 'DACH',
   defaultCurrency: 'EUR',
   defaultStandard: 'din276',
 };
 
+/**
+ * The literal `numberLocale` carried as its hardcoded default before `'auto'`
+ * existed.
+ *
+ * Changing the default alone would have fixed nothing for anybody: `persist`
+ * writes the whole object on every change, so any browser that ever touched a
+ * single preference has this value written down, and a stored value is
+ * indistinguishable from a deliberate choice of German separators. We resolve
+ * it in favour of `'auto'` exactly once, on the first read after the upgrade,
+ * and record the schema version so a `'de-DE'` chosen from here on is kept.
+ *
+ * The only reader this can surprise is one running a non-German UI who
+ * deliberately picked German numbers: on a German UI `'auto'` resolves to
+ * `'de-DE'` and the migration is a no-op. That is the same trade
+ * `adoptServerDateFormat` makes below, for the same reason.
+ */
+const LEGACY_NUMBER_LOCALE = 'de-DE';
+
 function readPreferences(): Preferences {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULTS;
-    return { ...DEFAULTS, ...JSON.parse(raw) };
+    const { _v: version, ...stored } = JSON.parse(raw) as Partial<Preferences> & { _v?: number };
+    const prefs: Preferences = { ...DEFAULTS, ...stored };
+    if ((version ?? 1) < SCHEMA_VERSION && prefs.numberLocale === LEGACY_NUMBER_LOCALE) {
+      prefs.numberLocale = 'auto';
+    }
+    return prefs;
   } catch {
     return DEFAULTS;
   }
@@ -55,8 +113,50 @@ function readPreferences(): Preferences {
 
 function persist(prefs: Preferences) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...prefs, _v: SCHEMA_VERSION }));
   } catch { /* ignore */ }
+}
+
+/**
+ * The locale to actually format a number with.
+ *
+ * This is the single resolver: a surface that renders a number reads the
+ * preference through here, never straight off the store, so "which locale" has
+ * one answer across the whole product rather than one answer per component.
+ */
+export function resolveNumberLocale(preference: NumberLocale): string {
+  return preference === 'auto' ? getIntlLocale() : preference;
+}
+
+/**
+ * `resolveNumberLocale` for a caller that cannot hold a hook.
+ *
+ * A grid cell renderer is a plain function called by the grid, not a component
+ * React owns, so it cannot subscribe to anything. This reads the preference at
+ * the moment of the call. That makes it a snapshot, and a snapshot is only
+ * correct because the surfaces that use it are repainted from above: the grid
+ * rebuilds its context and its column definitions when the locale moves, and
+ * the renderers run again. Keep those two halves in mind together. Dropping the
+ * locale from a grid's dependencies would leave these cells reading a value
+ * nobody asks them to read again.
+ */
+export function getNumberLocale(): string {
+  return resolveNumberLocale(usePreferencesStore.getState().numberLocale);
+}
+
+/**
+ * `resolveNumberLocale` bound to both of the things it depends on.
+ *
+ * Reading the preference alone is not enough for a component: with `'auto'` the
+ * answer also moves when the UI language moves, and the store has no idea that
+ * happened. Subscribing to both is what makes a language switch reach the
+ * numbers instead of leaving them in the previous language until an unrelated
+ * prop re-renders them.
+ */
+export function useNumberLocale(): string {
+  const preference = usePreferencesStore((s) => s.numberLocale);
+  const intlLocale = useIntlLocale();
+  return preference === 'auto' ? intlLocale : preference;
 }
 
 /* ── Server hydration (issue #335) ────────────────────────────────────── */
@@ -73,7 +173,42 @@ interface ServerPreferences {
 // store actually understands - a stray or future server value is skipped, never
 // forced into the union.
 const MEASUREMENT_SYSTEMS: readonly MeasurementSystem[] = ['metric', 'imperial'];
-const DATE_FORMATS: readonly DateFormat[] = ['DD.MM.YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'];
+const DATE_FORMATS: readonly DateFormat[] = ['auto', 'DD.MM.YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'];
+
+/**
+ * The value the account column carries when nobody ever picked a date format:
+ * `users.date_format` is NOT NULL and defaults to this, so on an account that
+ * predates the "automatic" option the value is ambiguous between "never chose"
+ * and "chose the day-first order".
+ */
+const LEGACY_ACCOUNT_DATE_FORMAT = 'DD.MM.YYYY';
+
+/**
+ * Decide what a server `date_format` means for this browser.
+ *
+ * Returns `undefined` for "leave the local value alone". We resolve the
+ * ambiguous legacy default in favour of automatic unless this browser already
+ * carries an explicit choice, which is what keeps every existing account
+ * rendering exactly as it does today instead of switching to numeric dates on
+ * the next sign-in. The two orders the column default can never produce, and
+ * an explicit `auto`, are always adopted. A value outside the vocabulary (the
+ * regional packs also ship `DD/MM/YYYY` and `YYYY/MM/DD`) is left alone rather
+ * than forced, so it falls through to the `'auto'` default on a fresh browser.
+ */
+function adoptServerDateFormat(server: string, local: DateFormat): DateFormat | undefined {
+  if (!(DATE_FORMATS as readonly string[]).includes(server)) return undefined;
+  if (server === LEGACY_ACCOUNT_DATE_FORMAT && local === 'auto') return undefined;
+  return server as DateFormat;
+}
+/**
+ * The value the account column carries when nobody ever picked a number
+ * format: `users.number_format` is NOT NULL and defaulted to this for every
+ * account created anywhere in the world, so the stored string is ambiguous
+ * between "never chose" and "chose German grouping". Same ambiguity as
+ * `LEGACY_ACCOUNT_DATE_FORMAT` above, same resolution.
+ */
+const LEGACY_ACCOUNT_NUMBER_FORMAT = '1.234,56';
+
 // The account stores the number format as a display PATTERN, not a BCP-47
 // locale; map the known patterns onto the locale the store formats with.
 const NUMBER_FORMAT_TO_LOCALE: Record<string, NumberLocale> = {
@@ -81,6 +216,46 @@ const NUMBER_FORMAT_TO_LOCALE: Record<string, NumberLocale> = {
   '1,234.56': 'en-US',
   '1 234,56': 'fr-FR',
 };
+
+/**
+ * Every value `numberLocale` may hold, for validating what the server sends.
+ *
+ * Exported because the regional-settings picker builds its buttons from this
+ * list rather than from a second one of its own. A value the type allows and
+ * the picker has no button for is a setting the reader cannot reach: `en-IN`
+ * was missing for exactly that reason, so Indian rupees were offered as a
+ * currency while lakh and crore grouping was unreachable by any choice.
+ */
+export const NUMBER_LOCALES: readonly NumberLocale[] = [
+  'auto', 'de-DE', 'en-US', 'en-GB', 'fr-FR', 'ru-RU', 'ar-SA', 'ja-JP', 'zh-CN', 'es-MX', 'en-IN',
+];
+
+/**
+ * Read a server `number_format` in either of the two vocabularies the field
+ * has been written in.
+ *
+ * The account column holds a display PATTERN - `i18n_data.py` seeds `1.234,56`
+ * - but the regional-settings toggle has always PATCHed a BCP-47 tag into the
+ * same free-form field. So a choice made in the UI came back as a value
+ * `NUMBER_FORMAT_TO_LOCALE` has no key for and was dropped on every boot,
+ * which meant the preference could not actually be overridden from the
+ * account. Accepting both keeps the old pattern working and lets a saved
+ * choice survive. An unknown value is skipped rather than forced in.
+ *
+ * The seeded pattern is refused unless this browser already carries an
+ * explicit choice, exactly as `adoptServerDateFormat` refuses the seeded date
+ * order. Without that, every account ever created read its numbers in German,
+ * because the column defaulted to the German pattern for all of them and the
+ * translator faithfully adopted it. `local` is what breaks the tie: the value
+ * alone cannot say whether German was chosen or seeded, but a browser sitting
+ * on `'auto'` has demonstrably never chosen anything.
+ */
+export function adoptServerNumberFormat(server: string, local: NumberLocale): NumberLocale | undefined {
+  if (server === LEGACY_ACCOUNT_NUMBER_FORMAT && local === 'auto') return undefined;
+  const mapped = NUMBER_FORMAT_TO_LOCALE[server];
+  if (mapped) return mapped;
+  return (NUMBER_LOCALES as readonly string[]).includes(server) ? (server as NumberLocale) : undefined;
+}
 
 interface PreferencesState extends Preferences {
   setPreference: <K extends keyof Preferences>(key: K, value: Preferences[K]) => void;
@@ -96,8 +271,6 @@ interface PreferencesState extends Preferences {
    */
   hydrateFromServer: () => Promise<void>;
 
-  /** Format a number as currency using current settings */
-  formatCurrency: (amount: number) => string;
   /** Format a number using current locale */
   formatNumber: (value: number, decimals?: number) => string;
 }
@@ -130,10 +303,11 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       if (r.measurement_system && (MEASUREMENT_SYSTEMS as readonly string[]).includes(r.measurement_system)) {
         updates.measurementSystem = r.measurement_system as MeasurementSystem;
       }
-      if (r.date_format && (DATE_FORMATS as readonly string[]).includes(r.date_format)) {
-        updates.dateFormat = r.date_format as DateFormat;
+      if (r.date_format) {
+        const adopted = adoptServerDateFormat(r.date_format, get().dateFormat);
+        if (adopted) updates.dateFormat = adopted;
       }
-      const mappedLocale = r.number_format ? NUMBER_FORMAT_TO_LOCALE[r.number_format] : undefined;
+      const mappedLocale = r.number_format ? adoptServerNumberFormat(r.number_format, get().numberLocale) : undefined;
       if (mappedLocale) updates.numberLocale = mappedLocale;
       // An empty currency_code means "not chosen" on the account; only a real
       // ISO-4217 code overrides the local currency.
@@ -150,25 +324,10 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
     }
   },
 
-  formatCurrency: (amount: number) => {
-    const { currency, numberLocale } = get();
-    const safe = /^[A-Z]{3}$/.test(currency) ? currency : 'EUR';
-    try {
-      return new Intl.NumberFormat(numberLocale, {
-        style: 'currency',
-        currency: safe,
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 2,
-      }).format(amount);
-    } catch {
-      return `${amount.toFixed(2)} ${safe}`;
-    }
-  },
-
   formatNumber: (value: number, decimals = 2) => {
     const { numberLocale } = get();
     try {
-      return new Intl.NumberFormat(numberLocale, {
+      return new Intl.NumberFormat(resolveNumberLocale(numberLocale), {
         minimumFractionDigits: 0,
         maximumFractionDigits: decimals,
       }).format(value);

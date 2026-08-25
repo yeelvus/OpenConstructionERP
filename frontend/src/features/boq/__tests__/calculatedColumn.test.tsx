@@ -238,10 +238,21 @@ describe('getCustomColumnDefs - backwards compatibility', () => {
     expect(defs[0]!.editable).not.toBe(false);
   });
 
-  it('still produces editable number columns', () => {
+  it('still produces editable number columns (text editor + strict locale-aware parser)', () => {
     const col: CustomColumnDef = { name: 'qty2', display_name: 'Qty2', column_type: 'number' };
     const defs = getCustomColumnDefs([col]);
-    expect(defs[0]!.cellEditor).toBe('agNumberCellEditor');
+    // Text editor on purpose: agNumberCellEditor is an <input type=number>
+    // that drops the German decimal comma at the keystroke level.
+    expect(defs[0]!.cellEditor).toBe('agTextCellEditor');
+    const parse = defs[0]!.valueParser as (p: { newValue: unknown; oldValue: unknown }) => unknown;
+    expect(typeof parse).toBe('function');
+    expect(parse({ newValue: '48,60', oldValue: 1 })).toBeCloseTo(48.6);
+    expect(parse({ newValue: '1.234,56', oldValue: 1 })).toBeCloseTo(1234.56);
+    expect(parse({ newValue: '48.60', oldValue: 1 })).toBeCloseTo(48.6);
+    // Garbage keeps the previous value instead of clearing the cell.
+    expect(parse({ newValue: 'abc', oldValue: 7 })).toBe(7);
+    // Clearing stays a deliberate clear.
+    expect(parse({ newValue: '', oldValue: 7 })).toBe('');
   });
 
   it('treats rows without column_type as text (legacy migration)', () => {

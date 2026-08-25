@@ -81,6 +81,16 @@ import {
   type Tr,
   type CertMaps,
 } from './certificate';
+import { getIntlLocale } from '@/shared/lib/formatters';
+
+// English fallbacks for the computed `commissioning.severity_*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const COMMISSIONING_SEVERITY_LABELS: Record<string, string> = {
+  low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical'
+};
+
 
 /* ── Config maps ───────────────────────────────────────────────────────── */
 
@@ -590,7 +600,7 @@ function IssuesPanel({ systemId, onAfterChange }: { systemId: string; onAfterCha
               className="flex items-center gap-2 rounded-lg bg-surface-secondary/60 px-3 py-2 text-sm"
             >
               <Badge variant={SEVERITY_VARIANT[issue.severity]} size="sm">
-                {t(`commissioning.severity_${issue.severity}`, { defaultValue: issue.severity })}
+                {t(`commissioning.severity_${issue.severity}`, { defaultValue: COMMISSIONING_SEVERITY_LABELS[issue.severity] ?? issue.severity })}
               </Badge>
               <span
                 className={clsx(
@@ -645,7 +655,7 @@ function IssuesPanel({ systemId, onAfterChange }: { systemId: string; onAfterCha
         >
           {(['low', 'medium', 'high', 'critical'] as IssueSeverity[]).map((s) => (
             <option key={s} value={s}>
-              {t(`commissioning.severity_${s}`, { defaultValue: s })}
+              {t(`commissioning.severity_${s}`, { defaultValue: COMMISSIONING_SEVERITY_LABELS[s] ?? s })}
             </option>
           ))}
         </select>
@@ -1225,7 +1235,7 @@ export function CommissioningPage() {
     const fmt = (iso: string | null): string => {
       if (!iso) return '';
       const d = new Date(iso);
-      return Number.isNaN(d.getTime()) ? '' : d.toLocaleString();
+      return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(getIntlLocale());
     };
     const header = [
       t('commissioning.field_name', { defaultValue: 'System name' }),

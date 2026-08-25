@@ -67,7 +67,7 @@ class CostItem(Base):
     currency: Mapped[str] = mapped_column(String(10), nullable=False, default="")
     source: Mapped[str] = mapped_column(
         String(50), nullable=False, default="cwicr", index=True
-    )  # cwicr, rsmeans, bki, custom
+    )  # cwicr, commercial, benchmark, custom
     classification: Mapped[dict] = mapped_column(  # type: ignore[assignment]
         JSON, nullable=False, default=dict, server_default="{}"
     )

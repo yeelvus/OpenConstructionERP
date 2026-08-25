@@ -29,6 +29,7 @@ import {
   fmtCompactNumber,
   num,
 } from './_shared';
+import { fmtPercent } from '@/shared/lib/formatters';
 
 interface LeadSourceAttributionWidgetProps {
   since?: string;
@@ -194,10 +195,10 @@ export function LeadSourceAttributionWidget({
                     {r.leads}
                   </td>
                   <td className="px-2 py-1.5 text-right text-content-secondary">
-                    {num(r.conversion_to_reservation_pct).toFixed(1)}%
+                    {fmtPercent(num(r.conversion_to_reservation_pct))}
                   </td>
                   <td className="px-2 py-1.5 text-right text-content-secondary">
-                    {num(r.conversion_to_sale_pct).toFixed(1)}%
+                    {fmtPercent(num(r.conversion_to_sale_pct))}
                   </td>
                   <td className="px-2 py-1.5 text-right">
                     {r.revenue.length === 0 ? (

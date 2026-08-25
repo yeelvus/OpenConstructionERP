@@ -14,6 +14,7 @@ const playbook: Playbook = {
   order: 135,
   category: "estimating",
   companyTypes: ["cost-consultant", "general-contractor", "subcontractor"],
+  roles: ["estimator", "quantity-surveyor"],
   icon: "Combine",
   titleKey: "cases.build_an_assembly_recipe_rate.title",
   titleDefault: "Build an assembly (recipe rate)",
@@ -131,8 +132,8 @@ const playbook: Playbook = {
       whyKey: "cases.build_an_assembly_recipe_rate.step.apply.why",
       whyDefault:
         "A saved assembly makes repeated pricing fast and, more importantly, consistent across a large bill. Change a component rate once and every line built on it moves together, so a price rise cannot be applied in one place and forgotten in ten.",
-      moduleLabel: "BOQ",
-      moduleLabelKey: "nav.boq",
+      moduleLabel: "Bill of Quantities",
+      moduleLabelKey: "boq.title",
       to: "/boq",
     },
   ],

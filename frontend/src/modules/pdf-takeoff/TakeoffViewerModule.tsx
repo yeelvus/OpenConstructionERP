@@ -84,7 +84,7 @@ import {
   type ConfidenceThresholds,
 } from '../../features/takeoff/lib/confidenceBand';
 import { apiGet, apiPost } from '../../shared/lib/api';
-import { formatFileSize } from '../../shared/lib/formatters';
+import { formatFileSize, fmtFixed } from '../../shared/lib/formatters';
 import { convertBetween } from '../../shared/lib/unitConversion';
 import { useMeasurementPersistence } from './useMeasurementPersistence';
 import {
@@ -155,9 +155,16 @@ import {
   type TextMatch,
 } from '../../features/takeoff/lib/takeoff-textsearch';
 import {
+  ANNOTATION_TYPES,
   computeGroupSummaries,
   formatGroupTotal,
 } from '../../features/takeoff/lib/takeoff-groups';
+import {
+  formatCountQuantity,
+  formatFixedDigits,
+  formatMaxDigits,
+} from '../../features/takeoff/lib/measurement-format';
+import { localizedUnitCode } from '@/shared/lib/unitLabels';
 import {
   groupColorCommit,
   groupColorIdentity,
@@ -179,6 +186,7 @@ import {
   planMeasurementDrop,
 } from '../../features/takeoff/lib/takeoff-order';
 import { seedAnnotationCounters } from '../../features/takeoff/lib/takeoff-labels';
+import { displayGroupName } from '../../features/takeoff/lib/group-labels';
 import {
   effectiveQuantity,
   hasQuantityFactor,
@@ -209,6 +217,7 @@ import { openLink } from '@/shared/lib/desktop';
 // Type-only: the scale-source vocabulary is a closed set owned by the backend
 // contract, so the viewer reuses it instead of restating it as a bare string.
 import type { ScaleSource } from '@/features/takeoff/api';
+import { fmtPercent, getIntlLocale } from '@/shared/lib/formatters';
 
 // Configure PDF.js worker — bundled locally (no CDN dependency)
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -625,7 +634,7 @@ export default function TakeoffViewerModule({
   recentDocuments,
   onOpenRecentDocument,
 }: TakeoffViewerModuleProps = {}) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
 
   // PDF state
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
@@ -1118,6 +1127,12 @@ export default function TakeoffViewerModule({
   // not applicable (e.g. a freshly dropped local file).
   const [noTextLayer, setNoTextLayer] = useState<{ count: number; pages: number[] } | null>(null);
   const [noTextBannerDismissed, setNoTextBannerDismissed] = useState(false);
+  // The server document's own project (from the metadata fetch below). Fallback
+  // identity for measurement persistence when no project is active in the app
+  // header: without it a document opened from /markups or the documents tab on
+  // a clean profile never fetches its measurements - the screen does not ask,
+  // it just renders an empty ledger. The header project, when set, still wins.
+  const [docProjectId, setDocProjectId] = useState<string | null>(null);
   const activeProjectId = useProjectContextStore((s) => s.activeProjectId);
   const activeProjectName = useProjectContextStore((s) => s.activeProjectName);
 
@@ -1147,7 +1162,9 @@ export default function TakeoffViewerModule({
     // (scale_pixels_per_unit) so the server-side B8 recompute uses the same
     // ratio the row was drawn at.
     scale,
-    projectId: activeProjectId,
+    // The header project wins; the document's own project fills in when no
+    // project is active so a server document still loads its measurements.
+    projectId: activeProjectId || docProjectId,
   });
 
   /* ── Seed default-label counters from hydrated measurements (issue #384) ─
@@ -1370,6 +1387,7 @@ export default function TakeoffViewerModule({
   // failure leaves the banner hidden rather than blocking the drawing.
   useEffect(() => {
     setNoTextLayer(null);
+    setDocProjectId(null);
     const docId = documentId;
     if (!docId) {
       setNoTextBannerDismissed(false);
@@ -1391,6 +1409,7 @@ export default function TakeoffViewerModule({
       try {
         const meta = await takeoffApi.getDocument(docId);
         if (cancelled || !meta) return;
+        setDocProjectId(meta.project_id ?? null);
         const count = meta.pages_without_text ?? 0;
         if (count > 0) {
           setNoTextLayer({ count, pages: meta.pages_without_text_list ?? [] });
@@ -3727,12 +3746,14 @@ export default function TakeoffViewerModule({
       // Prefer the user's own entry/unit; fall back to derived metres.
       const badge = entry ?? { realLength: meters, unit: 'm' as const };
       setLastCalibrationByPage((prev) => ({ ...prev, [page]: badge }));
+      // Locale-aware digits (K-15): the raw JS number printed "2.74" into
+      // German text, where a dot reads as a thousands separator.
       const metricSuffix =
-        badge.unit === 'm' ? '' : ` (${meters.toFixed(2)} m)`;
+        badge.unit === 'm' ? '' : ` (${formatFixedDigits(meters, 2)} m)`;
       addToast({
         type: 'success',
         title: t('takeoff_viewer.calibrated', { defaultValue: 'Scale calibrated' }),
-        message: `${formatScaleRatio(nextScale)} · ${badge.realLength} ${badge.unit}${metricSuffix} · ${t('takeoff_viewer.calibrated_page', { defaultValue: 'page {{page}}', page })}`,
+        message: `${formatScaleRatio(nextScale)} · ${formatMaxDigits(badge.realLength, 3)} ${badge.unit}${metricSuffix} · ${t('takeoff_viewer.calibrated_page', { defaultValue: 'page {{page}}', page })}`,
       });
     },
     [addToast, t, calibrationPixels, currentPage, setScale],
@@ -7102,7 +7123,7 @@ export default function TakeoffViewerModule({
                       </p>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap justify-center">
-                      <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-oe-blue/8 text-oe-blue border border-oe-blue/15 font-semibold">.pdf</span>
+                      <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-oe-blue/10 text-oe-blue border border-oe-blue/15 font-semibold">.pdf</span>
                     </div>
                     <p className="text-[10px] text-content-quaternary leading-relaxed mt-1 text-center">
                       {t('takeoff.landing_dropzone_hint', { defaultValue: 'Architectural drawings \u00B7 floor plans \u00B7 sections \u00B7 scans' })}
@@ -7481,7 +7502,7 @@ export default function TakeoffViewerModule({
                 <button onClick={zoomOut} className={tbBtn(false)} title={t('takeoff_viewer.zoom_out', { defaultValue: 'Zoom out' })} aria-label={t('takeoff_viewer.zoom_out', { defaultValue: 'Zoom out' })}>
                   <ZoomOut size={16} />
                 </button>
-                <span className="inline-flex h-7 min-w-[2.75rem] items-center justify-center px-1 text-xs tabular-nums text-content-tertiary">{(zoom * 100).toFixed(0)}%</span>
+                <span className="inline-flex h-7 min-w-[2.75rem] items-center justify-center px-1 text-xs tabular-nums text-content-tertiary">{fmtPercent(zoom * 100, 0)}</span>
                 <button onClick={zoomIn} className={tbBtn(false)} title={t('takeoff_viewer.zoom_in', { defaultValue: 'Zoom in' })} aria-label={t('takeoff_viewer.zoom_in', { defaultValue: 'Zoom in' })}>
                   <ZoomIn size={16} />
                 </button>
@@ -7990,7 +8011,7 @@ export default function TakeoffViewerModule({
                     <span className="uppercase tracking-wide text-[10px]">
                       {t('takeoff_viewer.tooltip_group', { defaultValue: 'Group' })}
                     </span>
-                    <span>{hoverMeasurement.group || 'General'}</span>
+                    <span>{displayGroupName(hoverMeasurement.group || 'General')}</span>
                   </div>
                   <div className="mt-0.5 text-[10px]">
                     {hoverMeasurement.linkedPositionOrdinal ? (
@@ -8244,7 +8265,7 @@ export default function TakeoffViewerModule({
                       const allGroupsOnPage = new Set<string>();
                       for (const m of pageMeasurements) allGroupsOnPage.add(m.group || 'General');
                       const visible = new Map(legendSummaries.map((s) => [s.name, s]));
-                      const rows: Array<{ name: string; color: string; count: number; total: number; unit: string; hidden: boolean }> = [];
+                      const rows: Array<{ name: string; color: string; count: number; total: number; unit: string; isCount: boolean; hidden: boolean }> = [];
                       for (const name of Array.from(allGroupsOnPage).sort()) {
                         // Derive hidden from hiddenGroups directly, never from a
                         // group's absence in the summaries: a visible group whose
@@ -8268,12 +8289,16 @@ export default function TakeoffViewerModule({
                               (m.group || 'General') === name &&
                               (groupHidden || !hiddenMeasurements.has(m.id)),
                           );
+                          const quantifiable = items.filter((it) => !ANNOTATION_TYPES.has(it.type));
                           rows.push({
                             name,
                             color: groupColorMap[name] || '#3B82F6',
                             count: items.length,
                             total: items.reduce((s, it) => s + it.value, 0),
                             unit: items.find((it) => it.unit)?.unit ?? '',
+                            isCount:
+                              quantifiable.length > 0 &&
+                              quantifiable.every((it) => it.type === 'count'),
                             hidden: groupHidden,
                           });
                         }
@@ -8300,7 +8325,7 @@ export default function TakeoffViewerModule({
                             style={{ backgroundColor: row.color }}
                           />
                           <span className="flex-1 text-[11px] font-semibold text-content-primary truncate">
-                            {row.name}
+                            {displayGroupName(row.name)}
                           </span>
                           <span className="text-[10px] font-mono text-content-tertiary tabular-nums">
                             {row.count}
@@ -8308,7 +8333,14 @@ export default function TakeoffViewerModule({
                           <span className="text-[10px] font-mono text-content-secondary tabular-nums min-w-0">
                             {(() => {
                               const d = convertQuantity(row.total, row.unit, measurementSystem);
-                              return formatGroupTotal(d.value, d.unit);
+                              // Count-only groups render whole pieces (K-14);
+                              // the unit takes the locale's trade code (de: Stk).
+                              return formatGroupTotal(
+                                d.value,
+                                localizedUnitCode(d.unit, i18n.language),
+                                undefined,
+                                row.isCount,
+                              );
                             })()}
                           </span>
                           {row.hidden
@@ -8344,7 +8376,7 @@ export default function TakeoffViewerModule({
                     scale.unitLabel,
                     measurementSystem,
                   );
-                  return `1px = ${perPixel.value.toFixed(4)} ${perPixel.unit}`;
+                  return `1px = ${formatFixedDigits(perPixel.value, 4)} ${perPixel.unit}`;
                 })()}
               </p>
               <div className="mt-2 flex gap-1 flex-wrap">
@@ -8399,7 +8431,7 @@ export default function TakeoffViewerModule({
                   data-testid="active-group-select"
                 >
                   {Array.from(new Set([...availableGroups, activeGroup])).map((g) => (
-                    <option key={g} value={g}>{g}</option>
+                    <option key={g} value={g}>{displayGroupName(g)}</option>
                   ))}
                   <option value="__new__">
                     {t('takeoff_viewer.new_group', { defaultValue: '+ New group' })}
@@ -8671,7 +8703,7 @@ export default function TakeoffViewerModule({
                     data-testid="prop-group-select"
                   >
                     {availableGroups.map((g) => (
-                      <option key={g} value={g}>{g}</option>
+                      <option key={g} value={g}>{displayGroupName(g)}</option>
                     ))}
                     <option value="__new__">{t('takeoff_viewer.new_group', { defaultValue: '+ New group' })}</option>
                   </select>
@@ -9021,11 +9053,18 @@ export default function TakeoffViewerModule({
                       data-testid="prop-value"
                     >
                       {selectedMeasurement.value
-                        ? convertQuantity(
-                            selectedMeasurement.value,
-                            selectedMeasurement.unit || '',
-                            measurementSystem,
-                          ).value.toFixed(3)
+                        ? (() => {
+                            const v = convertQuantity(
+                              selectedMeasurement.value,
+                              selectedMeasurement.unit || '',
+                              measurementSystem,
+                            ).value;
+                            // Counts are whole pieces (K-14); measured values
+                            // keep 3 digits, locale-rendered (K-15).
+                            return selectedMeasurement.type === 'count'
+                              ? formatCountQuantity(v)
+                              : formatFixedDigits(v, 3);
+                          })()
                         : '—'}
                     </div>
                   </div>
@@ -9037,7 +9076,10 @@ export default function TakeoffViewerModule({
                       className="min-w-[44px] rounded border border-border/60 bg-surface-secondary/60 px-2 py-1 text-xs text-content-primary text-center"
                       data-testid="prop-unit"
                     >
-                      {displayUnitFor(selectedMeasurement.unit || '', measurementSystem) || '—'}
+                      {localizedUnitCode(
+                        displayUnitFor(selectedMeasurement.unit || '', measurementSystem),
+                        i18n.language,
+                      ) || '—'}
                     </div>
                   </div>
                 </div>
@@ -9154,7 +9196,7 @@ export default function TakeoffViewerModule({
                               max={89}
                               step={0.5}
                               value={Number(
-                                degreesFromSlopeFactor(selectedMeasurement.slopeFactor ?? 1).toFixed(1),
+                                fmtFixed(degreesFromSlopeFactor(selectedMeasurement.slopeFactor ?? 1), 1),
                               )}
                               onChange={(e) => {
                                 const deg = Number(e.target.value);
@@ -9252,7 +9294,7 @@ export default function TakeoffViewerModule({
                               selectedMeasurement.unit || '',
                               measurementSystem,
                             );
-                            return `${eff.value.toFixed(3)} ${eff.unit}`;
+                            return `${formatFixedDigits(eff.value, 3)} ${localizedUnitCode(eff.unit, i18n.language)}`;
                           })()}
                         </span>
                       </div>
@@ -9732,7 +9774,11 @@ export default function TakeoffViewerModule({
                                       <Pencil size={10} className="shrink-0 opacity-0 group-hover/item:opacity-60 transition-opacity" />
                                     </button>
                                   )}
-                                  <span className="text-2xs text-content-tertiary capitalize truncate shrink">
+                                  {/* No `capitalize` here (audit case-2 K-11): the label
+                                      carries SI units, and "m²" must not render as "M²".
+                                      The sibling type badge keeps it - "distance" ->
+                                      "Distance" is a word, not a unit. */}
+                                  <span className="text-2xs text-content-tertiary truncate shrink">
                                     {/* Issue #287: show the measurement label in the
                                         user's system (m -> ft); identity for metric. */}
                                     {measurementLabel(m, scale, measurementSystem)}
@@ -9922,7 +9968,7 @@ export default function TakeoffViewerModule({
                                         Math.round(
                                           convertQuantity(m.value, m.unit || '', measurementSystem).value * 100,
                                         ) / 100
-                                      ).toLocaleString()}
+                                      ).toLocaleString(getIntlLocale())}
                                     </span>
                                     <span className="font-mono text-rose-700/80 dark:text-rose-300/80 shrink-0">
                                       {displayUnitFor(m.unit || '', measurementSystem)}
@@ -10092,7 +10138,7 @@ export default function TakeoffViewerModule({
                                                   {/* Current qty badge — shows what's about to be replaced. */}
                                                   {currentQty > 0 && (
                                                     <span className="font-mono tabular-nums text-content-tertiary shrink-0 text-[9px]">
-                                                      {currentQty.toLocaleString()}
+                                                      {currentQty.toLocaleString(getIntlLocale())}
                                                     </span>
                                                   )}
                                                   {unitMismatch ? (
@@ -10346,7 +10392,7 @@ export default function TakeoffViewerModule({
             <p className="text-xs text-content-tertiary mb-3">
               {t('takeoff_viewer.scale_desc', {
                 defaultValue: 'You marked a line of {{pixels}} pixels. Enter the real-world length:',
-                pixels: scaleRefPixels.toFixed(0),
+                pixels: fmtFixed(scaleRefPixels, 0),
               })}
             </p>
             <div className="flex items-center gap-2 mb-4">

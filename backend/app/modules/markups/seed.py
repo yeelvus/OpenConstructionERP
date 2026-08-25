@@ -44,7 +44,6 @@ from app.modules.users.models import User
 
 logger = logging.getLogger(__name__)
 
-_FLAGSHIP_PROJECT_ID = uuid.UUID("f1a95000-0001-4a00-8b00-000000000001")
 _SEED_AUTHOR = "demo-seed"
 _SEED_LAYER = "seed-demo"
 # The bundled reference plan (house_plans.pdf) the seed binds markups to is a
@@ -205,33 +204,23 @@ async def seed_markups(
 
     Args:
         session: Active async SQLAlchemy session.
-        project_ids: Candidate project ids. At most the first three are
-            seeded, but the flagship project id is always included when
-            present. Each seeded project gets its own document scope.
+        project_ids: Projects to seed. Every one of them is seeded, and any
+            that already carries the seed layer is left alone. Each seeded
+            project gets its own document scope.
 
     Returns:
-        A mapping of entity name to the number of rows inserted. Returns an
-        empty dict when the seed has already run (idempotent short-circuit).
+        A mapping of entity name to the number of rows inserted. Zero counts
+        when every project named was already seeded.
     """
     if not project_ids:
         logger.info("Markups seed skipped: no project ids supplied")
         return {}
 
-    # Build the target list: first three projects, flagship always included.
-    targets: list[uuid.UUID] = list(project_ids[:3])
-    if _FLAGSHIP_PROJECT_ID in project_ids and _FLAGSHIP_PROJECT_ID not in targets:
-        targets.append(_FLAGSHIP_PROJECT_ID)
-
-    # Idempotency guard: bail out if our marker layer already exists for the
-    # first project id. The wiring site also guards, but this keeps the
-    # function safe to call twice on its own.
-    marker_project = project_ids[0]
-    existing = await session.execute(
-        select(Markup.id).where(Markup.project_id == marker_project).where(Markup.layer == _SEED_LAYER).limit(1)
-    )
-    if existing.scalar_one_or_none() is not None:
-        logger.info("Markups seed skipped: already present for %s", marker_project)
-        return {}
+    # Every project the caller named, rather than a prefix chosen here. The
+    # caller decides which projects the demo fills (see _FOCUS_DEMO_IDS in
+    # demo_enrichment); slicing again here would silently drop the tail of a
+    # list somebody curated on purpose.
+    targets: list[uuid.UUID] = list(project_ids)
 
     counts: dict[str, int] = {
         "scale_configs": 0,
@@ -241,6 +230,17 @@ async def seed_markups(
     }
 
     for project_id in targets:
+        # Asked per project rather than once on the first id. Guarding on
+        # the flagship meant that once it had rows, every project added to the
+        # curated set later was skipped forever, so widening the set only ever
+        # took effect on a database that started empty.
+        # Asked before the document lookup below so a project that is already
+        # done does not have a document resolved for it.
+        seeded = await session.execute(
+            select(Markup.id).where(Markup.project_id == project_id).where(Markup.layer == _SEED_LAYER).limit(1)
+        )
+        if seeded.scalar_one_or_none() is not None:
+            continue
         # Bind every seeded annotation to a REAL CDE document so the markups
         # hub deep link (/markups?openDoc=<id>&markup=<id>) opens an actual
         # PDF instead of a blank viewer. Skip the project when no document can

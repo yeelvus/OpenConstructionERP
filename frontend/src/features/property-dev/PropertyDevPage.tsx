@@ -178,6 +178,62 @@ import { OverviewTab } from './tabs/OverviewTab';
 import { DevelopmentsGrid } from './tabs/DevelopmentsTab';
 import { PlotsTab } from './tabs/PlotsTab';
 import { HouseTypesTab } from './tabs/HouseTypesTab';
+import { fmtFixed } from '@/shared/lib/formatters';
+
+// English fallbacks for the computed `propdev.development.sales_phase.*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const SALES_PHASE_LABELS: Record<string, string> = {
+  planning: 'Planning', launch: 'Launch', sales: 'Sales', handover: 'Handover', closed: 'Closed'
+};
+
+// English fallbacks for the computed `propdev.development.type.*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const DEVELOPMENT_TYPE_LABELS: Record<string, string> = {
+  residential: 'Residential', mixed_use: 'Mixed use', commercial: 'Commercial', industrial: 'Industrial',
+  hospitality: 'Hospitality', resort: 'Resort', senior_living: 'Senior living',
+  student_housing: 'Student housing', retail: 'Retail', office: 'Office', logistics: 'Logistics',
+  other: 'Other'
+};
+
+// English fallbacks for the computed `propdev.lead_source_*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const LEAD_SOURCE_LABELS: Record<string, string> = {
+  web_form: 'Web form', walk_in: 'Walk-in', broker: 'Broker', referral: 'Referral', portal: 'Portal',
+  other: 'Other'
+};
+
+// English fallbacks for the computed `propdev.payment_schedule.status.*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const SCHEDULE_STATUS_LABELS: Record<string, string> = {
+  active: 'Active', completed: 'Completed', suspended: 'Suspended', cancelled: 'Cancelled'
+};
+
+// English fallbacks for the computed `propdev.reservation.status.*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const RESERVATION_STATUS_LABELS: Record<string, string> = {
+  active: 'Active', expired: 'Expired', converted: 'Converted', cancelled: 'Cancelled',
+  refunded: 'Refunded'
+};
+
+// English fallbacks for the computed `propdev.spa.status.*` keys. The default used to be
+// the raw value, so until the key lands in a locale the screen shows the bare
+// enum token to every reader, English included. Unknown values still fall
+// through to the previous default.
+const SPA_STATUS_LABELS: Record<string, string> = {
+  draft: 'Draft', sent_for_signature: 'Sent for signature', partially_signed: 'Partially signed',
+  signed: 'Signed', countersigned: 'Countersigned', registered: 'Registered', cancelled: 'Cancelled'
+};
+
 
 // Order matters - arrow-key navigation walks the list in this order.
 const PROPDEV_TAB_IDS = [
@@ -1453,7 +1509,7 @@ function LeadsTab({
             {LEAD_SOURCES.map((src) => (
               <option key={src} value={src}>
                 {t(`propdev.lead_source_${src}`, {
-                  defaultValue: src.replace(/_/g, ' '),
+                  defaultValue: LEAD_SOURCE_LABELS[src] ?? src.replace(/_/g, ' '),
                 })}
               </option>
             ))}
@@ -1546,11 +1602,11 @@ function LeadsTab({
                       </td>
                       <td className="px-4 py-2 text-xs text-content-secondary">
                         {t(`propdev.lead_source_${l.source}`, {
-                          defaultValue: l.source.replace(/_/g, ' '),
+                          defaultValue: LEAD_SOURCE_LABELS[l.source] ?? l.source.replace(/_/g, ' '),
                         })}
                       </td>
                       <td className="px-4 py-2 text-xs font-mono tabular-nums">
-                        {toNumber(l.lead_score).toFixed(0)}
+                        {fmtFixed(toNumber(l.lead_score), 0)}
                       </td>
                       <td className="px-4 py-2">
                         <Badge variant={LEAD_VARIANT[l.status]} dot>
@@ -1841,7 +1897,7 @@ function LeadDetailDrawer({
               {LEAD_SOURCES.map((src) => (
                 <option key={src} value={src}>
                   {t(`propdev.lead_source_${src}`, {
-                    defaultValue: src.replace(/_/g, ' '),
+                    defaultValue: LEAD_SOURCE_LABELS[src] ?? src.replace(/_/g, ' '),
                   })}
                 </option>
               ))}
@@ -2462,7 +2518,7 @@ function ReservationsTab({
           <option value="">{t('propdev.all_statuses', { defaultValue: 'All statuses' })}</option>
           {RESERVATION_STATUS_OPTIONS.map((s) => (
             <option key={s} value={s}>
-              {t(`propdev.reservation.status.${s}`, { defaultValue: s.replace(/_/g, ' ') })}
+              {t(`propdev.reservation.status.${s}`, { defaultValue: RESERVATION_STATUS_LABELS[s] ?? s.replace(/_/g, ' ') })}
             </option>
           ))}
         </select>
@@ -3022,7 +3078,7 @@ function SpaTab({
           <option value="">{t('propdev.all_statuses', { defaultValue: 'All statuses' })}</option>
           {SPA_STATUS_OPTIONS.map((s) => (
             <option key={s} value={s}>
-              {t(`propdev.spa.status.${s}`, { defaultValue: s.replace(/_/g, ' ') })}
+              {t(`propdev.spa.status.${s}`, { defaultValue: SPA_STATUS_LABELS[s] ?? s.replace(/_/g, ' ') })}
             </option>
           ))}
         </select>
@@ -3924,7 +3980,7 @@ function PaymentScheduleTab({
           <option value="">{t('propdev.all_statuses', { defaultValue: 'All statuses' })}</option>
           {SCHEDULE_STATUS_OPTIONS.map((s) => (
             <option key={s} value={s}>
-              {t(`propdev.payment_schedule.status.${s}`, { defaultValue: s.replace(/_/g, ' ') })}
+              {t(`propdev.payment_schedule.status.${s}`, { defaultValue: SCHEDULE_STATUS_LABELS[s] ?? s.replace(/_/g, ' ') })}
             </option>
           ))}
         </select>
@@ -5411,7 +5467,7 @@ function PlotDetailDrawer({
                 label={t('propdev.area', { defaultValue: 'Area' })}
                 value={(() => {
                   const a = dq.convert(toNumber(plot.area_m2), 'm²');
-                  return `${a.value.toFixed(1)} ${a.unit}`;
+                  return `${fmtFixed(a.value, 1)} ${a.unit}`;
                 })()}
               />
               <Field label={t('propdev.orientation', { defaultValue: 'Orientation' })} value={plot.orientation || '—'} />
@@ -5420,7 +5476,7 @@ function PlotDetailDrawer({
                 value={(() => {
                   if (plot.garden_area_m2 == null) return '—';
                   const g = dq.convert(toNumber(plot.garden_area_m2), 'm²');
-                  return `${g.value.toFixed(1)} ${g.unit}`;
+                  return `${fmtFixed(g.value, 1)} ${g.unit}`;
                 })()}
               />
               <Field
@@ -6866,7 +6922,7 @@ function CreateModal({
               {LEAD_SOURCES.map((src) => (
                 <option key={src} value={src}>
                   {t(`propdev.lead_source_${src}`, {
-                    defaultValue: src.replace(/_/g, ' '),
+                    defaultValue: LEAD_SOURCE_LABELS[src] ?? src.replace(/_/g, ' '),
                   })}
                 </option>
               ))}
@@ -7105,7 +7161,7 @@ function DevelopmentFormBody({
             {DEV_TYPES.map((dt) => (
               <option key={dt} value={dt}>
                 {t(`propdev.development.type.${dt}`, {
-                  defaultValue: dt.replace(/_/g, ' '),
+                  defaultValue: DEVELOPMENT_TYPE_LABELS[dt] ?? dt.replace(/_/g, ' '),
                 })}
               </option>
             ))}
@@ -7125,7 +7181,7 @@ function DevelopmentFormBody({
           >
             {DEV_SALES_PHASES.map((p) => (
               <option key={p} value={p}>
-                {t(`propdev.development.sales_phase.${p}`, { defaultValue: p })}
+                {t(`propdev.development.sales_phase.${p}`, { defaultValue: SALES_PHASE_LABELS[p] ?? p })}
               </option>
             ))}
           </select>

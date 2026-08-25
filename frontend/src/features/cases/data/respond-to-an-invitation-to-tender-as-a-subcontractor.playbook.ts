@@ -13,6 +13,7 @@ const playbook: Playbook = {
   order: 288,
   category: "tendering",
   companyTypes: ["subcontractor"],
+  roles: ["estimator", "quantity-surveyor", "commercial-manager"],
   icon: "Send",
   titleKey: "cases.respond_to_an_invitation_to_tender_as_a_subcontractor.title",
   titleDefault: "Respond to an invitation to tender as a subcontractor",
@@ -63,7 +64,7 @@ const playbook: Playbook = {
         "cases.respond_to_an_invitation_to_tender_as_a_subcontractor.step.review.why",
       whyDefault:
         "A price built on a misread scope is a price you will regret winning. Pinning the scope and the risky terms first is what keeps your bid aimed at the right work and your exclusions clear.",
-      moduleLabel: "Bid management",
+      moduleLabel: "Bid Management",
       moduleLabelKey: "nav.bid_management",
       to: "/bid-management",
     },

@@ -14,7 +14,7 @@ pack:
   id: revit_corridor_door_clearance
   name: Corridor and Door Clearance (Revit)
   description: |
-    Validates barrier-free clearance for Revit Rooms tagged as corridors
+    Validates barrier-free clearance for Revit® Rooms tagged as corridors
     and for Doors on accessible routes, per DIN 18040-1 (public buildings).
   source: openconstructionerp
   version: "1.0.0"

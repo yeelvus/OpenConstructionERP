@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
 """Cost Intelligence: regional indices + cost-item usage telemetry.
 
-v3.12.0 Stream B — gives the cost database an RSMeans-like regional
+v3.12.0 Stream B — gives the cost database a regional
 adjustment matrix (region × category factors) plus a per-item usage
 ledger that backs the green / yellow / red "certainty" badge surfaced
 in the BOQ rate picker.

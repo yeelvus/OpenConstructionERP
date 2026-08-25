@@ -43,7 +43,7 @@ function renderRate(value: number, unit: string, api: DisplayQuantityApi) {
     context: { displayQuantity: api },
   } as unknown as FormulaCellEditorParams;
   render(<RateCellEditor {...params} ref={ref} />);
-  const input = screen.getByRole('spinbutton') as HTMLInputElement;
+  const input = screen.getByRole('textbox') as HTMLInputElement;
   return { ref, input };
 }
 
@@ -141,7 +141,7 @@ describe('RateCellEditor - commit path (resource-less rate fix)', () => {
       column: { getColId: () => 'unit_rate' },
     } as unknown as FormulaCellEditorParams;
     render(<RateCellEditor {...params} />);
-    const input = screen.getByRole('spinbutton') as HTMLInputElement;
+    const input = screen.getByRole('textbox') as HTMLInputElement;
     return { input, setDataValue, stopEditing, tabToNextCell };
   }
 

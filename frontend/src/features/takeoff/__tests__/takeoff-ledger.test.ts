@@ -166,6 +166,25 @@ describe('groupSubtotals', () => {
     expect(floors.totals['m²']).toBe(35); // 20 + 15
   });
 
+  // Audit case-2 K-14: the ledger subtotal row must know a unit's total
+  // is whole pieces so it can skip the decimal ladder ("17,00 pcs").
+  it('flags a unit subtotal as count-only iff every contribution is a count', () => {
+    const subs = groupSubtotals([
+      m({ id: 'a', type: 'count', value: 17, unit: 'pcs', group: 'Openings' }),
+      m({ id: 'b', type: 'count', value: 10, unit: 'pcs', group: 'Openings' }),
+      m({ id: 'c', type: 'distance', value: 4, unit: 'm', group: 'Openings' }),
+    ]);
+    const openings = subs.find((s) => s.group === 'Openings')!;
+    expect(openings.countOnly.pcs).toBe(true);
+    expect(openings.countOnly.m).toBe(false);
+    // A measured row sharing the count's unit demotes that unit.
+    const mixed = groupSubtotals([
+      m({ id: 'd', type: 'count', value: 2, unit: 'pcs', group: 'G' }),
+      m({ id: 'e', type: 'distance', value: 1.5, unit: 'pcs', group: 'G' }),
+    ]);
+    expect(mixed[0]!.countOnly.pcs).toBe(false);
+  });
+
   it('counts annotations in the group count but excludes them from totals', () => {
     const measurements: Measurement[] = [
       m({ id: 'a', type: 'distance', value: 10, unit: 'm', group: 'G' }),

@@ -44,8 +44,9 @@ import {
   Plus,
 } from 'lucide-react';
 
-import { ApiError } from '@/shared/lib/api';
+import { ApiError, type Page } from '@/shared/lib/api';
 import { WideModal } from '@/shared/ui';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import { useToastStore } from '@/stores/useToastStore';
 import type { BIMModelData } from '@/shared/ui/BIMViewer';
 import { fetchBIMModels } from '@/features/bim/api';
@@ -61,6 +62,7 @@ import {
   placeBimModelOnMap,
   uploadPdfRasterOverlay,
 } from './api';
+import { fmtFixed } from '@/shared/lib/formatters';
 
 interface PlaceOnMapPickerProps {
   open: boolean;
@@ -151,7 +153,10 @@ export function PlaceOnMapPicker({
   });
   const documentsQuery = useQuery({
     queryKey: ['documents', projectId],
-    queryFn: () => fetchDocuments(projectId),
+    // Spelled out because this query holds a page, not a list: three surfaces
+    // cache under ['documents', <project>] and React Query will hand any of
+    // them what another put there.
+    queryFn: (): Promise<Page<DocumentItem>> => fetchDocuments(projectId),
     enabled: open && Boolean(projectId),
     staleTime: 15_000,
   });
@@ -173,7 +178,7 @@ export function PlaceOnMapPicker({
     [modelsQuery.data],
   );
   const pdfs = useMemo(
-    () => (documentsQuery.data ?? []).filter(isPdfDocument),
+    () => (documentsQuery.data?.items ?? []).filter(isPdfDocument),
     [documentsQuery.data],
   );
 
@@ -501,6 +506,15 @@ export function PlaceOnMapPicker({
             </section>
           )}
 
+          {/* The PDF list below is filtered from one page of the register, so
+              a drawing past that page cannot be placed and nothing on screen
+              would say why. Gated on the server page, never on the filtered
+              PDFs: the sentence is about the register, not about how many of
+              its rows happened to be PDFs. */}
+          {documentsQuery.data ? (
+            <TruncationNotice page={documentsQuery.data} />
+          ) : null}
+
           {/* PDF drawings --------------------------------------------- */}
           {pdfs.length > 0 && (
             <section>
@@ -527,7 +541,7 @@ export function PlaceOnMapPicker({
                           {doc.name}
                         </p>
                         <p className="text-xs text-content-tertiary">
-                          {((doc.file_size ?? 0) / 1024 / 1024).toFixed(1)} MB
+                          {fmtFixed((doc.file_size ?? 0) / 1024 / 1024, 1)} MB
                         </p>
                       </div>
                       {placed ? (
