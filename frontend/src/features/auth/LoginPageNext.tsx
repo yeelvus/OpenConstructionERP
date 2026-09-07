@@ -33,6 +33,7 @@ import { Button, Input, Logo, CountryFlag } from '@/shared/ui';
 import { safeNextPath } from './nextPath';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { extractErrorMessageFromBody } from '@/shared/lib/api';
+import { loginFailureKindFromResponse } from './loginError';
 import { AuthBackground } from './AuthBackground';
 import { SUPPORTED_LANGUAGES } from '@/app/i18n';
 
@@ -145,8 +146,20 @@ export function LoginPageNext() {
         body: JSON.stringify({ email, password }),
       });
       if (!res.ok) {
+        // Same reasoning as the other sign-in screen: a 5xx, and equally a 4xx
+        // with no message in it, means nothing read the password, so the
+        // credentials wording would be a claim we cannot support.
         const data = await res.json().catch(() => null);
         const parsed = extractErrorMessageFromBody(data);
+        if (loginFailureKindFromResponse(res.status, parsed) === 'unavailable') {
+          setError(
+            t('auth.server_unavailable', {
+              defaultValue:
+                'The server did not answer, so your details were never checked. Try again in a moment.',
+            }),
+          );
+          return;
+        }
         setError(parsed || t('auth.invalid_credentials', 'Invalid email or password'));
         return;
       }
@@ -160,9 +173,16 @@ export function LoginPageNext() {
     }
   };
 
+  // Mirrors the seeded demo accounts in backend/app/main.py::_seed_demo_account:
+  // every email here has to be one that seeder creates, and each name has to
+  // match that account's full_name. The admin tile shows the role word instead
+  // of the seeded person on purpose - that is what a first-time visitor scans
+  // for. No password is listed on purpose either: the seeder generates a fresh
+  // random one per install, so any literal printed here would be wrong on every
+  // install. The tiles sign in through /auth/demo-login/ instead.
   const demoAccounts = [
     { email: 'demo@openconstructionerp.com', name: 'Admin', role: t('auth.demo_role_admin', 'Administrator'), color: 'bg-blue-500', letter: 'A' },
-    { email: 'manager@openconstructionerp.com', name: 'Thomas Müller', role: t('auth.demo_role_manager', 'Manager'), color: 'bg-amber-500', letter: 'M' },
+    { email: 'manager@openconstructionerp.com', name: 'Michael Carter', role: t('auth.demo_role_manager', 'Manager'), color: 'bg-amber-500', letter: 'M' },
   ];
 
   const handleDemoLogin = async (demoEmail: string) => {

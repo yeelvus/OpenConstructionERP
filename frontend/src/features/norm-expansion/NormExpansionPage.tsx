@@ -39,7 +39,7 @@ import {
 import { Button, Card, Badge, EmptyState, RecoveryCard, SkeletonTable, CollapsibleSection } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { getErrorMessage } from '@/shared/lib/api';
-import { fmtNumber } from '@/shared/lib/formatters';
+import { fmtList, fmtNumber } from '@/shared/lib/formatters';
 import { useToastStore } from '@/stores/useToastStore';
 import { laborRatesApi, type LaborRateTemplate } from '@/features/labor-rates/api';
 import {
@@ -51,6 +51,7 @@ import {
   expandWork,
   isValidQuantity,
   buildBuildAssemblyPayload,
+  canRunBuildAssembly,
   buildNormResourceSplit,
   addNormSplitToBoqPosition,
   listBoqPickerProjects,
@@ -249,7 +250,7 @@ function ExpandPanel({ norms }: { norms: ProductionNorm[] }) {
         })}
       </p>
 
-      <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[2fr_1fr_auto]">
+      <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto]">
         <div>
           <label className="mb-1 block text-xs font-medium text-content-secondary">
             {t('normExpansion.work_item', { defaultValue: 'Work item' })}
@@ -663,14 +664,22 @@ function BuildAssemblyPanel({ norms }: { norms: ProductionNorm[] }) {
     queryFn: laborRatesApi.listTemplates,
   });
   const templates: LaborRateTemplate[] = templatesQuery.data ?? [];
-  const noTemplates = !templatesQuery.isLoading && templates.length === 0;
+  // Only the server saying "none" counts as none. A failed request leaves
+  // `data` undefined as well, and reading that as an empty list would both
+  // claim there are no templates and open the gate below on a guess.
+  const noTemplates = templatesQuery.isSuccess && templates.length === 0;
 
   const buildMut = useBuildAssembly();
 
   const selectedNorm = useMemo(() => norms.find((n) => n.id === normId), [norms, normId]);
-  // A labour rate is required to actually price the labour hours, so the run is
-  // gated on it (the backend would otherwise leave labour unpriced and flagged).
-  const canBuild = !!selectedNorm && laborRateTemplateId !== '' && !buildMut.isPending;
+  // A labour rate is required to price the labour hours, except when there are
+  // no templates to pick from at all - see canRunBuildAssembly for why.
+  const canBuild = canRunBuildAssembly({
+    normSelected: !!selectedNorm,
+    laborRateTemplateId,
+    noTemplates,
+    pending: buildMut.isPending,
+  });
 
   const templateLabel = (tpl: LaborRateTemplate): string =>
     tpl.all_in_rate ? `${tpl.name} · ${withCurrency(tpl.all_in_rate, tpl.currency)}` : tpl.name;
@@ -925,7 +934,7 @@ function BuildAssemblyResultView({ result }: { result: BuildAssemblyResult }) {
               defaultValue:
                 '{{count}} line(s) could not be priced and need a rate: {{names}}',
               count: result.unpriced.length,
-              names: result.unpriced.join(', '),
+              names: fmtList(result.unpriced),
             })}
           </span>
         </div>
@@ -937,7 +946,7 @@ function BuildAssemblyResultView({ result }: { result: BuildAssemblyResult }) {
             {t('normExpansion.build_unmatched', {
               defaultValue:
                 'No waste factor for: {{names}}. These materials were priced at their net quantity.',
-              names: result.waste_unmatched.join(', '),
+              names: fmtList(result.waste_unmatched),
             })}
           </span>
         </div>

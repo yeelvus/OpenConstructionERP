@@ -77,7 +77,7 @@ import { StatementsTab } from './StatementsTab';
 import { RetentionLedgerTab } from './RetentionLedgerTab';
 import { EInvoiceModal } from './EInvoiceModal';
 import { financeGuide } from './financeGuide';
-import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
+import { fmtList, fmtPercent, fmtFixed, fmtNumberForInput } from '@/shared/lib/formatters';
 
 // English fallbacks for the computed `finance.payment_status_*` keys. The default used to be
 // the raw value, so until the key lands in a locale the screen shows the bare
@@ -354,6 +354,34 @@ export const INVOICE_STATUS_ORDER = [
 ];
 
 /**
+ * Statuses from which the Mark Paid button is offered.
+ *
+ * This mirrors the set the pay endpoint accepts (`finance.service.pay_invoice`
+ * guards with `prior not in ("approved", "sent")`), because a button offered
+ * where the endpoint refuses produces a 400 nobody can act on, and a button
+ * withheld where it would succeed strands the invoice with no way forward.
+ *
+ * Both values are reached in normal use, so neither may be dropped. Since the
+ * v3033 FSM migration the Approve button writes 'sent'. 'approved' is not
+ * merely a legacy leftover: posting a capture from the invoice inbox creates
+ * its payable through `create_invoice(status="approved")`, so those rows land
+ * in 'approved' on a fully migrated database. Older rows can still carry it
+ * too, and the plain PATCH transition table accepts it as a target.
+ */
+const MARK_PAID_FROM = ['sent', 'approved'];
+
+/**
+ * True when a manager may mark this invoice paid.
+ *
+ * Exported (and pure) so the cross-layer invariant - the button appears for
+ * exactly the statuses the pay endpoint accepts - is unit-testable without
+ * mounting the page.
+ */
+export function canMarkPaid(status: string | null | undefined): boolean {
+  return MARK_PAID_FROM.includes(status ?? '');
+}
+
+/**
  * True when this invoice is one we issue rather than one we received.
  *
  * The e-invoice action only belongs on a receivable: the buyer is resolved from
@@ -627,7 +655,7 @@ export function FinanceSummaryCards({
             key={card.label}
             className="relative overflow-hidden rounded-xl border border-border-light bg-surface-elevated/90 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm"
           >
-            <div className={`absolute top-0 left-0 right-0 h-1 ${card.accent}`} />
+            <div className={`absolute top-0 start-0 end-0 h-1 ${card.accent}`} />
             <div className="p-4 pt-3">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-2xs font-medium uppercase tracking-wider text-content-tertiary">
@@ -681,7 +709,7 @@ export function FinanceSummaryCards({
                 defaultValue:
                   'Totals are converted to {{currency}}. No FX rate is set for {{codes}}, so amounts in those currencies are added unconverted and the total is approximate.',
                 currency: currency || '',
-                codes: missingFx.join(', '),
+                codes: fmtList(missingFx),
               })
             : t('finance.mixed_currency_converted', {
                 defaultValue:
@@ -1606,7 +1634,7 @@ function BudgetsTab({ projectId }: { projectId: string }) {
       {/* Search + actions */}
       <div className="p-4 border-b border-border-light flex flex-col sm:flex-row sm:items-center gap-3">
         <div className="relative flex-1 max-w-sm">
-          <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-content-tertiary">
+          <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center pl-3 text-content-tertiary">
             <Search size={16} />
           </div>
           <input
@@ -1617,7 +1645,7 @@ function BudgetsTab({ projectId }: { projectId: string }) {
             placeholder={t('finance.search_budgets', {
               defaultValue: 'Search by WBS or category...',
             })}
-            className="h-10 w-full rounded-lg border border-border bg-surface-primary pl-10 pr-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
+            className="h-10 w-full rounded-lg border border-border bg-surface-primary ps-10 pe-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
           />
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -1989,7 +2017,55 @@ function BudgetsTab({ projectId }: { projectId: string }) {
 
 /* ── Invoices Tab ─────────────────────────────────────────────────────── */
 
-function InvoicesTab({ projectId }: { projectId: string }) {
+/**
+ * The widest gap between a total a person typed and one the server will keep.
+ *
+ * A cent. Rounding a lump sum to a nicer figure is a real thing to want, and a
+ * cent of it is the only part that survives an invoice: subtotal + tax = total
+ * is the arithmetic every receiver checks (EN 16931 BR-CO-15), so a total that
+ * disagrees by more than rounding is not a preference, it is a document nobody
+ * downstream can accept. The server holds the same identity to twice this, so
+ * anything this form lets through is something the API will keep.
+ */
+const INVOICE_TOTAL_TOLERANCE = 0.01;
+
+/**
+ * The invoice form's three money fields, read as numbers.
+ *
+ * `Number` rather than `parseFloat` on purpose. `parseFloat` stops at the
+ * first character it cannot use and hands back what it has, so a grouped or
+ * comma-decimal string read as 9 or as 900 instead of failing, which is how
+ * issue #466 stayed silent. `Number('9,000.00')` is `NaN`, and a field that
+ * cannot be read is reported as unset rather than as a smaller number.
+ *
+ * A blank subtotal beside a typed total is filled from the total rather than
+ * sent as a zero: the server derives the stored total from subtotal + tax, so
+ * a zero subtotal stored a zero invoice next to a line item carrying the real
+ * figure.
+ */
+function readInvoiceAmounts(form: { subtotal: string; tax: string; amount: string }) {
+  const read = (raw: string): number | null => {
+    const text = (raw ?? '').trim();
+    if (text === '') return null;
+    const n = Number(text);
+    return Number.isFinite(n) ? n : null;
+  };
+  const tax = read(form.tax) ?? 0;
+  const typedSubtotal = read(form.subtotal);
+  const typedTotal = read(form.amount);
+  const subtotal = typedSubtotal ?? (typedTotal != null ? typedTotal - tax : 0);
+  const total = typedTotal ?? subtotal + tax;
+  return { subtotal, tax, total, typedSubtotal, typedTotal };
+}
+
+/**
+ * The invoice register and the create/edit form behind it.
+ *
+ * Exported so the money a person types into that form can be driven end to
+ * end in a test - typed, read back off the field, submitted - without
+ * mounting the whole Finance page around it.
+ */
+export function InvoicesTab({ projectId }: { projectId: string }) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
@@ -2088,9 +2164,11 @@ function InvoicesTab({ projectId }: { projectId: string }) {
       currency: inv.currency_code || inv.currency || projectCurrency || '',
       description: inv.notes ?? inv.description ?? '',
       buyer_reference: readBuyerReference(inv.metadata),
-      // The backend serialises the canonical 'sent' node; normalise it to the
-      // 'approved' label the UI uses so the dropdown shows the right option.
-      status: inv.status === 'sent' ? 'approved' : inv.status || 'draft',
+      // Shown exactly as stored. This used to rewrite 'sent' into 'approved'
+      // for display, which left the same invoice reading Sent in the table and
+      // Approved in this modal. A person sees the state the machine wrote, and
+      // approving writes 'sent'.
+      status: inv.status || 'draft',
     });
     // If the stored total differs from subtotal+tax, the invoice was saved
     // with a deliberate manual total - preserve that intent so editing the
@@ -2101,7 +2179,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
     setAmountEditedManually(
       Number.isFinite(totalN) &&
         total.trim() !== '' &&
-        Math.abs(totalN - (subN + taxN)) > 0.005,
+        Math.abs(totalN - (subN + taxN)) > INVOICE_TOTAL_TOLERANCE,
     );
     setInvoiceErrors({});
     setEditingInvoice(inv);
@@ -2120,15 +2198,28 @@ function InvoicesTab({ projectId }: { projectId: string }) {
     }
   }, [invoiceModalOpen]);
 
-  const canSubmitInvoice = !!invoiceForm.invoice_date && (parseFloat(invoiceForm.subtotal || '0') > 0 || parseFloat(invoiceForm.amount || '0') > 0);
+  const canSubmitInvoice =
+    !!invoiceForm.invoice_date && readInvoiceAmounts(invoiceForm).total > 0;
 
   const validateInvoice = (): boolean => {
     const e: Record<string, string> = {};
+    const { tax, total, typedSubtotal, typedTotal } = readInvoiceAmounts(invoiceForm);
     if (!invoiceForm.invoice_date) e.invoice_date = t('validation.required', { defaultValue: 'This field is required' });
     if (!invoiceForm.subtotal && !invoiceForm.amount) e.subtotal = t('validation.required', { defaultValue: 'This field is required' });
-    else {
-      const total = invoiceForm.amount ? parseFloat(invoiceForm.amount) : (parseFloat(invoiceForm.subtotal || '0') + parseFloat(invoiceForm.tax || '0'));
-      if (total <= 0) e.subtotal = t('validation.positive_number', { defaultValue: 'Must be a positive number' });
+    else if (total <= 0) e.subtotal = t('validation.positive_number', { defaultValue: 'Must be a positive number' });
+    // A hand-typed total that does not add up is named here rather than
+    // resolved in one direction or the other. Rewriting either figure would
+    // change a number a person typed without telling them, and dropping the
+    // typed total on the floor is what used to happen: the server rebuilt it
+    // from subtotal + tax, so the override never reached the invoice at all.
+    if (
+      typedSubtotal != null &&
+      typedTotal != null &&
+      Math.abs(typedTotal - (typedSubtotal + tax)) > INVOICE_TOTAL_TOLERANCE
+    ) {
+      e.amount = t('finance.total_mismatch', {
+        defaultValue: 'The total must equal the subtotal plus tax',
+      });
     }
     setInvoiceErrors(e);
     return Object.keys(e).length === 0;
@@ -2167,27 +2258,27 @@ function InvoicesTab({ projectId }: { projectId: string }) {
 
   const createInvoiceMut = useMutation({
     mutationFn: (data: typeof invoiceForm) => {
-      const sub = parseFloat(data.subtotal || '0');
-      const tax = parseFloat(data.tax || '0');
-      const total = data.amount ? parseFloat(data.amount) : sub + tax;
+      const { subtotal: sub, tax, total } = readInvoiceAmounts(data);
       return apiPost('/v1/finance/', {
         project_id: projectId,
         contact_id: data.contact_id || undefined,
         invoice_direction: data.direction,
         invoice_date: data.invoice_date,
         due_date: data.due_date || undefined,
-        amount_subtotal: String(sub),
-        tax_amount: String(tax),
-        amount_total: String(total),
+        amount_subtotal: fmtNumberForInput(sub),
+        tax_amount: fmtNumberForInput(tax),
+        amount_total: fmtNumberForInput(total),
         // Send the chosen currency; empty string lets the backend
         // resolve the project currency (never hardcode EUR — task #217).
         currency_code: data.currency || projectCurrency || '',
         notes: data.description || undefined,
         status: 'draft',
-        // One net line for the billed figure (falls back to the total when
-        // only a total was typed), and the BT-10 routing id under
+        // One net line for the billed figure, and the BT-10 routing id under
         // metadata.einvoice - both read by the e-invoice check and export.
-        line_items: singleFormLine(data, sub > 0 ? sub : total),
+        // The line is the subtotal, never the gross: lines are net amounts and
+        // the server refuses a set of them that does not add up to the
+        // subtotal it is being asked to store.
+        line_items: singleFormLine(data, sub),
         metadata: invoiceMetadataWithBuyerReference(null, data.buyer_reference),
       });
     },
@@ -2212,29 +2303,27 @@ function InvoicesTab({ projectId }: { projectId: string }) {
   // rejects an illegal jump, and the dropdown only offers legal next states.
   const updateInvoiceMut = useMutation({
     mutationFn: (data: { id: string; form: typeof invoiceForm; prevStatus: string }) => {
-      const sub = parseFloat(data.form.subtotal || '0');
-      const tax = parseFloat(data.form.tax || '0');
-      const total = data.form.amount ? parseFloat(data.form.amount) : sub + tax;
-      // Normalise the backend's canonical 'sent' to the 'approved' label the
-      // UI uses, so re-saving an approved invoice without touching the status
-      // doesn't look like a no-op transition (approved -> sent).
-      const prev = data.prevStatus === 'sent' ? 'approved' : data.prevStatus;
-      const statusChanged = data.form.status !== prev;
+      const { subtotal: sub, tax, total } = readInvoiceAmounts(data.form);
+      // Compared against the stored status directly. The form no longer
+      // relabels 'sent', so relabelling here too would make a plain edit of a
+      // sent invoice look like a sent -> sent transition, which the backend
+      // table does not allow and would reject with a 400.
+      const statusChanged = data.form.status !== data.prevStatus;
       // A claim-born or imported invoice carries a real line breakdown;
       // replacing it with this form's single figure would destroy it. Only
       // the simple shape (no lines yet, or the one line this form wrote) is
       // kept in sync with the edited amounts.
       const existingLines = editingInvoice?.line_items ?? [];
       const lineItemsPatch =
-        existingLines.length <= 1 ? { line_items: singleFormLine(data.form, sub > 0 ? sub : total) } : {};
+        existingLines.length <= 1 ? { line_items: singleFormLine(data.form, sub) } : {};
       return apiPatch(`/v1/finance/${data.id}`, {
         contact_id: data.form.contact_id || null,
         invoice_direction: data.form.direction,
         invoice_date: data.form.invoice_date,
         due_date: data.form.due_date || null,
-        amount_subtotal: String(sub),
-        tax_amount: String(tax),
-        amount_total: String(total),
+        amount_subtotal: fmtNumberForInput(sub),
+        tax_amount: fmtNumberForInput(tax),
+        amount_total: fmtNumberForInput(total),
         currency_code: data.form.currency || projectCurrency || '',
         notes: data.form.description || null,
         // Merged over the stored object: PATCH replaces metadata wholesale,
@@ -2450,7 +2539,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
         {/* Search + Status filter */}
         <div className="p-4 border-b border-border-light flex flex-col sm:flex-row sm:items-center gap-3">
           <div className="relative flex-1 max-w-sm">
-            <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-content-tertiary">
+            <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center pl-3 text-content-tertiary">
               <Search size={16} />
             </div>
             <input
@@ -2461,7 +2550,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
               placeholder={t('finance.search_invoices', {
                 defaultValue: 'Search invoices...',
               })}
-              className="h-10 w-full rounded-lg border border-border bg-surface-primary pl-10 pr-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
+              className="h-10 w-full rounded-lg border border-border bg-surface-primary ps-10 pe-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
             />
           </div>
           <div className="relative shrink-0">
@@ -2469,7 +2558,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
               aria-label={t('finance.filter_status', { defaultValue: 'Filter by status' })}
-              className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-36"
+              className="h-10 appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-36"
             >
               <option value="">{t('finance.filter_all_statuses', { defaultValue: 'All Statuses' })}</option>
               <option value="draft">{t('finance.status_draft', { defaultValue: 'Draft' })}</option>
@@ -2482,7 +2571,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                 {t('finance.status_credit_note_issued', { defaultValue: 'Credit note issued' })}
               </option>
             </select>
-            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+            <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-2.5 text-content-tertiary">
               <ChevronDown size={14} />
             </div>
           </div>
@@ -2584,11 +2673,10 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                           <div className="flex items-center gap-1 text-2xs text-content-tertiary mt-0.5">
                             <span>
                               {t('finance.budget_line', { defaultValue: 'Budget' })}:{' '}
-                              {inv.line_items
+                              {fmtList(inv.line_items
                                 .filter((li) => li.cost_category || li.wbs_id)
                                 .slice(0, 2)
-                                .map((li) => li.cost_category || li.wbs_id)
-                                .join(', ')}
+                                .map((li) => li.cost_category || li.wbs_id || ''))}
                             </span>
                             <Link
                               to="/boq"
@@ -2698,7 +2786,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                               {t('finance.approve', { defaultValue: 'Approve' })}
                             </Button>
                           )}
-                          {inv.status === 'approved' && isManager && (
+                          {canMarkPaid(inv.status) && isManager && (
                             <Button
                               variant="primary"
                               size="sm"
@@ -2798,7 +2886,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                       exposed only Edit, leaving status unreachable on phones). */}
                   {(inv.status === 'draft' ||
                     (inv.status === 'pending' && isManager) ||
-                    (inv.status === 'approved' && isManager)) && (
+                    (canMarkPaid(inv.status) && isManager)) && (
                     <div className="mt-3 flex flex-wrap justify-end gap-2">
                       {inv.status === 'draft' && (
                         <Button
@@ -2828,7 +2916,7 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                           {t('finance.approve', { defaultValue: 'Approve' })}
                         </Button>
                       )}
-                      {inv.status === 'approved' && isManager && (
+                      {canMarkPaid(inv.status) && isManager && (
                         <Button
                           variant="primary"
                           size="sm"
@@ -3171,16 +3259,18 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                   value={invoiceForm.subtotal}
                   onChange={(e) => {
                     const sub = e.target.value;
-                    const tax = invoiceForm.tax || '0';
-                    const total = fmtFixed(parseFloat(sub || '0') + parseFloat(tax), 2);
+                    const amounts = readInvoiceAmounts({ ...invoiceForm, subtotal: sub });
                     // Only auto-fill the total while the user hasn't taken it
                     // over manually; otherwise preserve their entered total.
+                    // Canonical form, because this lands back in a number
+                    // field and a grouped one empties it (#466).
+                    const total = fmtNumberForInput(amounts.subtotal + amounts.tax);
                     setInvoiceForm((f) => ({
                       ...f,
                       subtotal: sub,
                       ...(amountEditedManually ? {} : { amount: total }),
                     }));
-                    if (invoiceErrors.subtotal) setInvoiceErrors((prev) => { const next = { ...prev }; delete next.subtotal; return next; });
+                    if (invoiceErrors.subtotal || invoiceErrors.amount) setInvoiceErrors((prev) => { const next = { ...prev }; delete next.subtotal; delete next.amount; return next; });
                   }}
                   className={clsx(inputCls, 'pl-12', invoiceErrors.subtotal && 'border-semantic-error focus:ring-red-300 focus:border-semantic-error')}
                   placeholder="0.00"
@@ -3198,15 +3288,17 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                   value={invoiceForm.tax}
                   onChange={(e) => {
                     const tax = e.target.value;
-                    const sub = invoiceForm.subtotal || '0';
-                    const total = fmtFixed(parseFloat(sub) + parseFloat(tax || '0'), 2);
+                    const amounts = readInvoiceAmounts({ ...invoiceForm, tax });
                     // Preserve a manually entered total; otherwise keep it in
-                    // sync with subtotal+tax.
+                    // sync with subtotal+tax, in the canonical form the field
+                    // itself accepts (#466).
+                    const total = fmtNumberForInput(amounts.subtotal + amounts.tax);
                     setInvoiceForm((f) => ({
                       ...f,
                       tax,
                       ...(amountEditedManually ? {} : { amount: total }),
                     }));
+                    if (invoiceErrors.amount) setInvoiceErrors((prev) => { const next = { ...prev }; delete next.amount; return next; });
                   }}
                   className={clsx(inputCls, 'pl-12')}
                   placeholder="0.00"
@@ -3238,31 +3330,41 @@ function InvoicesTab({ projectId }: { projectId: string }) {
                     aria-label={t('finance.total', { defaultValue: 'Total' })}
                     value={(() => {
                       if (amountEditedManually) return invoiceForm.amount;
-                      const sub = parseFloat(invoiceForm.subtotal || '0');
-                      const tax = parseFloat(invoiceForm.tax || '0');
-                      const total = (Number.isFinite(sub) ? sub : 0) + (Number.isFinite(tax) ? tax : 0);
-                      return fmtFixed(total, 2);
+                      const { subtotal, tax } = readInvoiceAmounts(invoiceForm);
+                      return fmtNumberForInput(subtotal + tax);
                     })()}
                     onChange={(e) => {
                       const v = e.target.value;
                       setAmountEditedManually(true);
                       setInvoiceForm((f) => ({ ...f, amount: v }));
+                      if (invoiceErrors.amount) setInvoiceErrors((prev) => { const next = { ...prev }; delete next.amount; return next; });
                     }}
-                    className="h-9 w-36 rounded-lg border border-border bg-surface-primary px-3 text-right text-base font-bold tabular-nums text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
+                    className={clsx(
+                      'h-9 w-36 rounded-lg border bg-surface-primary px-3 text-right text-base font-bold tabular-nums text-content-primary focus:outline-none focus:ring-2',
+                      invoiceErrors.amount
+                        ? 'border-semantic-error focus:ring-red-300 focus:border-semantic-error'
+                        : 'border-border focus:ring-oe-blue/30 focus:border-oe-blue',
+                    )}
                     placeholder="0.00"
                   />
                 </div>
               </div>
+              {invoiceErrors.amount && (
+                <div className="mt-2 flex items-center justify-end">
+                  <span className="text-xs font-medium text-semantic-error">
+                    {invoiceErrors.amount}
+                  </span>
+                </div>
+              )}
               {amountEditedManually && (
                 <div className="mt-2 flex items-center justify-end">
                   <button
                     type="button"
                     onClick={() => {
-                      const sub = parseFloat(invoiceForm.subtotal || '0');
-                      const tax = parseFloat(invoiceForm.tax || '0');
-                      const total = fmtFixed((Number.isFinite(sub) ? sub : 0) + (Number.isFinite(tax) ? tax : 0), 2);
+                      const { subtotal, tax } = readInvoiceAmounts(invoiceForm);
                       setAmountEditedManually(false);
-                      setInvoiceForm((f) => ({ ...f, amount: total }));
+                      setInvoiceForm((f) => ({ ...f, amount: fmtNumberForInput(subtotal + tax) }));
+                      setInvoiceErrors((prev) => { const next = { ...prev }; delete next.amount; return next; });
                     }}
                     className="text-xs font-medium text-oe-blue hover:underline"
                   >

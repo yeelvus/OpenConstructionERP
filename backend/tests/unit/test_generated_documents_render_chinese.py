@@ -130,13 +130,23 @@ def switch_off(monkeypatch: pytest.MonkeyPatch) -> None:
     This is the only honest way to check that a generator's Chinese rendering
     comes from the wiring rather than from something reportlab does anyway.
 
-    It removes the Chinese rung from the face ladder rather than lying about
-    what the text contains. That is the switch the product would really have
-    thrown - a reportlab build that cannot provide the Adobe pack - and it
-    leaves the coverage predicate telling the truth, so what the control proves
-    is that the ladder reached that rung and not that a range test fired.
+    It removes the CID rungs from the face ladder rather than lying about what
+    the text contains. That is the switch the product would really have thrown -
+    a reportlab build that cannot provide the Adobe packs - and it leaves the
+    coverage predicate telling the truth, so what the control proves is that the
+    ladder reached a rung and not that a range test fired.
+
+    Both packs go, not just the Chinese one, and that is the whole switch rather
+    than a tidier way of writing half of it. Han encodes in EUC-KR, so the
+    Korean pack answers for Chinese text too; turning off only the Chinese rung
+    left Chinese being drawn by the Korean pack, which renders, so the control
+    passed nothing through to box and quietly stopped discriminating. They also
+    fail together in reality: both come from reportlab's Adobe CID mechanism, so
+    a build that cannot supply one cannot supply the other, and switching off
+    one alone was never a state the product could actually be in.
     """
     monkeypatch.setattr(pdf_fonts, "register_cjk_font", lambda: False)
+    monkeypatch.setattr(pdf_fonts, "register_korean_font", lambda: False)
 
 
 def ns(**kwargs: Any) -> types.SimpleNamespace:
@@ -497,6 +507,7 @@ def build_report(*, chinese: bool) -> bytes:
             generated_at=generated_at,
             template_data={},
             data_snapshot={"summary": {"分部工程": CN_SECTION, "清单项目": CN_ITEM}},
+            locale="zh",
         )
     return _export_pdf(
         title="Kostenübersicht",
@@ -506,6 +517,7 @@ def build_report(*, chinese: bool) -> bytes:
         generated_at=generated_at,
         template_data={},
         data_snapshot={"summary": {"Gewerk": DE_SECTION, "Position": DE_ITEM}},
+        locale="de",
     )
 
 
@@ -1368,8 +1380,37 @@ def test_a_latin_payment_application_built_after_a_chinese_one_is_unaffected() -
     )
 
 
-def test_a_latin_payment_application_is_byte_identical_to_the_one_before_the_wiring() -> None:
-    """The claim this commit makes about itself, checked rather than asserted.
+def placed_text(data: bytes, *, ignore_size: float | None = None) -> set[tuple[str, float, float, float]]:
+    """Every run of text with the coordinates it was drawn at.
+
+    Two documents with the same placement look the same, whatever operators the
+    content stream reached that placement with.
+    """
+    found: set[tuple[str, float, float, float]] = set()
+
+    def visit(text: str, cm: list[float], tm: list[float], _font: Any, size: float) -> None:
+        if not text.strip():
+            return
+        if ignore_size is not None and abs(size - ignore_size) < 0.01:
+            return
+        found.add((text.strip(), round(tm[4] + cm[4], 2), round(tm[5] + cm[5], 2), size))
+
+    for page in pypdf.PdfReader(io.BytesIO(data)).pages:
+        page.extract_text(visitor_text=visit)
+    return found
+
+
+def coordinates_of(data: bytes) -> set[tuple[float, float]]:
+    """Where the runs are, with what they say taken out.
+
+    Used by the control below, which has to fail for a document that is drawn
+    differently and not merely worded differently.
+    """
+    return {(x, y) for _text, x, y, _size in placed_text(data, ignore_size=7)}
+
+
+def test_a_latin_payment_application_is_laid_out_as_it_was_before_the_wiring() -> None:
+    """The claim the wiring commit made about itself, checked rather than asserted.
 
     Facing a helper that every cell of the schedule passes through could quietly
     restyle every application already issued. This compares against the real
@@ -1378,12 +1419,27 @@ def test_a_latin_payment_application_is_byte_identical_to_the_one_before_the_wir
 
     The earlier builder is found by walking the file's history for the most
     recent version that predates the wiring rather than by reading HEAD, because
-    once this is committed HEAD carries the wiring and a test anchored there
-    would skip itself and pass forever without comparing anything.
+    HEAD carries the wiring and a test anchored there would skip itself and pass
+    forever without comparing anything.
+
+    This compared bytes until the document's tables moved onto Paragraph cells.
+    A Paragraph reaches the same coordinates through different operators, so the
+    bytes differ where nothing on the page does, and the comparison moved to the
+    placement, which is the property the byte check was standing in for. It is
+    the weaker check of the two and it is worth saying so: an operator level
+    change that leaves every run where it was would now pass here.
+
+    The continuation sheet is left out because it did move, deliberately. Its
+    header row asked for white bold text through TEXTCOLOR and FONTNAME table
+    commands, and a table command cannot reach a flowable cell, so it had been
+    drawn in regular black on a near black fill since the day it was written.
+    Giving it the weight it asks for makes two of its labels wrap a line
+    further, which shifts the rows under them. It is the only seven point text
+    in the document, which is what separates it out here.
 
     This is also the test that would have caught the whitespace escalation fixed
-    in the commit before this one. Without that fix the headings of this very
-    document escalate to the Chinese pack and these bytes differ by 1114.
+    alongside the wiring. Without that fix the headings of this very document
+    escalate to the Chinese pack.
     """
     import reportlab.rl_config as rl_config
 
@@ -1402,23 +1458,48 @@ def test_a_latin_payment_application_is_byte_identical_to_the_one_before_the_wir
         latin = aia_payload(description="Substructure and ground floor slab")
         was = module.render_aia_application_pdf(latin)
         now = render_aia_application_pdf(latin)
-        assert was == now, "the English payment application changed, and it was not supposed to"
+        assert placed_text(was, ignore_size=7) == placed_text(now, ignore_size=7), (
+            "the English payment application moved, and it was not supposed to"
+        )
+        assert referenced_faces(was) == referenced_faces(now), (
+            "the English payment application embeds a different set of faces than it used to"
+        )
 
-        # The control: this comparison can tell two applications apart at all.
+        # Two controls. The first says this comparison can tell two documents
+        # apart by where they are drawn and not merely by what they say. A
+        # certifier name long enough to wrap moves every row beneath it, so the
+        # coordinates differ with the strings taken back out of them. Comparing
+        # a renumbered application would not do: APP-777 and APP-014 start at
+        # the same point, so the set would differ by the run's text alone and
+        # the control would hold over a comparison blind to position.
+        wrapped = aia_payload(description="Substructure and ground floor slab")
+        wrapped["certification"]["architect_certified_by"] = (
+            "Ortega Architects and Associates, Consulting Engineers and Surveyors"
+        )
+        assert coordinates_of(render_aia_application_pdf(wrapped)) != coordinates_of(now), (
+            "a certifier name long enough to wrap was placed at exactly the coordinates a short one was, "
+            "so this comparison cannot see where anything is drawn"
+        )
+        # The second is the original one, on the bytes, because that still holds:
+        # a Chinese scope reaches the page as different bytes than an English one.
         other = render_aia_application_pdf(aia_payload(description=CN_SCOPE))
         assert other != now, "a Chinese application produced the same bytes as an English one, so nothing is compared"
     finally:
         rl_config.invariant = previous
 
 
-# ── The AIA summary tables, which are not paragraphs ────────────────────────
+# ── The AIA summary tables ──────────────────────────────────────────────────
 #
-# The commit before this one faced every Paragraph in the document and said, in
-# its own message, that a Chinese certifier name would still box. It did. These
-# four tables are plain string cells drawn under their own FONTNAME, so the face
-# is chosen per cell by appending commands to the table style rather than by
-# cloning a paragraph style. A cell whose face can already draw it produces no
-# command, which is why the byte comparison above still holds.
+# The commit that faced every Paragraph in this document said, in its own
+# message, that a Chinese certifier name would still box. It did, because these
+# four tables held plain string cells drawn under the table's own FONTNAME,
+# which a paragraph style cannot reach. They were faced per cell by appending
+# commands to the table style instead.
+#
+# They are Paragraph cells now, so the face is chosen the ordinary way and the
+# appended commands are gone. What the tests below assert did not change: a
+# Chinese cell takes the CID face, the same cell boxes without the wiring, and
+# a bold label in the same row keeps its weight.
 
 CN_CERTIFIER = "上海建工集团股份有限公司"
 
@@ -1566,13 +1647,27 @@ def test_a_latin_methodology_built_after_a_chinese_one_is_unaffected() -> None:
     assert_renders(methodology_export(), "Unit rate method", "Overheads")
 
 
-def test_a_latin_methodology_is_byte_identical_to_the_one_before_the_wiring() -> None:
-    """The claim this commit makes about itself, checked rather than asserted.
+def test_a_latin_methodology_is_laid_out_as_it_was_before_the_wiring() -> None:
+    """The claim the wiring commit made about itself, checked rather than asserted.
 
     Compares against the real previous builder read out of git, so it cannot
     pass by agreeing with a copy of itself, and walks the history for the most
     recent version predating the wiring rather than anchoring on HEAD, which
-    would skip itself and pass forever once this is committed.
+    would skip itself and pass forever without comparing anything.
+
+    This compared bytes until the step table's header row was given the colour
+    its own TableStyle had been asking for. That row is filled #1a1a2e and the
+    style said TEXTCOLOR white, but a table command cannot reach a cell holding
+    a Paragraph, so "Step" and "Category" were drawn #1a1a2e on #1a1a2e and
+    were not on the page at all. Fixing that changes these bytes on purpose.
+
+    What the document is allowed to do is change colour, not move. So the
+    comparison is now on where every run is placed and on the faces the file
+    embeds, both of which a recolouring leaves alone, and the bytes are
+    asserted to differ rather than match, which pins that the recolouring is
+    still there. The colour itself is pinned by
+    test_pdf_header_text_is_readable_on_its_fill, which reads the fill behind
+    each run rather than trusting the style that asks for it.
     """
     import reportlab.rl_config as rl_config
 
@@ -1615,7 +1710,13 @@ def test_a_latin_methodology_is_byte_identical_to_the_one_before_the_wiring() ->
         }
         was = module.generate_methodology_pdf(payload)
         now = generate_methodology_pdf(payload)
-        assert was == now, "the English methodology export changed, and it was not supposed to"
+        assert placed_text(was) == placed_text(now), (
+            "the English methodology export moved, and only its header colour was supposed to change"
+        )
+        assert referenced_faces(was) == referenced_faces(now), (
+            "the English methodology export embeds a different set of faces than it used to"
+        )
+        assert was != now, "the header row is drawn in the colour it was before, so the readability fix is gone"
 
         other = generate_methodology_pdf({**payload, "methodology_name": CN_METHODOLOGY})
         assert other != now, "a Chinese export produced the same bytes as an English one, so nothing is compared"

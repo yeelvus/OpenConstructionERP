@@ -60,6 +60,21 @@ logger = logging.getLogger(__name__)
 CONFIDENCE_HIGH_THRESHOLD = 0.78
 CONFIDENCE_MEDIUM_THRESHOLD = 0.62
 
+# The two statuses that assert a human decided this group. They are what
+# ``apply()`` writes to a customer's BOQ and what ``build_preview`` reports to
+# validation as ``human_confirmed``, which makes the ai_estimator.low_confidence
+# rule pass whatever the score is. So they are a claim about a person, not a
+# workflow state: only the server may set them, and only on a path that records
+# who decided. Every reader of the set derives it from here so the guard on the
+# write side can never drift from the filter on the read side.
+HUMAN_DECISION_STATUSES: tuple[str, ...] = ("confirmed", "overridden")
+
+
+def is_human_decision(status: str | None) -> bool:
+    """True when *status* asserts that a person approved this group's rate."""
+    return status in HUMAN_DECISION_STATUSES
+
+
 # Pass-2 (unit/scale reconcile) demotion penalty. A candidate whose unit
 # dimension is incompatible with the group's chosen-unit dimension keeps its
 # real rate but has its score multiplied by this factor so the dimensionally
@@ -121,6 +136,43 @@ def _dec(value: Any, default: str = "0") -> Decimal:
     except (InvalidOperation, ValueError, TypeError):
         return Decimal(default)
     return d if d.is_finite() else Decimal(default)
+
+
+def _norm_per_unit(component: dict[str, Any]) -> tuple[float, bool]:
+    """The norm a catalogue component contributes to ONE unit of its work item.
+
+    The catalogue writes this figure as ``quantity``. That is not a naming
+    guess: ``resource_pricing`` prices a work item as the sum over components
+    of ``quantity * unit_price`` and stores that sum as the item's UNIT rate,
+    so ``quantity`` is arithmetically per one unit of the item and never a
+    total. Reading anything else here silently substitutes 1.0 for the real
+    norm, and because the unit rate is written separately from the chosen
+    candidate the position still reviews clean - the loss only surfaces when an
+    estimator edits the position and the rate is re-derived from the buildup.
+
+    ``factor`` is accepted as a second spelling because groups persisted by an
+    earlier revision of this module carry that key, and a stored group must not
+    change meaning when the code that reads it is upgraded.
+
+    Args:
+        component: One entry of ``CostItem.components``.
+
+    Returns:
+        The norm, and whether it was actually found. A component that declares
+        no usable norm yields ``(1.0, False)``; the caller marks such a row so
+        a human reviewing the buildup can see which lines are assumed rather
+        than grounded, instead of a plausible 1.0 hiding a total loss.
+    """
+    for key in ("quantity", "factor"):
+        if key not in component:
+            continue
+        try:
+            value = float(component[key])
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value, True
+    return 1.0, False
 
 
 def _quantity_for_unit(quantities: dict[str, float], unit: str) -> float:
@@ -1478,16 +1530,20 @@ class AiEstimatorService:
         for comp in item.components:
             if not isinstance(comp, dict):
                 continue
-            out.append(
-                {
-                    "name": str(comp.get("description") or comp.get("name") or comp.get("code") or ""),
-                    "code": str(comp.get("code") or ""),
-                    "unit": str(comp.get("unit") or ""),
-                    "factor": float(comp.get("factor", 1.0) or 1.0),
-                    "unit_rate": format(_dec(comp.get("unit_rate") or comp.get("rate")), "f"),
-                    "type": str(comp.get("type") or "other"),
-                }
-            )
+            factor, grounded = _norm_per_unit(comp)
+            row: dict[str, Any] = {
+                "name": str(comp.get("description") or comp.get("name") or comp.get("code") or ""),
+                "code": str(comp.get("code") or ""),
+                "unit": str(comp.get("unit") or ""),
+                "factor": factor,
+                "unit_rate": format(_dec(comp.get("unit_rate") or comp.get("rate")), "f"),
+                "type": str(comp.get("type") or "other"),
+            }
+            if not grounded:
+                # Surfaced, not swallowed: an assumed norm is a confidence
+                # signal the reviewer is entitled to see.
+                row["factor_estimated"] = True
+            out.append(row)
         return out
 
     async def _ensure_resources(self, grp: Any, qty: Decimal, unit_rate: Decimal) -> list[dict[str, Any]]:
@@ -1515,6 +1571,16 @@ class AiEstimatorService:
             return []
         unit = getattr(grp, "chosen_unit", None) or "pcs"
         out: list[dict[str, Any]] = []
+        # ONE KEY, TWO MEANINGS - do not let these rows back through
+        # ``_resource_breakdown``. In ``CostItem.components`` the catalogue
+        # writes ``quantity`` as the norm for ONE unit of the item; in the rows
+        # below, which are this module's own output shape, ``quantity`` is
+        # already the total for the whole position. ``factor`` of 1.0 is correct
+        # here and is not a missing norm: an allowance priced at a share of the
+        # unit rate genuinely is one allowance per unit. ``_resource_breakdown``
+        # reads only ``CostItem.components`` and never this output, which is
+        # what keeps the two apart; feeding it these rows would read a total as
+        # a norm and square the quantity.
         for rtype, share in (("labor", 0.40), ("material", 0.60)):
             out.append(
                 {
@@ -1630,12 +1696,19 @@ class AiEstimatorService:
 
     # ── Group edit / override / confirm ───────────────────────────────────
 
-    async def update_group(self, grp: AiEstimatorGroup, spec: schemas.GroupUpdate) -> AiEstimatorGroup:
+    async def update_group(
+        self, grp: AiEstimatorGroup, spec: schemas.GroupUpdate, user_id: uuid.UUID
+    ) -> AiEstimatorGroup:
         """Edit a group's stage-2 fields, or override its stage-3 candidate.
 
         A candidate override MUST reference an id already in the stored
         candidate list - the user (like the LLM) can never inject a fabricated
         code. Editing quantities/units invalidates the prior match.
+
+        Picking a candidate here IS a human decision, so it records *user_id*
+        as the deciding user exactly as ``confirm_group`` does. A caller may
+        not set a human-decision status directly: that would claim a person
+        approved the rate while recording nobody.
         """
         fields: dict[str, Any] = {}
         if spec.description is not None:
@@ -1670,8 +1743,18 @@ class AiEstimatorService:
                 match_method="manual",
                 resources=resources,
                 status="overridden",
+                confirmed_by=user_id,
+                confirmed_at=datetime.now(UTC),
             )
         if spec.status is not None:
+            if is_human_decision(spec.status):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"status '{spec.status}' asserts a human decision and cannot be set here. "
+                        "Confirm the group through its confirm endpoint, which records who decided."
+                    ),
+                )
             fields["status"] = spec.status
 
         await self.group_repo.update_fields(grp.id, **fields)
@@ -1947,7 +2030,7 @@ class AiEstimatorService:
                     "currency": currency or base_currency or "",
                     "confidence": confidence,
                     "confidence_band": grp.confidence_band,
-                    "human_confirmed": grp.status in ("confirmed", "overridden"),
+                    "human_confirmed": is_human_decision(grp.status),
                     "resources": grp.resources or [],
                     # The grounded CWICR row's standard classification so the
                     # MasterFormat / DIN rules validate against the real code.
@@ -2159,7 +2242,7 @@ class AiEstimatorService:
         max_ord = await self._count_positions(boq_id)
 
         target_ids = {gid for gid in spec.group_ids} if spec.group_ids else None
-        groups = await self.group_repo.list_for_run(run.id, statuses=["confirmed", "overridden"])
+        groups = await self.group_repo.list_for_run(run.id, statuses=list(HUMAN_DECISION_STATUSES))
         groups = groups[:_APPLY_BATCH_LIMIT]
 
         positions_created = 0

@@ -65,6 +65,25 @@ const TIMEOUT_TOAST_THROTTLE_MS = 12_000;
 export interface ApiRequestInit extends RequestInit {
   longRunning?: boolean;
   /**
+   * Explicit abort budget in ms, overriding both defaults and
+   * {@link LONG_RUNNING_TIMEOUT_MS}.
+   *
+   * `longRunning` is a two-position switch and there is a third position: a
+   * handful of endpoints are allowed far more time on the server than the
+   * client's five minutes. The Qdrant snapshot restore is the case that
+   * forced this - it downloads ~1.1 GB and then hands Qdrant a restore with
+   * `timeout_s=1800`, so the server may legitimately be working for forty
+   * minutes while the browser has already given up and told the user it
+   * failed. Setting `longRunning: true` there would only move a certain
+   * failure to a likely one.
+   *
+   * Use it only where the server's own budget is written down and this number
+   * is derived from it, so the two cannot drift apart silently. Everything
+   * else keeps the two-position switch: a long budget on an ordinary call
+   * turns a fast, clear failure into a spinner nobody can interpret.
+   */
+  timeoutMs?: number;
+  /**
    * Suppress the global "Request timed out" toast this wrapper raises when its
    * own abort budget runs out.
    *
@@ -110,6 +129,33 @@ export function getAuthToken(): string | null {
   return getToken();
 }
 
+/**
+ * The active i18next language reduced to its primary subtag, or null when
+ * it cannot be read.
+ *
+ * Exported because not every request goes through `apiGet` / `apiPost`: a
+ * few endpoints stream a binary or an HTML document and are fetched with a
+ * raw `fetch`, which means they never got the `Accept-Language` header
+ * `buildHeaders` attaches. Those are exactly the endpoints that render a
+ * document in the reader's language (see
+ * backend/app/modules/reporting/report_translations), so they have to ask
+ * for one explicitly rather than silently taking the server default.
+ */
+export function activeLanguageTag(): string | null {
+  try {
+    const lang = i18next.language || 'en';
+    // Strip any region suffix (i18next stores codes like 'pt-BR'; the
+    // backend maps via prefix anyway, but this keeps the header tidy
+    // and matches the locale codes shipped in the translations module).
+    const base = String(lang).split('-')[0];
+    return base || null;
+  } catch {
+    // Reading i18next mid-init can throw; locale-aware payloads
+    // gracefully fall back to English on the server.
+    return null;
+  }
+}
+
 /** Build common headers for every request. */
 function buildHeaders(extra?: HeadersInit): Headers {
   const headers = new Headers(extra);
@@ -132,17 +178,8 @@ function buildHeaders(extra?: HeadersInit): Headers {
   // without requiring an explicit ?locale= query param on every call.
   // Caller-provided Accept-Language always wins.
   if (!headers.has('Accept-Language')) {
-    try {
-      const lang = i18next.language || 'en';
-      // Strip any region suffix (i18next stores codes like 'pt-BR'; the
-      // backend maps via prefix anyway, but this keeps the header tidy
-      // and matches the locale codes shipped in the translations module).
-      const base = String(lang).split('-')[0];
-      if (base) headers.set('Accept-Language', base);
-    } catch {
-      // Reading i18next mid-init can throw; locale-aware payloads
-      // gracefully fall back to English on the server.
-    }
+    const base = activeLanguageTag();
+    if (base) headers.set('Accept-Language', base);
   }
 
   return headers;
@@ -472,11 +509,16 @@ async function request<TResponse>(
 
   // Abort budget: fast by default, long only when explicitly opted in for
   // heavy import / AI / CAD work. GET and mutations get distinct defaults.
-  const timeoutMs = init?.longRunning
-    ? LONG_RUNNING_TIMEOUT_MS
-    : method === 'GET'
-      ? DEFAULT_GET_TIMEOUT_MS
-      : DEFAULT_MUTATION_TIMEOUT_MS;
+  // An explicit `timeoutMs` outranks both, for the few endpoints whose server
+  // side is allowed more than the long budget - see the field's doc comment.
+  const timeoutMs =
+    init?.timeoutMs !== undefined
+      ? init.timeoutMs
+      : init?.longRunning
+        ? LONG_RUNNING_TIMEOUT_MS
+        : method === 'GET'
+          ? DEFAULT_GET_TIMEOUT_MS
+          : DEFAULT_MUTATION_TIMEOUT_MS;
   const controller = new AbortController();
   // Only attribute an abort to our own timeout when we actually own the
   // signal — a caller-supplied signal aborts for its own reasons.

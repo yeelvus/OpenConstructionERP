@@ -46,6 +46,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 
 # The single definition. scripts/strip_zero_width.py imports both of these.
@@ -92,43 +93,112 @@ REMEDIATOR = os.path.join("scripts", "strip_zero_width.py")
 # A caller writing its own class writes an escape: \x{200B}, \u200B or \u{200B}.
 # Prose that merely names a codepoint, "U+200C" in a comment, has no backslash
 # and is not a second copy of the rule, so it does not trip this.
-ESCAPE_RE = re.compile(
-    r"\\(?:x\{([0-9A-Fa-f]{1,6})\}|u\{([0-9A-Fa-f]{1,6})\}|u([0-9A-Fa-f]{4}))"
-)
+ESCAPE_RE = re.compile(r"\\(?:x\{([0-9A-Fa-f]{1,6})\}|u\{([0-9A-Fa-f]{1,6})\}|u([0-9A-Fa-f]{4}))")
 GOVERNED = {ord(c) for c in STRAY_CHARS} | {ord(c) for c in SPELLING_CHARS}
 
 
-def iter_files(root: str):
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-        for name in sorted(filenames):
-            if name.endswith(EXTENSIONS):
-                yield os.path.join(dirpath, name)
+# What is in scope has to be decided by the repository, not by how much
+# unversioned material happens to be sitting in the working copy. marketing-site
+# is 770 MB of generated pages, ignored in its entirety, and walking it meant the
+# no-argument run - the form ci.yml uses - never finished on a developer machine
+# that had it checked out. CI never noticed, because a fresh clone has no
+# marketing-site at all: the gate worked everywhere except where a person would
+# actually run it, which is the worst way for one to be broken.
+#
+# So git decides. `ls-files --cached --others --exclude-standard` is everything
+# the repository tracks plus everything a commit could still pick up, and nothing
+# .gitignore has already excluded. A file written a minute ago and not yet added
+# is still scanned; generated output that no commit can reach is not.
+MAX_FALLBACK_FILES = 20000
 
 
-# marketing-site alone is 770 MB of generated pages, so the common case, a clean
-# tree, must not pay for decoding all of it. One compiled pass over the raw bytes
-# answers "is anything in here", and only a file that says yes gets decoded and
-# located by line. The pattern is built from STRAY_CHARS, never written out.
-STRAY_BYTES_RE = re.compile(
-    b"|".join(re.escape(ch.encode("utf-8")) for ch in STRAY_CHARS)
-)
+class Unbounded(Exception):
+    """Raised when a root cannot be enumerated within a budget.
+
+    A gate that hangs cannot be told apart from a gate that is thinking, and
+    this one hung for ten minutes before anyone found out. Refusing loudly is
+    the only honest answer when the scope cannot be established.
+    """
 
 
-def scan(repo_root: str, roots: list[str]) -> list[tuple[str, int, str]]:
-    """Return (relative path, line number, character name) for every stray hit."""
+def git_files(repo_root: str, root: str) -> list[str] | None:
+    """Paths under ``root`` that git can account for, or None if it cannot."""
+    try:
+        result = subprocess.run(  # noqa: S603, S607
+            [
+                "git",
+                "-C",
+                repo_root,
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "--",
+                root,
+            ],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    names = [n for n in result.stdout.decode("utf-8", "replace").split("\0") if n]
+    return [os.path.join(repo_root, n.replace("/", os.sep)) for n in names]
+
+
+def iter_files(repo_root: str, root: str):
+    """Yield the files under ``root`` this gate is responsible for."""
+    paths = git_files(repo_root, root)
+    if paths is None:
+        # No git here - a wheel, a tarball, a copied directory. Walk, but with a
+        # ceiling, so the unbounded case fails instead of hanging.
+        paths = []
+        for dirpath, dirnames, filenames in os.walk(os.path.join(repo_root, root)):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            for name in sorted(filenames):
+                paths.append(os.path.join(dirpath, name))
+            if len(paths) > MAX_FALLBACK_FILES:
+                raise Unbounded(root)
+    for path in paths:
+        parts = set(os.path.relpath(path, repo_root).replace(os.sep, "/").split("/"))
+        if parts & SKIP_DIRS:
+            continue
+        if path.endswith(EXTENSIONS):
+            yield path
+
+
+# The common case, a clean tree, must not pay for decoding every file it reads.
+# One compiled pass over the raw bytes answers "is anything in here", and only a
+# file that says yes gets decoded and located by line. The pattern is built from
+# STRAY_CHARS, never written out.
+STRAY_BYTES_RE = re.compile(b"|".join(re.escape(ch.encode("utf-8")) for ch in STRAY_CHARS))
+
+
+def scan(repo_root: str, roots: list[str]) -> tuple[list[tuple[str, int, str]], dict[str, int]]:
+    """Return every stray hit, and how many files each root contributed.
+
+    The per-root count is printed on every run. A gate that reports only pass or
+    fail cannot tell a clean tree from a tree it never looked at, and this one
+    has now been narrowed once; the number is what makes the next narrowing
+    visible.
+    """
     hits: list[tuple[str, int, str]] = []
+    counted: dict[str, int] = {}
     for root in roots:
         abs_root = os.path.join(repo_root, root)
         if not os.path.isdir(abs_root):
             print(f"skipped, not present in this checkout: {root}")
             continue
-        for path in iter_files(abs_root):
+        seen = 0
+        for path in iter_files(repo_root, root):
             try:
                 with open(path, "rb") as fh:
                     blob = fh.read()
             except OSError:
                 continue
+            seen += 1
             if not STRAY_BYTES_RE.search(blob):
                 continue
             try:
@@ -140,7 +210,8 @@ def scan(repo_root: str, roots: list[str]) -> list[tuple[str, int, str]]:
                 for ch, name in STRAY_CHARS.items():
                     if ch in line:
                         hits.append((rel, lineno, name))
-    return hits
+        counted[root] = seen
+    return hits, counted
 
 
 def self_check(repo_root: str) -> list[str]:
@@ -168,9 +239,7 @@ def self_check(repo_root: str) -> list[str]:
             rel = f"{rel} (lint:unicode)"
 
         if expected not in text:
-            problems.append(
-                f"{rel} does not call {expected}, so it is a second copy of the rule"
-            )
+            problems.append(f"{rel} does not call {expected}, so it is a second copy of the rule")
 
         for match in ESCAPE_RE.finditer(text):
             code = int(next(g for g in match.groups() if g), 16)
@@ -192,9 +261,7 @@ def self_check(repo_root: str) -> list[str]:
         with open(path, encoding="utf-8", newline="") as fh:
             text = fh.read()
     except OSError:
-        problems.append(
-            f"{REMEDIATOR} is missing, so it cannot be shown to import this class"
-        )
+        problems.append(f"{REMEDIATOR} is missing, so it cannot be shown to import this class")
     else:
         if "from check_zero_width import" not in text:
             problems.append(
@@ -231,30 +298,38 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     sys.stdout.reconfigure(encoding="utf-8")
-    repo_root = os.path.abspath(
-        args.repo_root or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-    )
+    repo_root = os.path.abspath(args.repo_root or os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
     roots = list(args.roots) if args.roots else list(DEFAULT_ROOTS)
 
     if not args.skip_self_check:
         problems = self_check(repo_root)
         if problems:
-            print(
-                "The zero-width rule is defined in scripts/check_zero_width.py and nowhere else."
-            )
+            print("The zero-width rule is defined in scripts/check_zero_width.py and nowhere else.")
             for problem in problems:
                 print(f"  {problem}")
             return 2
 
-    hits = scan(repo_root, roots)
+    try:
+        hits, counted = scan(repo_root, roots)
+    except Unbounded as exc:
+        print(
+            f"{exc.args[0]} holds more than {MAX_FALLBACK_FILES} files and git is not "
+            "available here to say which of them the repository owns, so the scope of "
+            "this scan cannot be established. Run it from a git checkout, or name the "
+            "directories to scan."
+        )
+        return 2
+
+    scanned = ", ".join(f"{root} ({counted[root]} files)" for root in roots if root in counted)
     if hits:
         print("Zero-width Unicode characters found:")
         for rel, lineno, name in hits:
             print(f"  {rel}:{lineno}  {name}")
         print(REMEDIATION)
+        print(f"scanned: {scanned}")
         return 1
 
-    print(f"No stray zero-width Unicode characters found in: {', '.join(roots)}")
+    print(f"No stray zero-width Unicode characters found in: {scanned}")
     return 0
 
 

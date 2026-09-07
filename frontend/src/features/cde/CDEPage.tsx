@@ -57,6 +57,7 @@ import { CDETransmittalsBadge } from './CDETransmittalsBadge';
 import { CDESetupWizard } from './CDESetupWizard';
 import { cdeGuide } from './cdeGuide';
 import { fmtFixed } from '@/shared/lib/formatters';
+import { normalizeRole } from '@/shared/lib/roles';
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
 
@@ -105,21 +106,6 @@ const STATE_ORDER: CDEState[] = ['wip', 'shared', 'published', 'archived'];
  * Editors and viewers can never promote, so we hide the action for them
  * rather than letting the click 400.
  */
-function normalizeRole(role: string | null | undefined): string {
-  const r = (role ?? 'viewer').trim().toLowerCase();
-  const aliases: Record<string, string> = {
-    estimator: 'editor',
-    quantity_surveyor: 'editor',
-    qs: 'editor',
-    user: 'editor',
-    superuser: 'admin',
-    owner: 'admin',
-    readonly: 'viewer',
-    guest: 'viewer',
-  };
-  return aliases[r] ?? r;
-}
-
 function canRoleCrossGate(role: string | null | undefined, fromState: CDEState): boolean {
   const r = normalizeRole(role);
   if (fromState === 'published') return r === 'admin'; // Gate C — archive
@@ -753,10 +739,10 @@ function LinkDocumentModal({
           <div className="relative">
             <Search
               size={14}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-content-quaternary"
+              className="absolute start-3 top-1/2 -translate-y-1/2 text-content-quaternary"
             />
             <input
-              className="h-9 w-full rounded-lg border border-border bg-surface-primary pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
+              className="h-9 w-full rounded-lg border border-border bg-surface-primary ps-9 pe-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
               placeholder={t('cde.search_documents', {
                 defaultValue: 'Search documents...',
               })}

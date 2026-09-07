@@ -269,7 +269,7 @@ export function RulePackLibrary({ projectId, testId = 'rule-pack-library' }: Rul
         <div className="relative ml-auto min-w-[220px] flex-1 max-w-sm">
           <Search
             size={14}
-            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-content-tertiary"
+            className="pointer-events-none absolute start-2.5 top-1/2 -translate-y-1/2 text-content-tertiary"
           />
           <input
             type="search"
@@ -279,7 +279,7 @@ export function RulePackLibrary({ projectId, testId = 'rule-pack-library' }: Rul
               defaultValue: 'Search packs…',
             })}
             data-testid={`${testId}-search`}
-            className="h-9 w-full rounded-lg border border-border-light bg-surface-primary pl-8 pr-3 text-[12px] text-content-primary placeholder:text-content-tertiary focus:border-oe-blue focus:outline-none focus:ring-2 focus:ring-oe-blue/30"
+            className="h-9 w-full rounded-lg border border-border-light bg-surface-primary ps-8 pe-3 text-[12px] text-content-primary placeholder:text-content-tertiary focus:border-oe-blue focus:outline-none focus:ring-2 focus:ring-oe-blue/30"
           />
         </div>
       </div>

@@ -143,6 +143,46 @@ def _fmt_currency(value: float, currency: str, decimals: int = 2) -> str:
     return f"{formatted} {currency}"
 
 
+def _tax_label(markup: Any, currency: str) -> str:
+    """A tax line's own name and rate, so a stack of several stays readable.
+
+    Two decimals rather than the one the other markup rows use, because a rate
+    like Brazil's 3.65 loses its meaning when rounded to 3.7.
+    """
+    if getattr(markup, "markup_type", "") == "percentage":
+        return f"{markup.name} ({_fmt(markup.percentage, 2, currency)}%)"
+    return str(markup.name)
+
+
+def _tax_split(boq_data: Any) -> tuple[list[Any], Decimal, Decimal, Decimal]:
+    """Split a priced bill into its pre-tax subtotal, its tax lines and its total.
+
+    The tax is already inside ``net_total``. ``get_boq_structured`` computes
+    ``net_total = direct_cost + sum(every active markup)`` and sets
+    ``grand_total`` to exactly that, and the markup calculator has no notion of
+    a tax category, so a VAT line is one markup among the others. The exports
+    here used to read that figure as if it were net OF tax and add a tax on top
+    of it, which overstated a German bill by the whole nineteen per cent and
+    printed a Gross Total the application itself never agreed with.
+
+    Two things follow and both are the caller's to honour: the pre-tax subtotal
+    is ``net_total`` MINUS the tax rather than plus, and the total of everything
+    is ``net_total`` unchanged.
+
+    ``tax_lines`` is every active tax markup rather than the first one found.
+    Brazil's stack carries two, PIS + COFINS and ISS, and stopping at the first
+    dropped the second from the tax section while its money stayed inside the
+    total, so the printed figures did not add up down the column.
+
+    Returns ``(tax_lines, tax_amount, subtotal_excluding_tax, gross_total)``.
+    """
+    markups = getattr(boq_data, "markups", None) or []
+    tax_lines = [m for m in markups if getattr(m, "category", "") == "tax" and m.is_active]
+    tax_amount = sum((Decimal(str(m.amount)) for m in tax_lines), Decimal("0"))
+    gross_total = Decimal(str(boq_data.net_total))
+    return tax_lines, tax_amount, gross_total - tax_amount, gross_total
+
+
 def _build_styles() -> dict[str, ParagraphStyle]:
     """Build the set of paragraph styles used throughout the PDF."""
     base = getSampleStyleSheet()
@@ -253,6 +293,34 @@ def _build_styles() -> dict[str, ParagraphStyle]:
             fontName=BOLD_FONT,
             fontSize=8,
             textColor=colors.HexColor("#333333"),
+            alignment=TA_RIGHT,
+            leading=10,
+        ),
+        # The header row of the position table and of the section summary. A
+        # TableStyle TEXTCOLOR cannot reach a cell that holds a Paragraph, so
+        # the colour of a header has to live on the header's own style. It did
+        # not, and the row was drawn in the colour of the text below it: on the
+        # #1a1a2e header fill, "Pos.", "Description" and "Unit" came out
+        # #1a1a2e, the same colour they were standing on.
+        #
+        # Sizes are the ones these two rows already rendered at, 9pt on the
+        # left and 8pt on the right to match their columns. The table style
+        # also carried a FONTSIZE of 9 for the whole row, equally unable to
+        # act; honouring that as well would resize the right hand headings and
+        # move the table without making anything more readable.
+        "table_header": ParagraphStyle(
+            "TableHeader",
+            parent=base["Normal"],
+            fontName=BOLD_FONT,
+            fontSize=9,
+            textColor=colors.white,
+        ),
+        "table_header_right": ParagraphStyle(
+            "TableHeaderRight",
+            parent=base["Normal"],
+            fontName=BOLD_FONT,
+            fontSize=8,
+            textColor=colors.white,
             alignment=TA_RIGHT,
             leading=10,
         ),
@@ -466,36 +534,26 @@ def _build_cover_page(
     )
     elements.append(Spacer(1, 4 * mm))
 
-    # Cost summary
+    # Cost summary. The tax is already inside ``net_total``, so the pre-tax
+    # subtotal is that figure minus the tax and the total of everything is that
+    # figure itself. See :func:`_tax_split`.
     direct_cost = boq_data.direct_cost
-    markup_total = boq_data.net_total - direct_cost
-    net_total = boq_data.net_total
+    tax_lines, tax_amount, subtotal_ex_tax, gross_total = _tax_split(boq_data)
+    markup_total = subtotal_ex_tax - Decimal(str(direct_cost))
 
-    # Find VAT markup if present
-    vat_rate = 0.0
-    for m in boq_data.markups:
-        if m.category == "tax" and m.is_active:
-            vat_rate = m.percentage
-            break
-
-    # If there's a tax markup, compute VAT and gross total
-    if vat_rate > 0:
-        net_total_d = Decimal(str(net_total))
-        vat_amount = net_total_d * Decimal(str(vat_rate)) / Decimal("100")
-        gross_total = net_total_d + vat_amount
-    else:
-        # No tax markup found - show net=gross with 0% VAT
-        vat_rate = 0.0
-        vat_amount = Decimal("0")
-        gross_total = net_total
-
-    summary_rows = [
+    summary_rows: list[tuple[str, str, bool]] = [
         ("Direct Cost:", _fmt_currency(direct_cost, currency), False),
-        ("Markups:", _fmt_currency(markup_total, currency), False),
-        ("Net Total:", _fmt_currency(net_total, currency), False),
-        (f"VAT {_fmt(vat_rate, 0)}%:", _fmt_currency(vat_amount, currency), False),
-        ("Gross Total:", _fmt_currency(gross_total, currency), True),
+        ("Markups (excl. tax):", _fmt_currency(markup_total, currency), False),
+        ("Net Total (excl. tax):", _fmt_currency(subtotal_ex_tax, currency), False),
     ]
+    # One row per tax line, named and rated as the bill carries it. A stack with
+    # no tax at all still prints a zero row, so the summary keeps its shape and
+    # an untaxed bill is visibly untaxed rather than silently missing a row.
+    tax_rows = [(f"{_tax_label(m, currency)}:", Decimal(str(m.amount))) for m in tax_lines]
+    if not tax_rows:
+        tax_rows = [("VAT 0%:", Decimal("0"))]
+    summary_rows.extend((label, _fmt_currency(amount, currency), False) for label, amount in tax_rows)
+    summary_rows.append(("Gross Total:", _fmt_currency(gross_total, currency), True))
 
     summary_table_data = []
     for label, value, is_total in summary_rows:
@@ -607,12 +665,12 @@ def _build_boq_table(
 
     # Table header row
     header_row = [
-        Paragraph("<b>Pos.</b>", styles["section_header"]),
-        Paragraph("<b>Description</b>", styles["section_header"]),
-        Paragraph("<b>Unit</b>", styles["section_header"]),
-        Paragraph("<b>Qty</b>", styles["cell_bold_right"]),
-        Paragraph(f"<b>Rate ({currency})</b>", styles["cell_bold_right"]),
-        Paragraph(f"<b>Total ({currency})</b>", styles["cell_bold_right"]),
+        Paragraph("<b>Pos.</b>", styles["table_header"]),
+        Paragraph("<b>Description</b>", styles["table_header"]),
+        Paragraph("<b>Unit</b>", styles["table_header"]),
+        Paragraph("<b>Qty</b>", styles["table_header_right"]),
+        Paragraph(f"<b>Rate ({currency})</b>", styles["table_header_right"]),
+        Paragraph(f"<b>Total ({currency})</b>", styles["table_header_right"]),
     ]
 
     table_data: list[list[Any]] = [header_row]
@@ -733,9 +791,11 @@ def _build_boq_table(
     row_styles.append((row_idx, "total_line"))
     row_idx += 1
 
-    # Markup lines
+    # Markup lines. Tax is not one of them here: it is printed below the pre-tax
+    # subtotal, which is where the reader of a bill looks for it, and printing it
+    # in both places counted its money twice.
     for markup in boq_data.markups:
-        if not markup.is_active:
+        if not markup.is_active or markup.category == "tax":
             continue
         label = markup.name
         if markup.markup_type == "percentage":
@@ -753,47 +813,38 @@ def _build_boq_table(
         row_styles.append((row_idx, "markup"))
         row_idx += 1
 
-    # Net total
+    # Net total, before tax, then the tax lines, then the total of everything.
+    # See :func:`_tax_split` for why the tax is subtracted and not added.
+    tax_lines, tax_amount, subtotal_ex_tax, gross_total = _tax_split(boq_data)
     table_data.append(
         [
             "",
             "",
-            Paragraph("<b>Net Total:</b>", styles["cell_bold_right"]),
+            Paragraph("<b>Net Total (excl. tax):</b>", styles["cell_bold_right"]),
             "",
             "",
-            Paragraph(f"<b>{_fc(boq_data.net_total)}</b>", styles["cell_bold_right"]),
+            Paragraph(f"<b>{_fc(subtotal_ex_tax)}</b>", styles["cell_bold_right"]),
         ]
     )
     row_styles.append((row_idx, "grand_total"))
     row_idx += 1
 
-    # VAT and gross total
-    vat_rate = 0.0
-    for m in boq_data.markups:
-        if m.category == "tax" and m.is_active:
-            vat_rate = m.percentage
-            break
-
-    net_total_d = Decimal(str(boq_data.net_total))
-    if vat_rate > 0:
-        vat_amount = net_total_d * Decimal(str(vat_rate)) / Decimal("100")
-    else:
-        vat_amount = Decimal("0")
-
-    gross_total = net_total_d + vat_amount
-
-    table_data.append(
-        [
-            "",
-            "",
-            Paragraph(f"VAT {_fv(vat_rate, 0)}%:", styles["cell_right"]),
-            "",
-            "",
-            Paragraph(_fc(vat_amount), styles["cell_right"]),
-        ]
-    )
-    row_styles.append((row_idx, "vat"))
-    row_idx += 1
+    tax_rows = [(f"{_tax_label(m, currency)}:", Decimal(str(m.amount))) for m in tax_lines]
+    if not tax_rows:
+        tax_rows = [("VAT 0%:", Decimal("0"))]
+    for tax_label, tax_line_amount in tax_rows:
+        table_data.append(
+            [
+                "",
+                "",
+                Paragraph(tax_label, styles["cell_right"]),
+                "",
+                "",
+                Paragraph(_fc(tax_line_amount), styles["cell_right"]),
+            ]
+        )
+        row_styles.append((row_idx, "vat"))
+        row_idx += 1
 
     table_data.append(
         [
@@ -813,11 +864,11 @@ def _build_boq_table(
 
     # Base table style
     style_commands: list[Any] = [
-        # Header row
+        # Header row. The fill only: every cell in this table is a Paragraph
+        # and carries its own face, size and colour, so a TEXTCOLOR, FONTNAME
+        # or FONTSIZE command here would read as authoritative and change
+        # nothing on the page.
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), BOLD_FONT),
-        ("FONTSIZE", (0, 0), (-1, 0), 9),
         # Global
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("TOPPADDING", (0, 0), (-1, -1), 2 * mm),
@@ -1104,10 +1155,10 @@ def generate_boq_pdf_simple(
 
     # Build a compact section summary table
     header_row = [
-        Paragraph("<b>Section</b>", styles["section_header"]),
-        Paragraph("<b>Description</b>", styles["section_header"]),
-        Paragraph("<b>Items</b>", styles["cell_bold_right"]),
-        Paragraph("<b>Subtotal</b>", styles["cell_bold_right"]),
+        Paragraph("<b>Section</b>", styles["table_header"]),
+        Paragraph("<b>Description</b>", styles["table_header"]),
+        Paragraph("<b>Items</b>", styles["table_header_right"]),
+        Paragraph("<b>Subtotal</b>", styles["table_header_right"]),
     ]
     summary_col_widths = [35 * mm, USABLE_WIDTH - 35 * mm - 25 * mm - 35 * mm, 25 * mm, 35 * mm]
     table_data: list[list[Any]] = [header_row]
@@ -1135,10 +1186,8 @@ def generate_boq_pdf_simple(
 
     summary_table = Table(table_data, colWidths=summary_col_widths, repeatRows=1)
     summary_style_commands: list[Any] = [
+        # The fill only, for the same reason as the position table above.
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), BOLD_FONT),
-        ("FONTSIZE", (0, 0), (-1, 0), 9),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("TOPPADDING", (0, 0), (-1, -1), 2 * mm),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm),
@@ -1163,8 +1212,10 @@ def generate_boq_pdf_simple(
         ]
     )
 
+    # Tax is excluded here and printed under the pre-tax subtotal instead, so
+    # its money is stated once. See :func:`_tax_split`.
     for markup in boq_data.markups:
-        if not markup.is_active:
+        if not markup.is_active or markup.category == "tax":
             continue
         label = markup.name
         if markup.markup_type == "percentage":
@@ -1176,29 +1227,24 @@ def generate_boq_pdf_simple(
             ]
         )
 
+    tax_lines, tax_amount, subtotal_ex_tax, gross_total = _tax_split(boq_data)
     cost_rows.append(
         [
-            Paragraph("<b>Net Total:</b>", styles["cell_bold_right"]),
-            Paragraph(f"<b>{_fmt_currency(boq_data.net_total, currency)}</b>", styles["cell_bold_right"]),
+            Paragraph("<b>Net Total (excl. tax):</b>", styles["cell_bold_right"]),
+            Paragraph(f"<b>{_fmt_currency(subtotal_ex_tax, currency)}</b>", styles["cell_bold_right"]),
         ]
     )
 
-    vat_rate = 0.0
-    for m in boq_data.markups:
-        if m.category == "tax" and m.is_active:
-            vat_rate = m.percentage
-            break
-
-    net_total_d = Decimal(str(boq_data.net_total))
-    vat_amount = net_total_d * Decimal(str(vat_rate)) / Decimal("100") if vat_rate > 0 else Decimal("0")
-    gross_total = net_total_d + vat_amount
-
-    cost_rows.append(
-        [
-            Paragraph(f"VAT {_fmt(vat_rate, 0, currency)}%:", styles["cell_right"]),
-            Paragraph(_fmt_currency(vat_amount, currency), styles["cell_right"]),
-        ]
-    )
+    tax_rows = [(f"{_tax_label(m, currency)}:", Decimal(str(m.amount))) for m in tax_lines]
+    if not tax_rows:
+        tax_rows = [("VAT 0%:", Decimal("0"))]
+    for tax_label, tax_line_amount in tax_rows:
+        cost_rows.append(
+            [
+                Paragraph(tax_label, styles["cell_right"]),
+                Paragraph(_fmt_currency(tax_line_amount, currency), styles["cell_right"]),
+            ]
+        )
     cost_rows.append(
         [
             Paragraph(f"<b>Gross Total ({currency}):</b>", styles["cell_bold_right"]),

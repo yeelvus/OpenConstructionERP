@@ -42,6 +42,7 @@ import {
   Receipt,
   ChevronDown,
   MessagesSquare,
+  MapPin,
 } from 'lucide-react';
 import {
   Button, Card, CardHeader, CardContent, Badge, Skeleton, EmptyState, Breadcrumb,
@@ -79,8 +80,9 @@ import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useRecentStore } from '@/stores/useRecentStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useToastStore } from '@/stores/useToastStore';
+import { useModuleStore } from '@/stores/useModuleStore';
 import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
-import { formatCurrency as formatMoney } from '@/shared/lib/money';
+import { formatCurrency as formatMoney, toNum } from '@/shared/lib/money';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -101,7 +103,14 @@ interface BOQDetail {
   description: string;
   status: string;
   positions: PositionSummary[];
-  grand_total: number;
+  // Decimal-as-string on the wire. `PositionResponse` and `BOQResponse` both
+  // carry `@field_serializer(..., when_used="json")` returning a plain decimal
+  // string, so a large total round-trips without a float eating its tail.
+  // Declaring these `number` here was a lie the compiler then enforced against
+  // us: `+=` type-checked and concatenated, and `=== 0` type-checked and never
+  // matched. Both bugs below came from this pair of lines, so the type says
+  // what the wire says and the arithmetic goes through `toNum`.
+  grand_total: number | string;
   created_at: string;
   updated_at: string;
 }
@@ -109,10 +118,45 @@ interface BOQDetail {
 interface PositionSummary {
   id: string;
   description: string;
-  quantity: number;
-  unit_rate: number;
-  total: number;
+  quantity: number | string;
+  unit_rate: number | string;
+  total: number | string;
   validation_status: string;
+}
+
+/**
+ * Sum the grand totals of several estimates.
+ *
+ * `grand_total` arrives as a decimal string, so `total += detail.grand_total`
+ * concatenates instead of adding: starting from `0`, two estimates produce
+ * `"0126150861.5085944498.86"`, which formats to `NaN` and reaches the screen
+ * as the currency code followed by `NaN`. A single-estimate project hides it,
+ * because `0 + "2264760.32"` coerces and looks right, so the fault only
+ * appears from the second estimate onward and can survive for years.
+ */
+export function sumBoqGrandTotals(
+  details: readonly Pick<BOQDetail, 'grand_total'>[],
+): number {
+  let sum = 0;
+  for (const detail of details) sum += toNum(detail.grand_total);
+  return sum;
+}
+
+/**
+ * Is this position still unpriced?
+ *
+ * The rate of an unpriced position is the *string* `"0"`, which is the column
+ * default. `!"0"` is false because a non-empty string is truthy, and
+ * `"0" === 0` is false because the types differ, so the obvious spelling of
+ * this test agrees that nothing is unpriced no matter how much is. That made
+ * the "every position is priced" health check pass on a project where not one
+ * position had a rate: a green check with no measurement behind it, which is
+ * worse than a red one.
+ */
+export function isPositionUnpriced(
+  unitRate: PositionSummary['unit_rate'] | null | undefined,
+): boolean {
+  return toNum(unitRate) === 0;
 }
 
 interface ImportResult {
@@ -242,10 +286,29 @@ const statusVariant: Record<string, 'neutral' | 'blue' | 'success' | 'warning' |
   archived: 'warning',
 };
 
+// The second mirror of the backend's classification registry, and the one
+// that reads a stored value back rather than offering one. It has to name
+// every standard the picker on CreateProjectPage can write, or a project
+// created there shows a blank where its standard should be.
 const standardLabels: Record<string, string> = {
   din276: 'DIN 276',
   nrm: 'NRM',
   masterformat: 'MasterFormat',
+  uniformat: 'UniFormat',
+  uniclass: 'Uniclass',
+  omniclass: 'OmniClass',
+  gb50500: 'GB/T',
+  tetelrend: 'Tételrend',
+  gesn: 'GESN / FER',
+  bc3: 'BC3',
+  untec: 'UNTEC',
+  voci: 'VOCI',
+  onorm: 'ÖNORM',
+  gaeb: 'GAEB',
+  sinapi: 'SINAPI',
+  sekisan: 'Sekisan',
+  kbim: 'KBIM',
+  birimfiyat: 'Birim Fiyat',
 };
 
 // ---------------------------------------------------------------------------
@@ -299,7 +362,7 @@ function computeProjectHealth(
     for (const detail of boqDetails) {
       for (const pos of detail.positions) {
         totalPositions++;
-        if (!pos.unit_rate || pos.unit_rate === 0) unpricedCount++;
+        if (isPositionUnpriced(pos.unit_rate)) unpricedCount++;
         if (pos.validation_status === 'error') errorCount++;
         if (pos.validation_status && pos.validation_status !== 'pending') {
           validatedCount++;
@@ -486,29 +549,44 @@ function ProjectPhaseRibbon({ phase }: { phase: string | null }) {
 }
 
 /**
- * ProjectLocationPanel — full-width panel combining an interactive OSM
+ * ProjectLocationPanel — full-width panel combining an interactive street
  * map (left, 60%) with an 18-day weather forecast (right, 40%).  Each
- * half is independently toggleable via widget settings, and the panel
- * collapses entirely if the project has no address and both widgets
- * are off.
+ * half is independently toggleable via widget settings.
+ *
+ * WHAT COUNTS AS "LOCATED". Either a text address (street / city / country,
+ * which the map geocodes) or stored ``lat``/``lng``. Both are checked
+ * because they arrive independently: the create form writes text plus
+ * coordinates together, but a bundle import or a plain API write can set
+ * coordinates with no text at all, and gating the panel on the text alone
+ * hid the map for projects that were perfectly well located.
+ *
+ * A project with neither gets the "no location set" state rather than no
+ * panel. The panel used to disappear, which reads as "this build has no
+ * project map" instead of "this project has no location yet" - the first is
+ * false and unfixable-looking, the second is true. The map is never centred
+ * on a stand-in default: a map pointing at 0,0 or at some capital city is a
+ * wrong answer wearing a right answer's face.
  */
 function ProjectLocationPanel({ project }: { project: Project }) {
+  const { t } = useTranslation();
   const mapEnabled = useWidgetSettingsStore((s) => s.projectMapEnabled);
   const weatherEnabled = useWidgetSettingsStore((s) => s.projectWeatherEnabled);
   const queryClient = useQueryClient();
-  const storedLat =
-    project.address?.lat != null && Number.isFinite(project.address.lat)
-      ? project.address.lat
-      : null;
-  const storedLng =
-    project.address?.lng != null && Number.isFinite(project.address.lng)
-      ? project.address.lng
-      : null;
-  const [resolved, setResolved] = useState<{ lat: number; lng: number } | null>(
-    storedLat != null && storedLng != null
+  // A stored coordinate counts only when it is a real number. Zero is a valid
+  // longitude (Greenwich) and a valid latitude (the equator), so a truthiness
+  // test drops sites that sit on either line, and it drops them halfway: the
+  // map still plots the point while the weather half sees no location at all.
+  const storedLat = project.address?.lat;
+  const storedLng = project.address?.lng;
+  const storedPoint =
+    typeof storedLat === 'number' &&
+    Number.isFinite(storedLat) &&
+    typeof storedLng === 'number' &&
+    Number.isFinite(storedLng)
       ? { lat: storedLat, lng: storedLng }
-      : null,
-  );
+      : null;
+
+  const [resolved, setResolved] = useState<{ lat: number; lng: number } | null>(storedPoint);
 
   // Keep weather/map pin in sync when settings save new coordinates.
   useEffect(() => {
@@ -521,7 +599,7 @@ function ProjectLocationPanel({ project }: { project: Project }) {
   // renders (and other users of the same project) don't re-hit
   // Nominatim.  Only fires when we have an address but no stored
   // coords yet, and stops after the first successful write.
-  const [persisted, setPersisted] = useState(storedLat != null && storedLng != null);
+  const [persisted, setPersisted] = useState(storedPoint !== null);
   const persistCoords = useMutation({
     mutationFn: (coords: { lat: number; lng: number }) =>
       apiPatch(`/v1/projects/${project.id}`, {
@@ -543,10 +621,27 @@ function ProjectLocationPanel({ project }: { project: Project }) {
     (project.address.street || project.address.city || project.address.country)
   );
   // Coords-only pins (DMS paste without street text) still drive map + weather.
-  const hasCoords = storedLat != null && storedLng != null;
-  const hasLocation = hasTextAddress || hasCoords;
+  const hasCoords = storedPoint !== null;
 
-  if (!hasLocation || (!mapEnabled && !weatherEnabled)) return null;
+  if (!mapEnabled && !weatherEnabled) return null;
+
+  if (!hasTextAddress && !hasCoords) {
+    // Weather needs a point, so it stays hidden here; the empty state is the
+    // map's alone, and with the map widget off there is nothing left to show.
+    if (!mapEnabled) return null;
+    return (
+      <Card padding="lg">
+        <EmptyState
+          icon={<MapPin size={28} strokeWidth={1.5} />}
+          title={t('projects.map_no_location', { defaultValue: 'No location set' })}
+          description={t('projects.map_no_location_hint', {
+            defaultValue:
+              'This project has no site address or coordinates yet, so there is nothing to place on the map.',
+          })}
+        />
+      </Card>
+    );
+  }
 
   const addressLabel = [
     project.address?.street,
@@ -554,7 +649,7 @@ function ProjectLocationPanel({ project }: { project: Project }) {
     project.address?.country,
   ]
     .filter(Boolean)
-    .join(', ') || (hasCoords ? `${storedLat!.toFixed(5)}, ${storedLng!.toFixed(5)}` : '');
+    .join(', ') || (storedPoint ? `${storedPoint.lat.toFixed(5)}, ${storedPoint.lng.toFixed(5)}` : '');
 
   const handleResolved = (coords: { lat: number; lng: number }) => {
     setResolved(coords);
@@ -571,7 +666,7 @@ function ProjectLocationPanel({ project }: { project: Project }) {
       className={clsx(
         'grid gap-3 items-stretch',
         mapEnabled && weatherEnabled
-          ? 'grid-cols-1 lg:grid-cols-[3fr_2fr]'
+          ? 'grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]'
           : 'grid-cols-1',
       )}
     >
@@ -590,6 +685,13 @@ function ProjectLocationPanel({ project }: { project: Project }) {
             // to match the (now 3-row) weather block. When the map is
             // shown alone, fall back to a fixed height so it doesn't
             // collapse to zero.
+            //
+            // That fallback only reaches the element because ProjectMap
+            // stands its own ``h-full`` default down when this prop states a
+            // height. For a while it did not, both class names went out
+            // together, the stylesheet order picked ``h-full``, and this map
+            // was 2px tall against an auto-height parent while looking
+            // correct in the JSX. Do not reintroduce a default alongside it.
             weatherEnabled ? 'h-full min-h-[20rem]' : 'h-[32rem]',
           )}
         />
@@ -994,7 +1096,7 @@ function ImportDialog({
                     </p>
                   </div>
                   {!mutation.isPending && (
-                    <button
+                    <button aria-label={t('common.remove', { defaultValue: 'Remove' })}
                       onClick={() => {
                         setSelectedFile(null);
                         mutation.reset();
@@ -1270,6 +1372,10 @@ export function ProjectDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
+  // `/collaboration` is served only by the collaboration plugin module. With
+  // the module off the route does not exist and the button below would fall
+  // through to the catch-all 404, so the button goes with it.
+  const isCollaborationEnabled = useModuleStore((s) => s.isModuleEnabled('collaboration'));
 
   const [importTarget, setImportTarget] = useState<{
     boqId: string;
@@ -1468,13 +1574,12 @@ export function ProjectDetailPage() {
       };
     }
 
-    let totalBudget = 0;
+    const totalBudget = sumBoqGrandTotals(boqDetails);
     let totalPositions = 0;
     let validatedCount = 0;
     let passedCount = 0;
 
     for (const detail of boqDetails) {
-      totalBudget += detail.grand_total;
       totalPositions += detail.positions.length;
       for (const pos of detail.positions) {
         if (pos.validation_status && pos.validation_status !== 'pending') {
@@ -1716,7 +1821,7 @@ export function ProjectDetailPage() {
         className={clsx(
           'grid gap-3 items-stretch',
           !isWidgetHidden('project-info') && !isWidgetHidden('health-bar')
-            ? 'grid-cols-1 lg:grid-cols-[3fr_2fr]'
+            ? 'grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]'
             : 'grid-cols-1',
         )}
       >
@@ -2712,15 +2817,17 @@ export function ProjectDetailPage() {
                         Collaboration hub resolves the active project, which
                         this page has already set). Sits beside Documents so
                         it reads as a peer destination. */}
-                    <Button
-                      variant="secondary"
-                      size="md"
-                      className="w-full justify-start"
-                      icon={<MessagesSquare size={14} />}
-                      onClick={() => navigate('/collaboration')}
-                    >
-                      {t('projects.dash_discussion_link', { defaultValue: 'Discussion' })}
-                    </Button>
+                    {isCollaborationEnabled && (
+                      <Button
+                        variant="secondary"
+                        size="md"
+                        className="w-full justify-start"
+                        icon={<MessagesSquare size={14} />}
+                        onClick={() => navigate('/collaboration')}
+                      >
+                        {t('projects.dash_discussion_link', { defaultValue: 'Discussion' })}
+                      </Button>
+                    )}
                     <Button
                       variant="secondary"
                       size="md"
@@ -2866,7 +2973,7 @@ export function ProjectDetailPage() {
                 {boqs.map((boq) => {
                   const detail = detailMap.get(boq.id);
                   const posCount = detail?.positions.length ?? 0;
-                  const grandTotal = detail?.grand_total ?? 0;
+                  const grandTotal = toNum(detail?.grand_total);
 
                   return (
                     <div
@@ -2874,7 +2981,7 @@ export function ProjectDetailPage() {
                       className="flex items-center gap-4 px-6 py-4 transition-colors hover:bg-surface-secondary group"
                     >
                       {/* Icon */}
-                      <button
+                      <button aria-label={t('projects.open_boq', { name: boq.name, defaultValue: 'Open {{name}}' })}
                         onClick={() => navigate(`/boq/${boq.id}`)}
                         className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-oe-blue-subtle text-oe-blue-text transition-transform group-hover:scale-105"
                       >

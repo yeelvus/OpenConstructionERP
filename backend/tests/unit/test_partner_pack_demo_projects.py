@@ -21,6 +21,11 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.classification_registry import (
+    CLASSIFICATION_STANDARD_LABELS,
+    KNOWN_CLASSIFICATION_STANDARDS,
+    resolve_standard,
+)
 from app.core.demo_packs import PACK_TEMPLATES
 from app.core.demo_projects import (
     DEMO_CATALOG,
@@ -35,7 +40,20 @@ from app.core.demo_projects import (
 # 50500-2013 demo uses the standard Chinese measurement words: "项" (xiang,
 # lump-sum work item, like "lsum"), "台" (tai, a machine/equipment set), "樘"
 # (tang, a door/window leaf), "组" (zu, a group/set), "套" (tao, a set/system),
-# "根" (gen, a long single piece such as a pile or rod).
+# "根" (gen, a long single piece such as a pile or rod). Hungary uses the
+# tetelrend words "db" (darab, piece), "klt" (keszlet, set), "ho" (month) and
+# "nap" (day), plus "kWp" for photovoltaic capacity. Russia uses GESN measurers,
+# which carry the norm multiplier in the unit itself: "100 m2" means the rate is
+# per hundred square metres, which is how the resource-index method prices a
+# norm, so the scaled forms are units in their own right and not a formatting
+# accident. Cyrillic month and Latin "mes" look near-identical and are two
+# separate tokens on purpose. The Latin one is a single token serving both
+# Portuguese and Spanish, which is why the Spanish block below does not repeat
+# it. Six more markets joined with their own
+# measurers rather than translated ones, which is the whole reason this
+# allowlist grows by market instead of being replaced with a generic set: the
+# Spanish, Dutch, Polish, Turkish, Japanese and Korean blocks below each carry
+# the word a local estimator would actually read on the line.
 _ALLOWED_UNITS = {
     "m2",
     "m3",
@@ -62,6 +80,65 @@ _ALLOWED_UNITS = {
     "组",
     "套",
     "根",
+    # Hungary (tetelrend)
+    "db",
+    "klt",
+    "hó",
+    "nap",
+    "kWp",
+    # Russia (GESN measurers)
+    "шт",
+    "компл",
+    "м3",
+    "мес",
+    "т",
+    "100 м",
+    "100 м2",
+    "100 м3",
+    "100 шт",
+    "100 компл",
+    "1000 м2",
+    "1000 м3",
+    # Italy (computo metrico estimativo)
+    "cad",  # cadauno
+    "a corpo",  # a lump sum, the Italian "lsum"; the space is part of the token
+    "mese",
+    # Spain (mediciones y presupuesto)
+    "u",  # unidad
+    "pa",  # partida alzada, a lump-sum item
+    # Spanish "mes" is the same Latin token as the Brazilian one above and is
+    # already allowed; it is listed once because it is one token, unlike the
+    # Cyrillic "мес" which only looks the same.
+    # Netherlands (RAW / STABU)
+    "st",  # stuks
+    "post",  # a lump-sum post
+    "mnd",  # maand
+    "ton",  # also used by the Istanbul pack
+    # Poland (KNR kosztorys)
+    "szt",  # sztuka
+    "kpl",  # komplet
+    "mies",  # miesiąc
+    # Türkiye (birim fiyat)
+    "adet",
+    "takım",  # a set
+    # Japan (sekisan). "台" is already allowed above, from the Chinese set.
+    "式",  # shiki, a lump-sum item
+    "基",  # ki, a founded or standing installation
+    "本",  # hon, a long slender object
+    "箇所",  # kasho, a location
+    "面",  # men, a flat face or panel
+    # South Korea (pumsem)
+    "EA",
+    "식",  # sik, a lump-sum item
+    "개소",  # gaeso, a location
+    "대",  # dae, a machine or vehicle
+    "대·월",  # unit-months, how plant hire is measured rather than a typo
+    "세대",  # sedae, a dwelling unit
+    # Korean "본" (U+BCF8) is the hangul spelling of the same word the Japanese
+    # block writes as "本" (U+672C). Two codepoints, one meaning, and the pair
+    # is as easy to mistake for one token as the Cyrillic and Latin months
+    # above. Listing only one of them silently rejects the other market.
+    "본",
 }
 
 _CATALOG_BY_ID = {c["demo_id"]: c for c in DEMO_CATALOG}
@@ -159,3 +236,98 @@ def test_pack_template_is_substantial_and_valid(template) -> None:  # noqa: ANN0
             assert qty > 0, f"{template.demo_id} {ordinal}: non-positive qty {qty}"
             assert rate >= 0, f"{template.demo_id} {ordinal}: negative rate {rate}"
             assert desc.strip(), f"{template.demo_id} {ordinal}: empty description"
+
+
+# ── The classification standard a demo declares ───────────────────────────
+#
+# ``resolve_standard`` returns the requested standard when the registry knows
+# it and otherwise falls back, first to whatever the region maps to and then
+# to the global default, saying nothing either way. So a template can declare
+# one standard, be stored under another, and look correct from every angle
+# except a direct comparison.
+
+#: Demos whose declared standard the registry does not know.
+#:
+#: ``hospital-lyon`` declares ``dpgf`` and is stored as ``untec``, because
+#: ``COUNTRY_TO_STANDARD`` maps FR to untec and dpgf is in neither
+#: ``KNOWN_CLASSIFICATION_STANDARDS`` (13 names) nor
+#: ``CLASSIFICATION_STANDARD_LABELS`` (18 names).
+#:
+#: Everything else about that demo is dpgf and is coherent: its 119 priced
+#: lines are keyed ``classification["dpgf"]``, its rule set is ``dpgf``, and
+#: ``dpgf.lot_required`` reads that exact key. The standard it is stored under,
+#: untec, has no rules in the engine at all. So the question this entry holds
+#: open is which of the two France should classify to, and that is a product
+#: decision rather than something a test may settle.
+#:
+#: Named rather than skipped by a wildcard, so a second demo cannot join the
+#: same silence, and ``test_the_standard_allowlist_still_describes_the_tree``
+#: fails the day the registry learns dpgf.
+_DEMOS_WHOSE_STANDARD_DOES_NOT_RESOLVE = {"hospital-lyon"}
+
+
+def test_every_demo_standard_resolves_to_itself() -> None:
+    """A demo must be stored under the standard it declares.
+
+    Not cosmetic: the standard drives which classification the project page
+    labels, which codes the pickers offer, and what a reader believes the bill
+    is written to.
+    """
+    drifted: dict[str, str] = {}
+    for template in PACK_TEMPLATES:
+        declared = template.classification_standard
+        if template.demo_id in _DEMOS_WHOSE_STANDARD_DOES_NOT_RESOLVE:
+            continue
+        resolved = resolve_standard(declared, region=template.region)
+        if resolved.standard != declared:
+            drifted[template.demo_id] = f"declares {declared!r}, stored as {resolved.standard!r} via {resolved.source}"
+
+    assert not drifted, (
+        "these demos are stored under a classification standard they do not declare, "
+        "silently, because the registry does not know the name they asked for: "
+        + "; ".join(f"{demo} ({why})" for demo, why in sorted(drifted.items()))
+    )
+
+
+def test_the_standard_allowlist_still_describes_the_tree() -> None:
+    """The allowlist must not outlive the thing it describes.
+
+    Both directions: an entry the registry has since learned has to leave, and
+    an entry naming a demo that no longer exists has to leave too.
+    """
+    demo_ids = {t.demo_id for t in PACK_TEMPLATES}
+    gone = _DEMOS_WHOSE_STANDARD_DOES_NOT_RESOLVE - demo_ids
+    assert not gone, f"{sorted(gone)} is allowlisted and is not a shipped demo any more. Remove it."
+
+    still_drifting = set()
+    for template in PACK_TEMPLATES:
+        if template.demo_id not in _DEMOS_WHOSE_STANDARD_DOES_NOT_RESOLVE:
+            continue
+        resolved = resolve_standard(template.classification_standard, region=template.region)
+        if resolved.standard != template.classification_standard:
+            still_drifting.add(template.demo_id)
+
+    settled = _DEMOS_WHOSE_STANDARD_DOES_NOT_RESOLVE - still_drifting
+    assert not settled, (
+        f"{sorted(settled)} now resolves to the standard it declares. Remove it from "
+        "_DEMOS_WHOSE_STANDARD_DOES_NOT_RESOLVE so the check starts guarding it."
+    )
+
+
+def test_the_registry_and_its_labels_are_two_different_lists() -> None:
+    """Pin the gap, because reading either one alone gives a wrong answer.
+
+    ``KNOWN_CLASSIFICATION_STANDARDS`` is what a project can be stored under.
+    ``CLASSIFICATION_STANDARD_LABELS`` is what the UI can name. The second is
+    the larger, and the difference is legacy names plus two, gaeb and onorm,
+    that have rule sets in the engine while no project can be classified to
+    them. A reader who measures "how many standards do we support" against
+    the wrong list is out by five.
+    """
+    known = set(KNOWN_CLASSIFICATION_STANDARDS)
+    labelled = set(CLASSIFICATION_STANDARD_LABELS)
+    assert known < labelled, "the labels no longer cover every storable standard, which is the wrong direction"
+    assert labelled - known == {"gaeb", "omniclass", "onorm", "uniclass", "uniformat"}, (
+        "the set of labelled-but-unstorable standards changed: "
+        f"{sorted(labelled - known)}. If one became storable, the picker should offer it."
+    )

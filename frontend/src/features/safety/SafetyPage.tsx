@@ -6,6 +6,7 @@ import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { fetchAllPages, normalizeListResponse } from '@/shared/lib/apiHelpers';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import {
   ShieldAlert,
   Eye,
@@ -761,8 +762,8 @@ export function SafetyPage() {
   // nothing rather than inventing rows to fill it.
   const { data: insightIncidents = [] } = useQuery({
     queryKey: ['safety-incidents', projectId],
-    queryFn: () => apiGet<IncidentWire[]>(`/v1/safety/incidents/?project_id=${projectId}`),
-    select: (d): Incident[] => normalizeListResponse<IncidentWire>(d).map(normaliseIncident),
+    queryFn: () => apiGet<Page<IncidentWire>>(`/v1/safety/incidents/?project_id=${projectId}`),
+    select: (d): Incident[] => d.items.map(normaliseIncident),
     enabled: !!projectId,
   });
   const insights = useModuleInsights('safety', { defaultOpen: true });
@@ -1068,7 +1069,7 @@ function IncidentsTab({
   });
 
   const {
-    data: incidents,
+    data: incidentsPage,
     isLoading,
     isError,
     error,
@@ -1076,12 +1077,16 @@ function IncidentsTab({
   } = useQuery({
     queryKey: ['safety-incidents', projectId],
     queryFn: () =>
-      apiGet<IncidentWire[]>(
+      apiGet<Page<IncidentWire>>(
         `/v1/safety/incidents/?project_id=${projectId}`,
       ),
-    select: (d): Incident[] =>
-      normalizeListResponse<IncidentWire>(d).map(normaliseIncident),
+    // The envelope is kept rather than flattened here: the register below needs
+    // the rows, and the notice at the foot of it needs the count they came out
+    // of. Flattening to an array throws away the second one at the point it is
+    // cheapest to keep.
+    select: (d): Page<Incident> => ({ ...d, items: d.items.map(normaliseIncident) }),
   });
+  const incidents = incidentsPage?.items;
 
   const filtered = useMemo(() => {
     if (!incidents) return [];
@@ -1145,7 +1150,7 @@ function IncidentsTab({
       {/* Search + Export + New */}
       <div className="p-4 border-b border-border-light flex items-center gap-3">
         <div className="relative max-w-sm flex-1">
-          <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-content-tertiary">
+          <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center pl-3 text-content-tertiary">
             <Search size={16} />
           </div>
           <input
@@ -1156,7 +1161,7 @@ function IncidentsTab({
               defaultValue: 'Search incidents...',
             })}
             aria-label={t('safety.search_incidents', { defaultValue: 'Search incidents...' })}
-            className="h-10 w-full rounded-lg border border-border bg-surface-primary pl-10 pr-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
+            className="h-10 w-full rounded-lg border border-border bg-surface-primary ps-10 pe-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
           />
         </div>
         <Button
@@ -1357,6 +1362,10 @@ function IncidentsTab({
           </div>
         ))}
       </div>
+      {/* No reader of this route sends a limit, so the page is the route's
+          default fifty. The search box narrows what arrived, not the register,
+          so this states how much of the register that was. */}
+      {incidentsPage && <TruncationNotice page={incidentsPage} className="px-4 pb-4" />}
     </Card>
     )}
 
@@ -1702,7 +1711,7 @@ function ObservationsTab({ projectId }: { projectId: string }) {
       {/* Search + Export + New */}
       <div className="p-4 border-b border-border-light flex items-center gap-3">
         <div className="relative max-w-sm flex-1">
-          <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-content-tertiary">
+          <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center pl-3 text-content-tertiary">
             <Search size={16} />
           </div>
           <input
@@ -1713,7 +1722,7 @@ function ObservationsTab({ projectId }: { projectId: string }) {
               defaultValue: 'Search observations...',
             })}
             aria-label={t('safety.search_observations', { defaultValue: 'Search observations...' })}
-            className="h-10 w-full rounded-lg border border-border bg-surface-primary pl-10 pr-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
+            className="h-10 w-full rounded-lg border border-border bg-surface-primary ps-10 pe-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
           />
         </div>
         <Button

@@ -28,7 +28,13 @@
  */
 import { test, expect, type Page, type ConsoleMessage } from '@playwright/test';
 import * as path from 'path';
+import { fileURLToPath } from 'node:url';
 import { injectFakeAuth } from './helpers';
+
+// __dirname does not exist under "type": "module"; derived from import.meta.url
+// the same way the neighbours in this directory do it.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const ARTIFACT_DIR = path.resolve(
   __dirname,
@@ -168,8 +174,18 @@ test.describe('R6: zero-width Unicode regression', () => {
         /* networkidle can hang for SSE-using pages — best-effort only */
       });
 
-      // ── 1. Static check: no zero-width chars in rendered text ────────────
+      // ── 0. The page has to have rendered something ───────────────────────
+      // Both assertions in this test are about absence: an empty string carries
+      // no zero-width characters and a page that never ran logs no reconciler
+      // errors. A blank route therefore passes the whole test. This is the one
+      // check that separates "renders cleanly" from "renders nothing".
       const visibleText = await page.evaluate(() => document.body.innerText);
+      expect(
+        visibleText.trim().length,
+        `Page ${route} rendered no visible text at all`,
+      ).toBeGreaterThan(0);
+
+      // ── 1. Static check: no zero-width chars in rendered text ────────────
       expect(
         ZERO_WIDTH_RE.test(visibleText),
         `Page ${route} still renders zero-width Unicode in its visible text`,

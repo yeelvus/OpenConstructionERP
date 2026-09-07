@@ -8,7 +8,9 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.modules.bi_dashboards.kpi_spec import KPI_SCOPES as _KPI_SCOPES
 
 # ── Canonical enumerations ─────────────────────────────────────────────
 
@@ -38,6 +40,10 @@ KPI_CATEGORIES: tuple[str, ...] = (
     "sustainability",
     "operational",
 )
+#: What one computed KPI value is a value OF. Defined in ``kpi_spec``
+#: because that module is what knows which entities can carry which scope,
+#: and a second spelling here would be a second answer to the same question.
+KPI_SCOPES = _KPI_SCOPES
 DASHBOARD_SCOPES: tuple[str, ...] = ("personal", "role", "global", "project")
 REPORT_SCOPES: tuple[str, ...] = ("personal", "role", "global")
 WIDGET_TYPES: tuple[str, ...] = (
@@ -85,28 +91,83 @@ class KPIDefinitionRead(BaseModel):
     aggregation: str = "last"
     category: str = "operational"
     is_system: bool = False
+    spec_json: dict[str, Any] = Field(default_factory=dict)
     project_id: UUID | None = None
+    scope: str = "project"
     created_at: datetime
     updated_at: datetime
 
 
 class KPIDefinitionCreate(BaseModel):
-    code: str = Field(..., min_length=1, max_length=64)
+    """Payload for registering a custom KPI.
+
+    Deliberately minimal, and deliberately missing two fields the read
+    model has. ``formula_ref`` is not accepted because it binds a code to
+    a Python function: letting a caller set it would let them register
+    ``my_margin`` pointing at the built-in ``cpi`` and call the result
+    their own. ``is_system`` is not accepted because the starter pack
+    tells its own rows apart by it. Both are set by the server.
+
+    ``spec`` is the whole definition of what the KPI measures. It is
+    checked against the entity / field / aggregation whitelist in
+    :mod:`app.modules.bi_dashboards.kpi_spec` at creation time, and the
+    rejection names the part of the spec that failed.
+    """
+
+    code: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     name: str = Field(..., min_length=1, max_length=255)
     description: str = ""
-    formula_ref: str = Field(..., min_length=1, max_length=128)
-    source_modules: list[str] = Field(default_factory=list)
     unit: str = "ratio"
     target_default: Decimal | None = None
     aggregation: str = "last"
     category: str = "operational"
-    is_system: bool = False
     project_id: UUID | None = None
+    # What one value of this KPI is a value OF. "project" is the default and
+    # is what every definition registered before this field existed means.
+    # "estimate" is refused at creation when the spec's entity has no
+    # estimate of its own, rather than accepted and found unanswerable later.
+    scope: str = "project"
+    spec: dict[str, Any] = Field(...)
+
+    @field_validator("unit")
+    @classmethod
+    def _known_unit(cls, value: str) -> str:
+        if value not in KPI_UNITS:
+            raise ValueError(f"unknown unit {value!r}. Allowed: {', '.join(KPI_UNITS)}.")
+        return value
+
+    @field_validator("aggregation")
+    @classmethod
+    def _known_aggregation(cls, value: str) -> str:
+        # This is the trend aggregation - how successive stored values of
+        # the KPI roll up over time. What the KPI measures in the first
+        # place is ``spec.aggregation``, a different vocabulary.
+        if value not in KPI_AGGREGATIONS:
+            raise ValueError(f"unknown aggregation {value!r}. Allowed: {', '.join(KPI_AGGREGATIONS)}.")
+        return value
+
+    @field_validator("category")
+    @classmethod
+    def _known_category(cls, value: str) -> str:
+        if value not in KPI_CATEGORIES:
+            raise ValueError(f"unknown category {value!r}. Allowed: {', '.join(KPI_CATEGORIES)}.")
+        return value
+
+    @field_validator("scope")
+    @classmethod
+    def _known_scope(cls, value: str) -> str:
+        if value not in KPI_SCOPES:
+            raise ValueError(f"unknown scope {value!r}. Allowed: {', '.join(KPI_SCOPES)}.")
+        return value
 
 
 class KPIComputeRequest(BaseModel):
     kpi_code: str | None = None  # path param wins; body version optional
     project_id: UUID | None = None
+    # Narrow the reading to one estimate. The estimate is resolved to the
+    # project that owns it and THAT project is access-checked, so this is
+    # not a second, unguarded way to name a row set - see the router.
+    boq_id: UUID | None = None
     period_start: date | None = None
     period_end: date | None = None
     filters: dict[str, Any] = Field(default_factory=dict)

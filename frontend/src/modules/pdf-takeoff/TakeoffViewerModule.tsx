@@ -4,7 +4,7 @@
 // DDC-CWICR-OE-2026
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import * as pdfjsLib from 'pdfjs-dist';
+import { openPdf, type PDFDocumentProxy } from '@/shared/lib/pdfjs';
 import {
   Ruler,
   Upload,
@@ -84,7 +84,7 @@ import {
   type ConfidenceThresholds,
 } from '../../features/takeoff/lib/confidenceBand';
 import { apiGet, apiPost } from '../../shared/lib/api';
-import { formatFileSize, fmtFixed } from '../../shared/lib/formatters';
+import { formatFileSize, fmtFixed, fmtNumberForInput } from '../../shared/lib/formatters';
 import { convertBetween } from '../../shared/lib/unitConversion';
 import { useMeasurementPersistence } from './useMeasurementPersistence';
 import {
@@ -217,13 +217,7 @@ import { openLink } from '@/shared/lib/desktop';
 // Type-only: the scale-source vocabulary is a closed set owned by the backend
 // contract, so the viewer reuses it instead of restating it as a bare string.
 import type { ScaleSource } from '@/features/takeoff/api';
-import { fmtPercent, getIntlLocale } from '@/shared/lib/formatters';
-
-// Configure PDF.js worker — bundled locally (no CDN dependency)
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).toString();
+import { fmtList, fmtPercent, getIntlLocale } from '@/shared/lib/formatters';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -637,7 +631,7 @@ export default function TakeoffViewerModule({
   const { t, i18n } = useTranslation();
 
   // PDF state
-  const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [zoom, setZoom] = useState(1.0);
@@ -1226,7 +1220,7 @@ export default function TakeoffViewerModule({
     setIsLoading(true);
     try {
       const arrayBuffer = await file.arrayBuffer();
-      const doc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const doc = await openPdf(arrayBuffer).promise;
       setPdfDoc(doc);
       setTotalPages(doc.numPages);
       setCurrentPage(1);
@@ -1334,7 +1328,7 @@ export default function TakeoffViewerModule({
         }
         const arrayBuffer = await response.arrayBuffer();
         if (cancelled) return;
-        const doc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const doc = await openPdf(arrayBuffer).promise;
         if (cancelled) return;
         setPdfDoc(doc);
         setTotalPages(doc.numPages);
@@ -1603,7 +1597,6 @@ export default function TakeoffViewerModule({
 
         const viewport = page.getViewport({ scale: zoom * window.devicePixelRatio });
         const canvas = canvasRef.current!;
-        const ctx = canvas.getContext('2d')!;
 
         canvas.width = viewport.width;
         canvas.height = viewport.height;
@@ -1618,7 +1611,7 @@ export default function TakeoffViewerModule({
           overlayRef.current.getContext('2d')?.clearRect(0, 0, viewport.width, viewport.height);
         }
 
-        const task = page.render({ canvasContext: ctx, viewport });
+        const task = page.render({ canvas, viewport });
         activeTask = task;
         await task.promise;
         if (cancelled) return;
@@ -1675,9 +1668,7 @@ export default function TakeoffViewerModule({
           const off = document.createElement('canvas');
           off.width = Math.max(1, Math.ceil(vp.width));
           off.height = Math.max(1, Math.ceil(vp.height));
-          const offCtx = off.getContext('2d');
-          if (!offCtx) { queue.delete(n); continue; }
-          await page.render({ canvasContext: offCtx, viewport: vp }).promise;
+          await page.render({ canvas: off, viewport: vp }).promise;
           if (cancelled) { queue.delete(n); return; }
           const url = off.toDataURL('image/png');
           setThumbs((prev) => capThumbCache({ ...prev, [n]: url }, currentPage));
@@ -7896,7 +7887,7 @@ export default function TakeoffViewerModule({
                     <span className="ml-1 opacity-80">
                       {t('takeoff.needs_ocr_banner_pages', {
                         defaultValue: 'Pages: {{pages}}',
-                        pages: noTextLayer.pages.join(', '),
+                        pages: fmtList(noTextLayer.pages.map(String)),
                       })}
                     </span>
                   )}
@@ -8569,7 +8560,7 @@ export default function TakeoffViewerModule({
                       <select
                         value={linkPickerProjectId}
                         onChange={(e) => handlePickerProjectChange(e.target.value)}
-                        className="text-[10px] rounded border border-border-subtle bg-surface-primary px-1 py-0.5 text-content-primary"
+                        className="text-[10px] rounded border border-border-light bg-surface-primary px-1 py-0.5 text-content-primary"
                         aria-label={t('takeoff.bulk_add_target_project', {
                           defaultValue: 'Target project',
                         })}
@@ -8583,7 +8574,7 @@ export default function TakeoffViewerModule({
                         value={linkPickerBoqId}
                         onChange={(e) => handlePickerBoqChange(e.target.value)}
                         disabled={!linkPickerProjectId || linkBoqsLoading}
-                        className="text-[10px] rounded border border-border-subtle bg-surface-primary px-1 py-0.5 text-content-primary disabled:opacity-60"
+                        className="text-[10px] rounded border border-border-light bg-surface-primary px-1 py-0.5 text-content-primary disabled:opacity-60"
                         aria-label={t('takeoff.bulk_add_target_boq', {
                           defaultValue: 'Target BOQ',
                         })}
@@ -9195,8 +9186,13 @@ export default function TakeoffViewerModule({
                               min={0}
                               max={89}
                               step={0.5}
-                              value={Number(
-                                fmtFixed(degreesFromSlopeFactor(selectedMeasurement.slopeFactor ?? 1), 1),
+                              // Rounded for the field without going through a
+                              // display formatter: a reader whose decimal mark
+                              // is a comma got "26,6" back, `Number` read that
+                              // as NaN and the pitch box came up empty (#466).
+                              value={fmtNumberForInput(
+                                degreesFromSlopeFactor(selectedMeasurement.slopeFactor ?? 1),
+                                1,
                               )}
                               onChange={(e) => {
                                 const deg = Number(e.target.value);
@@ -10005,7 +10001,7 @@ export default function TakeoffViewerModule({
                                     <select
                                       value={linkPickerProjectId}
                                       onChange={(e) => handlePickerProjectChange(e.target.value)}
-                                      className="text-[10px] rounded border border-border-subtle bg-surface-primary px-1 py-0.5 text-content-primary"
+                                      className="text-[10px] rounded border border-border-light bg-surface-primary px-1 py-0.5 text-content-primary"
                                     >
                                       <option value="">{t('takeoff.pick_project', { defaultValue: '- project -' })}</option>
                                       {linkPickerProjects.map((p) => (
@@ -10016,7 +10012,7 @@ export default function TakeoffViewerModule({
                                       value={linkPickerBoqId}
                                       onChange={(e) => handlePickerBoqChange(e.target.value)}
                                       disabled={!linkPickerProjectId || linkBoqsLoading}
-                                      className="text-[10px] rounded border border-border-subtle bg-surface-primary px-1 py-0.5 text-content-primary disabled:opacity-60"
+                                      className="text-[10px] rounded border border-border-light bg-surface-primary px-1 py-0.5 text-content-primary disabled:opacity-60"
                                     >
                                       <option value="">
                                         {linkBoqsLoading
@@ -10081,7 +10077,7 @@ export default function TakeoffViewerModule({
                                           value={linkPickerSearch}
                                           onChange={(e) => setLinkPickerSearch(e.target.value)}
                                           placeholder={t('takeoff.link_search_placeholder', { defaultValue: 'Search ordinal or description...' })}
-                                          className="w-full mb-1 text-[10px] rounded border border-border-subtle bg-surface-primary px-1.5 py-0.5 text-content-primary"
+                                          className="w-full mb-1 text-[10px] rounded border border-border-light bg-surface-primary px-1.5 py-0.5 text-content-primary"
                                         />
                                         <div className="max-h-32 overflow-y-auto space-y-0.5">
                                           {linkBoqPositions

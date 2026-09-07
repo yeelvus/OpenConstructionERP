@@ -7,7 +7,11 @@ import { Map as MapIcon, MapPin } from 'lucide-react';
 import clsx from 'clsx';
 import type { MapRef, MarkerProps } from 'react-map-gl/maplibre';
 import { buildGeocodeQuery } from '@/shared/ui/ProjectMap/geocode';
-import { RASTER_BASEMAP_STYLE } from '@/shared/ui/ProjectMap/basemap';
+import { geocodeSuggest } from '@/features/geo-hub/api';
+import {
+  TILE_ATTRIBUTION_HTML,
+  VECTOR_BASEMAP_STYLE_URL,
+} from '@/shared/ui/ProjectMap/basemap';
 // maplibre-gl ships its canvas / control styles separately. The static
 // import lets Vite hoist the CSS into the dashboard chunk so markers
 // have correct positioning the moment the JS module resolves —
@@ -93,17 +97,20 @@ function writeCache(q: string, lat: number, lng: number) {
 async function geocodeOne(query: string, signal: AbortSignal): Promise<{ lat: number; lng: number } | null> {
   const cached = readCache(query);
   if (cached) return cached;
-  const url =
-    'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' +
-    encodeURIComponent(query);
+  // Goes to GET /api/v1/geo-hub/geocode/suggest, never to a public
+  // geocoder from the browser. A browser cannot set a User-Agent, so a
+  // direct call is unidentifiable and unthrottled and it fans out over
+  // every user's IP, which the Nominatim usage policy forbids. The
+  // backend tries Photon first, falls back to Nominatim behind a
+  // process-global 1 req/s gate, and sends a contact User-Agent.
+  // ``geocodeSuggest`` throws on a non-2xx and rejects on abort; the
+  // catch below turns both into the same null a miss already produced.
   try {
-    const res = await fetch(url, { signal, headers: { Accept: 'application/json' } });
-    if (!res.ok) return null;
-    const rows = (await res.json()) as Array<{ lat: string; lon: string }>;
-    const first = rows[0];
+    const res = await geocodeSuggest(query, { limit: 1, signal });
+    const first = res.suggestions[0];
     if (!first) return null;
-    const lat = parseFloat(first.lat);
-    const lng = parseFloat(first.lon);
+    const lat = Number(first.lat);
+    const lng = Number(first.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
     writeCache(query, lat, lng);
     return { lat, lng };
@@ -236,7 +243,10 @@ export function DashboardProjectsMap({ projects, className, heightClass: heightC
     }
     setResolved(out);
 
-    // Rate-limit Nominatim to ~1 req/sec to stay polite.
+    // Pace the lookups at ~1 req/sec. The backend already enforces the
+    // rate limit for the Nominatim fallback, but pacing here keeps a
+    // portfolio of thirty projects from queueing thirty requests behind
+    // that one-at-a-time gate the moment the dashboard mounts.
     (async () => {
       for (const p of projects) {
         if (controller.signal.aborted) return;
@@ -322,6 +332,12 @@ export function DashboardProjectsMap({ projects, className, heightClass: heightC
 
   const Map = mapLib?.default;
   const Marker = mapLib?.Marker;
+  // Attribution comes off the same dynamically-imported module as Map and
+  // Marker rather than a top-level import, because a static
+  // ``import { AttributionControl } from 'react-map-gl/maplibre'`` would
+  // pull the whole maplibre chunk eagerly into the dashboard bundle and
+  // undo the reason this file resolves the library lazily at all.
+  const Attribution = mapLib?.AttributionControl;
 
   // Map height scales with project count — a 1-2 project workspace doesn't
   // need 256px of map real estate. Saves vertical space on small portfolios.
@@ -339,18 +355,28 @@ export function DashboardProjectsMap({ projects, className, heightClass: heightC
         className,
       )}
     >
-      {Map && Marker ? (
+      {Map && Marker && Attribution ? (
         <Map
           ref={(instance: MapRef | null) => {
             mapRef.current = instance;
           }}
           initialViewState={initialView}
-          mapStyle={RASTER_BASEMAP_STYLE}
+          mapStyle={VECTOR_BASEMAP_STYLE_URL}
           style={{ width: '100%', height: '100%' }}
           interactive
           dragRotate={false}
           attributionControl={false}
         >
+          {/* The built-in control is off so it can be replaced with the
+              compact one below. OpenStreetMap data is ODbL and the tiles
+              rendered from it are a Produced Work, which owes attribution,
+              so this must stay mounted for as long as the map draws OSM
+              tiles. The credit is imported, not retyped, so it cannot drift
+              from the other surfaces (ProjectMap, MapLibreViewer). */}
+          <Attribution
+            compact
+            customAttribution={TILE_ATTRIBUTION_HTML}
+          />
           {resolved.map((m) => (
             <Marker
               key={m.id}

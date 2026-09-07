@@ -1063,8 +1063,19 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
 
           // Merge static items + dynamic module items for this group.
           // Most groups inject by their own `id`; `grp_reality` overrides
-          // with `dynamicGroupKey: 'reality'` so `oe_pointcloud`'s manifest
-          // can add its row via the documented `reality` registry key.
+          // with `dynamicGroupKey: 'reality'`.
+          //
+          // Nothing reaches this path today, which is worth knowing before
+          // debugging a module whose row will not appear. Every id in the
+          // catalogue is `grp_*` and the only `dynamicGroupKey` is
+          // `reality`, while the two manifests that declare navItems name
+          // `tools` (sustainability) and `ai` (pipelines) — neither is a
+          // group id in this catalogue, so both lists are dropped and both
+          // rows are carried statically there instead. This comment used
+          // to credit `oe_pointcloud` with injecting into `reality`; it is
+          // backend-only and has no manifest here. The mechanism itself
+          // works — a module publishing to a real `grp_*` id lands — it is
+          // simply unused in-tree.
           const dynamicItems: NavItem[] = getModuleNavItems(group.dynamicGroupKey ?? group.id)
             .filter((mi) => {
               const moduleId = mi.labelKey.split('.')[1] ?? mi.to.slice(1);
@@ -1126,7 +1137,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
             <Fragment key={group.id}>
               {group.separator && (
                 <div
-                  className="my-3 mx-auto h-px w-10/12 bg-border-light/70"
+                  className="my-3 mx-auto h-px w-10/12 bg-border-light"
                   aria-hidden
                 />
               )}
@@ -1612,7 +1623,7 @@ function NavGroupSection({
   if (iconified) {
     return (
       <div className="mb-1">
-        <div className="my-1.5 mx-auto h-px w-6 bg-border-light/60" aria-hidden />
+        <div className="my-1.5 mx-auto h-px w-6 bg-border-light" aria-hidden />
         {children}
       </div>
     );
@@ -1652,7 +1663,7 @@ function NavGroupSection({
             className={clsx(
               'h-1 w-1 rounded-full shrink-0 transition-colors duration-150',
               isCollapsed
-                ? 'bg-content-quaternary/45 group-hover:bg-content-tertiary'
+                ? 'bg-content-quaternary group-hover:bg-content-tertiary'
                 : 'bg-oe-blue/55 group-hover:bg-oe-blue',
             )}
             aria-hidden
@@ -2203,7 +2214,7 @@ export function FloatingRecentButton() {
     <div className="fixed bottom-24 end-4 z-40">
       {/* Popover */}
       {open && (
-        <div className="absolute bottom-12 end-0 w-72 rounded-xl border border-border-light bg-surface-primary shadow-xl overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-150">
+        <div className="absolute bottom-12 end-0 w-72 rounded-xl border border-border-light bg-surface-primary shadow-xl overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-border-light">
             <span className="text-xs font-semibold text-content-primary">{t('nav.recent', { defaultValue: 'Recent' })}</span>
             <button

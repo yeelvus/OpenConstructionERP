@@ -21,7 +21,7 @@ Every response carries an `X-API-Version` header with the running platform versi
 
 ## How endpoints are organised
 
-The platform ships 161 modules (projects, costs, boq, users, takeoff, validation, and many more). Each module owns a `router.py`, and the module loader mounts it automatically at:
+The platform ships 190 modules (projects, costs, boq, users, takeoff, validation, and many more). Each module owns a `router.py`, and the module loader mounts it automatically at:
 
 ```
 /api/v1/{module}/
@@ -65,16 +65,66 @@ It returns a small JSON document you can poll from a load balancer or uptime mon
 ```json
 {
   "status": "healthy",
-  "version": "10.10.0",
+  "version": "16.8.0",
   "env": "development",
-  "modules_loaded": 161,
+  "instance_id": "0f3a1c8e",
+  "build": "DDC-a1b2c3d",
+  "signature": "...",
+  "modules_discovered": 190,
+  "modules_enabled": 190,
+  "modules_loaded": 190,
+  "workspace_id": "...",
   "database": "ok",
   "alembic_head_matches": true,
+  "schema_heal_failed": false,
+  "schema_matches_models": true,
+  "data_repairs_failed": false,
+  "data_repair_ledger_failed": false,
+  "frontend_dist_present": true,
   "uptime_seconds": 42
 }
 ```
 
-`status` is `healthy` when the process is up, the database answers, and the schema is at the latest migration. It drops to `degraded` if the database is unreachable or a migration is pending.
+`status` is `healthy` when the process is up, the database answers, the schema
+and the boot-time data repairs landed, a servable frontend is present, and
+every module the operator enabled is loaded. Seven things drop it to
+`degraded`, they are not equally bad, and `status` does not say which one
+fired, so it is not enough to act on by itself. Each cause publishes its own
+field beside it, and those are what you read:
+
+`database` other than `ok` means this process cannot reach its database and
+nothing is usable. `frontend_dist_present` false means the API is up while
+every UI route answers 404. `schema_heal_failed` true, `schema_matches_models`
+false, `data_repairs_failed` true and `data_repair_ledger_failed` true each
+mean the database is behind the code running against it, in the schema or in
+the rows. And a module that is enabled and did not load leaves a working
+installation missing one feature, which is why it degrades at all: told
+healthy, somebody looking for that feature concludes their edition does not
+have it and stops. That one publishes no field of its own, it is
+`modules_enabled` above `modules_loaded`, and which module is missing is in
+the boot log.
+
+Watch the polarity, because it is not the same on every field. On
+`schema_heal_failed`, `data_repairs_failed` and `data_repair_ledger_failed`,
+`true` is the bad news; on `schema_matches_models` and `alembic_head_matches`
+it is `false`. On all five, `null` means this deployment could not tell and is
+not a fault, so alert on the exact value rather than on truthiness or a check
+would fire on every deployment whose database is not PostgreSQL.
+
+A pending migration does NOT degrade the status, which is deliberate. The
+product never runs `alembic upgrade`; the schema moves through `create_all`
+and the boot heal, so the stamp falls behind on an ordinary correct upgrade as
+soon as a release adds a revision. Degrading on that lit the field permanently
+for every upgraded install, and an aggregate with a permanently active cause
+has stopped being a signal. `alembic_head_matches` is published as a fact
+instead: `true` at head, `false` behind it, `null` when this deployment cannot
+tell.
+
+If you are polling this from a load balancer or an uptime monitor, treat both
+`healthy` and `degraded` as up and alert on `database` and
+`frontend_dist_present` separately. A check
+that requires the literal `healthy` will take a working installation out of
+rotation over a single missing module.
 
 ## Authentication
 

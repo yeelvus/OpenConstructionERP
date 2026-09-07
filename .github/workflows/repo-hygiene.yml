@@ -1,7 +1,17 @@
 # Repo hygiene gate.
 #
-# Twenty-one guards run on every push and pull request, grouped into three
-# jobs. They were nineteen separate jobs until 2026-08-24, eighteen of which
+# Guards: 76. They run on every push and pull request, grouped into three
+# jobs. A guard is a named step that is not a tooling install, and that rule is
+# not a matter of taste: it is the one that reproduces both counts this header
+# carried when it was written on 2026-08-24 - twenty-one guards, over jobs of
+# ten, ten and one steps, with no install steps in the file yet. The count
+# above is no longer maintained by hand. scripts/check_workflow_guard_count.py
+# recounts it on every run of this workflow and fails when the line and the
+# file drift apart; it said twenty-one for five days while the file grew past
+# fifty, and a number nobody recounts does not merely go stale, it dates the
+# file falsely.
+#
+# They were nineteen separate jobs until 2026-08-24, eighteen of which
 # ran exactly one step, each doing its own checkout of an 8764-file tree and
 # its own Python install to run a script that finishes in seconds. That is
 # nineteen runner slots for about two minutes of actual work, competing for
@@ -49,6 +59,14 @@
 #     forward-only against a frozen snapshot of already-seen locale-set
 #     shapes, and fails only when a genuinely new cluster of 3+ keys forms.
 #     See scripts/check_i18n_leak_baseline.py for both fingerprints.
+#   * no locale bundle as a whole is still mostly the English placeholder that
+#     the extraction tool seeds every batch value with. That is the same word
+#     "identical" as the guard above and a different question, so the two are
+#     separate on purpose: that one runs down the key axis and needs 24 of 28
+#     locales to agree before it says anything, this one runs down the locale
+#     axis and asks what share of one bundle's whole corpus is English. A
+#     single bundle at 74% is invisible to the first and obvious to the second.
+#     See scripts/check_locale_english_placeholder.py.
 # The file, escape and leak-baseline guards also run as pre-commit hooks; the
 # trailer guard runs as a commit-msg pre-commit hook. So a violation is
 # caught at commit time and in CI, and the file guard is caught again at
@@ -68,9 +86,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+
+      # Cheap, stdlib only, and above the heavy installs on purpose: it reads
+      # two files. backend/NOTICE is a byte copy of the root NOTICE and the only
+      # thing enforcing that was a pytest in the backend lane, which reports
+      # after a push and to the wrong person. Two commits this morning edited
+      # the root copy alone and that lane stayed red until the copy was
+      # restored. Proven able to fail: with the root copy edited and the backend
+      # copy not, it exits 1 and prints the drifted line. It also compares the
+      # git index, which is what a `git commit --only -- <paths>` actually
+      # carries: two files can agree on disk while only one of them is staged.
+      # In a checkout the index matches HEAD, so here that half simply agrees.
+      - name: Check NOTICE and backend/NOTICE have not drifted
+        if: ${{ !cancelled() }}
+        run: python scripts/check_notice_mirror.py
 
       - name: Check the tree for internal-only files
         if: ${{ !cancelled() }}
@@ -85,6 +117,57 @@ jobs:
       - name: Check every release version literal agrees
         if: ${{ !cancelled() }}
         run: python scripts/check_version_sync.py
+
+      # A committed file importing a module that only exists as an untracked
+      # file in somebody's working tree. It imports fine on the disk it was
+      # written on and nowhere else, and this is the first machine that reads
+      # the commit rather than the disk, so this is where it has to be caught.
+      # Two instances were live in the tree on 2026-09-05; both authors
+      # committed the missing module before anything shipped, which is luck
+      # rather than a gate. Nothing else here looks at that seam: every other
+      # commit-scoped guard reads the commit and every build reads the disk,
+      # and the two agree right up until one file is committed without its
+      # neighbour.
+      #
+      # The self-test runs first and on its own fixture. It costs nothing and
+      # it is the difference between a green step that refuses a bad tree and a
+      # green step that has stopped reading: exit 2 says the check can no
+      # longer catch the defect it exists for, which is not the same failure as
+      # exit 1 and should not look like one. The scan itself parses every
+      # tracked Python file under backend/, about 4800 of them, and that parse
+      # is essentially the whole cost. No timing is quoted here on purpose: the
+      # only measurements taken were on a Windows workstation, where the same
+      # scan ran anywhere between 81 seconds and five minutes depending on
+      # nothing but how warm the file cache was. A number carried over from
+      # there would be a figure about a laptop wearing the clothes of a figure
+      # about this runner.
+      - name: Prove the untracked-import check still refuses
+        if: ${{ !cancelled() }}
+        run: python scripts/check_untracked_imports.py --self-test
+
+      - name: Check no tracked file imports a module git does not have
+        if: ${{ !cancelled() }}
+        run: python scripts/check_untracked_imports.py
+
+      # desktop/src-tauri/windows/installer.nsi is a fork of the stock Tauri
+      # NSIS template, and the single line it changes is what keeps an upgrade
+      # from hanging forever. Upstream starts "Uninstall before installing"
+      # selected, which ExecWaits the uninstaller already on the machine, and
+      # every uninstaller from v11.7.1 to v15.8.0 calls nsExec with no timeout,
+      # so a PowerShell that never returns stops the upgrade dead. The fork
+      # pre-selects "Do not uninstall" on the upgrade branch instead.
+      #
+      # The script was written months ago and nothing ever ran it. A fork
+      # nobody compares against upstream stops being a fork and becomes a copy
+      # that drifts, and the drift that matters here is silent: bumping the
+      # Tauri CLI regenerates the template with different Handlebars
+      # expressions, our block survives textually, and the installer builds
+      # green while the page it patches has moved. This fetches the template at
+      # the CLI version pinned in desktop-release.yml, reconstructs the file
+      # from it, and fails when the two stop agreeing.
+      - name: Check the installer template against the Tauri version it forks
+        if: ${{ !cancelled() }}
+        run: python scripts/check_nsis_template_drift.py
 
       # The commit has to be able to import itself. A router was once committed
       # clean while the function it imported stayed in a working tree, so a fresh
@@ -103,6 +186,24 @@ jobs:
         if: ${{ !cancelled() }}
         run: python scripts/check_case_routes.py
 
+      # frontend/src/features/cases/countryPortraits.generated.ts is derived
+      # from the filenames under frontend/public/assets/people and imported at
+      # compile time by caseFaces.ts. `npm run build` is tsc followed by vite
+      # with no codegen ahead of either, so the module has to be committed and
+      # has to agree with the folder, and neither of those was checked
+      # anywhere: the generator carried a --check flag from the day it was
+      # written and no workflow ever called it.
+      #
+      # Two failures, not one. A webp dropped into the folder without
+      # regenerating leaves the manifest stale, so the art ships and the
+      # feature cannot see it. The louder one is absence: --check compares the
+      # rendered module against the file on disk and a missing file is not
+      # equal to it, so a manifest that never reached git fails here rather
+      # than in whatever clone first tries to compile the import.
+      - name: Check the case country-portrait manifest against the asset folder
+        if: ${{ !cancelled() }}
+        run: python scripts/gen_case_country_portraits.py --check
+
       # An unregistered key resolves to False for every role while admin
       # short-circuits above the check, so the route is admin-only in
       # production and every admin-authenticated test still passes. The
@@ -111,6 +212,91 @@ jobs:
       - name: Check permission keys against the registry
         if: ${{ !cancelled() }}
         run: python scripts/check_permission_registration.py
+
+      # A security constant kept in two hand-maintained copies is invisible
+      # while the copies agree and silent when they stop. These two had already
+      # stopped: the denylist of weak JWT secrets in app/main.py was missing
+      # three of the strings app/config.py rejected, and it measured length in
+      # UTF-8 bytes where config.py measured characters, so they disagreed on
+      # any non-ASCII secret. Nothing compared them, so nothing reported it.
+      # The copies are collapsed; this keeps them collapsed.
+      - name: Check the weak-secret denylist has one source of truth
+        if: ${{ !cancelled() }}
+        run: python scripts/check_secret_denylist_single_source.py
+
+      # The loader finds modules by their manifest, and skips a directory
+      # without one on a bare continue: no log line, no warning, no error. Every
+      # other way a module can be wrong is loud, so absence is the single case
+      # where a module that is missing is indistinguishable from a module that
+      # was never written, and there is no diagnostic to grep for. The module
+      # would be absent from the registry and from GET /api/v1/modules, its
+      # router unmounted with every endpoint answering 404, and its models never
+      # seen by Alembic autogenerate. The three support libraries that carry no
+      # manifest on purpose are allowlisted with a reason each, and the script
+      # rechecks that reason rather than trusting it: an allowlisted directory
+      # that grows a router.py or a models.py fails.
+      - name: Check every module directory carries a manifest
+        if: ${{ !cancelled() }}
+        run: python scripts/check_module_manifests.py
+
+      # AI Act Article 5 is in force and prohibits, among other things, a system
+      # that infers emotion in a workplace. This platform is a workplace tool,
+      # so a prompt that asked a model how frustrated a subcontractor sounds
+      # would be the prohibited thing rather than a bad feature, and it would
+      # arrive as an ordinary string literal in an ordinary service.
+      #
+      # The guard reads every model call site and accounts for each instruction
+      # slot, so a prompt assembled from a variable is not simply skipped: an
+      # unresolvable slot fails rather than passing quietly, which is the only
+      # arrangement that survives someone moving a prompt into a constant.
+      #
+      # It was written and then wired to nothing. Grep across HEAD for its name
+      # returned only the file itself: not this workflow, not .pre-commit-config
+      # .yaml, not the Makefile. A 1055-line guard that no lane runs is
+      # indistinguishable from no guard at all, except that it reads as
+      # coverage. The self-test above runs first for the reason the neighbouring
+      # gates do it: a run that passes has also just shown it can fail.
+      - name: Prove the prompt provenance guard can fail
+        if: ${{ !cancelled() }}
+        run: python scripts/check_prompt_provenance.py --self-test
+
+      - name: Check no shipped prompt asks a model to read a person
+        if: ${{ !cancelled() }}
+        run: python scripts/check_prompt_provenance.py
+
+      # The neighbouring question, and the first one a regulator or a buyer
+      # asks: which of the things you ship performs inference, and on what.
+      # `ModuleManifest.inference` lets a module answer for itself and this
+      # prints the answers checked against the code, because a register nobody
+      # checks drifts and it is quoted outside the project.
+      #
+      # THIS STEP DOES NOT BLOCK ON FINDINGS, and that is deliberate rather
+      # than an oversight to be tidied up later. Measured on the tree the day
+      # it was wired: 193 module directories scanned, 31 reach an inference
+      # primitive on their own account, 7 declare it, 24 declare nothing, 0
+      # declare the opposite. Turning that into a failure today would paint
+      # every lane red over a gap that predates the register, so the count is
+      # printed first and closed second. `--strict` makes findings fail and
+      # belongs here the day the 24 reach zero.
+      #
+      # It DOES block on a broken or stale scan, which is the half worth
+      # knowing about, so do not read the paragraph above as "this step cannot
+      # fail". Without `--strict` the script still exits non-zero when a file
+      # under backend/app will not parse, and when a name in its PRIMITIVES
+      # list is no longer in the tree. The second is the one that matters: a
+      # renamed primitive makes every module stop reaching it, and the whole
+      # instrument would otherwise read green while blind. Expect the first to
+      # turn this red occasionally on a genuinely broken Python file, which is
+      # the correct outcome and not a fault of this gate.
+      #
+      # The scanner's own logic is covered by backend/tests/unit/
+      # test_module_inference_gate.py, which points it at a fixture app tree so
+      # its negative control never has to write into the live one. This step is
+      # the part that test cannot be: the scanner aimed at what we actually
+      # ship.
+      - name: Report which modules reach an inference primitive
+        if: ${{ !cancelled() }}
+        run: python scripts/check_module_inference_declarations.py
 
       # A collection endpoint moving from a bare array to {items, total,
       # offset, limit} breaks every caller left behind. The build catches most
@@ -146,6 +332,29 @@ jobs:
       - name: Check migrations that rewrite pre-existing data are acknowledged
         if: ${{ !cancelled() }}
         run: python scripts/check_migration_data_rewrites.py
+
+      # Same set of revisions, the other question: does the rewrite reach
+      # anybody. Nothing in this product runs `alembic upgrade`; the schema
+      # moves at boot through postgres_auto_migrate plus create_all, neither of
+      # which executes a revision body, and stamp_head_if_unstamped then records
+      # the database at head. So a backfill, a rename or a de-duplication runs
+      # only where an operator runs alembic by hand, and every signal we have
+      # reports success either way - which is how v3271_formwork_debrand left
+      # trademarked rows in customer databases for eleven months. This fails
+      # when a revision that rewrites pre-existing rows does not say where that
+      # rewrite lands, and prints every declared gap on every run.
+      # This was held back for a while and the reason is worth keeping. The step
+      # went in before its script did, so every run died on "can't open file"
+      # and carried the whole lane red, which hid a real finding in the step
+      # above: a lane that is red for a reason unrelated to what it checks
+      # reports nothing at all, which is worse than not having the gate. The
+      # script came back without the registry it reads, which failed the same
+      # way somewhere quieter, passing against a working tree that still held
+      # the uncommitted files and failing against a clean clone. Both halves
+      # are in the tree now, and this step is what would catch the third time.
+      - name: Check data-rewrite migrations declare where the rewrite lands
+        if: ${{ !cancelled() }}
+        run: python scripts/check_data_rewrite_boot_repair.py
 
       # A fork in the revision graph is invisible to the person who made it:
       # each author runs `alembic heads` inside their own branch of work, sees
@@ -194,22 +403,568 @@ jobs:
         if: ${{ !cancelled() }}
         run: python scripts/check_bundled_font_licences.py
 
+      # The wheel's force-include map and the Docker build context, held to
+      # each other. The image installs the backend wheel inside the build, so
+      # every force-include entry pointing outside backend/ has to be copied
+      # into the context first or hatchling aborts the install. v16.2.0 shipped
+      # its PyPI package and its release page and no image at all, because two
+      # commits added entries and neither reached the Dockerfile.
+      #
+      # It has to be a guard here rather than a fixed Dockerfile, because
+      # release.yml is the only workflow that builds this image and it triggers
+      # on tags alone. The break is therefore invisible until the tag exists
+      # and PyPI has already published, which is the one ordering that cannot
+      # be walked back. This job runs on every push, so the disagreement is
+      # caught while it is still a working-tree change.
+      #
+      # The reverse direction is the quieter one and is checked too: a COPY
+      # with no map entry can bake a pack we deliberately hold back into a
+      # layer of a publicly published image, and nothing about that fails.
+      - name: Prove the Docker force-include gate can fail
+        if: ${{ !cancelled() }}
+        run: python scripts/check_docker_force_include_context.py --selftest
+
+      - name: Check the wheel's force-include paths reach the Docker context
+        if: ${{ !cancelled() }}
+        run: python scripts/check_docker_force_include_context.py
+
+      # Python outside backend/. CI lints the backend by running ruff from
+      # inside backend/ (ci.yml, "Lint with ruff"), which is where the
+      # configuration lives, so scripts/ and tools/ were linted by nothing at
+      # all, including the scripts that implement the guards in this very job.
+      #
+      # --config is not a convenience here, it is the whole check. There is no
+      # pyproject.toml or ruff.toml at the repository root, so ruff invoked from
+      # the root discovers no configuration, falls back to its own defaults and
+      # measures this tree against line-length 88 instead of the 120 the project
+      # uses. That failure is silent and it reports violations, which is the
+      # worst shape: a gate that is confidently wrong. Naming the backend config
+      # explicitly is what makes the answer mean anything.
+      #
+      # The version is read out of the backend dev extra rather than written
+      # here, so the pin has one home. `ruff format --check` compares against a
+      # specific formatter's exact output and shifts between releases, so a
+      # second literal in this file would drift from backend/pyproject.toml and
+      # .pre-commit-config.yaml without anything noticing.
+      #
+      # What it found on the way in, across 267 findings: 135 duplicate dictionary
+      # keys in one locale builder, where Python keeps the last value and the
+      # earlier translation is discarded unread, and 23 file handles left to the
+      # garbage collector. The duplicates were removed last-occurrence-wins, so
+      # the mapping the file builds is unchanged.
+      #
+      # What this reads: 116 files, against 121 tracked .py under these two
+      # directories. The seven-file difference is worth knowing about, because
+      # it is not an exclusion anybody wrote for ruff. `.gitignore` carries
+      # `scripts/translate_mn_*.py`; git exempts a file it already
+      # tracks from its own ignore rules, so those seven stay in the repository
+      # and look perfectly normal, while ruff applies the same patterns with no
+      # notion of an index and never opens them. A pattern meant to keep new
+      # files out is silently deciding what gets linted.
+      #
+      # What is still uncovered, said plainly so it does not read as done:
+      # packs/, packages/, modules/, frontend/ and desktop/ hold another 66
+      # tracked Python files that no lane reads. Widening the paths below is the
+      # whole change once those are normalised.
+      - name: Install the ruff the backend pins
+        id: ruff
+        if: ${{ !cancelled() }}
+        run: |
+          spec=$(python -c "import tomllib;d=tomllib.load(open('backend/pyproject.toml','rb'));print(next(s for s in d['project']['optional-dependencies']['dev'] if s.startswith('ruff==')))")
+          echo "installing $spec, as pinned by the backend dev extra"
+          python -m pip install --quiet "$spec"
+
+      # Proves the two steps below are reading something. Both commands treat a
+      # scope that resolves to no Python as success, so a permanently green lane
+      # that has never opened a file looks exactly like a passing one. Measured
+      # on 0.15.20, because the three ways a scope can empty out do not behave
+      # alike:
+      #   path does not exist        check exits 1, format exits 2. Already loud.
+      #   path exists, holds no .py  both exit 0, warning on stderr only, and
+      #                              check prints "All checks passed!"
+      #   every file excluded        identical to the line above, and
+      #                              --show-files agrees, so counting catches it
+      # A typo was never the risk. A widened .gitignore pattern, a broadened
+      # exclude or a renamed directory is, and the `scripts/translate_mn_*.py`
+      # line in `.gitignore` already empties part of this scope by exactly that
+      # mechanism.
+      #
+      # Cited by pattern rather than by line number on purpose: the number was
+      # already 13 lines stale before anyone noticed, and .gitignore moves.
+      #
+      # Both halves are counted, not just the lint half, because the two have
+      # separate exclude lists and this repository already sets one of them:
+      # [tool.ruff.format] exclude in backend/pyproject.toml. A format-only
+      # exclude is the realistic drift here, and it is the quietest case of all,
+      # since `ruff format --check` then exits 0 printing NOTHING at all, not
+      # even the stderr warning, while `ruff check` still reports normally. A
+      # guard that counted only the lint side would pass while the formatting
+      # step read zero files.
+      #
+      # The floor is zero rather than a number near today's 116, deliberately. A
+      # count that has to be edited whenever a file is added or removed is a
+      # ratchet somebody eventually raises without reading. Zero never needs
+      # touching. The trade is that a partial collapse still passes, so both
+      # counts are echoed to make that visible to a human reading the log.
+      - name: Check the ruff lane is reading files at all
+        if: ${{ !cancelled() && steps.ruff.outcome == 'success' }}
+        run: |
+          lint_files=$(ruff check --show-files --config backend/pyproject.toml scripts tools | wc -l) || true
+          fmt_summary=$(ruff format --check --config backend/pyproject.toml scripts tools 2>/dev/null | tail -1) || true
+          fmt_files=${fmt_summary%% *}
+          case "$fmt_files" in (''|*[!0-9]*) fmt_files=0 ;; esac
+          echo "lint step reads ${lint_files:-0} file(s), format step reads ${fmt_files:-0} file(s)"
+          if [ "${lint_files:-0}" -eq 0 ]; then
+            echo "::error::ruff check resolved zero Python files under scripts and tools, so the lint step would pass without opening anything"
+            exit 1
+          fi
+          if [ "${fmt_files:-0}" -eq 0 ]; then
+            echo "::error::ruff format resolved zero Python files under scripts and tools, so the formatting step would pass without opening anything"
+            exit 1
+          fi
+
+          # The same question for the backend, which the two steps below now
+          # read. It needs its own counts because it is reached a different way:
+          # from inside backend/ with ruff discovering the config, rather than
+          # with --config from the root. A collapse there is just as quiet, since
+          # `ruff format --check .` over zero files prints "0 files already
+          # formatted" and exits 0.
+          b_lint=$( cd backend && ruff check --show-files . | wc -l ) || true
+          b_summary=$( cd backend && ruff format --check . 2>/dev/null | tail -1 ) || true
+          b_fmt=${b_summary%% *}
+          case "$b_fmt" in (''|*[!0-9]*) b_fmt=0 ;; esac
+          echo "backend lint step reads ${b_lint:-0} file(s), backend format step reads ${b_fmt:-0} file(s)"
+          if [ "${b_lint:-0}" -eq 0 ]; then
+            echo "::error::ruff check resolved zero Python files under backend, so the backend lint step would pass without opening anything"
+            exit 1
+          fi
+          if [ "${b_fmt:-0}" -eq 0 ]; then
+            echo "::error::ruff format resolved zero Python files under backend, so the backend formatting step would pass without opening anything"
+            exit 1
+          fi
+
+      - name: Lint the Python outside the backend
+        if: ${{ !cancelled() && steps.ruff.outcome == 'success' }}
+        run: ruff check --config backend/pyproject.toml scripts tools
+
+      # Separate step rather than a second line in the one above. A step stops
+      # at its first failing command, and the two answer different questions, so
+      # sharing a step would mean a lint error hides every formatting error
+      # behind it and the next push finds them one at a time.
+      - name: Check the formatting of the Python outside the backend
+        if: ${{ !cancelled() && steps.ruff.outcome == 'success' }}
+        run: ruff format --check --config backend/pyproject.toml scripts tools
+
+      # The backend itself, which until now no lane that blocks anything read.
+      #
+      # The comment above lists what is uncovered and does not mention backend/,
+      # because the step below this one used to carry a line saying CI lints the
+      # backend by running ruff from inside backend/ in ci.yml. It does, and that
+      # is not the same as being covered: ci.yml gates nothing, and on main it is
+      # cancelled by the next push more often than it finishes, so a red ruff in
+      # the backend reddens nothing anybody reads. ci.yml also runs `ruff check`
+      # only, so backend formatting was checked by no workflow at all.
+      #
+      # Why these two steps cd into backend instead of appending the path to the
+      # two steps above. Those carry `--config backend/pyproject.toml`, and the
+      # exclude patterns inside that config are relative paths. Adding `backend`
+      # to such an invocation resolves `app/core/demo_packs/*-*.py` against the
+      # repository root, where it matches nothing, so the excluded demo packs get
+      # linted after all. Measured on this tree: appending the path turns a clean
+      # backend into "37 errors" and "30 files would be reformatted", every one of
+      # the thirty a demo pack the config deliberately exempts. Running from
+      # inside backend/ lets ruff discover the same config the way the pre-commit
+      # hook and the local gate do, and it is green: 4710 files already formatted,
+      # all checks passed.
+      - name: Lint the backend
+        if: ${{ !cancelled() && steps.ruff.outcome == 'success' }}
+        working-directory: backend
+        run: ruff check .
+
+      - name: Check the formatting of the backend
+        if: ${{ !cancelled() && steps.ruff.outcome == 'success' }}
+        working-directory: backend
+        run: ruff format --check .
+
+      # Last in the job on purpose, and much the heaviest install here: the ruff
+      # wheel above is one small download, this resolves the whole application.
+      # The guards above finish in seconds; putting this ahead of them would
+      # make every one of them wait on a dependency resolver. Steps rather than
+      # a fourth job because the resource this
+      # layout exists to conserve is runner slots, and a new job would take one
+      # while doing its own checkout of the same 8764-file tree.
+      #
+      # The instrument itself is stdlib-only, but the registries it reads live
+      # in modules that import pydantic and dateutil. Measured in a bare 3.12
+      # environment the check exits 1 with 27 probes unresolved, so this install
+      # is what makes the step below a gate rather than a permanent red light.
+      - name: Install the backend for the country coverage instrument
+        if: ${{ !cancelled() }}
+        working-directory: backend
+        run: |
+          mkdir -p ../frontend/dist
+          touch ../frontend/dist/.gitkeep
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server]"
+
+      # This job has no PostgreSQL service and that is the point rather than an
+      # accident of where the step landed. With no cluster the probes cannot
+      # import the modules their registries live in, so they fall back to the
+      # isolated source reads, and those are the paths that were broken and
+      # silent for a day while every test stayed green. The PostgreSQL lane
+      # imports everything cleanly, which makes it the one environment that
+      # structurally cannot see an instrument defect.
+      #
+      # What this catches, and only this: the instrument unable to run at all,
+      # which exits 1 and names the package that is missing, and a country that
+      # has fallen to zero covered and zero fallback dimensions, which --strict
+      # exits 2 on. A census that cannot read its registry is an exit 1 here too.
+      #
+      # What it does not catch is the larger half, written down because a gate
+      # that documents its own floor is the only kind that does not quietly
+      # become a ceiling. A country losing one dimension of eleven passes here
+      # green, and so does coverage sliding from ten dimensions to two. This is
+      # a floor, not a ratchet. It is deliberately not named for coverage
+      # without qualification: a step believed to gate coverage while detecting
+      # only a dead environment and a total collapse is worse than no step at
+      # all. The cohort is nine hardcoded codes, so a country added to the
+      # jurisdiction register is invisible here until somebody edits this file.
+      #
+      # The real coverage number is a jurisdiction commitment and belongs in the
+      # founder's register, where moving it is a decision somebody makes rather
+      # than a threshold somebody bumps to get a build green.
+      #
+      # On --ignore-unprobed. The instrument now walks the tree for country
+      # shaped registries and fails when it finds one no probe reads, because a
+      # registry nobody asks about is counted neither as covered nor as missing
+      # and every percentage on the page is quietly a percentage of what the
+      # tool happens to know about. Fifty-three are in that state today. The
+      # census still prints here, in full, with every unprobed registry named;
+      # what the flag suppresses is only the exit code, so this step keeps
+      # exactly the floor described above and does not silently become a
+      # different gate. Making it fail would leave this lane permanently red
+      # until a probe exists for every registry, and a lane that is always red
+      # is one somebody deletes at three in the morning, after which it guards
+      # nothing for real rather than nothing on paper. Note what it would not
+      # do: main carries deletion, non-fast-forward and linear-history rules and
+      # no required status checks at all, so no lane here blocks a push today.
+      # Whether any check should be required is a repository settings decision
+      # and belongs with the founder alongside the coverage number itself. The instrument fails loudly by default for anybody running it by
+      # hand, and tests/unit/test_country_coverage.py gates the census machinery
+      # in the PostgreSQL lane.
+      #
+      # That failure has its own exit code, 3, rather than reusing 1. A caller
+      # reading 1 is told the numbers cannot be trusted because something would
+      # not load; 3 says every number printed is sound and the divisor is short,
+      # and those need different answers. It matters here because 3 is checked
+      # before the --strict floor and would otherwise hide it: with the flag on,
+      # this step can still fail with 2 when a country has nothing anywhere,
+      # which is the floor it is named for.
+      - name: Check the instrument runs and no country has fallen to zero
+        if: ${{ !cancelled() }}
+        run: python backend/scripts/country_coverage.py --strict --ignore-unprobed US CA DE BG RU CN IN BR NG
+
+      # Both kinds of file are already parsed on the way through CI, and stating
+      # that precisely matters, because the first version of this finding said
+      # nothing checked them at all and that was wrong. Workflow YAML is loaded
+      # by five unit tests: test_ci_lane_coverage.py,
+      # test_workflow_expressions_are_legal_where_they_stand.py,
+      # test_release_signing_trigger.py, test_desktop_windows_packaging.py and
+      # test_pre_commit_declares_what_the_lanes_run.py, the last of which also
+      # loads .pre-commit-config.yaml. On the JSON side 25 scripts and 80 files
+      # under backend/tests call a JSON loader over the trees they own.
+      #
+      # Every one of those readers is addressed at a named file or at a single
+      # directory glob, so the coverage is per file and not per category. A
+      # malformed file written where no reader happens to look is parsed by
+      # nothing and turns nothing red. This step closes that, and only that.
+      #
+      # For YAML the failure it prevents is the quiet kind. GitHub does not run
+      # a workflow whose YAML will not parse, and reports nothing when it
+      # declines: no job, no log, no annotation. The lane goes silent rather
+      # than red, and silence from a lane we read as authoritative is
+      # indistinguishable from consent.
+      #
+      # Below the backend install deliberately, and it has to be. It parses YAML
+      # with PyYAML, which is a base dependency of the backend and is therefore
+      # already present once the install above has run. The guards near the top
+      # of this job are stdlib only on purpose, so this one cannot sit among
+      # them, and installing a parser inside a guard step would put an unpinned
+      # dependency resolve on the gate path for no gain.
+      - name: Check every tracked YAML and JSON file parses
+        if: ${{ !cancelled() }}
+        run: python scripts/check_config_file_syntax.py
+
+      # Declared only in its own docstring and running nowhere: no workflow step
+      # and no entry in .pre-commit-config.yaml, and pre-commit is not installed
+      # in this checkout in any case, so nothing had ever run it. It hunts a
+      # denylist of 66 firm names reachable from the demo seed pool, which is the
+      # FORBIDDEN direction and therefore the forgiving one: it over-reports at
+      # worst, and it cannot pass by finding nothing to look at, because a
+      # registry it cannot load exits 1 with the exception rather than reporting
+      # an empty pool clean.
+      #
+      # Below the install deliberately, and it has to be. It imports
+      # app.core.demo_packs and app.core.demo_projects to read the pool as the
+      # installer receives it rather than guessing at it from the text, so above
+      # the install it would be permanently red on a missing pydantic, which is
+      # the failure mode the data-rewrite step above already paid for once. It
+      # needs no database: it sets an unreachable DATABASE_URL itself and only
+      # reads the registries. Before the brand scan, for the same reason that one
+      # gives for being last, this being much the cheaper of the two.
+      #
+      # Passing today over 22640 strings from 34 templates, measured against a
+      # clean checkout of HEAD rather than a working tree, so this pins a green
+      # state rather than fixing a red.
+      - name: Check no denylisted firm name reaches the demo seed pool
+        if: ${{ !cancelled() }}
+        run: python scripts/check_demo_firm_names.py
+
+      # Below the install because it inventories the installed environment
+      # rather than the declarations: reading pyproject.toml would see none of
+      # the transitive packages, which is where copyleft usually arrives.
+      #
+      # This is the licence control that runs. The one in
+      # .github/workflows/dependency-review.yml triggers on pull_request, which
+      # this project does not produce, so it has never evaluated anything; its
+      # denylist also omitted AGPL-3.0, the licence of the single AGPL package
+      # we ship. Both are now fixed, but only this step executes on a push.
+      #
+      # The environment here is the [dev,server] superset, so it over-reports
+      # against the wheel a user installs. That is the safe direction, and the
+      # allowlist in the script records why each accepted entry is accepted,
+      # including pyinstaller, which is dev-only, and pymupdf, which is not.
+      #
+      # Proven able to fail rather than only observed passing: removing pymupdf
+      # from the script's allowlist turns it red and names pymupdf, and the
+      # --require guard makes a green run impossible against an environment
+      # where the packages under test are not installed.
+      - name: Check no dependency carries copyleft we have not accepted
+        if: ${{ !cancelled() }}
+        run: python scripts/check_dependency_licences.py
+
+      # No competitor or vendor product name ships, in code, UI strings,
+      # changelog or docs. That rule had one enforcement point, the CI workflow,
+      # and a rule enforced in exactly one place that nobody reads is not
+      # enforced: CI is chronically red for reasons of its own, so a red brand
+      # check there carries no information, and one sat red on a partner pack
+      # while later commits landed straight over it. Repeated here for the same
+      # reason the release version literals above are repeated here.
+      #
+      # Kept in CI as well rather than moved. The two workflows run in parallel,
+      # so keeping it there costs nothing, and a check reported twice is harder
+      # to lose than a check reported once.
+      #
+      # Last in the job deliberately: it reads every tracked text file, 8546 of
+      # them the day it landed, so the cheaper structural guards get to report
+      # their verdict before it starts.
+      - name: Check no competitor or vendor brand token is in the tree
+        if: ${{ !cancelled() }}
+        run: python scripts/check_no_brand_tokens.py
+
+      # The desktop launcher navigates its webview to http://127.0.0.1:<port>/,
+      # which Tauri classifies as a remote origin, so the access control list
+      # decides every command the application window invokes. With no
+      # permissions declared and no capability naming that origin the answer was
+      # no to all of them, and what that looked like on screen was every
+      # outbound link in the shipped product doing nothing at all when clicked.
+      # Nothing failed loudly, because the click was swallowed before the
+      # webview could navigate and the rejection was then dropped.
+      #
+      # This resolves the permission for real rather than grepping for the
+      # loopback pattern, since renaming the permission leaves that string in
+      # place and severs the grant. It also fails on a registered command that
+      # no capability grants, because declaring an application access control
+      # list turns the same check on for the launcher's own splash and failure
+      # screens, where app commands used to be unrestricted.
+      #
+      # What it does not check: whether the application window is granted the
+      # commands it happens to call beyond the link opener. Two are refused
+      # there today by choice, opening the app in a browser and the two
+      # update-notice buttons, and widening the remote grant is a decision to
+      # make deliberately rather than a threshold to move to get a lane green.
+      - name: Check the desktop app window can still open a link
+        if: ${{ !cancelled() }}
+        run: python scripts/check_desktop_link_acl.py
+
+      # The header of this file counts its own guards, and for five days the
+      # count was wrong by more than half. Nothing was broken by it and that is
+      # the point: a stale number in a comment produces no failure, no diff and
+      # no complaint, it just quietly tells every later reader that the gate is
+      # a third of its real size. This step is the reader the number never had.
+      # It self-tests before it counts, so a run that passes has also just
+      # shown it can refuse.
+      - name: Check this file's header still counts its own guards correctly
+        if: ${{ !cancelled() }}
+        run: python scripts/check_workflow_guard_count.py
+
   i18n:
     name: Locale and i18n guards
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      # Two libraries, not the application's dependency tree. The guards below
+      # need a parser and the translation runtime, and pinning both to the
+      # versions the build uses is the whole point: a bundle that parses under
+      # some other compiler, or resolves under some other i18next, is not the
+      # question anyone is asking. typescript is read out of devDependencies and
+      # i18next out of dependencies, because i18next ships in the product.
+      #
+      # One command rather than two on purpose. `npm install <spec>` rebuilds
+      # the tree it is pointed at rather than adding to it, so a second
+      # --no-save install can leave the first one's package gone, and the guard
+      # that needed it would fail for a reason that has nothing to do with what
+      # it guards. Naming both specs in one call cannot get into that state.
+      # Tailwind and postcss joined the list for the alpha-drop guard at the end
+      # of this job, which answers its question by compiling the real config and
+      # cannot answer it any other way. Same rule as the two above: the versions
+      # come out of package.json, because a config that resolves under some
+      # other Tailwind is not the question anyone is asking. And all four in one
+      # call, for the reason in the paragraph above.
+      - name: Install the compiler and the i18next the application uses
+        working-directory: frontend
+        run: |
+          tsv=$(node -p "require('./package.json').devDependencies.typescript")
+          i18nv=$(node -p "require('./package.json').dependencies.i18next")
+          twv=$(node -p "require('./package.json').devDependencies.tailwindcss")
+          pcv=$(node -p "require('./package.json').devDependencies.postcss")
+          echo "installing typescript@$tsv, i18next@$i18nv, tailwindcss@$twv and postcss@$pcv, as declared by the application"
+          npm install --no-save --no-audit --no-fund "typescript@$tsv" "i18next@$i18nv" "tailwindcss@$twv" "postcss@$pcv"
+
+      # First, because every guard below it answers a question about the
+      # contents of a file that has to load before any of those answers matter.
+      #
+      # This is here because a bundle shipped with a missing comma between two
+      # keys and every locale guard in this job went green over it. That is not
+      # bad luck. Each of them reads the locale as data with its own reader, and
+      # no reader of that kind cares about the separators holding the file
+      # together. They answer what is in the file. Whether the application can
+      # load the file was answered by nobody, because none of them is the thing
+      # that loads it. Adding a twelfth guard of the same kind would not have
+      # helped; guards that share a blind spot are one guard.
+      #
+      # So this one does not bring its own parser. It asks the compiler, which
+      # is the only reader whose opinion decides whether the product starts.
+      # Parsing is not type checking, so it costs about a second per bundle and
+      # runs here rather than waiting for a thirteen minute build.
+      - name: Check every locale bundle parses and declares no key twice
+        if: ${{ !cancelled() }}
+        run: node scripts/check-locales-parse.mjs
+        working-directory: frontend
+
+      # Next after the parse guard, because it asks the next question in the
+      # same chain. That one asks whether a bundle can be loaded at all. This
+      # one asks what comes out when the thing that loads it is asked to render.
+      #
+      # Nothing asked that before. Rewriting 30,964 t() calls into bare literals
+      # left the suite 91 of 91 green, because the harness mock returns
+      # defaultValue verbatim and almost every call site passes one. Corrupting
+      # all 38,895 German values turned exactly one assertion red, in a file
+      # nothing runs before merge. The only two tests that raise real i18next
+      # both swap a three key fixture in for the dictionary, on purpose and with
+      # a sound reason, which leaves the shipped dictionary on the far end of no
+      # real t() call anywhere in this repo.
+      #
+      # The self test runs first, and it has to. It builds locales in memory,
+      # one copied from English and one with a value blanked, and fails if the
+      # detectors stay quiet on them. Without it a detector that had stopped
+      # firing would report a clean tree, and the tree would look like it got
+      # better. Same order, and the same reason, as the accessibility ratchet
+      # further down.
+      - name: Check the locale render guard can still see its own defects
+        if: ${{ !cancelled() }}
+        run: node scripts/check-locale-render.mjs --selftest
+        working-directory: frontend
+
+      - name: Check every offered locale renders its own language
+        if: ${{ !cancelled() }}
+        run: node scripts/check-locale-render.mjs
+        working-directory: frontend
 
       - name: Check locale files for doubled escapes
         if: ${{ !cancelled() }}
         run: python scripts/check_locale_escapes.py
 
+      - name: Check locale files for a word spelled two ways
+        if: ${{ !cancelled() }}
+        run: python scripts/check_locale_umlaut_folding.py
+
+      - name: Check no new locale string ships with its diacritics stripped
+        if: ${{ !cancelled() }}
+        run: python scripts/check_locale_stripped_diacritics.py
+
+      # The requirements import sample is a row the user copies, and two of its
+      # seven fields are vocabularies the importer matches literally. 36 of 42
+      # locales had translated the priority, so RequirementCreate rejected the
+      # row outright, and ten had translated the operator too, which is quieter:
+      # the parser warns and substitutes equals, turning "at least 200" into
+      # "exactly 200". Reads both vocabularies out of the backend with ast, so
+      # adding an operator or a MoSCoW level needs no edit here.
+      - name: Check the requirements import sample would actually import
+        if: ${{ !cancelled() }}
+        run: python scripts/check_locale_requirement_sample.py
+
+      # This gate is declared in .pre-commit-config.yaml and was running nowhere.
+      # pre-commit is not installed in this checkout, so none of that file's hooks
+      # fire, and the local commit-msg shim covers only the two commit-message
+      # checks. Remeasured 2026-08-29 across the 24 gates that file declares under
+      # `repo: local`: twenty-three have a step in a workflow, this one included
+      # now that it exists, and check_commit_subject is the only one left with no
+      # step anywhere, carried by that shim alone. Recount from the file rather
+      # than trust this number, which has already gone stale once.
+      # It guards German, Portuguese, Spanish and French demo text against
+      # a corrected spelling reverting to its stripped form, which the people who
+      # read those languages are the ones who see. Passing today over 11 files and
+      # 1385 recorded spellings, so this pins a green state rather than fixing a red.
+      - name: Check shipped seed text keeps its diacritics
+        if: ${{ !cancelled() }}
+        run: python scripts/check_seed_diacritics.py
+
       - name: Check for new i18n leaks against the declared baseline
         if: ${{ !cancelled() }}
         run: python scripts/check_i18n_leak_baseline.py
+
+      # The other axis of the guard above, and it has to be a separate guard.
+      # That one asks, for one key, how many locales answer it in English, and
+      # flags at 24 of 28 because a leak copies one string everywhere at once.
+      # This one asks, for one locale, how much of the whole corpus is English.
+      # A single bundle that is three quarters English never reaches the other
+      # guard's count in any locale-set, so it is invisible there: hu.ts was
+      # assembled with 30920 of its 41787 comparable values byte-identical to
+      # English, and every locale gate in this job went green over it, because
+      # each of them asks about the key set and none of them asks what language
+      # a value is in.
+      #
+      # The first step proves the failing branch, over locales small enough to
+      # state by hand, including the two cases either side of the threshold and
+      # the one where the population itself is too narrow to judge.
+      - name: Prove the locale placeholder guard can fail
+        if: ${{ !cancelled() }}
+        run: python scripts/check_locale_english_placeholder.py --selftest
+
+      - name: Check no locale bundle is still mostly English placeholder
+        if: ${{ !cancelled() }}
+        run: python scripts/check_locale_english_placeholder.py
+
+      # The guard above compares each value against its RESOLVED English, which
+      # is en.ts plus the English supplied at the call site and beside a key
+      # field in the playbooks and module guides - about 7700 keys en.ts does
+      # not answer. A field arrangement the resolver cannot read does not make
+      # anything red; it drops those keys out of the guard's population and
+      # makes the verdict narrower without saying so. Two arrangements were
+      # found unreadable this way. This pins them, and pins the arrangements
+      # that must stay unreadable so the fix cannot be widened into inventing
+      # English for fields that are not i18n keys at all.
+      - name: Check the English-source resolver still reads every field shape
+        if: ${{ !cancelled() }}
+        run: python scripts/i18n_new_locale.py selftest
 
       - name: Check for t() keys no locale file can answer
         if: ${{ !cancelled() }}
@@ -219,6 +974,34 @@ jobs:
         if: ${{ !cancelled() }}
         run: python scripts/check_i18n_computed_keys.py
 
+      # The enforcement arm of the step above, and it was running nowhere: no
+      # workflow step and no entry in .pre-commit-config.yaml, so nothing had
+      # ever run it. The step above finds `<x>Key` fields whose English sits in a
+      # plain `<x>` sibling rather than a default* field, counts them and names
+      # them, but deliberately does not enforce them, because the populations
+      # under that one shape answer to different questions. It hands the module
+      # chips to this script by name, in its own output. The delegation was real
+      # and the delegate was not running, which is the worst of both: the step
+      # above reads as though something downstream is holding that population.
+      # What goes wrong without it is quiet by construction. A chip whose key no
+      # locale answers falls back to the English `label` written beside it, so
+      # the page renders in English rather than showing a raw key, and no locale
+      # guard, no build and no test has anything to go red about.
+      #
+      # This runs in the EXISTS direction, the one that can go falsely green, so
+      # its floor is the part worth checking rather than its verdict. It
+      # discovers both sides instead of holding an expected set, so a new locale
+      # or a new chip is picked up rather than breaking it, and it exits 2 rather
+      # than 0 when the playbooks, the locale files, or any single locale parse
+      # to zero keys, which is the state where a scan that read nothing would
+      # otherwise report a clean tree. Passing today over 842 chips in 202
+      # playbooks, 137 distinct keys against 43 locale files, measured against a
+      # clean checkout of HEAD rather than a working tree, so this pins a green
+      # state rather than fixing a red.
+      - name: Check case module chips are answered by every locale
+        if: ${{ !cancelled() }}
+        run: python scripts/check_case_module_chip_locales.py
+
       - name: Check module display names are reachable, undrifted and unorphaned
         if: ${{ !cancelled() }}
         run: python scripts/check_module_display_names.py
@@ -227,13 +1010,74 @@ jobs:
         if: ${{ !cancelled() }}
         run: python scripts/check_i18n_plural_forms.py
 
+      - name: Check translations ask only for variables the call site passes
+        if: ${{ !cancelled() }}
+        run: python scripts/check_i18n_placeholder_parity.py
+
+      - name: Check the UI copies of the backend role tables still match it
+        if: ${{ !cancelled() }}
+        run: python scripts/check_role_mirrors_match_the_backend.py
+
       - name: Check for keys written beside the translation object
         if: ${{ !cancelled() }}
         run: python scripts/check_i18n_key_nesting.py
 
+      - name: Prove the case playbook catalogue gate can fail
+        if: ${{ !cancelled() }}
+        run: python scripts/check_case_playbook_catalogue_locales.py --selftest
+
+      - name: Check a new case playbook has not un-finished a finished language
+        if: ${{ !cancelled() }}
+        run: python scripts/check_case_playbook_catalogue_locales.py
+
+      # The gate above holds the finished languages to the catalogue text:
+      # title, description and long description. Nothing held anyone to the
+      # step text, which is where the gap is. 220 playbooks name 7037 keys
+      # and most offered locales do not answer about 3000 of them, a number
+      # that grew with every new case because no gate could see it grow: the
+      # orphan gate reads literal t() calls and here the key is a variable,
+      # and the drift check skips a key that was never translated. This
+      # ratchet records, per locale and per playbook, what each locale does
+      # not answer, and fails when any count is higher than recorded, which
+      # is a key a locale had and lost or a case that shipped without its
+      # strings. --update only ever lowers a number, so the floor moves one
+      # way. It also owns the card_complete list the gate above reads, and
+      # promotes a language into it the day the language gets there.
+      #
+      # The proof step runs first, for the reason the render guard's does: a
+      # ratchet that had stopped firing would report a clean tree.
+      - name: Prove the case coverage ratchet can fail
+        if: ${{ !cancelled() }}
+        run: node scripts/check-case-coverage.mjs --selftest
+        working-directory: frontend
+
+      - name: Check no case answers fewer translated keys than the manifest records
+        if: ${{ !cancelled() }}
+        run: node scripts/check-case-coverage.mjs
+        working-directory: frontend
+
+      - name: Prove the payment application sense gate can fail
+        if: ${{ !cancelled() }}
+        run: python scripts/check_payment_application_sense.py --selftest
+
+      - name: Check a payment application still reads as a claim, not an app
+        if: ${{ !cancelled() }}
+        run: python scripts/check_payment_application_sense.py
+
       - name: Check for values written in someone else's alphabet
         if: ${{ !cancelled() }}
         run: python scripts/check_i18n_script_mixing.py
+
+      # The control runs BEFORE the ratchet on purpose. If a detector stops
+      # firing, the ratchet reports a clean tree and the tree looks like it got
+      # better, so the order is what keeps a green result meaningful.
+      - name: Check the accessibility ratchet can still see its own defects
+        if: ${{ !cancelled() }}
+        run: python scripts/check_a11y_attribute_ratchet.py --selftest
+
+      - name: Check for attributes that never translate and controls with no name
+        if: ${{ !cancelled() }}
+        run: python scripts/check_a11y_attribute_ratchet.py
 
       - name: Check locale files for stripped escape backslashes
         if: ${{ !cancelled() }}
@@ -243,12 +1087,96 @@ jobs:
         if: ${{ !cancelled() }}
         run: python scripts/check_locale_mixed_script.py
 
-  # Alone deliberately, and it has to stay alone. This is the only guard that
-  # reads git history rather than the working tree, so it is the only one that
-  # needs fetch-depth: 0. Folding it into either job above would hand it the
-  # default shallow checkout, where it would scan the single commit it can see,
-  # find nothing, and pass - a green tick for a guard that had stopped running.
-  # A one-step job next to two ten-step jobs looks like an oversight; it is not.
+      # An em dash whose UTF-8 bytes were read as CP1252 renders as three Latin
+      # letters and leaves the file valid, parseable and wrong. Four locales
+      # carried one from a single translation batch and nothing went red.
+      - name: Check locale files for UTF-8 read as a byte code page
+        if: ${{ !cancelled() }}
+        run: python scripts/check_locale_mojibake.py
+
+      # A revision that creates a table without asking whether it is already
+      # there cannot run on any install this application has booted, because the
+      # boot heal's create_all built that table first. The upgrade dies on
+      # DuplicateTable, PostgreSQL rolls the whole transaction back, and every
+      # revision behind it is skipped in silence along with its backfills.
+      - name: Check migrations guard create_table against an existing table
+        if: ${{ !cancelled() }}
+        run: python scripts/check_migration_create_table_guarded.py
+
+      # A class like `bg-oe-blue-subtle/60` names a colour token that cannot
+      # take an alpha modifier, and Tailwind's answer to that is to emit
+      # nothing. No warning, no fallback, no approximation: the declaration is
+      # dropped and the element renders with no fill while the source reads as
+      # though it has one. Every gate in this repo goes green over it, because
+      # the class IS in the file and is simply not in the stylesheet, so there
+      # is no missing key, no type error, no failing assertion, and a review
+      # reads the class and believes it.
+      #
+      # It looks for two shapes of the same silence. One is a real token given a
+      # modifier it cannot take. The other is a name that resolves to nothing at
+      # all, `bg-surface-muted`, where the theme defines surface as primary,
+      # secondary, tertiary and elevated and there is no muted. The second needs
+      # no cleverness to write, only a plausible word, so it is the one somebody
+      # new adds, and it is the larger population here.
+      #
+      # This is why the selftest above it is not decoration. The guard's whole
+      # job is to separate classes that look identical in source, so "it printed
+      # some findings" is not evidence it works. The selftest writes six that
+      # look alike, including `text-sm/6`, a real utility whose token is not a
+      # colour, and `to-do`, an English word that parses as a gradient utility
+      # and appears in the locale bundles. Three must be reported and three must
+      # not. It earned its place: it caught a double-count in the second half of
+      # this guard before that half ever ran on the tree.
+      #
+      # THIS STEP DOES NOT BLOCK ON FINDINGS, deliberately, not as an oversight
+      # to tidy up later. Measured at 79ea78bc7: 536 alpha-modifier occurrences
+      # in 201 files, and 579 classes in 124 files naming a token the theme
+      # never defined. Of the alpha half, 267 render nothing at all in either
+      # theme and 198 more are borders falling back to the preflight #e5e7eb, a
+      # near-white rule on every dark surface. Failing on that today would paint
+      # every lane red over a gap that predates the instrument, and a lane that
+      # is red for a week gets switched off. The count is printed first and
+      # closed second. `--strict` makes findings fail and belongs here the day
+      # the count reaches zero.
+      #
+      # The dead-name half read 769 in 156 files at acd3bad9c. The difference of
+      # 190 is the 138 classes repaired in 8a0aa6b99 and the 52 in 79ea78bc7.
+      # Counts here name the commit they were taken at because they move.
+      #
+      # Known residual on the second half, about 1%: a lowercase attribute name
+      # like `stroke-width` sitting alone in a string of its own reads as a dead
+      # class. That is a reason this reports rather than blocks, not a reason to
+      # add a list of words to ignore.
+      #
+      # It DOES block on being broken or stale, so this is not a step that
+      # cannot fail. Without `--strict` it still exits non-zero when the probe
+      # will not compile, when the config resolves to almost no colours, when
+      # too few utilities emit anything, when no token at all accepts an alpha,
+      # and when the content globs collect fewer files than the source tree has.
+      # That last one is the one worth having: point this at the wrong directory
+      # and it would otherwise report zero findings in a confident voice.
+      - name: Prove the Tailwind alpha-drop guard can fail
+        if: ${{ !cancelled() }}
+        run: node scripts/check-tailwind-alpha-drop.mjs --selftest
+        working-directory: frontend
+
+      - name: Report classes whose alpha modifier makes Tailwind emit nothing
+        if: ${{ !cancelled() }}
+        run: node scripts/check-tailwind-alpha-drop.mjs
+        working-directory: frontend
+
+  # Separate deliberately, and it has to stay separate. These are the guards
+  # that read git history rather than the working tree, so this is the only job
+  # that needs fetch-depth: 0. Folding one of them into either job above would
+  # hand it the default shallow checkout, where it would scan the single commit
+  # it can see, find nothing, and pass - a green tick for a guard that had
+  # stopped running. A short job next to the two large ones looks like an
+  # oversight; it is not.
+  # (This said "two ten-step jobs" until 2026-08-29, which was true the day it
+  # was written and had not been true for a while. It then said "alone" and
+  # "the only guard", which stopped being true on 2026-09-06 when the lost
+  # accent rule arrived and needed the same full history. No number here now,
+  # because nothing recounts this one.)
   commit-history:
     name: Commit history guards
     runs-on: ubuntu-latest
@@ -258,10 +1186,88 @@ jobs:
           # Full history so the guard scans every commit reachable from HEAD,
           # not just the tip; the tree is clean today and must stay that way.
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
       - name: Scan commit messages for AI attribution trailers
         if: ${{ !cancelled() }}
         run: python scripts/check_commit_trailers.py
+
+      # Not a duplicate of the step above. These two scripts are the pair the
+      # local .git/hooks/commit-msg shim runs, and until this step existed only
+      # one of them had a second home: check_commit_trailers.py ran here,
+      # check_commit_subject.py ran in none of the twenty workflows. Measured
+      # 2026-08-30, it was the only one of the twenty-five scripts named in
+      # .pre-commit-config.yaml with no executor anywhere.
+      #
+      # What that cost: the shim is the only thing running it, and a hook is not
+      # something git can transport. It is not in the object store, nothing
+      # tracked installs it, and core.hooksPath is an absolute path in a
+      # per-clone .git/config. So the guard existed in exactly one copy, on one
+      # disk, and would have disappeared on any other checkout without anything
+      # going red, because there was nothing anywhere to go red.
+      #
+      # Population: no argument, so the script reads every commit reachable from
+      # HEAD, which is why the job checks out at fetch-depth 0. That is the same
+      # population the trailers step above scans. It is 5027 commits today and
+      # green. Twelve published commits carry the artefact already, one of them
+      # the v14.6.0 tag, and the script exempts those by sha; a thirteenth is a
+      # failure. Only the shell-artefact rule applies in this mode. The long-dash
+      # rule is deliberately confined to a message being written, because 2094
+      # existing messages use one and scanning history for them would report a
+      # decision nobody has taken.
+      # Prove the guard below can fail. It scans 5027 commits that are all
+      # clean, so it goes green today whether it works or not, and a step that
+      # has never once failed is not evidence about anything. Same script as the
+      # scan it vouches for, which is the only reason it is evidence about it.
+      # Modelled on the planted-credential self-test in secret-scan.yml.
+      #
+      # The planted subject is the exact artefact that put twelve commits into
+      # published history: a PowerShell here-string opener consumed by
+      # 'git commit -m'. It is written under RUNNER_TEMP, outside the tree, so
+      # no other guard in this workflow sees it. Naming the reason as well as
+      # reading the exit code matters: a guard that failed for some unrelated
+      # reason would otherwise look like a guard that caught the plant.
+      - name: Prove the commit subject guard can fail
+        if: ${{ !cancelled() }}
+        run: |
+          # `set +e` is not redundant. GitHub runs a `run:` block under `bash -e`
+          # and the command below deliberately exits 1, which is the outcome
+          # being measured, so without this the step dies on the very line whose
+          # failure is the point. Same reasoning as secret-scan.yml.
+          set +e
+          set -uo pipefail
+          probe="${RUNNER_TEMP}/planted_subject.txt"
+          printf "@' \nthe real subject lands underneath\n" > "$probe"
+          python scripts/check_commit_subject.py "$probe" > probe.log 2>&1
+          rc=$?
+          cat probe.log
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::the subject guard accepted a planted here-string opener, so the scan below proves nothing"
+            exit 1
+          fi
+          if ! grep -q 'here-string opener' probe.log; then
+            echo "::error::the guard failed but did not name the planted artefact"
+            exit 1
+          fi
+          echo "self-test ok: planted subject rejected, exit ${rc}"
+
+      - name: Scan commit subjects for shell quoting artefacts
+        if: ${{ !cancelled() }}
+        run: python scripts/check_commit_subject.py
+
+      # The rule below reads two revisions of the same key, so it belongs here
+      # with the history guards and nowhere else. Its sibling in the locale job,
+      # check_locale_stripped_diacritics.py, reads only the working tree and
+      # judges a bare word by what the rest of the file spells. That is blind to
+      # two shapes: a value too short to reach its word count, and damage wide
+      # enough to supply its own second opinion. Ten Czech module names shipped
+      # through both on 2026-09-06 with their accents removed.
+      - name: Prove the lost accent rule can fail
+        if: ${{ !cancelled() }}
+        run: python scripts/check_locale_value_lost_diacritics.py --selftest
+
+      - name: Check no locale value lost the diacritics it used to carry
+        if: ${{ !cancelled() }}
+        run: python scripts/check_locale_value_lost_diacritics.py

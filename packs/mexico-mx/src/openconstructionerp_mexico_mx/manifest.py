@@ -29,7 +29,15 @@ MANIFEST = PartnerPackManifest(
         "(INFONAVIT, FOVISSSTE, CONAVI), IMSS and NOM-031-STPS site safety, "
         "32 states, and MXN."
     ),
-    default_locale="es",
+    # Mexican Spanish, not Spanish. The platform registers and offers es-MX as
+    # its own UI language, and this pack ships an es-MX overlay of its own, so
+    # declaring the bare "es" booted a Mexican workspace into Iberian Spanish
+    # with es-MX sitting unused beside it - costo read as coste, cimbra as
+    # encofrado, estimacion de obra as certificacion de obra. The frontend
+    # resolver (matchSupportedLanguage in frontend/src/app/i18n.ts) already
+    # prefers a region subtag whenever one is offered; it was never given one
+    # to prefer, because the onboarding wizard activates this field verbatim.
+    default_locale="es-MX",
     additional_locales={
         "es-MX": "locales/es-MX.json",
     },
@@ -43,11 +51,14 @@ MANIFEST = PartnerPackManifest(
     default_currency="MXN",
     default_tax_template="mx_iva_16",
     default_methodology="mexico",
-    validation_rule_packs=[
-        # Built-in engine rule sets (active): the Mexican rules plus universal
-        # BOQ quality. Both resolve to registered rules in the core engine.
+    # Built-in engine rule sets: the Mexican rules plus universal BOQ quality.
+    # These are what actually run; a project created under this pack inherits
+    # them.
+    validation_rule_sets=[
         "mexico",
         "boq_quality",
+    ],
+    validation_rule_packs=[
         # Documentation rule packs shipped with this pack (reference context for
         # the Mexican standards; not executed by the engine).
         "apu_precios_unitarios",
@@ -104,7 +115,10 @@ MANIFEST = PartnerPackManifest(
         ],
         "default_contract": "Contrato a precios unitarios",
         "social_housing_bodies": ["INFONAVIT", "FOVISSSTE", "CONAVI"],
-        "pilot_project_types": ["social housing (vivienda social)", "private residential (vivienda residencial)"],
+        "pilot_project_types": [
+            "social housing (vivienda social)",
+            "private residential (vivienda residencial)",
+        ],
         "support_email": "info@datadrivenconstruction.io",
     },
 )

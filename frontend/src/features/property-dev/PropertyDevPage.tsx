@@ -44,6 +44,7 @@ import {
   DollarSign,
   House,
   LayoutGrid,
+  ShieldCheck,
   MapPin,
   CalendarClock,
   UserCircle2,
@@ -168,6 +169,10 @@ import {
   type InstalmentStatus,
 } from './api';
 import {
+  ROLES_WITH_OWNER_SCOPED_DELETE,
+  ROLES_WITH_LEAD_DELETE,
+} from './permissions';
+import {
   PhasesTab,
   BlocksTab,
   BrokersTab,
@@ -178,7 +183,7 @@ import { OverviewTab } from './tabs/OverviewTab';
 import { DevelopmentsGrid } from './tabs/DevelopmentsTab';
 import { PlotsTab } from './tabs/PlotsTab';
 import { HouseTypesTab } from './tabs/HouseTypesTab';
-import { fmtFixed } from '@/shared/lib/formatters';
+import { fmtList, fmtFixed } from '@/shared/lib/formatters';
 
 // English fallbacks for the computed `propdev.development.sales_phase.*` keys. The default used to be
 // the raw value, so until the key lands in a locale the screen shows the bare
@@ -833,6 +838,27 @@ export function PropertyDevPage() {
               })}
             </Link>
           )}
+          {selectedDevId && (
+            // The compliance dashboard is dev-scoped like the two above: its
+            // endpoints all take dev_id, so this strip is where it is reached
+            // from. It carries no sidebar row for the same reason they do not.
+            <Link
+              to={`/property-dev/developments/${selectedDevId}/compliance`}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border-light bg-surface-primary px-2.5 py-1.5 text-xs font-medium text-content-secondary hover:bg-surface-secondary hover:text-oe-blue focus:outline-none focus:ring-2 focus:ring-oe-blue/40"
+              title={t('propdev.compliance.title', {
+                defaultValue: 'Compliance dashboard',
+              })}
+              aria-label={t('propdev.compliance.title', {
+                defaultValue: 'Compliance dashboard',
+              })}
+              data-testid="propdev-compliance-link"
+            >
+              <ShieldCheck size={13} />
+              {t('propdev.compliance.title', {
+                defaultValue: 'Compliance dashboard',
+              })}
+            </Link>
+          )}
         </div>
       )}
 
@@ -1234,7 +1260,6 @@ function BuyersTab({
                         }
                       }}
                       tabIndex={0}
-                      role="button"
                       aria-label={t('propdev.open_buyer_aria', {
                         defaultValue: 'Open buyer {{name}}',
                         name: b.full_name || b.email || b.id,
@@ -1571,7 +1596,6 @@ function LeadsTab({
                         }
                       }}
                       tabIndex={0}
-                      role="button"
                       aria-label={t('propdev.open_lead_aria', {
                         defaultValue: 'Open lead {{name}}',
                         name: l.full_name || l.email || l.id,
@@ -1681,10 +1705,14 @@ function LeadDetailDrawer({
       normalized,
     );
   }, [userRole]);
+  // Lead deletion is NOT owner scoped: the route keeps
+  // property_dev.lead.delete at MANAGER, so role is the only wall and the
+  // set stays short. Do not fold this into the owner-scoped constant used
+  // by the plot and buyer drawers, which is longer on purpose.
   const canDelete = useMemo(() => {
     if (!userRole) return false;
     const normalized = userRole.toLowerCase();
-    return ['admin', 'superuser', 'owner', 'manager'].includes(normalized);
+    return ROLES_WITH_LEAD_DELETE.includes(normalized);
   }, [userRole]);
 
   const leadFromList = leads.find((l) => l.id === leadId);
@@ -4602,7 +4630,7 @@ function CompleteHandoverModal({
             missing.length > 0
               ? t('propdev.handover_blocked_docs_list', {
                   defaultValue: 'Deliver these first: {{docs}}',
-                  docs: missing.join(', '),
+                  docs: fmtList(missing),
                 })
               : getErrorMessage(err),
         });
@@ -5311,7 +5339,7 @@ function PlotDetailDrawer({
   const canDelete = useMemo(() => {
     if (!userRole) return false;
     const n = userRole.toLowerCase();
-    return ['admin', 'superuser', 'owner', 'manager'].includes(n);
+    return ROLES_WITH_OWNER_SCOPED_DELETE.includes(n);
   }, [userRole]);
 
   const dq = useDisplayQuantity();
@@ -5832,7 +5860,10 @@ function ReserveBlock({ plotId, onSuccess }: { plotId: string; onSuccess: () => 
 
 /* ─── Buyer detail drawer with stage progression ─── */
 
-function BuyerDetailDrawer({
+// Exported for the delete-affordance test, which mounts this drawer rather
+// than asserting on the role constant it reads. It stays out of the feature
+// barrel: the page is the only thing that renders it.
+export function BuyerDetailDrawer({
   buyerId,
   buyers,
   plots,
@@ -5862,7 +5893,7 @@ function BuyerDetailDrawer({
   const canDelete = useMemo(() => {
     if (!userRole) return false;
     const normalized = userRole.toLowerCase();
-    return ['admin', 'superuser', 'owner', 'manager'].includes(normalized);
+    return ROLES_WITH_OWNER_SCOPED_DELETE.includes(normalized);
   }, [userRole]);
   const [editOpen, setEditOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);

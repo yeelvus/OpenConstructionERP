@@ -1540,7 +1540,19 @@ async def _process_cad_in_background(
             _tmp_cad_path = _tmp_dir / f"original{ext}"
             await asyncio.to_thread(_tmp_cad_path.write_bytes, content)
 
-            result = await asyncio.to_thread(process_ifc_file, _tmp_cad_path, _tmp_dir, conversion_depth)
+            # Bind a failure record to this upload before handing the
+            # conversion to the thread pool. Other uploads convert at the
+            # same time on that pool, and the diagnostics we read below
+            # (stderr tail, converter and authoring-app versions) must be
+            # the ones this file produced, not whichever conversion failed
+            # last. The worker inherits a copy of this context, so it fills
+            # in the same record object; we take our copy of it here, while
+            # the scope is still open.
+            from app.modules.bim_hub.ifc_processor import ddc_failure_scope
+
+            with ddc_failure_scope() as _ddc_record:
+                result = await asyncio.to_thread(process_ifc_file, _tmp_cad_path, _tmp_dir, conversion_depth)
+                ddc_failure = dict(_ddc_record)
             element_count = result["element_count"]
 
             geo_key: str | None = None
@@ -1791,13 +1803,11 @@ async def _process_cad_in_background(
             else:
                 meta = dict(model.metadata_ or {})
 
-                # Pull the structured failure context the DDC subprocess
-                # recorded (RVT version, converter version, stderr tail).
-                # If it's present, we can build a much more specific error
-                # message than the legacy "converter not installed" boilerplate.
-                from app.modules.bim_hub.ifc_processor import last_ddc_failure
-
-                ddc_failure = last_ddc_failure()
+                # The structured failure context this conversion recorded
+                # (RVT version, converter version, stderr tail), captured
+                # above while its scope was open. If it's present, we can
+                # build a much more specific error message than the legacy
+                # "converter not installed" boilerplate.
                 rvt_info = ddc_failure.get("rvt_info") or {}
                 conv_info = ddc_failure.get("converter_info") or {}
                 rvt_app = rvt_info.get("app_name")  # authoring app + version from the RVT header
@@ -2083,6 +2093,26 @@ async def _generate_pdf_in_background(
                 content=pdf_bytes,
             )
 
+            # ``uploaded_by``, not ``created_by``: Document has no
+            # ``created_by`` column - Base carries id/created_at/updated_at and
+            # nothing else - so the keyword this used to pass raised TypeError
+            # on every call, before a single byte reached the database. The
+            # ``except Exception`` that used to stand below caught it and
+            # logged "linkage failed", which reads like the database declining
+            # a row. It had declined nothing, and it had never been asked:
+            # keyword and function arrived in the same commit, so the sheets
+            # PDF has never once reached the documents hub.
+            #
+            # Narrowing to SQLAlchemyError does not make the next such defect
+            # loud: this is a background task and the whole body sits under an
+            # ``except Exception`` at the end of the function, so a TypeError
+            # here still ends quietly. What it buys is a traceback naming this
+            # line instead of a one-line warning naming the database, which is
+            # the difference between a defect somebody can act on and one that
+            # survives for as long as this one did. Being reached at all needs
+            # a converter binary, so no test on a clean machine executes it -
+            # the guard is ``tests/unit/test_bim_document_cross_link_fields.py``,
+            # which reads the keywords out of this file's syntax.
             try:
                 from app.modules.documents.models import Document as DocModel
 
@@ -2095,7 +2125,7 @@ async def _generate_pdf_in_background(
                         file_size=len(pdf_bytes),
                         mime_type="application/pdf",
                         tags=["bim", "sheets", "auto-generated", converter_ext],
-                        created_by=_uuid.UUID(user_id) if user_id else None,
+                        uploaded_by=user_id or "",
                     )
                     session.add(pdf_doc)
                     await session.commit()
@@ -2105,8 +2135,12 @@ async def _generate_pdf_in_background(
                         pdf_storage_key,
                         len(pdf_bytes),
                     )
-            except Exception as exc:
-                logger.warning("PDF sheets → Document linkage failed: %s", exc)
+            except SQLAlchemyError:
+                logger.exception(
+                    "Failed to cross-link the sheets PDF of BIM model %s (project %s) into the documents hub",
+                    model_id,
+                    project_id,
+                )
 
     except Exception as exc:
         logger.exception("PDF generation failed for model %s: %s", model_id, exc)
@@ -2999,7 +3033,11 @@ async def get_model_geometry(
     # BUG-323: forged tokens with a fake UUID must not authenticate here
     # either. Re-hydrate against the DB and replace self-asserted role /
     # permissions with canonical state before any authorization check.
-    db_user = await verify_user_exists_and_active(payload["sub"])
+    db_user = await verify_user_exists_and_active(
+        payload["sub"],
+        issued_at=payload.get("iat"),
+        session_id=payload.get("sid"),
+    )
     from app.core.permissions import permission_registry
 
     payload["role"] = db_user.role

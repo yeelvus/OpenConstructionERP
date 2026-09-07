@@ -10,7 +10,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import * as pdfjsLib from 'pdfjs-dist';
+import { closePdf, openPdf, type PageViewport, type PDFDocumentProxy, type RenderTask } from '@/shared/lib/pdfjs';
 import {
   ZoomIn,
   ZoomOut,
@@ -34,12 +34,6 @@ import { useToastStore } from '@/stores/useToastStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { createMarkup, fetchMarkups } from './api';
 import type { Markup, MarkupType, CreateMarkupPayload } from './api';
-
-// Configure PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).toString();
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -150,7 +144,7 @@ export function InlinePdfAnnotator({
   const addToast = useToastStore((s) => s.addToast);
 
   // PDF state
-  const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [zoom, setZoom] = useState(1.0);
@@ -191,13 +185,13 @@ export function InlinePdfAnnotator({
   const pageDimensionsRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
   // Current rendered viewport. Required for converting between PDF user
   // units (where annotations are stored) and canvas pixels (where we draw).
-  const viewportRef = useRef<pdfjsLib.PageViewport | null>(null);
+  const viewportRef = useRef<PageViewport | null>(null);
 
   /* ── Load PDF from backend ────────────────────────────────────────── */
 
   useEffect(() => {
     let cancelled = false;
-    let loadedDoc: pdfjsLib.PDFDocumentProxy | null = null;
+    let loadedDoc: PDFDocumentProxy | null = null;
     const loadPdf = async () => {
       setIsLoading(true);
       setError(null);
@@ -212,11 +206,11 @@ export function InlinePdfAnnotator({
         if (!res.ok) throw new Error(`Failed to load document: ${res.statusText}`);
         const arrayBuffer = await res.arrayBuffer();
         if (cancelled) return;
-        const doc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const doc = await openPdf(arrayBuffer).promise;
         if (cancelled) {
           // Component unmounted while the doc was loading — free native
           // resources immediately to prevent the classic PDF.js leak.
-          doc.destroy?.();
+          closePdf(doc);
           return;
         }
         loadedDoc = doc;
@@ -236,7 +230,7 @@ export function InlinePdfAnnotator({
       cancelled = true;
       // Release the worker-side document; without this PDF.js holds onto
       // the entire file buffer + parsed objects for the lifetime of the tab.
-      loadedDoc?.destroy?.();
+      closePdf(loadedDoc);
     };
   }, [documentId]);
 
@@ -322,13 +316,12 @@ export function InlinePdfAnnotator({
   useEffect(() => {
     if (!pdfDoc || !canvasRef.current) return;
     let cancelled = false;
-    let activeTask: ReturnType<pdfjsLib.PDFPageProxy['render']> | null = null;
+    let activeTask: RenderTask | null = null;
     const renderPage = async () => {
       const page = await pdfDoc.getPage(currentPage);
       if (cancelled) return;
       const viewport = page.getViewport({ scale: zoom * 1.5 });
       const canvas = canvasRef.current!;
-      const ctx = canvas.getContext('2d')!;
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       pageDimensionsRef.current = { width: viewport.width, height: viewport.height };
@@ -346,7 +339,7 @@ export function InlinePdfAnnotator({
         overlayCtx?.clearRect(0, 0, overlayRef.current.width, overlayRef.current.height);
       }
 
-      activeTask = page.render({ canvasContext: ctx, viewport });
+      activeTask = page.render({ canvas, viewport });
       try {
         await activeTask.promise;
       } catch (err) {
@@ -962,7 +955,7 @@ export function InlinePdfAnnotator({
         <div className="w-px h-5 bg-border-light mx-1" />
 
         {/* Zoom controls */}
-        <button
+        <button aria-label={t('common.zoom_out', { defaultValue: 'Zoom out' })}
           onClick={() => changeZoom(-1)}
           disabled={zoom <= ZOOM_LEVELS[0]!}
           className="p-1.5 rounded-md text-content-secondary hover:bg-surface-secondary disabled:opacity-40"
@@ -972,7 +965,7 @@ export function InlinePdfAnnotator({
         <span className="text-2xs text-content-tertiary tabular-nums w-10 text-center">
           {Math.round(zoom * 100)}%
         </span>
-        <button
+        <button aria-label={t('common.zoom_in', { defaultValue: 'Zoom in' })}
           onClick={() => changeZoom(1)}
           disabled={zoom >= ZOOM_LEVELS[ZOOM_LEVELS.length - 1]!}
           className="p-1.5 rounded-md text-content-secondary hover:bg-surface-secondary disabled:opacity-40"
@@ -982,7 +975,7 @@ export function InlinePdfAnnotator({
 
         {/* Page navigation */}
         <div className="w-px h-5 bg-border-light mx-1" />
-        <button
+        <button aria-label={t('common.previous_page', { defaultValue: 'Previous page' })}
           onClick={() => goPage(-1)}
           disabled={currentPage <= 1}
           className="p-1.5 rounded-md text-content-secondary hover:bg-surface-secondary disabled:opacity-40"
@@ -992,7 +985,7 @@ export function InlinePdfAnnotator({
         <span className="text-2xs text-content-secondary tabular-nums">
           {currentPage} / {totalPages}
         </span>
-        <button
+        <button aria-label={t('common.next_page', { defaultValue: 'Next page' })}
           onClick={() => goPage(1)}
           disabled={currentPage >= totalPages}
           className="p-1.5 rounded-md text-content-secondary hover:bg-surface-secondary disabled:opacity-40"
@@ -1112,7 +1105,7 @@ export function InlinePdfAnnotator({
                 >
                   <Save size={12} />
                 </button>
-                <button
+                <button aria-label={t('common.close', { defaultValue: 'Close' })}
                   onClick={() => setShowTextInput(false)}
                   className="p-1 rounded text-content-tertiary hover:bg-surface-secondary"
                 >

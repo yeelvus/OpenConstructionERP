@@ -32,7 +32,8 @@ Conceptually, a pack answers seven questions at boot:
 3. **What language and money?** (`default_locale`, `additional_locales`,
    `default_currency`, `default_tax_template`)
 4. **Which cost catalogues should load first?** (`cwicr_regions`)
-5. **Which validation rules apply by default?** (`validation_rule_packs`)
+5. **Which validation rules apply by default?** (`validation_rule_sets`,
+   and separately `validation_rule_packs` for the reference documents)
 6. **Which modules should the sidebar emphasise / hide?** (`default_modules`,
    `hidden_modules`)
 7. **How does a brand-new user get oriented?** (`onboarding_script_path`)
@@ -232,11 +233,13 @@ wheels and are independent of the core release cycle.
 | `batimatech-ca` | Canada | CAD | fr-CA, en-CA | NBC 2020, CCDC 2, CSA A23 | Full reference — favicon + bilingual locales + onboarding |
 | `bimhessen-de` | Germany (Hessen) | EUR | de | DIN 276, GAEB X83/X86, VOB 2023, ISO 19650 CDE, BKI | German BIM consultancy preset |
 | `doker-formwork` | Germany | EUR | de | DIN 18218, formwork-cycle rules | Formwork-supplier vertical |
-| `uk-jct` | United Kingdom | GBP | en-GB | NRM 1 + NRM 2, JCT clauses, BCIS | UK GC preset |
+| `uk-jct` | United Kingdom | GBP | en-GB | NRM 1, 2 and 3, JCT contract suite, Construction Act payments, CIS and the VAT reverse charge, CDM 2015, Building Safety Act 2022 | Two engine rule sets, `nrm` and `uk_statutory`; no commercial price book bundled |
 | `us-costdata` | United States | USD | en-US | MasterFormat 2020, AIA A201-2017, US city cost index | US GC preset |
 | `aus-nzs` | Australia / NZ | AUD | en-AU | AS 1684, NZS 3604, Rawlinsons, AS 4000 | AU/NZ residential + commercial |
 | `brazil-sinapi` | Brazil | BRL | pt-BR | NBR 12721, RPS PDF, SINAPI | Latam tier-1 |
-| `india-cpwd` | India | INR | en-IN, hi | CPWD, IS standards, DSR | Indian public-works |
+| `india-cpwd` | India | INR | en, hi | CPWD Specifications and DSR, IS 456, IS 800, the IS 1893 seismic bundle, IS 1200 measurement, NBC 2016, RERA, GST and TDS | Central PWD works; state SoRs are named, not shipped |
+| `hungary-hu` | Hungary | HUF | en | Building and infrastructure item orders, material and fee split, VAT | Runs in English: no Hungarian UI bundle ships yet |
+| `russia-gesn` | Russia | RUB | ru | GESN/FER norm base, resource decomposition, price level, overhead and profit on payroll | Ships a Russian UI; carries the `cwicr-ru-stpetersburg` cost database |
 | `saudi-vision2030` | Saudi Arabia | SAR | ar, en | SBC, MoMRAH, Aramco standards | KSA mega-projects |
 | `renewables-epc` | Cross-region | EUR | en | IEC 61400 wind, IEC 61730 PV, MV cables, LCOE, grid compliance | Renewables EPC vertical |
 
@@ -273,6 +276,8 @@ pip install -e packs/batimatech-ca
 pip install -e packs/bimhessen-de
 pip install -e packs/brazil-sinapi
 pip install -e packs/doker-formwork
+pip install -e packs/hungary-hu
+pip install -e packs/russia-gesn
 pip install -e packs/india-cpwd
 pip install -e packs/renewables-epc
 pip install -e packs/saudi-vision2030
@@ -321,7 +326,11 @@ MANIFEST = PartnerPackManifest(
     additional_locales={"fr": "locales/fr.json"},
     cwicr_regions=["cwicr-fr-paris"],
     default_currency="EUR",
+    # The reference documents the pack ships under rule_packs/, one per
+    # file stem. These are documentation; the engine does not execute them.
     validation_rule_packs=["din_276"],
+    # The engine rule sets to switch on. These are what make rules run.
+    validation_rule_sets=["din276"],
     branding=PartnerBranding(
         primary_color="#003366",
         accent_color="#FF6600",
@@ -395,26 +404,87 @@ not loaded as executable validation rules.** The core ships all rule
   packs (Shape B), these JSON files can become runtime-loadable without
   changing the manifest schema.
 
-The actual list of *rules enabled by default* is what you put in
-`validation_rule_packs=[...]` on the manifest. Each entry there must match
-a rule-pack slug that the core already implements. The current core ships
-the following rule-pack slugs (from `backend/app/core/validation/rules/`):
+Two manifest fields decide what a pack validates, and they are not
+interchangeable. Knowing which one you are writing is the whole of it.
 
-- `boq_quality` — universal
-- `din_276`, `gaeb_x83_x86`, `vob_2023`, `iso_19650_cde`, `bki_benchmarks` — DACH
-- `nrm_1_cost_planning`, `nrm_2_detailed_measurement`, `jct_contract_clauses`, `bcis_benchmarks` — UK
-- `masterformat_2018`, `aia_a201_2017`, `us_city_cost_index` — US
-- `cpwd`, `is_standards`, `dsr` — IN
-- `nbr_12721`, `rps_pdf`, `sinapi` — BR
-- `as_1684`, `nzs_3604`, `rawlinsons`, `as_4000` — AU/NZ
-- `sbc`, `momrah`, `aramco_standards` — SA
-- `nbc_2020`, `ccdc_2`, `csa_a23` — CA
-- `iec_61400_wind`, `iec_61730_pv`, `mv_cable_specs`, `lcoe_templates`,
-  `renewables_grid_compliance` — renewables
-- `din_18218`, `formwork_cycle` — formwork
+`validation_rule_packs=[...]` lists the pack's own `rule_packs/*.json`
+documents, one entry per file stem. The engine never executes those files, so
+naming one here switches nothing on; the installer reports them as
+documentation-only, and a test asserts the list matches the files on disk.
 
-If a partner needs a rule that isn't in this list, file an issue against
-the core. Packs cannot ship new rule classes.
+`validation_rule_sets=[...]` lists engine rule-set identifiers, and those are
+the names that make rules run. Every project created while the pack is active
+inherits them, additively - a pack widens what a project validates against and
+never narrows it. The identifiers are checked against the live registry when the
+pack is applied, and one the engine does not register is refused there with a
+message naming the spelling that would have worked. It is refused rather than
+ignored because a rule set the registry has never heard of runs no rules and
+raises no error, which is indistinguishable from a pack that enables nothing on
+purpose.
+
+The failure this separation exists to prevent is writing the name of a standard
+the engine implements, spelled the way the document is spelled, and expecting
+the rules to run. `din_276` is the DIN 276 reference document; `din276` is the
+rule set. Seven shipped packs wrote fifteen document ids and no rule sets at
+all, and the installer's only complaint was "no built-in engine match", which
+reads as though the engine had nothing for DIN 276. Write both: the document id
+in `validation_rule_packs` because the file exists, and the engine identifier in
+`validation_rule_sets` because the rules should run. Read the rules before you
+do - several of them are error severity and will fail bills of quantities that
+pass today.
+
+The rule sets the core registers on its own are these. These names come from
+`rule_registry.list_rule_sets()`, which is what the installer consults, and not
+from the `standard` attribute on the rule classes; the two lists differ by five
+names in both directions, and reading the wrong one is how this section came to
+teach identifiers that were never rule sets at all.
+
+| Slug | What it checks |
+|---|---|
+| `boq_quality` | Universal bill of quantities hygiene |
+| `estimate_audit` | Estimate-level audit checks |
+| `schedule_quality` | Programme quality |
+| `sheet_completeness` | Drawing index against issue register |
+| `classification_nudge` | Suggests a classification when none is set |
+| `ai_estimator` | Guards on machine-produced estimate lines |
+| `field_time` | Site time capture |
+| `procurement` | Purchase orders and reconciliation |
+| `rfq_issue` | Enquiry at the point of issue |
+| `rfq_award` | Enquiry at the point of award |
+| `subcontract` | Subcontract packages |
+| `submittal` | Submittals |
+| `property_dev` | Development appraisal |
+| `pipeline` | Opportunity pipeline |
+| `din276` | DIN 276 cost groups (DE) |
+| `gaeb` | GAEB LV structure and ordinals (DE) |
+| `onorm` | ÖNORM (AT) |
+| `nrm` | NRM 1 and 2 (UK) |
+| `uk_statutory` | UK statute on the estimate: contract form, Construction Act payment regime, retention, CDM 2015 duty holders, Building Safety Act higher-risk test, VAT treatment |
+| `masterformat` | MasterFormat divisions (US) |
+| `dpgf` | DPGF (FR) |
+| `bc3` | FIEBDC-3 / BC3 (ES) |
+| `mexico` | Mexican estimating conventions |
+| `sinapi` | SINAPI codes (BR) |
+| `nbr` | ABNT NBR (BR) |
+| `cpwd` | CPWD and IS 1200 (IN) |
+| `gbt50500` | GB/T 50500 (CN) |
+| `sekisan` | Sekisan (JP) |
+| `birimfiyat` | Birim Fiyat (TR) |
+| `gesn` | GESN (RU) |
+| `hungary` | Hungarian item orders, material and fee split (HU) |
+
+Modules add more. Anything with a `validators.py` registers its own sets when it
+loads, `formwork` and `carbon_6d` and `project_completeness` among them, and
+several of them register additional rules into sets that already exist. So the
+list an installation actually has is longer than the one above and depends on
+which modules are enabled. Read it from the installation rather than from here
+when it matters, and note that no rule count is published in this table for the
+same reason: the number changes with what is loaded, so it would describe the
+reader's process and not the software.
+
+If a partner needs a rule class that is not here, it has to be written in the
+core. Packs cannot ship executable rules, only the JSON documents that describe
+them.
 
 ---
 

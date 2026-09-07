@@ -46,8 +46,9 @@ import { Badge } from '@/shared/ui/Badge';
 import { Button } from '@/shared/ui/Button';
 import { ConfirmDialog } from '@/shared/ui/ConfirmDialog';
 import { EmptyState } from '@/shared/ui/EmptyState';
+import { ErrorState } from '@/shared/ui/ErrorState';
 import { TruncationNotice } from '@/shared/ui/TruncationNotice';
-import { getErrorMessage } from '@/shared/lib/api';
+import { ApiError, getErrorMessage } from '@/shared/lib/api';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useToastStore } from '@/stores/useToastStore';
 
@@ -86,6 +87,7 @@ import {
   validationVerdict,
   verdictTone,
 } from './fxRates';
+import { fmtList } from '@/shared/lib/formatters';
 
 type Tab = 'convert' | 'sets' | 'policy';
 
@@ -638,6 +640,24 @@ function PolicyTab({ projectId }: { projectId: string }) {
     );
   }
 
+  // A 404 means the project has no policy, which is the ordinary state and is
+  // rendered as an invitation below. Any other failure - a 500, a dropped
+  // connection - must not borrow that wording: telling somebody "nothing is
+  // broken" while the server is down is how a missing policy gets set twice.
+  const policyLoadFailed =
+    policyQuery.isError && !(policyQuery.error instanceof ApiError && policyQuery.error.status === 404);
+
+  if (policyLoadFailed && !editing) {
+    return (
+      <ErrorState
+        title={getErrorMessage(policyQuery.error)}
+        onRetry={() => {
+          void policyQuery.refetch();
+        }}
+      />
+    );
+  }
+
   if (!policy && !editing) {
     return (
       <EmptyState
@@ -825,7 +845,7 @@ function PolicyTab({ projectId }: { projectId: string }) {
                 {t('fx.policy_uncovered', {
                   defaultValue:
                     'The current rates cannot price {{codes}}, which this project declares. Figures in it will look finished and cannot be converted.',
-                  codes: uncovered.join(', '),
+                  codes: fmtList(uncovered),
                 })}
               </p>
             )}
@@ -834,7 +854,7 @@ function PolicyTab({ projectId }: { projectId: string }) {
             <p className="text-xs text-content-tertiary">
               {t('fx.policy_currencies_note', {
                 defaultValue: 'Currencies in play: {{codes}}.',
-                codes: policyCurrencies(policy).join(', '),
+                codes: fmtList(policyCurrencies(policy)),
               })}
             </p>
           </div>

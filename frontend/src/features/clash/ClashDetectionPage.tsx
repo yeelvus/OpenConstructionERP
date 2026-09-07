@@ -2579,7 +2579,7 @@ export function ClashDetectionPage() {
                 className="w-full max-w-md rounded-2xl border border-border-subtle bg-surface-0 shadow-xl"
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
+                <div className="flex items-center justify-between border-b border-border-light px-5 py-4">
                   <h2 className="flex items-center gap-2 text-base font-semibold text-content-primary">
                     <Bookmark className="h-4 w-4 text-oe-blue" />
                     {t('clash.save_as_profile', {
@@ -2616,7 +2616,7 @@ export function ClashDetectionPage() {
                     })}
                   </p>
                 </div>
-                <div className="flex items-center justify-end gap-2 border-t border-border-subtle px-5 py-4">
+                <div className="flex items-center justify-end gap-2 border-t border-border-light px-5 py-4">
                   <Button
                     variant="secondary"
                     size="sm"
@@ -3128,14 +3128,14 @@ export function ClashDetectionPage() {
                     </h2>
 
                     <div className="relative ml-auto">
-                      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-content-tertiary" />
+                      <Search className="pointer-events-none absolute start-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-content-tertiary" />
                       <input
                         value={fSearch}
                         onChange={(e) => setFSearch(e.target.value)}
                         placeholder={t('clash.search_ph', {
                           defaultValue: 'Search element name…',
                         })}
-                        className="h-8 w-56 rounded-md border border-border bg-surface-primary pl-8 pr-2 text-xs"
+                        className="h-8 w-56 rounded-md border border-border bg-surface-primary ps-8 pe-2 text-xs"
                       />
                     </div>
 
@@ -4509,7 +4509,7 @@ function ClashGroupingPanel({
               {data.levels.map((lvl) => (
                 <div
                   key={lvl.key}
-                  className="flex items-center justify-between gap-3 rounded-md border border-border-subtle px-3 py-2 text-sm"
+                  className="flex items-center justify-between gap-3 rounded-md border border-border-light px-3 py-2 text-sm"
                 >
                   <span className="font-medium text-content-primary">
                     {lvl.key === '(no level)'

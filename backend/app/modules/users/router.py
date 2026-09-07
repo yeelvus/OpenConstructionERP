@@ -12,6 +12,8 @@ Endpoints:
     PATCH /me                   - Update own profile
     DELETE /me                  - Erase own account (GDPR Art. 17)
     POST /me/change-password    - Change own password
+    GET  /me/sessions           - List own login sessions
+    DELETE /me/sessions/{sid}   - Sign out one of them
     GET  /me/api-keys           - List own API keys
     POST /me/api-keys           - Create API key
     DELETE /me/api-keys/{id}    - Revoke API key
@@ -41,6 +43,7 @@ from pydantic import BaseModel
 from app.core.rate_limiter import client_identifier, login_limiter
 from app.dependencies import (
     CurrentUserId,
+    CurrentUserPayload,
     RequirePermission,
     RequireRole,
     SessionDep,
@@ -63,6 +66,8 @@ from app.modules.users.schemas import (
     RefreshRequest,
     ResetPasswordRequest,
     ResetPasswordResponse,
+    SessionListResponse,
+    SessionResponse,
     TokenResponse,
     UserAdminUpdate,
     UserCreate,
@@ -613,6 +618,73 @@ async def change_password(
     pair so the client can stay authenticated without a forced re-login.
     """
     return await service.change_password(uuid.UUID(user_id), data)
+
+
+@router.get("/me/sessions/", response_model=SessionListResponse)
+@router.get("/me/sessions", response_model=SessionListResponse, include_in_schema=False)
+async def list_my_sessions(
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    service: UserService = Depends(_get_service),
+) -> SessionListResponse:
+    """List the caller's own login sessions, newest first.
+
+    Self-service only: the owner comes from the caller's own token and the
+    route takes no user id, so this can never list somebody else's sessions.
+    Needs no permission beyond being authenticated, for the same reason
+    changing your own password needs none.
+
+    Sessions that have already expired are omitted; revoked ones are kept, so
+    ending a session shows up as ended rather than as a row that vanished.
+
+    ``current`` is computed here rather than in the service, because it is a
+    property of the request and not of the row: the same session is current to
+    the device holding it and not current to every other device listing it.
+    """
+    caller_sid = payload.get("sid")
+    sessions = await service.list_sessions(uuid.UUID(user_id))
+    items = [
+        SessionResponse(
+            sid=s.sid,
+            created_at=s.created_at,
+            expires_at=s.expires_at,
+            last_used_at=s.last_used_at,
+            revoked_at=s.revoked_at,
+            # ``caller_sid`` is None for a token minted before sessions
+            # existed. ``None == s.sid`` is False for every row, which is the
+            # honest answer: such a token belongs to no row on file.
+            current=s.sid == caller_sid,
+        )
+        for s in sessions
+    ]
+    return SessionListResponse(items=items, total=len(items), offset=0, limit=len(items))
+
+
+@router.delete("/me/sessions/{sid}/", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/me/sessions/{sid}", status_code=status.HTTP_204_NO_CONTENT, include_in_schema=False)
+async def revoke_my_session(
+    sid: str,
+    user_id: CurrentUserId,
+    service: UserService = Depends(_get_service),
+) -> None:
+    """Sign out one of the caller's own sessions, leaving the others alone.
+
+    This is the point of the whole mechanism: before it, the only way to end a
+    session was to change the password, which ends every session the person
+    has, on every device. Now the laptop left in a hotel can be signed out
+    from the phone.
+
+    The owner is taken from the caller's token and never from the path, and
+    the service scopes its write by both, so quoting somebody else's session
+    id gets a 404 rather than ending their session. A session id that does not
+    exist and one that belongs to another user answer identically on purpose,
+    so this route cannot be used to find out which session ids are real.
+
+    Revoking the session the caller is currently using is allowed and simply
+    signs them out, which is what "sign out everywhere else, including here"
+    has to mean.
+    """
+    await service.revoke_session(uuid.UUID(user_id), sid)
 
 
 @router.delete("/me/", response_model=DeleteAccountResponse)

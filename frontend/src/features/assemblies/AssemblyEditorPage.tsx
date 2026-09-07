@@ -548,7 +548,7 @@ export function AssemblyEditorPage() {
                 className="bg-violet-50 text-violet-700 dark:bg-violet-900/20 dark:text-violet-400 border-violet-200/50 pr-1"
               >
                 {tag}
-                <button
+                <button aria-label={t('common.remove_tag', { tag, defaultValue: 'Remove tag {{tag}}' })}
                   onClick={() => handleRemoveTag(tag)}
                   className="ml-1 flex h-4 w-4 items-center justify-center rounded-full hover:bg-violet-200 dark:hover:bg-violet-800/40 transition-colors"
                 >
@@ -914,13 +914,13 @@ function CostDbSearchForAssembly({
         {/* Search */}
         <div className="px-6 py-3 border-b border-border-light shrink-0">
           <div className="relative">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-content-quaternary" />
+            <Search size={14} className="absolute start-3 top-1/2 -translate-y-1/2 text-content-quaternary" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={t('assemblies.search_cost_placeholder', { defaultValue: 'Search cost items by description or code...' })}
-              className="w-full h-9 pl-9 pr-3 rounded-lg border border-border-light bg-surface-primary text-sm text-content-primary placeholder:text-content-quaternary focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-400"
+              className="w-full h-9 ps-9 pe-3 rounded-lg border border-border-light bg-surface-primary text-sm text-content-primary placeholder:text-content-quaternary focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-400"
               autoFocus
             />
           </div>
@@ -1296,7 +1296,7 @@ export function ComponentRow({
               className={clsx('transition-transform', detailsOpen && 'rotate-180')}
             />
           </button>
-          <button
+          <button aria-label={t('common.remove', { defaultValue: 'Remove' })}
             onClick={async () => {
               const ok = await confirm({
                 title: t('assemblies.confirm_delete_component_title', { defaultValue: 'Remove component?' }),
@@ -2044,7 +2044,7 @@ function CatalogResourcePickerModal({
           <div className="relative flex-1 min-w-[200px]">
             <Search
               size={14}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-content-tertiary"
+              className="absolute start-2.5 top-1/2 -translate-y-1/2 text-content-tertiary"
             />
             <input
               type="text"
@@ -2053,7 +2053,7 @@ function CatalogResourcePickerModal({
               placeholder={t('assemblies.catalog_search_ph', {
                 defaultValue: 'Search materials / labor / equipment…',
               })}
-              className="w-full pl-8 pr-3 py-1.5 text-sm rounded-lg border border-border-light bg-surface-primary focus:outline-none focus:ring-1 focus:ring-emerald-400"
+              className="w-full ps-8 pe-3 py-1.5 text-sm rounded-lg border border-border-light bg-surface-primary focus:outline-none focus:ring-1 focus:ring-emerald-400"
               autoFocus
             />
           </div>

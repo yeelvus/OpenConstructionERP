@@ -27,6 +27,15 @@ MANIFEST = PartnerPackManifest(
     ],
     default_currency="NZD",
     default_tax_template="nz_gst_15",
+    # Was absent, which is not the same as deliberately empty: a project made
+    # under this pack opened on the flat international default while the pack
+    # itself declared NZD, the NZ cost regions and the NZ standards.
+    #
+    # The New Zealand template is still the neutral international method
+    # carrying NZD and 15 percent GST rather than a national convention, and it
+    # says so in its own description. Naming it here is worth doing anyway, and
+    # it turns national by itself once the markup table states the NZ stack.
+    default_methodology="new_zealand",
     validation_rule_packs=[
         "nzbc_acceptable_solutions",
         "nzs_3604_timber",
@@ -36,8 +45,8 @@ MANIFEST = PartnerPackManifest(
     default_modules=[],
     hidden_modules=[],
     branding=PartnerBranding(
-        primary_color="#000000",   # NZ all-black
-        accent_color="#C8102E",    # NZ silver-fern red accent
+        primary_color="#000000",  # NZ all-black
+        accent_color="#C8102E",  # NZ silver-fern red accent
         logo_path="logo.svg",
         favicon_path=None,
         powered_by_text=None,
@@ -59,7 +68,15 @@ MANIFEST = PartnerPackManifest(
             "Rawlinsons New Zealand Construction Handbook",
         ],
         "practitioner_licence": "LBP — Licensed Building Practitioner (MBIE)",
-        "lbp_classes": ["Design 1/2/3", "Carpentry", "Bricklaying & Blocklaying", "External Plastering", "Foundations", "Roofing", "Site"],
+        "lbp_classes": [
+            "Design 1/2/3",
+            "Carpentry",
+            "Bricklaying & Blocklaying",
+            "External Plastering",
+            "Foundations",
+            "Roofing",
+            "Site",
+        ],
         "default_contract": "NZS 3910:2023",
         "support_email": "info@datadrivenconstruction.io",
     },

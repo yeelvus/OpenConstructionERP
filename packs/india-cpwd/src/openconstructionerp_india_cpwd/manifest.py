@@ -25,42 +25,46 @@ MANIFEST = PartnerPackManifest(
         "hi": "locales/hi.json",
     },
     cwicr_regions=[
-        # Top 7 Indian metros — pre-loaded for instant project setup
-        "cwicr-eng-delhi",       # Delhi NCR (default for DSR)
-        "cwicr-eng-mumbai",      # Maharashtra
-        "cwicr-eng-bangalore",   # Karnataka
-        "cwicr-eng-chennai",     # Tamil Nadu
-        "cwicr-eng-hyderabad",   # Telangana
-        "cwicr-eng-kolkata",     # West Bengal
-        "cwicr-eng-pune",        # Maharashtra (industrial belt)
+        # One Indian catalogue exists and this is its marketplace slug. The
+        # list used to name seven metros; six of them resolved to nothing, and
+        # the one the pack called its default, Delhi, was among them. A slug
+        # with no catalogue behind it is skipped at install with no error, so
+        # the pack read as if it shipped seven cities of rates and shipped
+        # one. The other six are recorded under metadata as planned, which is
+        # what they always were.
+        "cwicr-hi-mumbai",
     ],
     default_currency="INR",
     default_tax_template="in_gst_18",
     default_methodology="india",
     validation_rule_packs=[
         # Specifications & rates
-        "cpwd_specs_2019",          # CPWD Specs 2019 + Works Manual 2019 + DSR 2023
-        "dsr_delhi_rates",           # DSR 2023 unit-rate alignment
+        "cpwd_specs_2019",  # CPWD Specs 2019 + Works Manual 2019 + DSR 2023
+        "dsr_delhi_rates",  # DSR 2023 unit-rate alignment
         # Structural codes
-        "is_456_concrete",           # IS 456:2000 + amendments
-        "is_800_steel",              # IS 800:2007 limit-state
-        "is_seismic_loads",          # IS 1893 + IS 875 + IS 13920 bundle
+        "is_456_concrete",  # IS 456:2000 + amendments
+        "is_800_steel",  # IS 800:2007 limit-state
+        "is_seismic_loads",  # IS 1893 + IS 875 + IS 13920 bundle
         # Building code (broader than CPWD DSR)
-        "nbc_india_2016",            # NBC 2016 + 2024 amendments
+        "nbc_india_2016",  # NBC 2016 + 2024 amendments
         # Real-estate regulation (private developers)
-        "rera_2016",                 # RERA Act 2016
+        "rera_2016",  # RERA Act 2016
         # Tax & statutory
-        "india_tax_construction",    # GST + TDS 194C + BOCW labour cess
+        "india_tax_construction",  # GST + TDS 194C + BOCW labour cess
     ],
-    default_modules=[],   # empty = show all (Shape A - no module hiding)
+    # The engine identifier behind the CPWD specification document above.
+    validation_rule_sets=[
+        "cpwd",
+    ],
+    default_modules=[],  # empty = show all (Shape A - no module hiding)
     hidden_modules=[],
     demo_template_ids=["govt-building-delhi"],
     branding=PartnerBranding(
-        primary_color="#FF9933",   # Saffron (Indian flag, Kesari)
-        accent_color="#138808",    # India Green (Indian flag)
+        primary_color="#FF9933",  # Saffron (Indian flag, Kesari)
+        accent_color="#138808",  # India Green (Indian flag)
         logo_path="logo.svg",
         favicon_path=None,
-        powered_by_text=None,      # use default co-branding string
+        powered_by_text=None,  # use default co-branding string
     ),
     onboarding_script_path="onboarding.yaml",
     metadata={
@@ -82,29 +86,39 @@ MANIFEST = PartnerPackManifest(
             "Income-Tax Act s.194C (TDS on contractors)",
             "BOCW Cess Act 1996 (labour cess 1%)",
         ],
-        # CPWD = central PWD only. State works follow state-specific SoRs.
+        # CPWD is central PWD only. State works follow state-specific SoRs.
         # Top 5 state SoRs flagged in onboarding as separately-enableable.
         "compatible_state_sors": [
-            "mppwd",            # Madhya Pradesh PWD
-            "rpwd",             # Rajasthan PWD
-            "mjp",              # Maharashtra Jeevan Pradhikaran
-            "kerala_pwd",       # Kerala PWD
-            "tamilnadu_pwd",    # Tamil Nadu PWD
+            "mppwd",  # Madhya Pradesh PWD
+            "rpwd",  # Rajasthan PWD
+            "mjp",  # Maharashtra Jeevan Pradhikaran
+            "kerala_pwd",  # Kerala PWD
+            "tamilnadu_pwd",  # Tamil Nadu PWD
         ],
         "compatible_state_sors_note": (
             "CPWD is central-only. State PWD works need the matching state "
-            "SoR enabled separately — the onboarding wizard prompts the user "
+            "SoR enabled separately. The onboarding wizard prompts the user "
             "to select the predominant work type so the right SoR is loaded."
         ),
-        "cwicr_metros_preloaded": [
-            "Delhi NCR",
+        # What actually loads, and what does not. Kept apart on purpose: the
+        # single list that used to hold all seven could not tell a reader
+        # which of them the install would produce.
+        "cwicr_metros_available": [
             "Mumbai",
+        ],
+        "cwicr_metros_planned": [
+            "Delhi NCR",
             "Bangalore",
             "Chennai",
             "Hyderabad",
             "Kolkata",
             "Pune",
         ],
+        "cwicr_metros_planned_note": (
+            "No catalogue is published for these yet. DSR is a Delhi schedule "
+            "and no Delhi catalogue ships, so rates for Delhi work come from "
+            "your own cost history or your own copy of the schedule."
+        ),
         "dsr_reference_year": 2023,
         "nbc_amendment_year": 2024,
         "support_email": "info@datadrivenconstruction.io",

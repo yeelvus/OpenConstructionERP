@@ -16,7 +16,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
-from app.core.cpm import check_work_days_in_range
+from app.core.cpm import canonical_exception_dates, check_work_days_in_range
 
 
 def _check_calendar_metadata(metadata: Any) -> None:
@@ -28,22 +28,63 @@ def _check_calendar_metadata(metadata: Any) -> None:
     engine without passing the ``schedule_advanced`` calendar schemas. It is a
     second way into the same Monday-zero convention and needs the same refusal.
 
-    Only a present, list-shaped ``work_days`` is inspected. Everything else is
-    left to the resolver, which coerces defensively and has to keep doing so for
-    schedules written before this check existed.
+    Both halves of the override are inspected, and for the same reason. A
+    weekday the engine cannot count produces a shorter week; an exception date
+    the engine cannot read is dropped, so a day the user marked as a holiday is
+    worked. Neither is reported anywhere the writer can see it, which is what
+    makes the write the last place either can still be refused.
+
+    ``exceptions`` is normalised in place before it is stored, so an unambiguous
+    but untidy entry is accepted rather than refused: a date pasted from a
+    spreadsheet arrives as ``"2026-05-01 "``, and an export may write
+    ``"2026-05-01T00:00:00"``. Storing the canonical form also settles it for
+    the reader in ``progress_math``, which compares ISO strings without parsing
+    them and so would otherwise miss both spellings in silence.
+
+    Everything else is left to the resolver, which coerces defensively and has
+    to keep doing so for schedules written before these checks existed.
 
     Args:
         metadata: The schedule's metadata mapping, or anything else.
 
     Raises:
-        ValueError: If the override declares a weekday outside Monday=0..Sunday=6.
+        ValueError: If the override declares a weekday outside Monday=0..Sunday=6,
+            or an exception entry that names no single day.
     """
     if not isinstance(metadata, dict):
         return
     calendar = metadata.get("calendar")
     if not isinstance(calendar, dict):
         return
-    check_work_days_in_range(calendar.get("work_days"), source="metadata.calendar.work_days")
+    _check_calendar_override(calendar, source="metadata.calendar")
+
+
+def _check_calendar_override(calendar: dict[str, Any], *, source: str) -> None:
+    """Refuse, and where it can, repair one work-calendar override.
+
+    The checks live here rather than in a single caller because the engine has
+    more than one entrance. A calendar reaches it through a schedule's
+    ``metadata`` and through the CPM endpoint's request body, and neither passes
+    the ``schedule_advanced`` calendar schemas on the way. Both entrances need
+    the same refusal, so a third one added later joins by calling this with its
+    own ``source`` rather than by growing a second copy of the rules.
+
+    Args:
+        calendar: The override mapping. ``exceptions`` is normalised in place.
+        source: Dotted path of the override within the request body. It is
+            prefixed onto the field name in every error, so the message names
+            the field the writer has to correct rather than a field that merely
+            resembles it.
+
+    Raises:
+        ValueError: If the override declares a weekday outside Monday=0..Sunday=6,
+            or an exception entry that names no single day.
+    """
+    check_work_days_in_range(calendar.get("work_days"), source=f"{source}.work_days")
+    if "exceptions" in calendar:
+        canonical = canonical_exception_dates(calendar["exceptions"], source=f"{source}.exceptions")
+        if canonical is not None:
+            calendar["exceptions"] = canonical
 
 
 # ── v3 §10 money serialisation helper ─────────────────────────────────────
@@ -201,7 +242,12 @@ class ActivityResource(BaseModel):
 
 
 class ActivityCreate(BaseModel):
-    """Create a new activity."""
+    """Create a new activity.
+
+    v3 §10 - ``cost_planned`` / ``cost_actual`` are money;
+    Decimal-as-string in JSON. ``budgeted_units`` / ``installed_units``
+    are quantities and travel the same way.
+    """
 
     model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
 
@@ -230,7 +276,32 @@ class ActivityCreate(BaseModel):
     constraint_date: str | None = Field(default=None, max_length=20)
     activity_code: str | None = Field(default=None, max_length=50)
     bim_element_ids: list[str] | None = Field(default=None, max_length=100_000)
+    # ── Cost-loaded / progress-rigor columns ──────────────────────────────
+    # ``None`` means "not cost-loaded", which is what the nullable ORM columns
+    # already encode; the EVM rollup reads a missing amount as zero. Bounds
+    # mirror the work-order money pair. The unit quantities take ``ge=0`` only,
+    # matching ``progress_schemas.TypedProgressRequest``, which is the other
+    # writer of the same two columns.
+    cost_planned: Decimal | None = Field(default=None, ge=0, le=Decimal("1e12"))
+    cost_actual: Decimal | None = Field(default=None, ge=0, le=Decimal("1e12"))
+    percent_complete_type: str = Field(default="physical", pattern=r"^(physical|duration|units)$")
+    remaining_duration: int | None = Field(default=None, ge=0, le=_MAX_SCHEDULE_DAYS)
+    budgeted_units: Decimal | None = Field(default=None, ge=0)
+    installed_units: Decimal | None = Field(default=None, ge=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("cost_planned", "cost_actual", "budgeted_units", "installed_units", mode="after")
+    @classmethod
+    def _reject_non_finite(cls, v: Decimal | None) -> Decimal | None:
+        if v is None:
+            return None
+        if not v.is_finite():
+            raise ValueError("amount must be finite (no NaN / Infinity)")
+        return v
+
+    @field_serializer("cost_planned", "cost_actual", "budgeted_units", "installed_units", when_used="json")
+    def _ser_money(self, v: Decimal | None) -> str | None:
+        return _serialise_money(v)
 
     @model_validator(mode="after")
     def _check_dates(self) -> "ActivityCreate":
@@ -239,7 +310,13 @@ class ActivityCreate(BaseModel):
 
 
 class ActivityUpdate(BaseModel):
-    """Partial update for an activity."""
+    """Partial update for an activity.
+
+    The cost and unit fields write the raw columns, the way ``progress_pct``
+    already does here. The percent-complete engine lives behind
+    ``PATCH /activities/{id}/typed-progress/``; that endpoint stays the place
+    that derives a percent from units and recomputes the remaining duration.
+    """
 
     model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
 
@@ -265,7 +342,27 @@ class ActivityUpdate(BaseModel):
     constraint_date: str | None = Field(default=None, max_length=20)
     activity_code: str | None = Field(default=None, max_length=50)
     bim_element_ids: list[str] | None = Field(default=None, max_length=100_000)
+    # ── Cost-loaded / progress-rigor columns ──────────────────────────────
+    cost_planned: Decimal | None = Field(default=None, ge=0, le=Decimal("1e12"))
+    cost_actual: Decimal | None = Field(default=None, ge=0, le=Decimal("1e12"))
+    percent_complete_type: str | None = Field(default=None, pattern=r"^(physical|duration|units)$")
+    remaining_duration: int | None = Field(default=None, ge=0, le=_MAX_SCHEDULE_DAYS)
+    budgeted_units: Decimal | None = Field(default=None, ge=0)
+    installed_units: Decimal | None = Field(default=None, ge=0)
     metadata: dict[str, Any] | None = None
+
+    @field_validator("cost_planned", "cost_actual", "budgeted_units", "installed_units", mode="after")
+    @classmethod
+    def _reject_non_finite(cls, v: Decimal | None) -> Decimal | None:
+        if v is None:
+            return None
+        if not v.is_finite():
+            raise ValueError("amount must be finite (no NaN / Infinity)")
+        return v
+
+    @field_serializer("cost_planned", "cost_actual", "budgeted_units", "installed_units", when_used="json")
+    def _ser_money(self, v: Decimal | None) -> str | None:
+        return _serialise_money(v)
 
     @model_validator(mode="after")
     def _check_dates(self) -> "ActivityUpdate":
@@ -274,7 +371,11 @@ class ActivityUpdate(BaseModel):
 
 
 class ActivityResponse(BaseModel):
-    """Activity returned from the API."""
+    """Activity returned from the API.
+
+    v3 §10 - ``cost_planned`` / ``cost_actual`` are money;
+    Decimal-as-string in JSON, as are the two unit quantities.
+    """
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -318,6 +419,20 @@ class ActivityResponse(BaseModel):
     # dedicated PUT /activities/{id}/calendar/ endpoint; exposed here so the
     # grid can show and pick the activity's calendar. None -> schedule default.
     calendar_id: UUID | None = None
+
+    # ── Cost-loaded / progress-rigor columns ──────────────────────────────
+    # ``cost_planned`` is the activity's share of BAC, so a client that cannot
+    # read it back cannot tell a cost-loaded schedule from an empty one.
+    cost_planned: Decimal | None = None
+    cost_actual: Decimal | None = None
+    percent_complete_type: str = "physical"
+    remaining_duration: int | None = None
+    budgeted_units: Decimal | None = None
+    installed_units: Decimal | None = None
+
+    @field_serializer("cost_planned", "cost_actual", "budgeted_units", "installed_units", when_used="json")
+    def _ser_money(self, v: Decimal | None) -> str | None:
+        return _serialise_money(v)
 
 
 class ActivityListResponse(BaseModel):
@@ -721,12 +836,34 @@ class RelationshipResponse(BaseModel):
 
 
 class CPMCalculateRequest(BaseModel):
-    """Request body for CPM calculation with optional work calendar override."""
+    """Request body for CPM calculation with optional work calendar override.
+
+    The calendar here is the engine's second entrance, and until now the only
+    unguarded one. It is passed straight to :func:`app.core.cpm.calculate_cpm`
+    without touching the schedule's stored metadata, so the check on that field
+    never saw it, and the endpoint persists what it computes onto every
+    activity. An override the engine cannot read therefore wrote wrong dates to
+    the database and returned success.
+    """
 
     calendar: dict[str, Any] | None = Field(
         default=None,
         description="Work calendar override: {work_days: [0-4], exceptions: []}",
     )
+
+    @field_validator("calendar")
+    @classmethod
+    def _check_calendar(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Apply the shared override rules to the request body's calendar.
+
+        Unlike the calendar write schemas, this field is typed ``dict[str, Any]``,
+        so ``str_strip_whitespace`` does not reach the strings inside it. An
+        entry pasted with a leading space arrives here untrimmed and is
+        normalised by the shared check rather than by the model config.
+        """
+        if isinstance(v, dict):
+            _check_calendar_override(v, source="calendar")
+        return v
 
 
 # ── Schedule Baseline schemas ──────────────────────────────────────────────
@@ -898,6 +1035,11 @@ class EvmSummaryResponse(BaseModel):
 
     schedule_id: UUID
     as_of_date: str
+    #: ISO 4217 code every money field below is denominated in, and the code
+    #: they were rounded to. Blank when the project has no currency set. It is
+    #: not decoration: without it a reader cannot tell an integer yen amount
+    #: from an amount that lost its decimals somewhere.
+    currency: str = ""
     # ── Cost-loaded money fields (Decimal-as-string) ──────────────────────
     planned_value: Decimal = Decimal("0")  # PV / BCWS, time-phased to as_of
     earned_value: Decimal = Decimal("0")  # EV / BCWP

@@ -68,10 +68,14 @@ import {
 import { nextCasesFor, relatedCasesFor, moreCasesFor } from "./relatedness";
 import { PLAYBOOKS } from "./playbooks";
 import { useAuthoredCases } from "./useCustomCases";
-import { dealCaseFaces } from "./caseFaces";
+import { dealCaseFaces, type CaseFace } from "./caseFaces";
+import { CaseFacePhoto } from "./CaseFacePhoto";
 import { CaseArt } from "./CaseArt";
 import { regionDisplayName } from "./regions";
-import { CaseModuleHive } from "./ModuleHive";
+import { CaseConstellation } from "./CaseConstellation";
+import { modulesForPlaybook } from "./playbookModules";
+import { CaseCompanyHive } from "./CompanyHive";
+import { MarketPackPanel } from "./MarketPackPanel";
 import { FlowGlyph, flowGlyphFor, type FlowGlyphKind } from "./flowGlyphs";
 import { normalizeCaseRoute } from "./playbookModules";
 
@@ -296,7 +300,7 @@ function StepBlock({
       {/* Title + detail on the left, the data flow on the right. `items-start`
           keeps the In / Out cards' top aligned with the step title, and every
           left-column line shares one left edge. */}
-      <div className="grid gap-4 lg:grid-cols-[2fr_3fr] lg:items-start lg:gap-6">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:items-start lg:gap-6">
         <div className="min-w-0 space-y-3">
           <h3 className="text-base font-semibold leading-snug text-content-primary sm:text-lg">
             {title}
@@ -475,7 +479,7 @@ function FaceBandArt({
   face,
 }: {
   playbook: Playbook;
-  face: string | null;
+  face: CaseFace | null;
 }): ReactElement {
   const tint = tintFor(playbook.category);
   const Icon = iconFor(playbook.icon);
@@ -490,14 +494,10 @@ function FaceBandArt({
   if (!face) return art;
   return (
     <>
-      <img
-        src={face}
-        alt=""
-        loading="lazy"
-        decoding="async"
+      <CaseFacePhoto
+        face={face}
         width={340}
         height={480}
-        draggable={false}
         className={clsx(
           "absolute inset-y-0 start-0 w-[38%] object-cover object-[50%_22%]",
           // Opaque through most of its width, then out, so the diagram beside
@@ -523,7 +523,7 @@ function FaceColumnArt({
   face,
 }: {
   playbook: Playbook;
-  face: string | null;
+  face: CaseFace | null;
 }): ReactElement {
   const tint = tintFor(playbook.category);
   const Icon = iconFor(playbook.icon);
@@ -539,14 +539,10 @@ function FaceColumnArt({
   return (
     <>
       <div className="absolute inset-x-0 bottom-0 h-[52%]">{art}</div>
-      <img
-        src={face}
-        alt=""
-        loading="lazy"
-        decoding="async"
+      <CaseFacePhoto
+        face={face}
         width={340}
         height={480}
-        draggable={false}
         className={clsx(
           // Opaque through most of its height, then out, so the diagram
           // below starts before the picture has finished - the vertical
@@ -573,7 +569,7 @@ function CaseHeroMedia({
   face,
 }: {
   playbook: Playbook;
-  face: string | null;
+  face: CaseFace | null;
 }): ReactElement {
   const { ref, near } = useNearViewport<HTMLDivElement>("400px");
   return (
@@ -604,7 +600,7 @@ function MoreCaseTile({
   onOpen,
 }: {
   playbook: Playbook;
-  face: string | null;
+  face: CaseFace | null;
   /** Active UI language, for the localized market name. */
   language: string;
   onOpen: () => void;
@@ -684,6 +680,10 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
     [allPlaybooks],
   );
   const face = facesByPlaybook.get(playbook.id) ?? null;
+  // Resolved here as well as inside the cluster so the hero can choose
+  // between the cluster and the plain tile without the cluster having to
+  // render itself to nothing first.
+  const heroModules = useMemo(() => modulesForPlaybook(playbook), [playbook]);
 
   const toggleStepDone = useCasesStore((s) => s.toggleStepDone);
   const setCurrentStep = useCasesStore((s) => s.setCurrentStep);
@@ -968,7 +968,26 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
               the person who greets them; the market flag sits in the same
               meta row as the discipline, on the title's eye-line. */}
           <div className="flex min-w-0 gap-4 md:gap-5">
-            <CaseHeroMedia playbook={playbook} face={face} />
+            {/* The case as a cluster: the specialist at the centre, the
+                modules they work in around them. Replaces both the flat
+                photo tile that used to sit here and the separate module
+                comb that used to sit further down, so the reach of the
+                case is stated once, attached to the face, instead of
+                twice in two geometries. Falls back to the plain tile for
+                a case that reaches no module at all, where a cluster
+                would be a hub with nothing touching it. */}
+            {heroModules.length > 0 ? (
+              <div className="hidden shrink-0 sm:block">
+                <CaseConstellation
+                  playbook={playbook}
+                  face={face}
+                  onSelect={goToModule}
+                  cellWidth={100}
+                />
+              </div>
+            ) : (
+              <CaseHeroMedia playbook={playbook} face={face} />
+            )}
             <div className="min-w-0 flex-1">
               <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span
@@ -996,6 +1015,30 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
                     {regionDisplayName(playbook.region, i18n.language)}
                   </span>
                 )}
+                {/* The pack that serves this case's market. This used to be a
+                    sentence naming the pack and nothing else, which left the
+                    reader with a requirement and no door: on a stock install
+                    eighteen packs sit on disk and none is applied, so the name
+                    was true and unreachable. The notice now says whether the
+                    pack is switched on here and links straight at it. It is
+                    absent, not empty, where no pack serves the market - most
+                    cases carry no market at all, and a chip that shrugs on 140
+                    of 202 pages would teach the reader to stop reading the
+                    row.
+
+                    The chip that used to sit here is gone, and the pack now
+                    appears once, as `MarketPackPanel` at the foot of the
+                    process column, where it can carry the activate button.
+                    Two readouts of one pack a screen apart is the same
+                    mistake the company chips made below: same nouns, same
+                    destination, twice, and the reader learns to skip both. */}
+                {/* The kinds of company this case is written for used to be
+                    repeated here as chips and again as a comb below. Two
+                    lists of the same eight nouns, a screen apart, with the
+                    same click behind both. The comb is the one that keeps
+                    the company scene and the per-type colour, so it is the
+                    one that stayed, and it now sits directly under this
+                    header rather than below the process strip. */}
                 <span className="inline-flex items-center gap-1 text-2xs font-medium text-content-tertiary">
                   <Clock size={11} aria-hidden="true" />
                   {t("cases.card.minutes", {
@@ -1105,95 +1148,128 @@ export function PlaybookRunner({ playbook, onBack }: PlaybookRunnerProps) {
         </div>
       </header>
 
-      {/* ── The process: a full-width row of step cards, up to six across and
-          wrapping after that. Each card is a picture of the work and its title;
-          clicking one jumps to that step below and marks it current. ──────── */}
-      <section aria-label={t("cases.the_process", { defaultValue: "The process" })}>
-        <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-          <p className="text-2xs font-semibold uppercase tracking-wide text-content-tertiary">
-            {t("cases.the_process", { defaultValue: "The process" })}
-          </p>
-          <p className="text-xs text-content-tertiary">
-            {t("cases.process_help", {
-              defaultValue: "Choose a step to see what happens and why",
-            })}
-          </p>
-        </div>
-        {/* One compact row, always: the strip is the case's journey map (and
-            the camera frame the showcase films), so every step reads left to
-            right on a single line - a seven-step case fits 1920px whole. Each
-            card keeps one fixed compact size; when the viewport is narrower
-            than the row, the ROW scrolls inside this container and the page
-            itself never scrolls sideways. */}
-        <ol
-          className="flex gap-2 overflow-x-auto pb-1"
-          aria-label={title}
-        >
-          {playbook.steps.map((step, i) => {
-            const done = isStepDone(progress, step.id);
-            const isCurrent = i === currentIndex;
-            const stepTitle = t(step.titleKey, { defaultValue: step.titleDefault });
-            return (
-              <li key={step.id} className="w-36 shrink-0 sm:w-40">
-                <button
-                  type="button"
-                  ref={(el) => {
-                    cardRefs.current[i] = el;
-                  }}
-                  onClick={() => {
-                    selectStep(i);
-                    scrollToStep(step.id);
-                  }}
-                  onKeyDown={(e) => onCardKeyDown(e, i)}
-                  aria-current={isCurrent ? "step" : undefined}
-                  title={stepTitle}
-                  className={clsx(
-                    "group flex h-full w-full flex-col gap-1 rounded-lg border p-1 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40",
-                    isCurrent
-                      ? "border-oe-blue bg-oe-blue-subtle ring-1 ring-inset ring-oe-blue/30"
-                      : done
-                        ? "border-semantic-success/30 bg-semantic-success/10 hover:border-semantic-success/50"
-                        : "border-border-light bg-surface-primary hover:border-oe-blue/40 hover:bg-surface-secondary/40",
-                  )}
-                >
-                  <div className="relative">
-                    <StepThumb step={step} className="aspect-[16/9] w-full" />
-                    <span
-                      className={clsx(
-                        "absolute start-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full text-2xs font-bold shadow-sm",
-                        done
-                          ? "bg-semantic-success text-white"
-                          : isCurrent
-                            ? "bg-oe-blue text-white"
-                            : "bg-surface-primary/95 text-content-secondary ring-1 ring-inset ring-border-light",
-                      )}
-                      aria-hidden="true"
-                    >
-                      {done ? <Check size={12} strokeWidth={2.5} /> : i + 1}
-                    </span>
-                  </div>
-                  <span
+      {/* ── The process, and who the case is written for, side by side from
+          `lg` up. The comb answers "is this case for a firm like mine", the
+          question a reader arrives with, so it must not be pushed below the
+          full list of steps; beside the strip it keeps that place in the
+          reading order and gives back the band of page it used to have to
+          itself. Heights are joined by `items-stretch`, which is the flex
+          default and is written out here because the obvious-looking
+          `items-center` would let the two columns end at different heights.
+          The strip's column carries `min-w-0`: a flex child will not shrink
+          below its content unless it is told it may, and without that the
+          strip's own `overflow-x-auto` never engages and the whole PAGE
+          scrolls sideways instead. Stacked below `lg`, where a phone has no
+          room for a second column. ─────────────────────────────────────── */}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-stretch lg:gap-4">
+        {/* ── The process: one row of step cards, as wide as the column it
+            is given. Each card is a picture of the work and its title;
+            clicking one jumps to that step below and marks it current. ──────── */}
+        {/* The process column is a column, not a single block: the strip on
+            top and the market's pack at the foot. The strip is one fixed-height
+            row of cards, so on its own it left the taller of the two columns
+            trailing - measured at 1600px, 125px of cards inside a 201px
+            column, with the company comb beside it drawing a bordered box the
+            full 201. Filling that space with the pack is what makes the row
+            read as one row, and `lg:mt-auto` below is what pins the panel to
+            the bottom of whatever slack there is rather than leaving a gap
+            under it. */}
+        <div className="flex min-w-0 flex-col gap-3 lg:flex-1">
+        <section className="min-w-0" aria-label={t("cases.the_process", { defaultValue: "The process" })}>
+          <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+            <p className="text-2xs font-semibold uppercase tracking-wide text-content-tertiary">
+              {t("cases.the_process", { defaultValue: "The process" })}
+            </p>
+            <p className="text-xs text-content-tertiary">
+              {t("cases.process_help", {
+                defaultValue: "Choose a step to see what happens and why",
+              })}
+            </p>
+          </div>
+          {/* One compact row, always: the strip is the case's journey map (and
+              the camera frame the showcase films), so every step reads left to
+              right on a single line - a seven-step case fits 1920px whole. Each
+              card keeps one fixed compact size; when the viewport is narrower
+              than the row, the ROW scrolls inside this container and the page
+              itself never scrolls sideways. */}
+          <ol
+            className="flex gap-2 overflow-x-auto pb-1"
+            aria-label={title}
+          >
+            {playbook.steps.map((step, i) => {
+              const done = isStepDone(progress, step.id);
+              const isCurrent = i === currentIndex;
+              const stepTitle = t(step.titleKey, { defaultValue: step.titleDefault });
+              return (
+                <li key={step.id} className="w-36 shrink-0 sm:w-40">
+                  <button
+                    type="button"
+                    ref={(el) => {
+                      cardRefs.current[i] = el;
+                    }}
+                    onClick={() => {
+                      selectStep(i);
+                      scrollToStep(step.id);
+                    }}
+                    onKeyDown={(e) => onCardKeyDown(e, i)}
+                    aria-current={isCurrent ? "step" : undefined}
+                    title={stepTitle}
                     className={clsx(
-                      "line-clamp-2 px-0.5 text-2xs font-semibold leading-snug",
-                      isCurrent ? "text-oe-blue-text" : "text-content-primary",
+                      "group flex h-full w-full flex-col gap-1 rounded-lg border p-1 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue/40",
+                      isCurrent
+                        ? "border-oe-blue bg-oe-blue-subtle ring-1 ring-inset ring-oe-blue/30"
+                        : done
+                          ? "border-semantic-success/30 bg-semantic-success/10 hover:border-semantic-success/50"
+                          : "border-border-light bg-surface-primary hover:border-oe-blue/40 hover:bg-surface-secondary/40",
                     )}
                   >
-                    {stepTitle}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      </section>
+                    <div className="relative">
+                      <StepThumb step={step} className="aspect-[16/9] w-full" />
+                      <span
+                        className={clsx(
+                          "absolute start-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full text-2xs font-bold shadow-sm",
+                          done
+                            ? "bg-semantic-success text-white"
+                            : isCurrent
+                              ? "bg-oe-blue text-white"
+                              : "bg-surface-primary/95 text-content-secondary ring-1 ring-inset ring-border-light",
+                        )}
+                        aria-hidden="true"
+                      >
+                        {done ? <Check size={12} strokeWidth={2.5} /> : i + 1}
+                      </span>
+                    </div>
+                    <span
+                      className={clsx(
+                        "line-clamp-2 px-0.5 text-2xs font-semibold leading-snug",
+                        isCurrent ? "text-oe-blue-text" : "text-content-primary",
+                      )}
+                    >
+                      {stepTitle}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+        </section>
 
-      {/* ── The span of the case: every module it walks through, as one
-          honeycomb. The strip above is the case in TIME, step after step; this
-          is the case in REACH, and it is the only place the whole span is
-          visible at once. Sits between the two so the reader meets the case's
-          shape before its detail. Clicking a hexagon jumps to the step that
-          opens that module. ──────────────────────────────────────────────── */}
-      <CaseModuleHive playbook={playbook} onSelect={goToModule} />
+          {/* Named here rather than beside the title, because this is where
+              there is room for the button that acts on it. Renders nothing for
+              a market with no pack on disk. */}
+          <MarketPackPanel region={playbook.region} className="lg:mt-auto" />
+        </div>
+
+        {/* ── Who the case is written for. The hero above says what the case
+            reaches; this says who it is for, in the same comb geometry, so
+            the two questions a reader arrives with are answered by two
+            drawings of one language rather than by a comb and a row of
+            chips. It sits beside the process strip, and above the full list
+            of steps, because a reader who came asking whether this case is
+            for a firm like theirs should not have to pass the whole process
+            to find out. ─────────────────────────────────────────────────── */}
+        <CaseCompanyHive playbook={playbook} variant="aside" />
+      </div>
 
       {/* ── Every step, in full, one under the other ─────────────────────── */}
       <div className="space-y-3">

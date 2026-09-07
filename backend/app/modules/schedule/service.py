@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
+from app.core.cpm import readable_exception_dates, readable_work_days
 from app.core.events import event_bus
 from app.core.json_merge import merge_metadata
 
@@ -303,6 +304,43 @@ def _calc_duration_from_resources(
 # There are no holidays here and never have been: compute_duration counts
 # every non-weekend day as a working day, for every region in this table.
 # weekday(): Monday=0, Tuesday=1, ... Saturday=5, Sunday=6
+#
+# WHAT THIS TABLE IS. The week the planner schedules against, which is not the
+# same question as the week a statute describes. core.calendar._WORKING_WEEK
+# answers that other question. A planning week may deliberately be LONGER than
+# the statutory one, which is why Brazil, China and India plan six days on top
+# of a five-day statutory week. It may never be shorter, because removing a day
+# the country works puts every computed date on the wrong side of the weekend.
+# The gate is tests/unit/test_work_calendar_rest_days_do_not_conflict.py, and
+# its module docstring is the long form of this paragraph.
+#
+# WHAT CONSULTS IT, measured rather than assumed. get_work_calendar is the only
+# reader that computes a date, and it is reached from two places that do not
+# behave the same way:
+#
+#   * BOQ schedule generation resolves it from project.region, so a project's
+#     region really does select its calendar there.
+#   * compute_duration takes a region argument, and no caller anywhere passes
+#     one. Every call site supplies two arguments, so get_work_calendar(None)
+#     returns DEFAULT and compute_duration is Monday-Friday for every project
+#     in every region. The parameter works; nothing gives it a value.
+#
+# core.country_coverage reads this table as well, but as a coverage probe, and
+# it deliberately answers through the resolver rather than off the table: the
+# keys are a mixed vocabulary rather than country codes, so reading them
+# directly gives the wrong answer. It computes no dates.
+#
+# So the same project can be given a six-day duration by BOQ generation and a
+# five-day one as soon as anything recomputes it: create_activity always,
+# update_activity whenever the payload carries a start or end date, and
+# get_gantt_data as a fallback when the stored duration is zero. Nothing
+# exempts a BOQ-generated row from that, so a Chinese project's duration
+# changes the first time someone drags one of its dates. Do not read an entry
+# below as "this is what the product does for that country" until you know
+# which of the paths produced the number in front of you.
+#
+# WHERE EACH WEEK CAME FROM is recorded per entry. An entry with no note is
+# one whose source was never recorded, and that is worth knowing as such.
 
 WORK_CALENDARS: dict[str, dict] = {
     "DEFAULT": {
@@ -358,19 +396,67 @@ WORK_CALENDARS: dict[str, dict] = {
         "work_days": {0, 1, 2, 3, 4},  # Mon-Fri
         "label": "Russia (Mon-Fri, 8h)",
     },
-    # 9. UAE/Gulf - AR_DUBAI
+    # Gulf states that work Sunday to Thursday: SA, QA, KW, BH and OM.
+    #
+    # Friday is the statutory weekly rest day, not merely the customary one:
+    # Qatar Labour Law No. 14 of 2004 Art. 75 and Kuwait Labour Law No. 6 of 2010
+    # Art. 64 both name it. A planning week that works Friday therefore
+    # contradicts the statute, and one that rests Sunday drops a working day.
+    #
+    # Eight hours a day keeps the week inside every maximum in the group: 48
+    # hours a week in Saudi Arabia (Labour Law Art. 98), Qatar (Art. 73), Kuwait
+    # (Art. 64) and Bahrain (Law No. 36 of 2012 Art. 51), and 40 hours in Oman,
+    # the lowest of the six (Royal Decree 53/2023 Art. 70). Five 8-hour days is
+    # 40 and clears all of them.
+    #
+    # Limit of the sourcing: Oman's statute sets two consecutive rest days
+    # without naming them (Royal Decree 53/2023 Art. 77), so Sunday-Thursday for
+    # Oman is the regional convention rather than a statute naming those days.
+    # Ramadan reductions to 6 hours a day are not modelled here.
     "GULF": {
-        "hours_per_day": 10,
-        "work_days": {0, 1, 2, 3, 4, 5},  # Mon-Sat
-        "label": "UAE/Gulf (Mon-Sat, 10h)",
+        "hours_per_day": 8,
+        "work_days": {6, 0, 1, 2, 3},  # Sun-Thu
+        "label": "Gulf (Sun-Thu, 8h)",
+    },
+    # The UAE left the Sunday-Thursday week on 1 January 2022 and is the only GCC
+    # state to have done so, which is why it cannot share the entry above.
+    # Federal government works Monday to Thursday in full with a half day on
+    # Friday and a Saturday-Sunday weekend. The private-sector maximum is 8 hours
+    # a day and 48 hours a week (Federal Decree-Law No. 33 of 2021 Art. 17).
+    #
+    # Limit of the sourcing: Friday is modelled as a whole working day because it
+    # is worked, and a half day cannot be expressed in a whole-day work_days set.
+    # This overstates Friday for the public sector rather than dropping it.
+    "UAE": {
+        "hours_per_day": 8,
+        "work_days": {0, 1, 2, 3, 4},  # Mon-Fri
+        "label": "UAE (Mon-Fri, 8h)",
     },
     # 10. China - ZH_SHANGHAI
+    #
+    # Source of the week: UNSOURCED. The six-day week is a construction site
+    # convention and no statute is cited for it here. An attempt to source the
+    # PRC statutory week failed to reach a primary text, so the weekly maximum
+    # this six-day week would have to fit inside is not known, and no figure has
+    # been invented for it. core.calendar._WORKING_WEEK carries Monday-Friday for
+    # CN, also uncited, so the two are not evidence for one another.
+    #
+    # China's holidays are modelled, but not here: see core.calendar._holidays_cn,
+    # which cites the State Council national holiday measures. That function also
+    # documents the annual arrangement that turns particular weekends into working
+    # days, which neither this table nor the seeded calendar can express.
     "CHINA": {
         "hours_per_day": 8,
         "work_days": {0, 1, 2, 3, 4, 5},  # Mon-Sat (common in construction)
         "label": "China (Mon-Sat, 8h)",
     },
     # 11. India - HI_MUMBAI
+    #
+    # Source of the week: UNSOURCED, and unlike Brazil and China this entry gave
+    # no reason of its own. Brazil records a statutory 44h week and China records
+    # a site convention; India recorded neither. The source the original author
+    # used could not be found, so nothing is claimed for it here rather than a
+    # citation being fitted to a value that was already in the table.
     "INDIA": {
         "hours_per_day": 8,
         "work_days": {0, 1, 2, 3, 4, 5},  # Mon-Sat
@@ -379,84 +465,194 @@ WORK_CALENDARS: dict[str, dict] = {
 }
 
 
+# Region resolution keyspaces, held apart on purpose.
+#
+# A calendar is selected by ISO 3166-1 alpha-2 country code. That is the
+# convention the shipped CWICR catalogue uses for its region ids today:
+# BR_SAOPAULO, CA_TORONTO, AR_BUENOSAIRES, PT_LISBON, GB_LONDON, IN_MUMBAI.
+# A country whose week is not Monday-Friday and is simply absent from this map
+# is not detected by anything: it falls through to DEFAULT, which is Mon-Fri, and
+# a missing country looks exactly like a country with no special calendar. That
+# is how Kuwait, Bahrain and Oman were given the wrong weekend. The gate is
+# tests/unit/test_work_calendar_rest_days_do_not_conflict.py.
+_CALENDAR_BY_COUNTRY: dict[str, str] = {
+    "AE": "UAE",
+    "AT": "DACH",
+    "BH": "GULF",
+    "BR": "BRAZIL",
+    "CA": "CANADA",
+    "CH": "DACH",
+    "CN": "CHINA",
+    "DE": "DACH",
+    "ES": "SPAIN",
+    "FR": "FRANCE",
+    "GB": "UK",
+    "IN": "INDIA",
+    "KW": "GULF",
+    "OM": "GULF",
+    "QA": "GULF",
+    "RU": "RU",
+    "SA": "GULF",
+    "US": "US",
+}
+
+# Heads that are not, and can never be, ISO 3166-1 alpha-2 country codes: a
+# superseded CWICR naming that keyed some regions by language (ZH_SHANGHAI,
+# HI_MUMBAI, SP_BARCELONA) or by a longer alias (USA_USD, UK_GBP, ENG_TORONTO),
+# plus the calendar keys and grouping names a project may carry directly.
+# core.match_service.region_language renames the same strays to their ISO form.
+#
+# Nothing in here may be a two-letter ISO code. AR and PT used to sit in the
+# same dict as the country codes, where they meant Arabic and Portuguese, so
+# Buenos Aires was given the Gulf week of six 10-hour days and Lisbon the
+# Brazilian week of six. Because the three head keyspaces cannot overlap, the
+# order they are consulted in does not decide any answer.
+_CALENDAR_BY_LEGACY_HEAD: dict[str, str] = {
+    "BRAZIL": "BRAZIL",
+    "CANADA": "CANADA",
+    "CHINA": "CHINA",
+    "DACH": "DACH",
+    "ENG": "CANADA",  # ENG_TORONTO, since renamed CA_TORONTO
+    "FRANCE": "FRANCE",
+    "GULF": "GULF",
+    "HI": "INDIA",  # HI_MUMBAI, since renamed IN_MUMBAI
+    "INDIA": "INDIA",
+    "NORDIC": "DACH",
+    "SP": "SPAIN",  # SP_BARCELONA, since renamed ES_MADRID
+    "SPAIN": "SPAIN",
+    "UK": "UK",  # UK_GBP, since renamed GB_LONDON
+    "USA": "US",  # USA_USD
+    "ZH": "CHINA",  # ZH_SHANGHAI
+}
+
+# The vocabulary the project region picker emits, which is none of the three
+# above: not ISO codes, not superseded catalogue heads, and not the spaced
+# labels below. frontend/src/features/projects/CreateProjectPage.tsx ships
+# REGION_GROUPS as compound CamelCase tokens, so a project created through the
+# product carries "GulfStates" or "MiddleEast" rather than "QA" or "Middle East".
+#
+# That mismatch is why the Gulf week was unreachable from the product's own
+# picker while every gate stayed green: the tests walked _CALENDAR_BY_COUNTRY,
+# whose ISO codes the picker never emits, so the instrument and the product were
+# speaking different vocabularies and neither could see the other.
+#
+# Only regions whose week actually differs from DEFAULT, or that own a named
+# calendar, need an entry. A region with no calendar of its own is left to fall
+# through to DEFAULT on purpose: that is the honest answer rather than a
+# neighbouring country's week. The gate over this dict's coverage of the shipped
+# picker is tests/unit/test_every_shipped_region_option_reaches_a_calendar.py,
+# and it reads the picker file rather than a copy of these keys.
+#
+# Same rule as the dict above: nothing in here may be a two-letter ISO code.
+_CALENDAR_BY_PICKER_REGION: dict[str, str] = {
+    # "Gulf States" and "Middle East (General)" both carry no country, so both
+    # get the week five of the six GCC states work, matching what the spaced
+    # "MIDDLE EAST" label below has always answered. The UAE is the one GCC
+    # state that does not work it, and it stays reachable by "AE", "AE_DUBAI"
+    # and "United Arab Emirates"; a UAE project stored under a region naming the
+    # group rather than the country still gets Sunday-Thursday.
+    "GULFSTATES": "GULF",
+    "MIDDLEEAST": "GULF",
+    # Not a week change: RU is Monday-Friday and eight hours, exactly DEFAULT.
+    # It is here so the badge a Russian project renders reads "Russia" instead
+    # of "Standard", because a shipped calendar the picker cannot reach is
+    # indistinguishable from one that does not exist.
+    "RUSSIA": "RU",
+}
+
+# Human-readable region labels that projects carry instead of a code, matched
+# by prefix. There is deliberately no bare "UNITED" entry: it used to catch every
+# label beginning with that word, so "United Arab Emirates" was given the
+# American calendar rather than the Gulf one.
+#
+# The five Gulf states are named here as well as coded above because the region
+# field accepts free text: the picker's "Custom..." option stores whatever the
+# user types. "QA" resolved to Sunday-Thursday while "Qatar" fell through to
+# Monday-Friday, so the same project got two different weeks depending on which
+# form was typed, and the longer, more natural one was the wrong one.
+_CALENDAR_BY_LABEL: dict[str, str] = {
+    "BAHRAIN": "GULF",
+    "KUWAIT": "GULF",
+    # "Middle East" carries no country, so it gets the week five of the six GCC
+    # states work. The UAE is named in full and is the one that does not.
+    "MIDDLE EAST": "GULF",
+    "OMAN": "GULF",
+    "QATAR": "GULF",
+    "SAUDI ARABIA": "GULF",
+    "UNITED ARAB EMIRATES": "UAE",
+    "UNITED KINGDOM": "UK",
+    "UNITED STATES": "US",
+}
+
+
 def get_work_calendar(region: str | None = None) -> dict:
-    """Get work calendar for a region. Falls back to DEFAULT."""
-    if region:
-        # Try exact match, then prefix match
-        cal = WORK_CALENDARS.get(region.upper())
-        if cal:
-            return cal
-        # Try matching region prefix (e.g., "DE_BERLIN" → "DACH")
-        region_map = {
-            # CWICR db_id prefixes → calendar keys
-            "USA": "US",
-            "US": "US",
-            "UK": "UK",
-            "GB": "UK",
-            "DE": "DACH",
-            "AT": "DACH",
-            "CH": "DACH",
-            "ENG": "CANADA",  # ENG_TORONTO
-            "FR": "FRANCE",
-            "SP": "SPAIN",
-            "ES": "SPAIN",
-            "PT": "BRAZIL",
-            "BR": "BRAZIL",
-            "RU": "RU",
-            "AR": "GULF",
-            "AE": "GULF",
-            "SA": "GULF",
-            "QA": "GULF",
-            "ZH": "CHINA",
-            "CN": "CHINA",
-            "HI": "INDIA",
-            "IN": "INDIA",
-            # Project region values
-            "DACH": "DACH",
-            "GULF": "GULF",
-            "NORDIC": "DACH",
-            "CANADA": "CANADA",
-            "FRANCE": "FRANCE",
-            "SPAIN": "SPAIN",
-            "BRAZIL": "BRAZIL",
-            "CHINA": "CHINA",
-            "INDIA": "INDIA",
-            # Human-readable region labels actually stored on projects
-            # (e.g. demo projects carry region="Middle East" /
-            # "United States"). Keyed by the uppercased first token so the
-            # prefix-match below resolves them. Without these, "Middle East"
-            # → prefix "MIDDLE" fell through to DEFAULT and the Gulf 6-day
-            # calendar was never applied.
-            "MIDDLE": "GULF",
-            "UNITED": "US",  # "United States" / "United Kingdom" → see override
-        }
-        # Full-label overrides take priority over the first-token prefix so
-        # "United Kingdom" doesn't collide with "United States" on "UNITED".
-        full_label_map = {
-            "MIDDLE EAST": "GULF",
-            "UNITED STATES": "US",
-            "UNITED KINGDOM": "UK",
-        }
-        normalized = region.strip().upper()
-        for label, mapped_cal in full_label_map.items():
-            if normalized.startswith(label):
-                return WORK_CALENDARS.get(mapped_cal, WORK_CALENDARS["DEFAULT"])
-        prefix = region.split("_")[0].split()[0].upper() if region.strip() else ""
-        mapped = region_map.get(prefix)
-        if mapped:
-            return WORK_CALENDARS.get(mapped, WORK_CALENDARS["DEFAULT"])
+    """Get the work calendar for a region, falling back to DEFAULT.
+
+    A region may be a calendar key ("GULF"), an ISO 3166-1 alpha-2 country code
+    or a region id headed by one ("DE_BERLIN"), a superseded catalogue head
+    ("ZH_SHANGHAI"), a value the project region picker emits ("GulfStates"), or
+    a human-readable label ("United States", "Qatar").
+
+    Args:
+        region: The region string stored on a project or a catalogue row.
+
+    Returns:
+        The calendar dict, which carries hours_per_day, work_days and label.
+        DEFAULT is returned when no calendar in the table is that region's,
+        which is the honest answer rather than a neighbouring country's week.
+    """
+    if not region or not region.strip():
+        return WORK_CALENDARS["DEFAULT"]
+
+    normalized = region.strip().upper()
+
+    # A calendar key carried directly.
+    calendar = WORK_CALENDARS.get(normalized)
+    if calendar:
+        return calendar
+
+    # A human-readable label. Longest first, so a label that is a prefix of
+    # another can never answer for it.
+    for label in sorted(_CALENDAR_BY_LABEL, key=len, reverse=True):
+        if normalized.startswith(label):
+            return WORK_CALENDARS.get(_CALENDAR_BY_LABEL[label], WORK_CALENDARS["DEFAULT"])
+
+    # Otherwise the head of a region id: "DE_BERLIN" -> "DE".
+    head_words = normalized.split("_")[0].split()
+    head = head_words[0] if head_words else ""
+    mapped = (
+        _CALENDAR_BY_COUNTRY.get(head) or _CALENDAR_BY_LEGACY_HEAD.get(head) or _CALENDAR_BY_PICKER_REGION.get(head)
+    )
+    if mapped:
+        return WORK_CALENDARS.get(mapped, WORK_CALENDARS["DEFAULT"])
     return WORK_CALENDARS["DEFAULT"]
 
 
 def compute_duration(start_date: str, end_date: str, region: str | None = None) -> int:
     """Calculate working days between two ISO date strings.
 
-    Uses regional work calendar (respects different work weeks).
+    ``region`` selects a working week from :data:`WORK_CALENDARS`, but nothing
+    passes one. Every call site supplies two arguments, so this resolves DEFAULT
+    and counts a Monday-to-Friday week for every project in every region. The
+    parameter has existed since ``9e266fced`` added it in March 2026 and no commit
+    since has given it a value, so the previous wording here, that the function
+    respects different work weeks, described the parameter rather than the
+    behaviour.
+
+    This is worth knowing before threading a region through. BOQ schedule
+    generation does resolve a calendar from ``project.region``, so a Chinese
+    project's activities are generated on a six-day week and recomputed here on
+    five. Passing a region would make those durations agree at six days; leaving
+    it unset would make them agree at five. Both change dates that shipped demo
+    packs already produce, which makes it a product decision rather than a
+    correction.
 
     Args:
         start_date: ISO date string (e.g. "2026-04-01").
         end_date: ISO date string (e.g. "2026-04-15").
-        region: Optional region for work calendar (e.g. "DACH", "GULF").
+        region: Optional region key for :data:`WORK_CALENDARS`, for example
+            "DACH" or "GULF". No caller sets it; ``None`` resolves to the
+            DEFAULT Monday-to-Friday week.
 
     Returns:
         Number of working days between start and end, inclusive.
@@ -504,11 +700,8 @@ def resolve_calendar(schedule: Schedule) -> dict:
     meta = getattr(schedule, "metadata_", None)
     cal = meta.get("calendar") if isinstance(meta, dict) else None
     if isinstance(cal, dict) and cal.get("work_days"):
-        try:
-            work_days = [int(d) for d in cal.get("work_days") or []]
-        except (TypeError, ValueError):
-            work_days = list(default_work_days)
-        exceptions = [str(e) for e in (cal.get("exceptions") or []) if e]
+        work_days = readable_work_days(cal.get("work_days"), source="schedule metadata calendar work days")
+        exceptions = readable_exception_dates(cal.get("exceptions"), source="schedule metadata calendar exceptions")
         return {"work_days": work_days or list(default_work_days), "exceptions": exceptions}
     return {"work_days": list(default_work_days), "exceptions": []}
 
@@ -768,6 +961,12 @@ class ScheduleService:
             activity_code=activity_code,
             bim_element_ids=data.bim_element_ids,
             metadata_=data.metadata,
+            cost_planned=data.cost_planned,
+            cost_actual=data.cost_actual,
+            percent_complete_type=data.percent_complete_type,
+            remaining_duration=data.remaining_duration,
+            budgeted_units=data.budgeted_units,
+            installed_units=data.installed_units,
         )
         activity = await self.activity_repo.create(activity)
         activity_id = activity.id  # snapshot before update_fields() expires the instance
@@ -1874,11 +2073,8 @@ class ScheduleService:
             cal = cal_by_id.get(cid) if cid else None
             if cal is None:
                 continue
-            try:
-                work_days = [int(d) for d in (cal.work_days or [])]
-            except (TypeError, ValueError):
-                work_days = []
-            exceptions = [str(h) for h in (cal.holidays or []) if h]
+            work_days = readable_work_days(cal.work_days, source=f"calendar {cal.id} work days")
+            exceptions = readable_exception_dates(cal.holidays, source=f"calendar {cal.id} holidays")
             resolved[str(a.id)] = {
                 "work_days": work_days or [0, 1, 2, 3, 4],
                 "exceptions": exceptions,
@@ -1916,11 +2112,12 @@ class ScheduleService:
             )
             default_cal = rows.scalars().first()
             if default_cal is not None:
-                try:
-                    work_days = [int(d) for d in (default_cal.work_days or [])]
-                except (TypeError, ValueError):
-                    work_days = []
-                exceptions = [str(h) for h in (default_cal.holidays or []) if h]
+                work_days = readable_work_days(
+                    default_cal.work_days, source=f"default calendar {default_cal.id} work days"
+                )
+                exceptions = readable_exception_dates(
+                    default_cal.holidays, source=f"default calendar {default_cal.id} holidays"
+                )
                 return {"work_days": work_days or [0, 1, 2, 3, 4], "exceptions": exceptions}
 
         return resolve_calendar(schedule)

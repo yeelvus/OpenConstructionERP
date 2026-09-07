@@ -9,7 +9,7 @@ can be unit-tested in isolation (and on Python 3.11 locally, where importing
 live PostgreSQL cluster).
 
 It implements the algorithm described in
-``docs/strategy/ADVANCED_SCHEDULING_PROJECT_CONTROLS_ROADMAP.md`` (the "Progress
+``internal design note ADVANCED_SCHEDULING_PROJECT_CONTROLS_ROADMAP`` (the "Progress
 rigor" / T3.2 design): three percent-complete *types*, weighted step roll-up,
 suspend/resume remaining-duration freeze, deterministic EVM-distortion warnings,
 and time-phased planned value. The real ORM->calendar adapter and the service
@@ -60,7 +60,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
@@ -227,7 +227,21 @@ def _parse_date(iso: str | date) -> date:
     Accepts an existing ``date`` for convenience. Raises ``ValueError`` on
     anything unparseable -- callers pass validated dates, and a silent default
     would corrupt working-day math.
+
+    A ``datetime`` is narrowed to its date first, and the order of these two
+    checks is the whole point of writing them out. ``datetime`` subclasses
+    ``date``, so a lone ``isinstance(iso, date)`` returns the datetime
+    unchanged, and :meth:`WorkCalendar._is_working` then compares
+    ``"2026-05-01T09:30:00"`` against a set of ``YYYY-MM-DD`` holidays, matches
+    nothing, and reports a holiday as a working day.
+
+    Nothing reaches this with a ``datetime`` today: the activity date columns
+    are strings. That is why this is two lines and a test rather than a fix
+    with a story. The day one of those columns becomes a real date column, every
+    holiday would quietly stop being a holiday and no test anywhere would fail.
     """
+    if isinstance(iso, datetime):
+        return iso.date()
     if isinstance(iso, date):
         return iso
     return date.fromisoformat(str(iso)[:10])

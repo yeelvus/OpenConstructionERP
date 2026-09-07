@@ -4,6 +4,11 @@
     "note": "book/product title, identical in en/ru/kk (kk locale addition)",
     "reason_category": "product_name"
   },
+  "about.third_party_size": {
+    "en_value": "{{kb}} kB",
+    "note": "unit abbreviation (kilobytes) beside a bundled licence text's size, the same shape as the settled sibling bim.converter_panel_size ({{size}} MB); the only literal is kB, written the same way in every locale we ship including the Cyrillic and Arabic-script ones, and en-US is a spelling overlay that does not carry the key at all",
+    "reason_category": "abbreviation"
+  },
   "accommodation.bim_link.label": {
     "en_value": "BIM",
     "note": "named open data / interchange standard or format code (CLAUDE.md: not translated)",
@@ -68,6 +73,11 @@
     "en_value": "S/N",
     "note": "abbreviation, identical in every locale including ru (bn locale addition)",
     "reason_category": "abbreviation"
+  },
+  "assets.maint.ok": {
+    "en_value": "OK",
+    "note": "status word carried unchanged into cs/de/es/fr/pt, the same way the locales already ship it elsewhere; the languages that do not borrow it translate it, ru ok, zh normal, so the identical cells are the translation and not the English showing through",
+    "reason_category": "cognate_loanword"
   },
   "auth.how_found_github": {
     "en_value": "GitHub",
@@ -137,6 +147,11 @@
   "boq.markup_percentage": {
     "en_value": "%",
     "note": "bare symbol/punctuation glyph, not a word",
+    "reason_category": "symbol"
+  },
+  "boq.measurement.sign": {
+    "en_value": "+/-",
+    "note": "column head of the measurement sheet's add-or-deduct toggle: the two arithmetic signs, written the same way in every locale we ship including the Cyrillic, Arabic-script and CJK ones; the toggle's own option labels, boq.measurement.adds and boq.measurement.deducts, are translated keys beside it",
     "reason_category": "symbol"
   },
   "boq.provenance_cad_short": {
@@ -318,6 +333,11 @@
     "en_value": "/data/inbound/site-a",
     "note": "placeholder filesystem path shown as an input example",
     "reason_category": "file_path_example"
+  },
+  "construction_control.capture_method.gnss": {
+    "en_value": "GNSS",
+    "note": "satellite positioning acronym, kept as GNSS by every one of the 40 locales that carry the key, ru included, while all seven of its capture_method siblings are genuinely translated (ru 'Лазерное сканирование', de 'Laserscan', zh '激光扫描'); the same locales keep the Latin 'LiDAR' inside the translated drone_lidar sibling",
+    "reason_category": "abbreviation"
   },
   "contacts.how_mod_crm": {
     "en_value": "CRM",
@@ -584,6 +604,16 @@
     "note": "brand/service name, functional interop reference",
     "reason_category": "product_name"
   },
+  "global_search.collection.bim": {
+    "en_value": "BIM",
+    "note": "named open data / interchange standard or format code (CLAUDE.md: not translated)",
+    "reason_category": "standard_code"
+  },
+  "global_search.unnamed_hit": {
+    "en_value": "{{kind}} {{ref}}",
+    "note": "placeholder-only template with nothing between the two slots but a space; kind is a collection label that api.ts collectionLabel returns in English whatever the locale and ref is the first eight characters of an id, so there is no natural-language content to translate in any of the 41 locales",
+    "reason_category": "template_only"
+  },
   "governance.mod_rfi": {
     "en_value": "RFI",
     "note": "bare short acronym/initialism",
@@ -784,6 +814,11 @@
     "note": "template-only string, no natural-language content outside placeholders and punctuation (et locale addition)",
     "reason_category": "template_only"
   },
+  "phonelog.channel_chat": {
+    "en_value": "Chat",
+    "note": "the ordinary word for a chat channel in cs/de/es/fr/pt, borrowed rather than translated; ru and zh both carry their own word, which is what separates this from a locale that never got filled",
+    "reason_category": "cognate_loanword"
+  },
   "pipeline.dock.progress": {
     "en_value": "{{pct}}%",
     "note": "placeholder-only template, identical in en/ru/kk (kk locale addition)",
@@ -928,6 +963,11 @@
     "en_value": "CPA",
     "note": "bare technical/business acronym or initialism",
     "reason_category": "abbreviation"
+  },
+  "propdev.development.type.resort": {
+    "en_value": "Resort",
+    "note": "development type; resort is the borrowed term in cs/de/es/fr/pt property vocabulary, while ru and zh render it in their own words, so the five matching cells are deliberate",
+    "reason_category": "cognate_loanword"
   },
   "propdev.edit.status": {
     "en_value": "Status",

@@ -49,6 +49,11 @@ interface BOQWithProject extends BOQ {
 
 const ITEMS_PER_PAGE = 12;
 
+// Stable display order for the status stat badges: known statuses in their
+// natural workflow order first, then any unrecognised value alphabetically
+// so a new backend status doesn't reshuffle the row it lands in.
+const STATUS_DISPLAY_ORDER = ['draft', 'in_review', 'final', 'approved', 'archived'];
+
 /**
  * A whole-number amount in the reader's language.
  *
@@ -649,6 +654,10 @@ export function BOQListPage() {
 
   // Seed demo presence when collaboration module is enabled and BOQs load
   const isCollabEnabled = useModuleStore((s) => s.isModuleEnabled('collaboration'));
+  // The GAEB Exchange module keeps no sidebar entry of its own, so the way in
+  // for someone who has not opened a BOQ yet - the estimator who just received
+  // an X83 and has nothing to open - is here (Issue #439).
+  const isGaebExchangeEnabled = useModuleStore((s) => s.isModuleEnabled('gaeb-exchange'));
   const seedDemoPresence = usePresenceStore((s) => s.seedDemoPresence);
   useEffect(() => {
     if (isCollabEnabled && allBoqs && allBoqs.length > 0) {
@@ -725,17 +734,35 @@ export function BOQListPage() {
       .map(([currency, total]) => ({ currency, total }))
       .sort((a, b) => b.total - a.total);
     const totalPositions = filtered.reduce((s, b) => s + b.positionCount, 0);
-    const drafts = filtered.filter((b) => b.status === 'draft').length;
-    const finals = filtered.filter((b) => b.status === 'final').length;
+    // Tally every status value present in the filtered set rather than a
+    // hardcoded draft/final pair - the backend status column is a free
+    // string (models.py), and seeding already writes 'approved' straight
+    // to the DB alongside the 'draft' -> 'final' router transition, so a
+    // fixed pair silently drops whatever else shows up.
+    const byStatus = new Map<string, number>();
+    for (const b of filtered) {
+      byStatus.set(b.status, (byStatus.get(b.status) ?? 0) + 1);
+    }
     return {
       totalsByCurrency,
       multiCurrency: byCurrency.size > 1,
       totalPositions,
-      drafts,
-      finals,
+      byStatus,
       count: filtered.length,
     };
   }, [allBoqs, filtered]);
+
+  const statusEntries = useMemo(() => {
+    if (!stats) return [];
+    return [...stats.byStatus.entries()].sort(([a], [b]) => {
+      const ia = STATUS_DISPLAY_ORDER.indexOf(a);
+      const ib = STATUS_DISPLAY_ORDER.indexOf(b);
+      if (ia === -1 && ib === -1) return a.localeCompare(b);
+      if (ia === -1) return 1;
+      if (ib === -1) return -1;
+      return ia - ib;
+    });
+  }, [stats]);
 
   /* ── Mutations ────────────────────────────────────────────────────── */
 
@@ -775,6 +802,7 @@ export function BOQListPage() {
   function statusVariant(status: string): 'success' | 'blue' | 'warning' | 'neutral' {
     switch (status) {
       case 'final': return 'success';
+      case 'approved': return 'success';
       case 'draft': return 'blue';
       case 'in_review': return 'warning';
       default: return 'neutral';
@@ -879,6 +907,19 @@ export function BOQListPage() {
             label: t('nav.cost_explorer', { defaultValue: 'Cost Explorer' }),
             onClick: () => navigate('/cost-explorer'),
           },
+          ...(isGaebExchangeEnabled
+            ? [
+                {
+                  label: t('nav.gaeb_exchange', { defaultValue: 'GAEB Exchange' }),
+                  onClick: () =>
+                    navigate(
+                      activeProjectId
+                        ? `/gaeb-exchange?project_id=${encodeURIComponent(activeProjectId)}&tab=import`
+                        : '/gaeb-exchange?tab=import',
+                    ),
+                },
+              ]
+            : []),
         ]}
       >
         {t('boq.intro_body', {
@@ -937,9 +978,12 @@ export function BOQListPage() {
           </div>
           <div className="flex flex-col justify-start rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-gradient-to-b from-slate-50/70 to-slate-100/45 dark:from-slate-800/50 dark:to-slate-900/35 p-4 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
             <div className="text-2xs font-medium text-content-tertiary uppercase tracking-wide">{t('boq.status', { defaultValue: 'Status' })}</div>
-            <div className="mt-1 flex items-center gap-2">
-              <Badge variant="blue" size="sm" dot>{stats.drafts} {t('boq.draft', { defaultValue: 'draft' })}</Badge>
-              <Badge variant="success" size="sm" dot>{stats.finals} {t('boq.final', { defaultValue: 'final' })}</Badge>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              {statusEntries.map(([status, n]) => (
+                <Badge key={status} variant={statusVariant(status)} size="sm" dot>
+                  {n} {statusLabel(status)}
+                </Badge>
+              ))}
             </div>
           </div>
         </div>
@@ -951,7 +995,7 @@ export function BOQListPage() {
           <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
             {/* Search */}
             <div className="relative flex-1">
-              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-content-tertiary">
+              <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center pl-3 text-content-tertiary">
                 <Search size={16} />
               </div>
               <input
@@ -959,7 +1003,7 @@ export function BOQListPage() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={t('boq.search_placeholder', { defaultValue: 'Search estimates...' })}
-                className="h-10 w-full rounded-lg border border-border bg-surface-primary pl-10 pr-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
+                className="h-10 w-full rounded-lg border border-border bg-surface-primary ps-10 pe-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
               />
             </div>
 
@@ -972,14 +1016,14 @@ export function BOQListPage() {
                   aria-label={t('a11y.boq.project_filter', {
                     defaultValue: 'Filter estimates by project',
                   })}
-                  className="h-10 max-w-full appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:min-w-44 sm:max-w-80"
+                  className="h-10 max-w-full appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:min-w-44 sm:max-w-80"
                 >
                   <option value="">{t('boq.all_projects', { defaultValue: 'All projects' })}</option>
                   {uniqueProjects.map((p) => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
                 </select>
-                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+                <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-2.5 text-content-tertiary">
                   <ChevronDown size={14} />
                 </div>
               </div>
@@ -994,14 +1038,14 @@ export function BOQListPage() {
                   aria-label={t('a11y.boq.status_filter', {
                     defaultValue: 'Filter estimates by status',
                   })}
-                  className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-32"
+                  className="h-10 appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-32"
                 >
                   <option value="">{t('boq.all_statuses', { defaultValue: 'All statuses' })}</option>
                   {uniqueStatuses.map((s) => (
                     <option key={s} value={s}>{statusLabel(s)}</option>
                   ))}
                 </select>
-                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+                <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-2.5 text-content-tertiary">
                   <ChevronDown size={14} />
                 </div>
               </div>

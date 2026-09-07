@@ -16,9 +16,10 @@ Usage in routers:
 
 import logging
 import uuid as _uuid
+from collections import OrderedDict
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any
 
 if TYPE_CHECKING:
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import HTTPConnection
 
@@ -144,6 +146,183 @@ def decode_access_token(
 # ── Current user ───────────────────────────────────────────────────────────
 
 
+def reject_token_issued_before_password_change(
+    issued_at: float | int | None,
+    password_changed_at: datetime | None,
+) -> None:
+    """Refuse a credential minted before the user's last password change.
+
+    ``password_changed_at`` is the only session kill switch this product has.
+    The rule for reading it lives here once, because it used to live inline in
+    :func:`get_current_user_payload` and nowhere else: every other place a
+    token is accepted - the three websockets, the optional-auth resolver and
+    the refresh endpoint - went on honouring tokens the HTTP surface had
+    already refused. A rule written twice drifts; a rule written once and
+    called from each door cannot.
+
+    Both operands are whole seconds by construction, and that sets the limit
+    of the mechanism rather than revealing an oversight in it. ``iat`` is
+    seconds since the epoch by RFC 7519, so the watermark is truncated to
+    match, and a credential minted inside the same second as the change
+    compares equal to it and survives. Comparing the truncated ``iat`` against
+    a fractional timestamp does not close that: it breaks the ordinary case,
+    because the fresh token pair that change-password itself hands back
+    carries an ``iat`` inside that very second and would be refused, logging
+    the user out of the session they just created. The per-session ``sid``
+    revocation being built on top of this asks whether a session is still
+    alive rather than when its token was minted, so second resolution does not
+    reach it at all.
+
+    Args:
+        issued_at: the credential's ``iat`` claim. ``None`` (a token minted
+            before we set the claim) skips the comparison, because a token
+            that never said when it was issued cannot be placed either side
+            of the watermark.
+        password_changed_at: the user's watermark, ``None`` until they first
+            change a password.
+
+    Raises:
+        HTTPException 401 if the credential predates the watermark.
+    """
+    if issued_at is None or password_changed_at is None:
+        return
+    # SQLite hands back naive datetimes; assume UTC when the tzinfo is absent.
+    if password_changed_at.tzinfo is None:
+        password_changed_at = password_changed_at.replace(tzinfo=UTC)
+    # ``iat`` arrives as int or float depending on the jose version.
+    if int(float(issued_at)) < int(password_changed_at.timestamp()):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been invalidated by a password change. Please log in again.",
+        )
+
+
+# Sessions already reported by :func:`reject_revoked_session` as missing, most
+# recently seen last. The warning it writes exists to be counted, and what
+# carries the signal is the number of DISTINCT sessions, not the number of
+# lines: a restore from a backup shows up as a burst of new ones that stops
+# arriving, a pruning predicate reaching unexpired rows shows up as new ones
+# that keep arriving. Repeating a line for a session already reported adds
+# nothing to either reading and costs a line on every request that token makes,
+# for as long as it lives. That is the case this exists to prevent: the pruning
+# scenario never decays, so the unbounded version writes forever, and a log
+# filling the disk is a way this diagnostic could take down the host it is
+# diagnosing.
+#
+# The cap bounds the registry itself, which a restore would otherwise grow by
+# one entry per live token. Falling out of it lets a session be reported once
+# more later, so the cap degrades to a rate limit rather than to silence. Hits
+# move to the end, so the sessions asking most often are the ones kept quiet.
+_SESSIONS_REPORTED_MISSING: OrderedDict[str, None] = OrderedDict()
+_SESSIONS_REPORTED_MISSING_CAP = 4096
+
+
+def _first_sighting_of_missing_session(sid: str) -> bool:
+    """True the first time ``sid`` is seen missing, false while it is remembered."""
+    if sid in _SESSIONS_REPORTED_MISSING:
+        _SESSIONS_REPORTED_MISSING.move_to_end(sid)
+        return False
+    _SESSIONS_REPORTED_MISSING[sid] = None
+    while len(_SESSIONS_REPORTED_MISSING) > _SESSIONS_REPORTED_MISSING_CAP:
+        _SESSIONS_REPORTED_MISSING.popitem(last=False)
+    return True
+
+
+async def reject_revoked_session(
+    session: AsyncSession,
+    sid: str | None,
+    user_id: _uuid.UUID,
+) -> None:
+    """Refuse a credential whose session has been revoked.
+
+    The fine-grained counterpart to
+    :func:`reject_token_issued_before_password_change`. The watermark can only
+    say "everything older than this moment", which ends every session the
+    person has; this asks whether one named session is still alive, so ending
+    the laptop left in a hotel does not sign them out of their phone.
+
+    Takes the caller's already-open session rather than opening one. Every
+    door that calls this has just loaded the user row through a session it
+    holds, and opening a second one here would double connection churn on the
+    hot authentication path.
+
+    Two cases deliberately pass rather than raise, and both are load-bearing.
+
+    A token with no ``sid`` is honoured. Every credential issued before the
+    session table existed carries none, and refusing them would sign out every
+    live user the moment this deploys. Such a token is not revocable
+    individually; it lives until it expires, at most the refresh horizon, and
+    the lever over it in the meantime is ``password_changed_at`` through the
+    watermark check above. Its first refresh opens a session and it becomes
+    revocable from then on.
+
+    A ``sid`` with no row is also honoured, which is a fail-open check and is
+    worth justifying rather than assuming. The question is not "open or
+    closed" in the abstract but whether a live token can exist without its
+    row. There are three ways for the row to be missing. A failed insert at
+    login cannot produce one, because
+    :meth:`UserService._open_session` flushes before any token is minted and a
+    failure there refuses the login. Pruning cannot reach one, because it is
+    only ever allowed to delete rows already past ``expires_at`` and that
+    column is kept at or beyond the horizon of the refresh token naming it.
+    That leaves restoring the database from a backup taken before the session
+    began, and failing closed there would sign out every user on the platform
+    at the moment of a restore, which is when they can least afford it. So the
+    remaining case is one where fail-open is the choice we would make on
+    purpose, not a hole nobody noticed. If that stops being true - a fourth
+    way for a row to go missing - this is the comment to come back to, and the
+    fix is to close the new hole, not to flip this.
+
+    Args:
+        session: an open database session belonging to the caller.
+        sid: the credential's ``sid`` claim, or ``None``.
+        user_id: the owner the credential claims, already verified against the
+            database. The lookup is scoped by it so that a ``sid`` belonging
+            to somebody else cannot be used to probe another account.
+
+    Raises:
+        HTTPException 401 if the named session has been revoked.
+    """
+    if not sid:
+        return
+    from app.modules.users.models import UserSession
+
+    # ``sid`` is selected alongside ``revoked_at`` so that the two passing cases
+    # stay distinguishable. Reading ``revoked_at`` alone cannot tell them apart:
+    # it is NULL both for a live session and for a row that is not there, so the
+    # deliberate fail-open documented above would be indistinguishable in the
+    # code from the ordinary success it is meant to be an exception to, and
+    # would leave no trace to count.
+    row = (
+        await session.execute(
+            select(UserSession.sid, UserSession.revoked_at).where(
+                UserSession.sid == sid,
+                UserSession.user_id == user_id,
+            )
+        )
+    ).first()
+    if row is None:
+        # The fail-open path. It is logged because its three causes are only
+        # separable by how often it fires: a restore from backup produces a
+        # burst across every live token that decays as sessions refresh, a
+        # pruning predicate that reaches unexpired rows produces a flat rate
+        # that never decays, and isolated events mean the login-time flush
+        # stopped refusing a failed insert. The comment above argues the case
+        # is acceptable; this line is what says whether it is happening.
+        if _first_sighting_of_missing_session(sid):
+            logger.warning(
+                "Session %s claimed by user %s is not on file; honouring the token as unrevocable",
+                sid,
+                user_id,
+            )
+        return
+    if row.revoked_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This session has been signed out. Please log in again.",
+        )
+
+
 async def get_current_user_payload(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     settings: SettingsDep,
@@ -193,19 +372,8 @@ async def get_current_user_payload(
                 payload["role"] = user.role
                 payload["permissions"] = permission_registry.get_role_permissions(user.role)
 
-                if iat is not None and user.password_changed_at is not None:
-                    pwd_changed = user.password_changed_at
-                    # SQLite may return naive datetimes - assume UTC if no tz info
-                    if pwd_changed.tzinfo is None:
-                        pwd_changed = pwd_changed.replace(tzinfo=UTC)
-                    pwd_changed_ts = int(pwd_changed.timestamp())
-                    # iat may be int or float depending on jose version
-                    iat_ts = int(float(iat))
-                    if iat_ts < pwd_changed_ts:
-                        raise HTTPException(
-                            status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail="Token has been invalidated by a password change. Please log in again.",
-                        )
+                reject_token_issued_before_password_change(iat, user.password_changed_at)
+                await reject_revoked_session(session, payload.get("sid"), user.id)
         except HTTPException:
             raise
         except Exception:
@@ -231,8 +399,13 @@ async def get_current_user_id(
 # ── Optional auth (for public + authenticated endpoints) ───────────────────
 
 
-async def verify_user_exists_and_active(user_sub: str) -> "User":
-    """Load a User row by subject UUID, raising 401 if absent/inactive.
+async def verify_user_exists_and_active(
+    user_sub: str,
+    *,
+    issued_at: float | int | None,
+    session_id: str | None,
+) -> "User":
+    """Load a User row by subject UUID, raising 401 if absent/inactive/stale.
 
     Shared across all JWT entry points (HTTP bearer, WS token, optional
     payloads) so that forged tokens with a real-looking UUID that nobody
@@ -240,8 +413,27 @@ async def verify_user_exists_and_active(user_sub: str) -> "User":
     :func:`decode_access_token` only proves the signature is valid - it
     says nothing about whether the ``sub`` references a real user.
 
+    ``issued_at`` is keyword-only and has NO default on purpose. It is the
+    token's ``iat``, and passing it is what enforces the password-change
+    watermark at this door. A default would let a new entry point skip the
+    check by saying nothing, which is exactly how the sockets came to outlive
+    a password change: the watermark went into one caller's inline copy and
+    never into this shared helper. Without a default, a caller that has not
+    decided fails to start rather than failing to protect somebody.
+
+    ``session_id`` is the token's ``sid`` and is keyword-only with no default
+    for the same reason. Note what that buys and what it does not: it makes
+    forgetting the argument a build failure, and it does nothing at all unless
+    the body below calls the rule. Both were briefly true of ``issued_at`` at
+    once - required at every call site, read by none - and every caller looked
+    correct throughout, which is the same way the sockets came to outlive a
+    password change. The enforcement is not this signature, it is the two
+    lines at the end of this function.
+
     Raises:
-        HTTPException 401 if the user does not exist or is inactive.
+        HTTPException 401 if the user does not exist, is inactive, the
+        credential predates the user's last password change, or the session
+        the credential names has been revoked.
     """
     from uuid import UUID
 
@@ -262,6 +454,8 @@ async def verify_user_exists_and_active(user_sub: str) -> "User":
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found or inactive",
             )
+        reject_token_issued_before_password_change(issued_at, user.password_changed_at)
+        await reject_revoked_session(session, session_id, user.id)
         return user
 
 
@@ -302,7 +496,11 @@ async def get_optional_user_payload(
         return None
     try:
         payload = decode_access_token(token, settings)
-        await verify_user_exists_and_active(payload["sub"])
+        await verify_user_exists_and_active(
+            payload["sub"],
+            issued_at=payload.get("iat"),
+            session_id=payload.get("sid"),
+        )
         return payload
     except HTTPException:
         return None

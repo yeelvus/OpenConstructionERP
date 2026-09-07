@@ -1154,7 +1154,12 @@ _MORE_COUNTRY_TEMPLATES: list[dict[str, Any]] = [
         name="Romania",
         country_code="RO",
         currency="RON",
-        vat="19",
+        # 21 % since 1 August 2025; see ROMANIA_VAT_SOURCES in
+        # app/modules/i18n_foundation/romania_vat.py. Editing this literal
+        # changes what a *new* installation of the template carries. Project
+        # methodologies already cloned from it keep their own ``vat_rate``
+        # column and are not healed by this line.
+        vat="21",
         overhead="12",
         profit="8",
         tax_label="TVA",
@@ -1169,6 +1174,22 @@ _MORE_COUNTRY_TEMPLATES: list[dict[str, Any]] = [
         profit="8",
         tax_label="AFA",
         decimals=0,
+    ),
+    # Russia. The rates written here are the fallback and are not what ships:
+    # the regional table states the national stack (НР, СП, unforeseen costs,
+    # НДС) and :func:`_reconcile_with_region_table` replaces these three steps
+    # with it. What this literal carries that the table has no opinion about is
+    # the currency and the tax rate. Russia had no template at all until now,
+    # which is why the national stack had nothing to be reconciled into.
+    _flat_country_template(
+        slug="russia",
+        name="Russia",
+        country_code="RU",
+        currency="RUB",
+        vat="20",
+        overhead="16",
+        profit="7",
+        tax_label="NDS",
     ),
     # Middle East.
     _flat_country_template(

@@ -108,6 +108,7 @@ from app.modules.boq.copilot_schemas import (
     CopilotChatResponse,
     CopilotMessageOut,
 )
+from app.modules.boq.markup_templates import DEFAULT_MARKUP_TEMPLATES
 from app.modules.boq.roundtrip import (
     ID_COLUMN_ALIASES,
     ID_COLUMN_HEADER,
@@ -198,8 +199,18 @@ from app.modules.boq.schemas import (
     SustainabilityResponse,
     TemplateInfo,
 )
-from app.modules.boq.service import MAX_NESTING_DEPTH, BOQService, resource_fx_factor
+from app.modules.boq.service import (
+    MAX_NESTING_DEPTH,
+    SECTION_UNITS,
+    BOQService,
+    build_position_response,
+    exportable_positions,
+    resource_fx_factor,
+)
+from app.modules.boq.units import to_gaeb_unit_code
 from app.modules.costs.repository import CostItemRepository
+from app.modules.measurement.presets import PRESETS as MEASUREMENT_PRESETS
+from app.modules.price_breakdown.presets import PRESETS as PRICE_BREAKDOWN_PRESETS
 
 router = APIRouter(tags=["boq"])
 _log = logging.getLogger(__name__)
@@ -326,82 +337,30 @@ async def _log_activity(
         _log.debug("Activity log write failed (non-critical)", exc_info=True)
 
 
-_CONFIDENCE_LABELS = {"high": 0.9, "medium": 0.6, "med": 0.6, "low": 0.3}
-
-
-def _coerce_confidence(raw: object) -> float | None:
-    """Best-effort coerce a stored confidence value to float (0.0-1.0).
-
-    Some legacy / seed rows persisted ``confidence`` as a label
-    (``'high'``/``'medium'``/``'low'``) rather than the numeric 0–1
-    contract.  The PATCH endpoint must keep responding 200 for those
-    rows or the whole grid stops saving - so we map known labels to
-    representative floats and drop anything else to ``None``.
-    """
-    if raw is None or raw == "":
-        return None
-    if isinstance(raw, (int, float)):
-        return float(raw)
-    text = str(raw).strip().lower()
-    if text in _CONFIDENCE_LABELS:
-        return _CONFIDENCE_LABELS[text]
-    try:
-        return float(text)
-    except ValueError:
-        return None
-
-
 def _position_to_response(position: object) -> PositionResponse:
-    """Build a PositionResponse from a Position ORM object."""
-    # Issue #79: read back the CostItem linkage stored under
-    # ``metadata.cost_item_id``.  Older rows that pre-date the linkage
-    # simply return None.  We tolerate any non-UUID string defensively
-    # - bad data should not break the GET response.
-    raw_meta = getattr(position, "metadata_", None)  # type: ignore[attr-defined]
-    cost_item_id_val: uuid.UUID | None = None
-    if isinstance(raw_meta, dict):
-        raw_cid = raw_meta.get("cost_item_id")
-        if raw_cid:
-            try:
-                cost_item_id_val = uuid.UUID(str(raw_cid))
-            except (ValueError, TypeError):
-                cost_item_id_val = None
+    """Build a PositionResponse from a Position ORM object.
 
-    return PositionResponse(
-        id=position.id,  # type: ignore[attr-defined]
-        boq_id=position.boq_id,  # type: ignore[attr-defined]
-        parent_id=position.parent_id,  # type: ignore[attr-defined]
-        ordinal=position.ordinal,  # type: ignore[attr-defined]
-        description=position.description,  # type: ignore[attr-defined]
-        unit=position.unit,  # type: ignore[attr-defined]
-        # BUG-B-011: forward the exact stored decimal string; the schema
-        # now keeps it as Decimal and serialises a plain string, so a
-        # 999,999,999.99 × 999,999.99 total no longer loses its tail.
-        quantity=position.quantity,  # type: ignore[attr-defined]
-        unit_rate=position.unit_rate,  # type: ignore[attr-defined]
-        total=position.total,  # type: ignore[attr-defined]
-        classification=position.classification,  # type: ignore[attr-defined]
-        source=position.source,  # type: ignore[attr-defined]
-        confidence=_coerce_confidence(position.confidence),  # type: ignore[attr-defined]
-        cad_element_ids=position.cad_element_ids,  # type: ignore[attr-defined]
-        # Issue #347: owning BIM model of the linked elements (multi-model picker).
-        cad_model_id=getattr(position, "cad_model_id", None),
-        validation_status=position.validation_status,  # type: ignore[attr-defined]
-        metadata=position.metadata_,  # type: ignore[attr-defined]
-        sort_order=position.sort_order,  # type: ignore[attr-defined]
-        created_at=position.created_at,  # type: ignore[attr-defined]
-        updated_at=position.updated_at,  # type: ignore[attr-defined]
-        cost_item_id=cost_item_id_val,
-        # BUG-CONCURRENCY01: surface the row's optimistic-concurrency
-        # token so clients can echo it on the next PATCH.
-        version=int(getattr(position, "version", 0) or 0),  # type: ignore[attr-defined]
-        # Issue #127: reuse-group fields (read-only). ``linked_instance_count``
-        # needs a project-wide query so it is left None here and populated
-        # explicitly by the links endpoint / propagation paths.
-        reference_code=getattr(position, "reference_code", None),  # type: ignore[attr-defined]
-        link_role=getattr(position, "link_role", None),  # type: ignore[attr-defined]
-        link_group_id=getattr(position, "link_group_id", None),  # type: ignore[attr-defined]
-    )
+    Issue #457. This was a second builder that constructed the response itself,
+    and it and the service's builder had drifted apart in both directions: this
+    one alone set ``cost_item_id`` and ``version``, the service's alone set
+    ``risk_dispersion``, ``price_basis``, ``norm_id`` and ``norm_work_key``. So
+    ``GET /boqs/{boq_id}`` and ``GET /positions/{position_id}`` gave different
+    answers about the same row, and the norm provenance shipped answering null
+    on every endpoint a client would ask it from. It now delegates, and there is
+    one builder again: the union of what the two of them used to set.
+
+    Kept as a function rather than replaced at its thirteen call sites because
+    the router's name for it reads at those sites and because the router, not
+    the service, is where a response is a response.
+
+    Args:
+        position: The position to render, typed loosely because several call
+            sites pass rows built by importers rather than by the ORM.
+
+    Returns:
+        The position as the API returns it.
+    """
+    return build_position_response(position)  # type: ignore[arg-type]
 
 
 async def _position_to_response_with_links(
@@ -534,23 +493,11 @@ async def list_boqs(
     # mixed-currency BOQ no longer reports a blended, meaningless grand total.
     breakdown = await service.compute_boq_totals(boq_ids)
 
-    # Position counts per BOQ
-    from sqlalchemy import func, select
-
-    from app.modules.boq.models import Position
-
-    pos_counts: dict[uuid.UUID, int] = {}
-    if boq_ids:
-        rows = (
-            await session.execute(
-                select(Position.boq_id, func.count())
-                .where(Position.boq_id.in_(boq_ids))
-                .where(Position.unit != "")  # Exclude section headers
-                .group_by(Position.boq_id)
-            )
-        ).all()
-        for bid, cnt in rows:
-            pos_counts[bid] = cnt
+    # Position counts per BOQ. The service owns the definition of a section
+    # header; this endpoint used to open-code it as ``unit != ""`` and so
+    # counted the headers of every imported bill, which spell it "section",
+    # as priced lines.
+    pos_counts = await service.count_line_items(boq_ids)
 
     results: list[BOQListItem] = []
     for b in boqs:
@@ -1629,12 +1576,14 @@ async def create_budget_from_boq(
     # Group positions: by wbs_id if set, otherwise by parent_id (section), else "ungrouped"
     groups: dict[str, Decimal] = {}
     for pos in positions:
-        # Skip section headers (quantity=0, unit="")
+        # Skip section headers, which carry no money and would otherwise open a
+        # budget group of their own. Both spellings of the sentinel unit, or an
+        # imported bill's headers become zero-value budget lines.
         try:
             total = Decimal(str(pos.total))
         except Exception:
             total = Decimal("0")
-        if total == 0 and pos.unit == "":
+        if total == 0 and (pos.unit or "").strip().lower() in SECTION_UNITS:
             continue
 
         group_key = pos.wbs_id or (str(pos.parent_id) if pos.parent_id else "ungrouped")
@@ -2653,19 +2602,45 @@ async def apply_default_markups(
     user_id: CurrentUserId,
     payload: CurrentUserPayload,
     session: SessionDep,
-    region: str = Query(
-        default="DEFAULT",
-        description="Region code: DACH, UK, US, FR, GULF, IN, AU, JP, BR, NORDIC, RU, CN, KR, DEFAULT",
+    region: str | None = Query(
+        default=None,
+        description=(
+            "Region code, one of: "
+            f"{', '.join(sorted(DEFAULT_MARKUP_TEMPLATES))}. "
+            "Omit it to resolve the region from the project's own country."
+        ),
     ),
     service: BOQService = Depends(_get_service),
 ) -> list[MarkupResponse]:
     """Apply regional default markups to a BOQ.
 
     Replaces any existing markups with the standard template for the region.
-    Pass region as query parameter: ``?region=DACH``.
+    Pass region as query parameter: ``?region=DACH``. The list of codes is read
+    from the markup table itself rather than written out here, because it was
+    written out here: the docstring and the query description both carried a
+    hand-kept list of fourteen regions, and six national stacks were added
+    without either of them noticing. A caller reading the API had no way to
+    learn that Hungary, Italy, Spain, the Netherlands, Poland or Turkiye had a
+    stack at all.
 
-    Supported regions: DACH, UK, US, FR, GULF, IN, AU, JP, BR, NORDIC,
-    RU, CN, KR, DEFAULT.
+    Omitting ``region`` now means "decide from the project" rather than "use
+    the neutral stack". The resolution reads the project's ``country_code``
+    against the markup table's country map, and a country the table does not
+    cover falls to the neutral stack rather than to a neighbour.
+
+    That was not safe until v3319. The column was NOT NULL with a 'DE' default
+    while the API accepted the field as optional, so a project where nobody had
+    chosen a country was stored identically to a German one, and deriving from
+    it would have quoted an unstated market with German overheads, German
+    profit and German VAT. The migration makes an unknown country expressible,
+    and an unknown country resolves to the neutral stack, which is exactly what
+    every caller used to get.
+
+    ``project.region`` is deliberately not consulted, despite the name. It
+    holds a cost-database region slug and is read as one by the cost lookups
+    and by language inference, so reading it here would give one column two
+    meanings that disagree the first time a Hungarian project prices from an
+    Austrian cost database.
     """
     # IDOR guard: this destructively REPLACES all markups, yet the global
     # boq.update role is not project-scoped - verify the caller may access the
@@ -2995,11 +2970,14 @@ def _build_rule_sets(
     Args:
         project_rule_sets: Explicit rule sets from project config.
         classification_standard: e.g. "din276", "nrm", "masterformat".
-        region: e.g. "DACH", "UK", "US".
+        region: e.g. "DACH", "UK", "US", "PL_WARSAW". Reduced to a country
+            through the classification registry before lookup.
 
     Returns:
         Deduplicated list of rule set names.
     """
+    from app.core.classification_registry import normalise_region
+
     rule_sets = list(project_rule_sets)
 
     # Map classification standard → rule set name
@@ -3026,17 +3004,29 @@ def _build_rule_sets(
     if std_rule and std_rule not in rule_sets:
         rule_sets.append(std_rule)
 
-    # Map region → additional rule sets. Hispanophone markets (ES + LATAM
-    # via Epic I) pick up BC3 - FIEBDC-3 is the de-facto BOQ format in
-    # Spain (AENOR-mandated for public tenders) and ~70% of LATAM. We
-    # add MasterFormat on the US-/CA-leaning LATAM markets that have
-    # historically adopted CSI classification alongside BC3.
-    REGION_RULES: dict[str, list[str]] = {
-        "DACH": ["gaeb", "din276"],
+    # Map country → additional rule sets. This is the rule-pack axis, not
+    # the classification-standard axis, and it stays a table of its own on
+    # purpose: a country reads exactly one classification standard but can
+    # pull several rule packs, so Spain carries BC3 plus MasterFormat and
+    # Germany carries GAEB plus DIN 276. Folding the two together would
+    # lose that.
+    #
+    # What it does share with the standard registry is the normaliser. The
+    # keys are ISO 3166-1 alpha-2 and the lookup goes through
+    # ``normalise_region``, so ``DACH``, ``DE`` and ``DE_BERLIN`` all reach
+    # the German row. Before that they did not: the region was upper-cased
+    # and looked up verbatim, so a project keyed to a catalogue region such
+    # as ``PL_WARSAW`` or ``DE_MUNICH`` picked up no regional rule pack at
+    # all.
+    #
+    # Hispanophone markets pick up BC3 - FIEBDC-3 is the de-facto BOQ
+    # format in Spain (AENOR-mandated for public tenders) and much of
+    # LATAM. MasterFormat rides along on the US-/CA-leaning LATAM markets
+    # that have historically adopted CSI classification alongside BC3.
+    COUNTRY_RULES: dict[str, list[str]] = {
         "DE": ["gaeb", "din276"],
         "AT": ["gaeb", "onorm"],
         "CH": ["gaeb", "din276"],
-        "UK": ["nrm"],
         "GB": ["nrm"],
         "US": ["masterformat"],
         "CA": ["masterformat"],
@@ -3047,11 +3037,7 @@ def _build_rule_sets(
         "IN": ["cpwd"],
         "TR": ["birimfiyat"],
         "JP": ["sekisan"],
-        "UAE": ["nrm"],
-        "GCC": ["nrm"],
-        # Epic I8: Spain + Hispanophone LATAM - BC3 first, MasterFormat
-        # second (LATAM exporters increasingly carry both classification
-        # schemes; BC3 is the source-of-truth for the tender format).
+        "AE": ["nrm"],
         "ES": ["bc3", "masterformat"],
         "MX": ["bc3", "masterformat"],
         "AR": ["bc3", "masterformat"],
@@ -3059,7 +3045,8 @@ def _build_rule_sets(
         "CO": ["bc3", "masterformat"],
         "PE": ["bc3", "masterformat"],
     }
-    for rs in REGION_RULES.get(region.upper(), []):
+    country = normalise_region(region)
+    for rs in COUNTRY_RULES.get(country or "", []):
         if rs not in rule_sets:
             rule_sets.append(rs)
 
@@ -3735,7 +3722,7 @@ async def export_boq_csv(
     # exports must do the same before fetching any priced data.
     await _verify_boq_owner(session, boq_id, _user_id, payload)
     # Use structured data to include markups in the grand total
-    structured = await service.get_boq_structured(boq_id)
+    structured = await service.get_boq_structured_for_export(boq_id)
     # Issue #111 - freeze the project FX table into the exported artifact so
     # the base-currency totals are auditable and a later rate edit cannot
     # retroactively rewrite a delivered BOQ.
@@ -3980,7 +3967,7 @@ async def export_boq_excel(
     await _verify_boq_owner(session, boq_id, _user_id, payload)
     boq_data = await service.get_boq_with_positions(boq_id)
     boq_obj = await service.get_boq(boq_id)
-    structured_data = await service.get_boq_structured(boq_id)
+    structured_data = await service.get_boq_structured_for_export(boq_id)
     # Issue #111 - structured_data totals are FX-converted into the project
     # base currency; boq_data.grand_total is a raw position sum (wrong for
     # mixed-currency BOQs). Source the aggregate cells from structured_data
@@ -4087,7 +4074,10 @@ async def export_boq_excel(
         total_cell.fill = light_gray_fill
         return row + 1
 
-    for pos in boq_data.positions:
+    # The flat list drives the sheet's rows, so it needs the same narrowing
+    # ``get_boq_structured_for_export`` applies to the section tree above: a
+    # placeholder nobody has typed into is not a line of the delivered bill.
+    for pos in exportable_positions(boq_data.positions):
         pos_parent = str(pos.parent_id) if pos.parent_id else None
 
         # If we switched sections, write subtotal for previous section
@@ -4413,7 +4403,7 @@ async def export_boq_pdf(
     # IDOR guard: scope the export to the project owner/member, matching
     # every other BOQ read endpoint.
     await _verify_boq_owner(session, boq_id, _user_id, payload)
-    boq_data = await service.get_boq_structured(boq_id)
+    boq_data = await service.get_boq_structured_for_export(boq_id)
 
     # Load project for cover page info
     project_repo = ProjectRepository(session)
@@ -4570,7 +4560,7 @@ async def export_boq_gaeb(
     # IDOR guard: scope the export to the project owner/member, matching
     # every other BOQ read endpoint.
     await _verify_boq_owner(session, boq_id, _user_id, payload)
-    boq_data = await service.get_boq_structured(boq_id)
+    boq_data = await service.get_boq_structured_for_export(boq_id)
 
     # Load project for label text + currency.
     project_repo = ProjectRepository(session)
@@ -4638,7 +4628,7 @@ async def export_boq_bc3(
     # IDOR guard: scope the export to the project owner/member, matching every
     # other BOQ read endpoint.
     await _verify_boq_owner(session, boq_id, _user_id, payload)
-    boq_data = await service.get_boq_structured(boq_id)
+    boq_data = await service.get_boq_structured_for_export(boq_id)
 
     # Load project for label text + currency.
     project_repo = ProjectRepository(session)
@@ -4953,69 +4943,46 @@ def build_gaeb_xml(
             span = ET.SubElement(p, "span")
             span.text = line
 
-    # Map internal unit tokens → GAEB/DIN 276-compatible unit codes.
-    # Lexicon follows GAEB 3.3 Appendix B (standard short forms, German
-    # market conventions) - normalized entries prevent silent swapping
-    # during roundtrip (BUG-175).
-    _UNIT_MAP: dict[str, str] = {
-        # Length
-        "m": "m",
-        "cm": "cm",
-        "mm": "mm",
-        "km": "km",
-        # Area
-        "m2": "m2",
-        "m²": "m2",
-        "sqm": "m2",
-        # Volume
-        "m3": "m3",
-        "m³": "m3",
-        "cbm": "m3",
-        "l": "l",
-        "liter": "l",
-        # Mass
-        "kg": "kg",
-        "t": "t",
-        "g": "g",
-        "ton": "t",
-        # Count
-        "pcs": "Stk",
-        "piece": "Stk",
-        "stk": "Stk",
-        "stck": "Stk",
-        "st": "Stk",
-        "ea": "Stk",
-        # Lump sum
-        "lsum": "psch",
-        "psch": "psch",
-        "lump": "psch",
-        "ls": "psch",
-        # Time
-        "h": "h",
-        "hour": "h",
-        "d": "d",
-        "day": "d",
-        "month": "Mo",
-        "mo": "Mo",
-        "year": "Jahr",
-        "a": "Jahr",
-        # Volume flow
-        "m3/h": "m3/h",
-    }
-
     def _gaeb_unit(unit: str) -> str:
         """Convert internal unit to GAEB-compatible unit code.
 
         Falls back to the raw input when no mapping exists - preserves
         user-custom units instead of silently dropping them.
         """
-        if not unit:
-            return ""
-        key = unit.strip().lower()
-        mapped = _UNIT_MAP.get(key)
-        if mapped is not None:
-            return mapped
-        return unit.strip()
+        return to_gaeb_unit_code(unit)
+
+    def _unit_was_invented(pos: Any) -> bool:
+        """True when this row's unit was guessed at import, not read from a file.
+
+        A GAEB import records the source's own ``<QU>`` in
+        ``metadata['gaeb_unit_original']``, writing the empty string when the
+        file stated nothing - which an X84 item always does, since the unit
+        lives on the paired X83. The importer then guesses a unit so the row
+        can be stored at all, and that guess is indistinguishable from a
+        stated unit everywhere downstream. Writing it into an outgoing file
+        would turn our guess into somebody else's fact, so a row whose
+        original was empty is exported with no ``QU`` at all, which is what
+        the source actually said.
+
+        The distinction is membership, not truthiness, and an absent key is
+        not a claim about where the row came from. It says only that no file
+        statement stands behind the unit this row carries now, which happens
+        two ways: nothing was ever imported (manual entry, Excel, an older
+        row), or a GAEB row was imported and somebody has since changed the
+        unit to a different one, at which point ``update_position`` retires
+        the recorded ``<QU>`` because it no longer describes the value being
+        exported. Re-submitting the same unit changes nothing and keeps the
+        claim. Both shapes export their unit, which is right for both, and
+        row origin is carried by ``Position.source`` rather than by this key.
+        Testing with ``.get()`` would conflate absent with empty and start
+        stripping the unit from every hand-built BOQ we export.
+        """
+        meta = getattr(pos, "metadata_", None)
+        if not isinstance(meta, dict):
+            meta = getattr(pos, "metadata", None)
+        if not isinstance(meta, dict) or "gaeb_unit_original" not in meta:
+            return False
+        return not str(meta["gaeb_unit_original"] or "").strip()
 
     # ── X84 Nebenangebot (alternate-bid) rationale ─────────────────────────
     # The GAEB 3.3 schema has no <BoQBkUp>/<Recommendation> elements - the
@@ -5065,7 +5032,7 @@ def build_gaeb_xml(
         if is_priced:
             ET.SubElement(item, "UP").text = up_s
             ET.SubElement(item, "IT").text = it_s
-        else:
+        elif not _unit_was_invented(pos):
             ET.SubElement(item, "QU").text = _gaeb_unit(pos.unit)[:4]
         _set_description(item, str(getattr(pos, "description", "") or ""))
         # Schema order: BidComm follows Description in the X84 Item.
@@ -5210,12 +5177,27 @@ def build_gaeb_xml(
     # ── BoQInfo / Totals (reconciliation), priced phase only ───────────────
     # The X84 schema places <Totals> as the last child of <BoQInfo> (the X83
     # schema forbids it - the request is unpriced). Total = sum of item ITs
-    # (direct cost); TotalNet = markup-inclusive net total, so a reader
-    # reconciles both the direct cost and the grand total from one block.
+    # (direct cost); TotalNet = the same total with the tax taken back out.
+    #
+    # TotalNet used to carry ``net_total`` unchanged, and this comment called
+    # that "the markup-inclusive net total" as though it were a choice. It is
+    # not one. ``net_total`` is the direct cost plus every active markup, and a
+    # VAT line is one markup among the others, so the figure is tax-inclusive:
+    # the field docstring in schemas.py says so, the editor screen says so by
+    # computing its own Net Total with the tax markups filtered out, and
+    # 906bd78cc already took the tax back out of the PDF exports for exactly
+    # this reason. GAEB is a German exchange format, Netto there excludes VAT,
+    # so a reader who trusted the label read a bill short by the whole tax.
+    # This is that same decision applied to the site the PDF fix did not reach,
+    # through the same helper rather than a second copy of the arithmetic,
+    # because it was two copies that disagreed which produced the defect.
     if is_priced:
+        from app.modules.boq.pdf_export import _tax_split
+
+        _, _, subtotal_excluding_tax, _ = _tax_split(boq_data)
         totals_el = ET.SubElement(boq_info, "Totals")
         ET.SubElement(totals_el, "Total").text = _fmt_price(boq_data.direct_cost)
-        ET.SubElement(totals_el, "TotalNet").text = _fmt_price(boq_data.net_total)
+        ET.SubElement(totals_el, "TotalNet").text = _fmt_price(subtotal_excluding_tax)
 
     # ── Serialize to XML string ───────────────────────────────────────────
     # The provenance line is an XML COMMENT - every conformant parser (and
@@ -6255,13 +6237,11 @@ async def import_boq_gaeb(
     files from different GAEB toolchains (any mainstream GAEB authoring
     tool) all import without pre-normalization.
 
-    Security: uses ``defusedxml`` to harden against XXE, billion-laughs,
-    and other XML-parser-level attacks on user-uploaded files.
+    Security: the upload is parsed by ``GAEBXMLImporter``, which reads it
+    through ``defusedxml`` to harden against XXE, billion-laughs and other
+    XML-parser-level attacks on user-uploaded files. Nothing in this module
+    parses the bytes any more, so grep for the hardening in the importer.
     """
-    import xml.etree.ElementTree as ET
-
-    from defusedxml.ElementTree import fromstring as _safe_fromstring
-
     # Epic I5: deprecation signal - clients should migrate to /import/auto/.
     response.headers["Deprecation"] = "true"
     response.headers["Link"] = '</api/v1/boq/boqs/{boq_id}/import/auto/>; rel="successor-version"'
@@ -6286,266 +6266,64 @@ async def import_boq_gaeb(
         )
     # No upload size cap - per product policy.
 
-    # Parse XML defensively via defusedxml - blocks XXE, external-entity
-    # expansion, billion-laughs, and DTD-based attacks on user input.
+    # ── Epic I5: this route runs the registered GAEB importer ──────────────
+    # It used to walk the XML inline instead, and that walker never worked on
+    # a conformant GAEB file. GAEB DA XML 3.3 puts an item's wording in
+    # Description/CompleteText/DetailTxt/Text/p/span, and every text helper it
+    # carried read only an element's own ``.text``: it located <Text>, read the
+    # whitespace sitting between <Text> and its <p> child, found nothing, then
+    # fell back to <OutlineText>.text, which was whitespace for the same
+    # reason. Its ``_extract_description`` therefore returned "" for every
+    # Item, and an Item with no description is skipped. Measured over every
+    # GAEB fixture in this repo, the walker imported 0 of 27 items from the
+    # X84, 0 of 27 from the X83 and 0 of 21 from the Frankfurt X83, and
+    # reported the whole file as skipped.
+    #
+    # The registered importer reads the nested text, threads each BoQCtgy as a
+    # parent section row, keeps the real OZ as the ordinal instead of the
+    # opaque Item/@ID handle, reconstructs an X84's quantity from IT/UP, and
+    # surfaces the Zuschlagsposition as a native markup. It parses through the
+    # same defusedxml entry point, so the XXE protection is not lost.
+    from app.modules.boq.importers import ImporterParseError
+    from app.modules.boq.importers.gaeb_xml import GAEBXMLImporter
+
     try:
-        root = _safe_fromstring(content)
-    except ET.ParseError as exc:
+        imported_boq = await GAEBXMLImporter.parse(content, locale=get_locale())
+    except ImporterParseError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to parse GAEB XML: {exc}",
         ) from exc
-    except Exception as exc:  # defusedxml raises its own subclasses for attacks
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"GAEB XML rejected by security parser: {exc}",
-        ) from exc
 
-    def _local(tag: str) -> str:
-        """Strip namespace from an element tag."""
-        return tag.split("}", 1)[1] if "}" in tag else tag
+    apply_summary = await _persist_imported_boq(
+        boq_id,
+        imported_boq,
+        file_name=file.filename or "gaeb",
+        service=service,
+        actor_id=_user_id,
+    )
 
-    def _find_child(parent: ET.Element, name: str) -> ET.Element | None:
-        """Namespace-agnostic single-child lookup by local name."""
-        for child in parent:
-            if _local(child.tag) == name:
-                return child
-        return None
+    # ``imported`` keeps its historic meaning of line items only. The importer
+    # also emits one parent row per BoQCtgy and ``_persist_imported_boq``
+    # counts those in ``created`` - 39 rows for a 27-position LV. Returning
+    # ``created`` would keep the field name and silently change what it counts,
+    # so the section rows are subtracted here and reported under ``sections``,
+    # which is where this route has always reported them.
+    section_positions = [p for p in imported_boq.positions if p.is_section]
+    created = int(apply_summary["created"])
+    line_items_created = max(created - len(section_positions), 0)
+    sections_seen = [{"ordinal": p.ordinal or "", "label": p.description or ""} for p in section_positions]
 
-    def _find_all_descendants(parent: ET.Element, name: str) -> list[ET.Element]:
-        """Walk the entire subtree, collect elements whose local name matches."""
-        found: list[ET.Element] = []
-        for el in parent.iter():
-            if _local(el.tag) == name:
-                found.append(el)
-        return found
-
-    def _text_of(parent: ET.Element, name: str) -> str:
-        child = _find_child(parent, name)
-        return (child.text or "").strip() if child is not None else ""
-
-    def _extract_description(item: ET.Element) -> str:
-        """Pull human-readable text out of GAEB's nested Description/CompleteText/DetailTxt/Text."""
-        # Take the first non-empty <Text> we find anywhere in the item's
-        # subtree - description structures vary wildly between exporters.
-        for text_el in _find_all_descendants(item, "Text"):
-            if text_el.text and text_el.text.strip():
-                return text_el.text.strip()
-        # Fall back to OutlineText / Outline / LblTx
-        for name in ("OutlineText", "OutlTxt", "LblTx"):
-            val = _text_of(item, name)
-            if val:
-                return val
-        return ""
-
-    # Build reverse map from the export lexicon so GAEB unit codes round-trip
-    # back to our internal tokens (BUG-175 - "Stk" → "pcs", "psch" → "lsum").
-    _GAEB_TO_INTERNAL: dict[str, str] = {
-        "stk": "pcs",
-        "st": "pcs",
-        "psch": "lsum",
-        "jahr": "year",
-        "mo": "month",
-    }
-
-    def _normalize_unit(unit: str) -> str:
-        key = (unit or "").strip().lower()
-        return _GAEB_TO_INTERNAL.get(key, unit.strip()) if key else ""
-
-    # Locate the *top-level* BoQBody - the one directly inside <BoQ>.
-    # A GAEB tree nests BoQBody recursively under each BoQCtgy, so
-    # traversing ``_find_all_descendants`` would double-visit every Item.
-    top_body: ET.Element | None = None
-    for el in root.iter():
-        if _local(el.tag) == "BoQ":
-            top_body = _find_child(el, "BoQBody")
-            if top_body is not None:
-                break
-    if top_body is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No <BoQBody> element found. Is this a valid GAEB DA XML?",
-        )
-    boq_bodies = [top_body]
-
-    imported = 0
-    skipped = 0
-    errors: list[dict[str, Any]] = []
-    sections_seen: list[dict[str, str]] = []
-
-    # Capture currency for round-trip metadata. Empty when the source
-    # GAEB doesn't carry <Cur> - preferable to a EUR fallback that
-    # mis-stamps non-Eurozone tenders. Downstream code that needs a
-    # currency falls back to project.currency at the consumer side.
-    award = None
-    for el in root.iter():
-        if _local(el.tag) == "Award":
-            award = el
-            break
-    currency = (_text_of(award, "Cur") if award is not None else "") or ""
-
-    def _process_category(ctgy: ET.Element, parent_ordinal: str = "") -> None:
-        nonlocal imported, skipped
-        ord_ = (ctgy.get("ID") or "").strip() or parent_ordinal
-        label = _text_of(ctgy, "LblTx") or "Section"
-        sections_seen.append({"ordinal": ord_, "label": label})
-
-        # Each BoQCtgy has its own BoQBody containing Itemlist/Item.
-        inner_body = _find_child(ctgy, "BoQBody")
-        if inner_body is not None:
-            # Nested categories (recursion for multi-level hierarchies).
-            for child in inner_body:
-                local = _local(child.tag)
-                if local == "BoQCtgy":
-                    _process_category(child, parent_ordinal=ord_)
-                elif local == "Itemlist":
-                    for item in child:
-                        if _local(item.tag) == "Item":
-                            _import_item(item, section_ordinal=ord_)
-
-    def _import_item(item: ET.Element, *, section_ordinal: str = "") -> None:
-        nonlocal imported, skipped
-        try:
-            pos_ordinal = (item.get("ID") or "").strip() or str(imported + 1)
-            description = _extract_description(item)
-            if not description:
-                skipped += 1
-                return None
-
-            unit_raw = _text_of(item, "QU")
-            unit = _normalize_unit(unit_raw) or "pcs"
-            quantity = _safe_float(_text_of(item, "Qty"), default=0.0)
-            unit_rate = _safe_float(_text_of(item, "UP"), default=0.0)
-
-            if not (0 <= quantity <= 1e9):
-                errors.append(
-                    {
-                        "ordinal": pos_ordinal,
-                        "error": f"Quantity out of range: {quantity}",
-                    }
-                )
-                return None
-            if not (0 <= unit_rate <= 1e8):
-                errors.append(
-                    {
-                        "ordinal": pos_ordinal,
-                        "error": f"Unit rate out of range: {unit_rate}",
-                    }
-                )
-                return None
-
-            position_data = PositionCreate(
-                boq_id=boq_id,
-                ordinal=pos_ordinal,
-                description=description,
-                unit=unit,
-                quantity=quantity,
-                unit_rate=unit_rate,
-                classification={"gaeb_section": section_ordinal} if section_ordinal else {},
-                source="gaeb_import",
-                metadata={
-                    "import_source": file.filename or "gaeb",
-                    "gaeb_ordinal": pos_ordinal,
-                    "gaeb_section": section_ordinal,
-                    "gaeb_unit_original": unit_raw,
-                    "gaeb_currency": currency,
-                },
-            )
-            # add_position is async - run it via await below.
-            return position_data
-        except Exception as exc:  # noqa: BLE001 - narrow at caller
-            errors.append({"error": str(exc), "ordinal": ""})
-            return None
-
-    # Walk the top-level BoQBody: may contain direct Item elements OR BoQCtgy.
-    for body in boq_bodies:
-        for child in body:
-            local = _local(child.tag)
-            if local == "BoQCtgy":
-                # The original _process_category helper builds positions but
-                # can't await - so refactor: collect items, then insert.
-                pass
-
-    # Second, simpler pass: collect every Item anywhere in the tree, attribute
-    # it to the nearest ancestor BoQCtgy's ID for section ordinal.
-    def _ancestor_ctgy_id(el: ET.Element, ancestors: list[ET.Element]) -> str:
-        for anc in reversed(ancestors):
-            if _local(anc.tag) == "BoQCtgy":
-                return (anc.get("ID") or "").strip()
-        return ""
-
-    def _walk_and_collect(el: ET.Element, ancestors: list[ET.Element]) -> list[tuple[ET.Element, str]]:
-        found: list[tuple[ET.Element, str]] = []
-        for child in el:
-            if _local(child.tag) == "Item":
-                found.append((child, _ancestor_ctgy_id(child, ancestors + [el])))
-            else:
-                found.extend(_walk_and_collect(child, ancestors + [el]))
-        return found
-
-    collected: list[tuple[ET.Element, str]] = []
-    for body in boq_bodies:
-        collected.extend(_walk_and_collect(body, []))
-
-    auto_counter = 0
-    for item, section_ordinal in collected:
-        auto_counter += 1
-        try:
-            pos_ordinal = (item.get("ID") or "").strip() or str(auto_counter)
-            description = _extract_description(item)
-            if not description:
-                skipped += 1
-                continue
-
-            unit_raw = _text_of(item, "QU")
-            unit = _normalize_unit(unit_raw) or "pcs"
-            quantity = _safe_float(_text_of(item, "Qty"), default=0.0)
-            unit_rate = _safe_float(_text_of(item, "UP"), default=0.0)
-
-            if not (0 <= quantity <= 1e9):
-                errors.append({"ordinal": pos_ordinal, "error": f"Quantity out of range: {quantity}"})
-                continue
-            if not (0 <= unit_rate <= 1e8):
-                errors.append({"ordinal": pos_ordinal, "error": f"Unit rate out of range: {unit_rate}"})
-                continue
-
-            classification: dict[str, Any] = {}
-            if section_ordinal:
-                classification["gaeb_section"] = section_ordinal
-
-            position_data = PositionCreate(
-                boq_id=boq_id,
-                ordinal=pos_ordinal,
-                description=description,
-                unit=unit,
-                quantity=quantity,
-                unit_rate=unit_rate,
-                classification=classification,
-                source="gaeb_import",
-                metadata={
-                    "import_source": file.filename or "gaeb",
-                    "gaeb_ordinal": pos_ordinal,
-                    "gaeb_section": section_ordinal,
-                    "gaeb_unit_original": unit_raw,
-                    "gaeb_currency": currency,
-                },
-            )
-            await service.add_position(position_data)
-            imported += 1
-        except Exception as exc:
-            errors.append({"ordinal": item.get("ID") or "", "error": str(exc)})
-            logger.warning("GAEB import error for BOQ %s: %s", boq_id, exc)
-
-    # Persist lightweight import metadata at the BOQ level.
-    if imported > 0:
+    # Persist lightweight import metadata at the BOQ level (unchanged keys).
+    if created > 0:
         try:
             boq_obj = await service.get_boq(boq_id)
             meta = dict(boq_obj.metadata_) if isinstance(boq_obj.metadata_, dict) else {}
             meta["last_import"] = {
                 "source_filename": file.filename,
-                "source_format": "gaeb",
-                "gaeb_currency": currency,
-                "total_imported": imported,
+                "source_format": imported_boq.source_format,
+                "gaeb_currency": imported_boq.currency,
+                "total_imported": line_items_created,
                 "total_sections": len(sections_seen),
                 "import_date": datetime.now(UTC).isoformat(),
             }
@@ -6555,31 +6333,26 @@ async def import_boq_gaeb(
         except Exception:
             logger.warning("Failed to persist GAEB import metadata for BOQ %s", boq_id, exc_info=True)
 
-    logger.info(
-        "GAEB import complete for %s: imported=%d, skipped=%d, errors=%d, sections=%d",
-        boq_id,
-        imported,
-        skipped,
-        len(errors),
-        len(sections_seen),
-    )
-
-    # Run validation inline against the freshly-imported GAEB BOQ so
-    # DIN276 / GAEB / boq_quality rule packs fire AT import time, not
-    # later via the standalone /validate/ endpoint. For DACH GAEB files
-    # the project region is almost always DE/AT/CH so _build_rule_sets
-    # selects the gaeb + din276 rule packs automatically.
     validation_report = None
-    if imported > 0:
+    if created > 0:
         validation_report = await _run_import_validation(boq_id, service, service.session)
 
+    logger.info(
+        "GAEB import complete for %s: imported=%d, sections=%d, skipped=%d, errors=%d",
+        boq_id,
+        line_items_created,
+        len(sections_seen),
+        imported_boq.skipped,
+        len(imported_boq.errors) + len(apply_summary["apply_errors"]),
+    )
+
     return {
-        "imported": imported,
-        "skipped": skipped,
-        "errors": errors,
+        "imported": line_items_created,
+        "skipped": imported_boq.skipped,
+        "errors": imported_boq.errors + apply_summary["apply_errors"],
         "sections": sections_seen,
-        "source_format": "gaeb",
-        "currency": currency,
+        "source_format": imported_boq.source_format,
+        "currency": imported_boq.currency,
         "validation_report": validation_report,
     }
 
@@ -8345,6 +8118,36 @@ async def get_cost_breakdown(
 
 
 @router.get(
+    "/price-analysis/presets/",
+    summary="Presentation presets a price analysis can be read in",
+    dependencies=[Depends(RequirePermission("boq.read"))],
+    response_model=None,
+)
+async def list_price_analysis_presets() -> dict[str, Any]:
+    """Return every presentation preset, straight from the preset table.
+
+    A price analysis is a document handed to somebody who expects it in their
+    own market's shape, so the product offers a switch between those shapes.
+    The list behind that switch was written out by hand in the frontend and
+    named two of the six presets, the international one and the German EFB
+    sheets; the UK, US, Hungarian and cost-plus presets existed, were complete,
+    and could not be reached from the interface at all. A hand-kept copy of a
+    table that lives in the backend goes stale in exactly that direction, and
+    it did.
+
+    Each entry is the preset's own ``to_dict``: its name, its English label,
+    the stable i18n key for that label, the market it is written for, and its
+    resource kinds in the preset's own display order with a label and an i18n
+    key each. The order matters and is not decoration: the Hungarian sheet
+    opens with material rather than labour, because that is the column order
+    the Hungarian client reads a tender against.
+    """
+    from app.modules.price_breakdown import PRESETS
+
+    return {"presets": [preset.to_dict() for preset in PRESETS.values()]}
+
+
+@router.get(
     "/positions/{position_id}/price-analysis/",
     summary="Unit-price breakdown for a position",
     dependencies=[Depends(RequirePermission("boq.read"))],
@@ -8356,22 +8159,50 @@ async def get_position_price_analysis(
     payload: CurrentUserPayload,
     session: SessionDep,
     fmt: str = Query(default="json", alias="format"),
-    preset: str = Query(default="international"),
+    preset: str | None = Query(
+        default=None,
+        description=(
+            "Presentation preset, one of: "
+            f"{', '.join(sorted(PRICE_BREAKDOWN_PRESETS))}. "
+            "Omit it to resolve the preset from the project's own country."
+        ),
+    ),
     service: BOQService = Depends(_get_service),
 ) -> StreamingResponse | dict[str, Any]:
     """Return the detailed unit-price breakdown (price analysis) of a position.
 
     Splits the unit rate into labour, material, machinery, equipment,
     subcontract and other, then stacks the BoQ overhead and profit markups, so
-    an estimator can see and justify how the rate is built. This is the
-    international core; ``preset=efb`` also returns the German EFB 221/222/223
-    style grouping. ``format=markdown`` streams a readable table.
+    an estimator can see and justify how the rate is built.
+    ``format=markdown`` streams a readable table.
+
+    Omitting ``preset`` means "decide from the project" rather than "use the
+    international one". A price analysis is a document an estimator hands to
+    somebody who expects it in their own market's shape, and reading a
+    Hungarian bill as a single unit rate rather than as anyag and dij is not a
+    translation of that bill but a different document. The preset that does
+    this has shipped since the Hungarian pack landed and nothing chose it: the
+    default was the international preset by name, so a Hungarian estimator got
+    the international shape unless they knew the preset's own slug. A market
+    with no preset of its own still gets the international one, which is what
+    every caller used to get.
+
+    The list of preset names is read from the preset table rather than written
+    out here, because it was written out here: the docstring named exactly one
+    of the six, the German sheet, and had never mentioned the UK, US, Hungarian
+    or cost-plus presets at all.
 
     Reads the resource split already stored on the position
     (``metadata.resources``); positions without one show the whole rate as a
     single line so the sheet always renders.
     """
-    from app.modules.price_breakdown import efb_221_view, from_position, render_markdown
+    from app.modules.price_breakdown import (
+        efb_221_view,
+        from_position,
+        get_preset,
+        preset_for_country,
+        render_markdown,
+    )
 
     existing = await service.position_repo.get_by_id(position_id)
     if existing is None:
@@ -8394,6 +8225,10 @@ async def get_position_price_analysis(
     }
     breakdown = from_position(position_dict, markups=markup_dicts)
 
+    if preset is None:
+        project = await service.project_for_boq(existing.boq_id)
+        preset = preset_for_country(getattr(project, "country_code", None))
+
     if fmt == "markdown":
         text = render_markdown(breakdown, preset=preset)
         safe = str(existing.ordinal or "position").replace("/", "-").replace(" ", "_")
@@ -8404,6 +8239,13 @@ async def get_position_price_analysis(
         )
 
     result = breakdown.to_dict()
+    # Say which preset produced this. The caller may have omitted it and let
+    # the project's country decide, and without this the answer is invisible:
+    # nothing else in the payload differs between presets except the ``efb``
+    # block, so a reader could not tell a Hungarian sheet from an international
+    # one. It also carries the preset's own per-kind wording and display order,
+    # which is the whole of what a preset is for a JSON reader.
+    result["preset"] = get_preset(preset).to_dict()
     if preset == "efb":
         result["efb"] = efb_221_view(breakdown)
     return result
@@ -8444,7 +8286,14 @@ async def compute_position_measurement(
     session: SessionDep,
     data: dict = Body(...),
     fmt: str = Query(default="json", alias="format"),
-    preset: str = Query(default="international"),
+    preset: str | None = Query(
+        default=None,
+        description=(
+            "Measurement preset, one of: "
+            f"{', '.join(sorted(MEASUREMENT_PRESETS))}. "
+            "Omit it to resolve the preset from the project's own country."
+        ),
+    ),
     service: BOQService = Depends(_get_service),
 ) -> StreamingResponse | dict[str, Any]:
     """Compute a quantity from formula-based take-off lines without saving.
@@ -8457,9 +8306,19 @@ async def compute_position_measurement(
     (PATCH the position with ``quantity`` and ``metadata.measurement``).
 
     ``format=markdown`` or ``format=csv`` streams a readable sheet; otherwise
-    JSON. ``preset`` labels the output (international, reb, oenorm).
+    JSON. ``preset`` labels the output and fixes the rounding convention the
+    quantities are written out with.
+
+    Omitting ``preset`` means "decide from the project" rather than "use the
+    international one". A measurement sheet is a document an auditor checks
+    against their own market's rules: REB 23.003 (DA11/DA12) in Germany and
+    OENORM A 2063 in Austria. Both presets have shipped since the module was
+    written and nothing selected either one, so a German quantity surveyor got
+    the international sheet unless they knew the preset's own slug. A market
+    with no preset of its own still gets the international one, which is what
+    every caller used to get.
     """
-    from app.modules.measurement import build_sheet, reconcile
+    from app.modules.measurement import build_sheet, preset_for_country, reconcile
     from app.modules.measurement.formula import MeasurementError
 
     existing = await service.position_repo.get_by_id(position_id)
@@ -8484,6 +8343,10 @@ async def compute_position_measurement(
             detail=f"measurement error: {exc}",
         ) from exc
 
+    if preset is None:
+        project = await service.project_for_boq(existing.boq_id)
+        preset = preset_for_country(getattr(project, "country_code", None))
+
     streamed = _measurement_stream(sheet, fmt, preset, existing.ordinal or "")
     if streamed is not None:
         return streamed
@@ -8505,15 +8368,27 @@ async def get_position_measurement(
     payload: CurrentUserPayload,
     session: SessionDep,
     fmt: str = Query(default="json", alias="format"),
-    preset: str = Query(default="international"),
+    preset: str | None = Query(
+        default=None,
+        description=(
+            "Measurement preset, one of: "
+            f"{', '.join(sorted(MEASUREMENT_PRESETS))}. "
+            "Omit it to resolve the preset from the project's own country."
+        ),
+    ),
     service: BOQService = Depends(_get_service),
 ) -> StreamingResponse | dict[str, Any]:
     """Return the measurement sheet stored on a position (``metadata.measurement``).
 
     Bad stored formulas are kept as per-line errors (quantity 0) rather than
     failing the whole read, so a saved sheet always renders.
+
+    Omitting ``preset`` resolves it from the project's country, exactly as the
+    compute endpoint does. The pair has to answer the same way: a sheet
+    computed as a REB DA11 take-off and read back as an international one is a
+    worse state than either of them applied consistently.
     """
-    from app.modules.measurement import build_sheet, reconcile
+    from app.modules.measurement import build_sheet, preset_for_country, reconcile
 
     existing = await service.position_repo.get_by_id(position_id)
     if existing is None:
@@ -8544,6 +8419,10 @@ async def get_position_measurement(
         lines=lines,
         strict=False,
     )
+    if preset is None:
+        project = await service.project_for_boq(existing.boq_id)
+        preset = preset_for_country(getattr(project, "country_code", None))
+
     streamed = _measurement_stream(sheet, fmt, preset, existing.ordinal or "")
     if streamed is not None:
         return streamed
@@ -9329,13 +9208,15 @@ async def renumber_positions(
     positions = list(boq_data.positions)
 
     def _is_section(pos: object) -> bool:
-        """Mirror the canonical frontend isSection check (api.ts:136).
+        """Classify by unit alone, unlike the service predicate of the same name.
 
-        Sections are stored with EITHER unit="" (demo seed convention) OR
-        unit="section" (create_section endpoint convention) - handle both.
+        Renumbering runs over response objects, so it takes the spellings from
+        ``SECTION_UNITS`` rather than repeating them, but it deliberately drops
+        the zero quantity and zero rate the service predicate also requires: a
+        header someone typed a quantity into still has to be renumbered as one.
         """
         u = (getattr(pos, "unit", "") or "").strip().lower()
-        return u == "" or u == "section"
+        return u in SECTION_UNITS
 
     # Build hierarchy by parent_id. Top-level positions have parent_id=None.
     by_parent: dict[str | None, list] = {}

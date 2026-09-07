@@ -171,7 +171,13 @@ async def draft_spec(session: Any, user_id: str, description: str) -> ModuleSpec
     payload = extract_json(text)
     if not isinstance(payload, dict):
         raise DraftRefused("The assistant did not return a module description.", raw=text[:2000])
-    return spec_from_payload(payload)
+    spec = spec_from_payload(payload)
+    # Recorded here rather than in spec_from_payload, which also validates
+    # payloads that no model produced, and rather than in the router, so that
+    # the claim is made by the code that actually called the model. The model
+    # does not get to say this about itself: whatever it puts in the field is
+    # replaced.
+    return spec.model_copy(update={"drafted_by": "assistant"})
 
 
 def spec_from_payload(payload: dict[str, Any]) -> ModuleSpec:
@@ -230,6 +236,13 @@ async def install(spec: ModuleSpec, app: Any) -> InstalledModule:
     except Exception as exc:
         shutil.rmtree(target, ignore_errors=True)
         _forget(spec.key)
+        # _load_into ran discover() before the load failed, so the registry has
+        # already recorded a module whose directory is now gone. Same reason as
+        # in uninstall(): an entry with no files behind it is listed, counted
+        # and enable-able.
+        from app.core.module_loader import module_loader
+
+        module_loader.forget_module(spec.module_name)
         logger.exception("module_builder: %s failed to load and was removed", spec.key)
         raise InstallRefused(f"The module was built but did not load, so it was removed again. {exc}") from exc
 
@@ -285,6 +298,14 @@ async def uninstall(key: str, app: Any, *, drop_data: bool = False) -> dict[str,
 
     shutil.rmtree(target, ignore_errors=True)
     _forget(key)
+    # And out of the module registry. disable_module deliberately keeps the
+    # manifest, because that is what a later enable reads back - but the files
+    # are gone now, so what it keeps is an entry for a module that cannot be
+    # loaded again. Left there it is still listed by /api/v1/modules, still
+    # counted by the health endpoint, and still accepted by the enable route,
+    # whose 404 guard is a lookup in that same registry; the enable then dies
+    # inside importlib instead of answering 404.
+    module_loader.forget_module(module_name)
     # The module's permissions go with it. Left registered they would still be
     # listed in the admin matrix and still granted to roles, with no endpoint
     # behind them, and a reinstall from a different spec would inherit them.

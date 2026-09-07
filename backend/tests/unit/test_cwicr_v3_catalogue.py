@@ -100,6 +100,40 @@ def test_ddc_path_starts_with_lang_directory():
         )
 
 
+def test_installable_catalogues_never_keep_the_legacy_github_path():
+    """A row the UI will actually download must point at a host still serving it.
+
+    The two layouts in :func:`test_ddc_path_starts_with_lang_directory` are not
+    interchangeable any more. DDC stopped publishing v3 snapshots to GitHub LFS
+    when the bandwidth cap kept getting hit, and the flat
+    ``<LANG>___DDC_CWICR/`` paths written into this file are dead there today -
+    a HEAD on one answers 404 while the HF path for the same region answers
+    302. What keeps that from being a live defect is ``_apply_hf_overrides``,
+    which rewrites every published region's ``ddc_path`` to the HF layout at
+    import time, so the literals above are documentation and the runtime value
+    is what installs.
+
+    That leaves exactly one way to break it: mark a row available without
+    giving it an HF path. ``install_v3_catalogue`` picks its base URL by
+    looking for ``___DDC_CWICR`` in the path, so such a row would send Qdrant
+    to a GitHub URL that no longer exists and the install would fail at
+    download with nothing in the registry looking wrong.
+
+    No row carries a legacy path today. ZH_CHINA and TR_NATIONAL used to, and
+    the 409 for an unpublished region was the only thing keeping them off a
+    dead URL, until both turned out to have been published all along under
+    their pre-rename ids. So this finds nothing at the moment and regains its
+    force the first time a genuinely pending region is added, which is why it
+    reads the tuple rather than naming regions.
+    """
+    stranded = [cat.region for cat in CWICR_V3_CATALOGUES if cat.available and "___DDC_CWICR" in cat.ddc_path]
+    assert not stranded, (
+        f"{stranded} are offered for install but still point at the retired GitHub LFS "
+        "layout. Add them to _HF_PUBLISHED so _apply_hf_overrides rewrites the path, "
+        "rather than flipping available on its own."
+    )
+
+
 def test_ddc_path_filename_starts_with_region_or_alias():
     """Filename inside the DDC dir must start with the region id OR its
     HF-published alias (e.g. CA_TORONTO → ENG_TORONTO, GB_LONDON → UK_GBP).

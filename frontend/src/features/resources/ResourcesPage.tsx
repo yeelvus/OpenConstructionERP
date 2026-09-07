@@ -780,7 +780,7 @@ export function ResourcesPage() {
             <div className="relative flex-1 min-w-[200px] max-w-md">
               <Search
                 size={14}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-content-tertiary"
+                className="absolute start-3 top-1/2 -translate-y-1/2 text-content-tertiary"
                 aria-hidden="true"
               />
               <input
@@ -790,7 +790,7 @@ export function ResourcesPage() {
                 })}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className={clsx(inputCls, 'pl-8 pr-8')}
+                className={clsx(inputCls, 'ps-8 pe-8')}
                 aria-label={t('common.search', { defaultValue: 'Search' })}
                 data-testid="resources-search"
               />
@@ -799,7 +799,7 @@ export function ResourcesPage() {
                   type="button"
                   onClick={() => setSearch('')}
                   aria-label={t('common.clear', { defaultValue: 'Clear' })}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-content-tertiary hover:bg-surface-secondary hover:text-content-primary"
+                  className="absolute end-2 top-1/2 -translate-y-1/2 rounded p-1 text-content-tertiary hover:bg-surface-secondary hover:text-content-primary"
                   data-testid="resources-search-clear"
                 >
                   <X size={12} />

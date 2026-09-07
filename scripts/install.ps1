@@ -93,21 +93,122 @@ function Test-Docker {
     }
 }
 
-function Test-Python312 {
-    # Must treat future major versions (Python 4.x) as satisfying "3.12+":
-    # the naive ``$major -ge 3 -and $minor -ge 12`` fails for 4.0-4.11
-    # because 4.0 < 3.12 component-wise. Use proper major/minor compare.
+# Every way a usable interpreter might be reachable, best first. An entry is
+# the argv prefix that runs it, not a name, because the launcher takes its
+# version selector as a separate argument.
+#
+# `py` leads the list and that is the whole point of it. The python.org
+# installer leaves "Add python.exe to PATH" unchecked by default and installs
+# the launcher unconditionally, so the person this script exists for - someone
+# who installed Python from python.org and changed nothing - has a working 3.12
+# that the bare name `python` does not reach. In the other direction, `python`
+# on PATH is frequently some unrelated tool's virtual environment that happens
+# to come first, which is the state of the machine this was written on: `python`
+# there is a 3.11.0 belonging to another application entirely.
+$OE_PYTHON_CANDIDATES = @(
+    @("py", "-3.12"),
+    @("py", "-3"),
+    @("python3.12"),
+    @("python3"),
+    @("python")
+)
+
+# Asked of the interpreter itself, so the answer is about the process that
+# would actually run and not about the name we used to reach it. Comparing
+# sys.version_info as a tuple is also what makes a future 4.0 satisfy "3.12 or
+# newer"; the banner-parsing check this replaces compared major and minor
+# separately, which reads 4.0 as older than 3.12.
+$OE_PYTHON_PROBE = "import sys; print('%d.%d.%d' % sys.version_info[:3]); sys.exit(0 if sys.version_info >= (3, 12) else 1)"
+
+function Get-PythonCandidate {
+    <#
+    .SYNOPSIS
+    Run one candidate and report what it is, or $null if it is not a Python.
+    #>
+    param([Parameter(Mandatory)] [string[]] $Candidate)
+
+    $exe = $Candidate[0]
+    if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { return $null }
+
+    $selector = @()
+    if ($Candidate.Count -gt 1) { $selector = $Candidate[1..($Candidate.Count - 1)] }
+
+    # Unwrap ErrorRecords the way Invoke-Native does, so a candidate that fails
+    # by writing to stderr - `py -3.12` with no 3.12 installed, or the Microsoft
+    # Store stub that Windows ships as `python` - is read as text rather than
+    # raised as an error mid-probe.
     try {
-        $ver = & python --version 2>&1
-        if ($ver -match "Python (\d+)\.(\d+)") {
-            $major = [int]$Matches[1]
-            $minor = [int]$Matches[2]
-            return ($major -gt 3) -or (($major -eq 3) -and ($minor -ge 12))
+        $lines = & $exe @selector -c $OE_PYTHON_PROBE 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
         }
-        return $false
+        $code = $LASTEXITCODE
     } catch {
-        return $false
+        return $null
     }
+
+    # Only a line that is nothing but a version counts. Anything that did not
+    # print one is not an interpreter we can hold a conversation with, whatever
+    # it wrote and whatever it exited with.
+    $match = [regex]::Match(($lines -join "`n"), '(?m)^\s*(\d+\.\d+\.\d+)\s*$')
+    if (-not $match.Success) { return $null }
+
+    return [pscustomobject]@{
+        Display = ($Candidate -join " ")
+        Exe     = $exe
+        Args    = $selector
+        Version = $match.Groups[1].Value
+        Usable  = ($code -eq 0)
+    }
+}
+
+function Find-Python312 {
+    <#
+    .SYNOPSIS
+    The first candidate that reports 3.12 or newer, or $null if there is none.
+
+    .DESCRIPTION
+    Searched once and remembered, because the answer is used twice and each
+    probe starts a process. Candidates that ran but are too old are remembered
+    too, in $script:OE_PYTHON_REJECTED, so the failure can name them.
+    #>
+    if ($script:OE_PYTHON_SEARCHED) { return $script:OE_PYTHON_FOUND }
+    $script:OE_PYTHON_SEARCHED = $true
+    $script:OE_PYTHON_FOUND = $null
+    $script:OE_PYTHON_REJECTED = @()
+
+    foreach ($candidate in $OE_PYTHON_CANDIDATES) {
+        $report = Get-PythonCandidate -Candidate $candidate
+        if ($null -eq $report) { continue }
+        if ($report.Usable) {
+            $script:OE_PYTHON_FOUND = $report
+            return $report
+        }
+        $script:OE_PYTHON_REJECTED += "$($report.Display) is Python $($report.Version)"
+    }
+    return $null
+}
+
+function Test-Python312 {
+    return ($null -ne (Find-Python312))
+}
+
+function Write-NoPython312 {
+    <#
+    .SYNOPSIS
+    The one failure message, used whether nothing ran or everything was too old.
+
+    .DESCRIPTION
+    Both endings are the same ending: no interpreter was selected, the advice is
+    the same, and the caller exits 1. The only thing a too-old candidate adds is
+    a line naming it, because "Python 3.12+ is required" reads as "you have no
+    Python" to someone looking at a working `python` in the same terminal.
+    #>
+    Write-Err "Python 3.12+ is required."
+    foreach ($rejected in $script:OE_PYTHON_REJECTED) {
+        Write-Host "  Found, but too old: $rejected"
+    }
+    Write-Host "  Install from: https://www.python.org/downloads/"
+    Write-Host "  If you just installed it, open a new terminal and run this again."
 }
 
 function Test-Uv {
@@ -119,43 +220,258 @@ function Test-Uv {
     }
 }
 
+function New-ComposeSecret {
+    # Windows has no openssl, so the bytes come from the OS cryptographic
+    # generator through System.Security.Cryptography.RandomNumberGenerator and
+    # are rendered as 64 hex characters. That is 256 bits, more than the 192
+    # the POSIX installer takes from `openssl rand -base64 24`, and hex cannot
+    # emit the "@" that would break the connection URL the stack builds from
+    # the password: a URL splits its user info at the first "@", so a literal
+    # one moves the rest of the password into the host.
+    #
+    # Create() rather than the newer Fill(), because Windows PowerShell 5.1
+    # runs on .NET Framework, where Fill() does not exist.
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $bytes = [byte[]]::new(32)
+        $rng.GetBytes($bytes)
+        return ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''
+    } finally {
+        $rng.Dispose()
+    }
+}
+
+function Write-ComposeSecrets {
+    # Write the two secrets the quickstart compose file will not start without.
+    # It reads POSTGRES_PASSWORD and JWT_SECRET with compose's fail-fast form
+    # on purpose, so that nobody runs a stack whose JWT signing key is shared
+    # with every other reader of the file. Without a .env beside the compose
+    # file, `docker compose up` stops on an interpolation error and starts
+    # nothing, which is what this installer did for everyone who had Docker.
+    #
+    # The check is per key, not per file. A .env holding one of the two is a
+    # state a reader reaches easily, since the recipe in the README is two
+    # separate lines, and a plain "the file is there, leave it alone" test
+    # would keep the install broken for them. A key that is already present is
+    # never rewritten: the password in it is the one PostgreSQL initialised its
+    # data directory with, and generating a new one would lock the user out of
+    # their own data.
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $existing = @()
+    if (Test-Path $Path) {
+        $existing = @(Get-Content -Path $Path)
+    }
+
+    $missing = @()
+    foreach ($key in @("POSTGRES_PASSWORD", "JWT_SECRET")) {
+        if (-not ($existing | Where-Object { $_ -match "^$key=" })) {
+            $missing += "$key=$(New-ComposeSecret)"
+            Write-Ok "Generated $key in $Path"
+        }
+    }
+    if ($missing.Count -eq 0) { return }
+
+    if (Test-Path $Path) {
+        # Add-Content writes after the last byte, so a file that does not end
+        # in a newline would swallow the first new key onto the tail of its
+        # last line. An empty value terminates that line and adds nothing else.
+        $raw = Get-Content -Path $Path -Raw
+        if ($raw -and -not $raw.EndsWith("`n")) {
+            Add-Content -Path $Path -Value "" -Encoding ascii
+        }
+        Add-Content -Path $Path -Value $missing -Encoding ascii
+    } else {
+        # ascii, not utf8. Both secrets are ASCII by construction, and
+        # Windows PowerShell writes utf8 with a byte order mark, which compose
+        # would read as part of the name of the first key in the file.
+        Set-Content -Path $Path -Value $missing -Encoding ascii
+    }
+}
+
+function Set-ImageTagPin {
+    # Record a pinned version in the .env as well, where the two secrets are.
+    # Setting it in this process would only reach this process, and the commands
+    # printed at the end of the install are typed later in a fresh shell, where
+    # ${OE_IMAGE_TAG:-latest} would quietly mean latest. The .env is read on
+    # every compose invocation in this directory, so the pin holds for the pull,
+    # for the up, and for every start after that.
+    #
+    # Unlike the two secrets this key is replaced when a later run asks for a
+    # different version. Overwriting a version pin loses nothing, where
+    # overwriting the password would lock the user out of the data PostgreSQL
+    # already wrote.
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Tag
+    )
+
+    $kept = @()
+    if (Test-Path $Path) {
+        $kept = @(Get-Content -Path $Path | Where-Object { $_ -notmatch '^OE_IMAGE_TAG=' })
+    }
+    Set-Content -Path $Path -Value ($kept + "OE_IMAGE_TAG=$Tag") -Encoding ascii
+}
+
+function Remove-ImageTagPin {
+    # The other half of Set-ImageTagPin. Writing a pin and never removing one
+    # meant the .env decided the version for every later run, so re-running
+    # the documented one-liner to upgrade pulled the version pinned the first
+    # time and announced a completed installation.
+    param([Parameter(Mandatory)] [string] $Path)
+
+    if (-not (Test-Path $Path)) { return }
+    $lines = @(Get-Content -Path $Path)
+    $kept = @($lines | Where-Object { $_ -notmatch '^OE_IMAGE_TAG=' })
+    if ($kept.Count -eq $lines.Count) { return }
+    Set-Content -Path $Path -Value $kept -Encoding ascii
+    Write-Warn "Removed a version pin left by an earlier install, this run takes the latest"
+}
+
+function Get-HealthVerdict {
+    <#
+      .SYNOPSIS
+      Turn a health response, or the absence of one, into one of four verdicts.
+
+      Separated from the code that prints so that it can be exercised without a
+      Docker daemon, an install or a network. The branch this returns is the
+      whole of the decision; everything around it is wording.
+
+      Pass $null for "nothing ever answered". Anything that is neither healthy
+      nor degraded is treated the same way, because a status this script does
+      not recognise is not a status it should reassure anybody about.
+    #>
+    param($Health)
+
+    if ($null -eq $Health) { return "no-answer" }
+    if ($Health.status -eq "healthy") { return "healthy" }
+    if ($Health.status -ne "degraded") { return "no-answer" }
+    # Degraded covers two unlike things. A module that did not load leaves a
+    # usable product; a database the process cannot reach does not.
+    if ($Health.database -ne "ok") { return "database" }
+    return "degraded"
+}
+
 function Install-Docker {
     Write-Info "Installing via Docker..."
     New-Item -ItemType Directory -Force -Path $OE_INSTALL_DIR | Out-Null
     Set-Location $OE_INSTALL_DIR
 
-    $url = "$OE_REPO/raw/main/docker-compose.quickstart.yml"
-    try {
-        Invoke-WebRequest -Uri $url -OutFile "docker-compose.yml" -ErrorAction Stop
-    } catch {
-        Write-Err "Failed to download docker-compose.quickstart.yml: $($_.Exception.Message)"
-        exit 1
+    # The image override is saved as docker-compose.override.yml, the name
+    # compose merges by itself with no -f flags. Two reasons. The base file
+    # builds the app from source and there is no source here, only these two
+    # files, so on its own it would stop on a Dockerfile that is not there.
+    # And because the name is the automatic one, every plain `docker compose`
+    # command run in this directory afterwards, including the ones printed
+    # below, keeps meaning the stack that was installed.
+    #
+    # OE_VERSION is honoured here the way the other install methods below
+    # honour it, and the way scripts/install.sh does. It used to be read into
+    # $OE_VERSION at the top of this file and then ignored by this branch, so
+    # asking for a version and getting Docker gave you whatever was on main.
+    $files = @{
+        "docker-compose.quickstart.yml"       = "docker-compose.yml"
+        "docker-compose.quickstart.image.yml" = "docker-compose.override.yml"
     }
+    $ref = if ($OE_VERSION -eq "latest") { "main" } else { "v$OE_VERSION" }
+    foreach ($source in $files.Keys) {
+        try {
+            Invoke-WebRequest -Uri "$OE_REPO/raw/$ref/$source" -OutFile $files[$source] -ErrorAction Stop
+        } catch {
+            Write-Err "Failed to download ${source}: $($_.Exception.Message)"
+            exit 1
+        }
+    }
+
+    $envPath = Join-Path $OE_INSTALL_DIR ".env"
+    Write-ComposeSecrets -Path $envPath
+    # Asking for latest has to undo a pin, not merely decline to write one.
+    # The .env outlives the run that wrote it, so without this an install
+    # that once asked for a specific version keeps pulling it forever and
+    # still reports that the installation completed.
+    if ($OE_VERSION -eq "latest") {
+        Remove-ImageTagPin -Path $envPath
+    } else {
+        Set-ImageTagPin -Path $envPath -Tag $OE_VERSION
+    }
+
+    # Pulling is spelled out rather than left to `up`, the same way the
+    # quickstart-image make target does it, so which artefact runs is stated by
+    # the command instead of inferred from compose's build-versus-pull rules
+    # for a service that carries both an image and a build section.
+    Write-Info "Pulling the published image..."
+    Invoke-Native -Description "docker compose pull app" -Block {
+        & docker compose pull app
+    } | Out-Null
 
     Write-Info "Starting OpenConstructionERP..."
     Invoke-Native -Description "docker compose up -d" -Block {
         & docker compose up -d
     } | Out-Null
 
-    # Wait for health check
-    Write-Info "Waiting for health check..."
-    $healthy = $false
-    for ($i = 0; $i -lt 30; $i++) {
+    # Wait for health check.
+    #
+    # Three outcomes rather than two, because the endpoint reports three and
+    # collapsing them loses the one a person can act on. It answers healthy,
+    # or degraded, or it never answers at all. Waiting only for the literal
+    # string healthy turns the middle case into the last one: a degraded
+    # install serves every page, and the loop below would nonetheless spin out
+    # its full budget and then report that the health check did not pass, which
+    # reads as "this did not install" for something that installed and works.
+    #
+    # That distinction stopped being theoretical in this release. A module that
+    # is enabled and fails to load now degrades the status, which is a state
+    # this endpoint could not previously reach, so the number of installs that
+    # answer degraded goes up precisely as this script starts calling them
+    # failures. The health endpoint's own comment says what such a person
+    # should do - restart or reinstall - and they can only do it if they are
+    # told which of the three happened.
+    #
+    # Degraded is reported against the database field rather than on its own,
+    # because the same word covers a missing module, where the product is
+    # usable, and a database the process cannot reach, where it is not.
+    $attempts = 30
+    $delaySeconds = 2
+    # Named, because the figure printed at the end is computed from it. An
+    # attempt that gets no answer spends this before it sleeps.
+    $timeoutSeconds = 2
+    $health = $null
+    for ($i = 0; $i -lt $attempts; $i++) {
         try {
-            $resp = Invoke-RestMethod -Uri "http://localhost:$OE_PORT/api/health" -TimeoutSec 2
-            if ($resp.status -eq "healthy") {
-                $healthy = $true
+            $resp = Invoke-RestMethod -Uri "http://localhost:$OE_PORT/api/health" -TimeoutSec $timeoutSeconds
+            if ($resp.status -eq "healthy" -or $resp.status -eq "degraded") {
+                $health = $resp
                 break
             }
         } catch {}
-        Start-Sleep -Seconds 2
+        Start-Sleep -Seconds $delaySeconds
     }
 
-    if ($healthy) {
-        Write-Ok "OpenConstructionERP is running at http://localhost:$OE_PORT"
-    } else {
-        Write-Warn "Service started but health check did not pass within 60s"
-        Write-Host "  Check logs: cd $OE_INSTALL_DIR; docker compose logs -f"
+    switch (Get-HealthVerdict $health) {
+        "healthy" {
+            Write-Ok "OpenConstructionERP is running at http://localhost:$OE_PORT"
+        }
+        "degraded" {
+            Write-Ok "OpenConstructionERP is running at http://localhost:$OE_PORT"
+            Write-Warn "Reporting degraded: $($health.modules_loaded) of $($health.modules_enabled) enabled modules loaded"
+            Write-Host "  The application is usable. A restart usually loads the rest."
+            Write-Host "  Which module is missing is in the log: cd $OE_INSTALL_DIR; docker compose logs -f"
+        }
+        "database" {
+            Write-Warn "OpenConstructionERP started but cannot reach its database"
+            Write-Host "  Check logs: cd $OE_INSTALL_DIR; docker compose logs -f"
+        }
+        default {
+            # The figure is derived rather than written down. It used to say 60s
+            # while the loop could take twice that, since each attempt can also
+            # spend its request timeout before sleeping. The first correction
+            # here still left the timeout out of the arithmetic and so still
+            # understated the wait, by three times against a socket that
+            # accepts and never replies. Both terms are in it now.
+            $waited = $attempts * ($delaySeconds + $timeoutSeconds)
+            Write-Warn "Service started but health check did not answer within ${waited}s"
+            Write-Host "  Check logs: cd $OE_INSTALL_DIR; docker compose logs -f"
+        }
     }
     Write-Host ""
     Write-Host "Commands:"
@@ -200,19 +516,25 @@ function Install-Pip {
 
     # 1. Verify Python
     Write-Info "[1/5] Checking Python 3.12+..."
-    if (-not (Test-Python312)) {
-        Write-Err "Python 3.12+ is required."
-        Write-Host "  Install from: https://www.python.org/downloads/"
+    $python = Find-Python312
+    if ($null -eq $python) {
+        Write-NoPython312
         exit 1
     }
-    $pyVer = & python --version 2>&1
-    Write-Ok "[1/5] Found $pyVer"
+    # Names the invocation as well as the version, because on a machine where
+    # `python` is something else the two are not the same fact.
+    Write-Ok "[1/5] Found Python $($python.Version) via '$($python.Display)'"
 
     # 2. Create venv
+    # Built with the interpreter that was actually selected. Spelling `python`
+    # here again would have quietly built the venv from a different one than the
+    # check approved - the check and the use have to name the same process.
     Write-Info "[2/5] Creating virtual environment at $OE_INSTALL_DIR\venv ..."
     New-Item -ItemType Directory -Force -Path $OE_INSTALL_DIR | Out-Null
     if (-not (Test-Path "$OE_INSTALL_DIR\venv\Scripts\python.exe")) {
-        & python -m venv "$OE_INSTALL_DIR\venv"
+        $pyExe = $python.Exe
+        $pyArgs = @($python.Args)
+        & $pyExe @pyArgs -m venv "$OE_INSTALL_DIR\venv"
         if ($LASTEXITCODE -ne 0) {
             Write-Err "Failed to create venv (exit $LASTEXITCODE)"
             exit 1
@@ -240,11 +562,27 @@ function Install-Pip {
     } else {
         "$OE_INSTALL_DIR\venv\Scripts\openestimate.exe"
     }
-    & $cliExe init-db 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warn "init-db reported a non-zero exit code, continuing anyway..."
+    # The fallback branch above names a path without checking it, so this can
+    # be a file that is not there. That mattered more than it looks: calling a
+    # missing executable raises rather than running, $LASTEXITCODE is left
+    # holding whatever the previous native command set it to, and the previous
+    # one succeeded. So the -ne 0 test below used to pass on a database that
+    # was never initialised, and the script reported it ready.
+    #
+    # $LASTEXITCODE is only meaningful after something native actually ran, so
+    # the existence of the binary is established first and separately.
+    if (-not (Test-Path $cliExe)) {
+        Write-Warn "The command line tool is not where the install put it, so the database was not initialised"
+        Write-Host "  Expected: $cliExe"
+        Write-Host "  The first start will try again."
     } else {
-        Write-Ok "[4/5] Database ready"
+        $global:LASTEXITCODE = 0
+        & $cliExe init-db 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "init-db reported a non-zero exit code, continuing anyway..."
+        } else {
+            Write-Ok "[4/5] Database ready"
+        }
     }
 
     # 5. Put the command on PATH + create launchers
@@ -306,10 +644,18 @@ if (Test-Docker) {
     Write-Info "uv detected, installing as Python tool"
     Install-Uv
 } elseif (Test-Python312) {
-    Write-Info "Python 3.12+ detected, installing via pip"
+    $python = Find-Python312
+    Write-Info "Python $($python.Version) detected via '$($python.Display)', installing via pip"
     Install-Pip
 } else {
-    Write-Info "No Docker or Python found, installing uv first"
+    # Say which of the two it is. "No Python found" is a false sentence to read
+    # in a terminal where `python --version` answers, and it is the sentence
+    # this branch used to print for anyone whose Python was merely too old.
+    if ($script:OE_PYTHON_REJECTED.Count -gt 0) {
+        Write-Info "Found Python, but older than 3.12 ($($script:OE_PYTHON_REJECTED -join '; ')); installing uv first"
+    } else {
+        Write-Info "No Docker or Python found, installing uv first"
+    }
     Install-Uv
 }
 

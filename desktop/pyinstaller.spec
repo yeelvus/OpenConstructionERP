@@ -127,9 +127,11 @@ hidden_imports += ["torch", "transformers"]
 #
 # The layers below are the ones the module loader reaches for by name rather
 # than by import statement, so they have to be declared here. Not every module
-# has every layer: 191 module packages carry 188 manifests, 187 routers, 173
-# services, 171 schemas, 150 models and 110 repositories. Naming all six for
-# all of them regardless produced 167 lines of
+# has every layer: 192 module packages carry 189 manifests, 188 routers, 173
+# services, 171 schemas, 150 models, 110 repositories, 57 event modules, 40
+# validator modules, 2 repair modules, one schema package and a single
+# pipeline_nodes. Naming every layer for every module regardless produced 167
+# lines of
 #
 #   ERROR: Hidden import 'app.modules.<name>.repository' not found
 #
@@ -147,7 +149,57 @@ hidden_imports += ["torch", "transformers"]
 # instead would have been wrong twice over: the ``excludes`` list below means
 # "nothing in the sidecar imports this", and the list would need editing every
 # time a module gained a file.
-_MODULE_LAYERS = ("models", "schemas", "router", "service", "repository", "manifest")
+#
+# The last five names are the ones the criterion had always covered and the
+# tuple had never listed. ``module_loader`` imports ``events``, ``validators``
+# and ``pipeline_nodes`` by name under ``contextlib.suppress``, and
+# ``app/core/data_repairs.py`` walks ``app.modules`` with
+# ``pkgutil.iter_modules`` and imports ``app.modules.<name>.repairs`` the same
+# way. All of them reached the bundle before they were listed here, but only
+# through the ``backend/app`` tree that ``datas`` ships below - measured on a
+# published Windows sidecar, 27 of those files had no frozen module and were
+# imported from source out of the extracted tree. That works, and it is not
+# something to rest on: the ``datas`` entry describes itself as data, and the
+# day somebody narrows it to what it says it is, five layers stop importing
+# with no error to read.
+#
+# ``repairs`` is also why the criterion cannot be "a filename common enough to
+# look like a layer". Two modules carry ``repairs.py`` today against 189
+# manifests, so any rule keyed on how many modules have the file would rank it
+# with the one-off helpers. Discovery is what makes a layer, not frequency.
+#
+# ``schema`` is the thinnest of the ten and it earns its place the same way.
+# ``module_builder`` drops a module's table by importing
+# ``app.modules.<key>.schema``, and exactly one package in the tree answers to
+# that name: ``eac/schema/``, which holds the canonical EacRuleDefinition JSON
+# Schema and the loader for it. Nothing imports that package with an import
+# statement - the eac code reaches for ``schemas``, ``schemas_api`` and
+# ``schemas_graph``, all of which are different files - so before this line it
+# reached the sidecar only as source under ``datas``.
+#
+# The shape of the failure is what made this worth naming rather than leaving
+# to luck. A discovery pass that finds nothing registers nothing, reports no
+# failures and leaves the health endpoint describing a clean boot, on the one
+# install route that ships no migration tree at all - which is the route the
+# repairs were written to serve.
+#
+# backend/tests/unit/test_desktop_hidden_imports_resolve.py reads those import
+# sites out of the backend source and fails if this tuple is missing one of
+# them, so a layer invented next year arrives as a red test rather than as a
+# silent dependency on the line below.
+_MODULE_LAYERS = (
+    "models",
+    "schemas",
+    "router",
+    "service",
+    "repository",
+    "manifest",
+    "events",
+    "validators",
+    "pipeline_nodes",
+    "repairs",
+    "schema",
+)
 
 if modules_dir.is_dir():
     for mod_dir in sorted(modules_dir.iterdir()):
@@ -199,6 +251,71 @@ datas.append((str(BACKEND / "app"), "app"))
 # missing directory here means the build is wrong and PyInstaller should stop
 # rather than produce another bundle that cannot start.
 datas.append((str(BACKEND / "locales"), "locales"))
+
+# The match service tuning data. Same shape as the catalogue above:
+# app/core/match_service/data_paths.py looks for a ``data/match`` directory
+# beside the app package, which in a frozen bundle is
+# ``sys._MEIPASS/data/match``, so shipping backend/app does not carry it.
+# Four files, about 12 KB, holding encoder score bands, per language fuzzy
+# cutoffs and two region overlays.
+#
+# This one never broke a build and never will, which is the reason it went
+# unnoticed: every reader falls back to hardcoded constants when the
+# directory is absent, so no desktop bundle has ever failed over it and none
+# has ever used the shipped tuning either. The wheel force-includes the same
+# directory at the same destination (backend/pyproject.toml) and
+# backend/tests/unit/test_desktop_spec_ships_wheel_data.py checks the pair.
+#
+# Not to be confused with the NOTE at the top of this file: that one is
+# about ``data/catalog``, which stays out of the installer on a licensing
+# basis NOTICE records as pending. These four files were authored in this
+# repository and carry the project's own copyright header.
+#
+# Unconditional, like the catalogue and the packs: tracked in git, so an
+# absent directory means the build is wrong and PyInstaller should say so.
+datas.append((str(ROOT / "data" / "match"), "data/match"))
+
+# The community packs. Same shape as the catalogue above and missing for the
+# same reason: app/core/partner_pack/discovery.py looks for a ``packs``
+# directory sitting NEXT TO the app package, which in a frozen bundle is
+# ``sys._MEIPASS/packs``, so shipping backend/app does not carry them and no
+# desktop build had ever contained one. The wheel force-includes the same
+# fifteen paths at the same destinations (backend/pyproject.toml), and
+# backend/tests/unit/test_desktop_spec_ships_wheel_data.py checks the two
+# lists against each other.
+#
+# The list is written out here rather than derived from the wheel map on
+# purpose. Reading the map would make that comparison agree with itself, and
+# the point of the gate is that two independently maintained lists have to be
+# brought into line by hand when a pack is added.
+#
+# Which packs, and why not all nineteen, is a licensing decision recorded next
+# to the wheel map: the deprecated pack and the three carrying a third party's
+# name are held back from community artefacts.
+_COMMUNITY_PACKS = (
+    "aus",
+    "brazil-sinapi",
+    "china-gbt50500",
+    "hungary-hu",
+    "russia-gesn",
+    "india-cpwd",
+    "mexico-mx",
+    "modular-prefab",
+    "nzs",
+    "renewables-epc",
+    "retail-grocery-dach",
+    "saudi-vision2030",
+    "south-africa",
+    "uk-jct",
+    "us-california",
+    "us-costdata",
+    "us-texas",
+)
+for _pack_slug in _COMMUNITY_PACKS:
+    # Unconditional, like the catalogue: these are tracked in git, so an
+    # absent one means the build is wrong and PyInstaller should say so rather
+    # than produce another bundle that lists no packs.
+    datas.append((str(ROOT / "packs" / _pack_slug / "src"), f"packs/{_pack_slug}/src"))
 
 # Ship pyproject.toml next to the bundled app package. _detect_version()
 # reads the version from the source tree first and only falls back to the
@@ -319,6 +436,49 @@ pyz = PYZ(a.pure, cipher=block_cipher)
 # ID instead of none.
 codesign_identity = "-" if sys.platform == "darwin" else None
 
+# Unpack into a directory this application owns, rather than into the system
+# temporary folder.
+#
+# `_MEI` is PyInstaller's prefix for every program built with it, not a name of
+# ours, so by default our extractions sit in %TEMP% among other vendors'. That
+# is not only untidy. The launcher clears abandoned extractions at start
+# (sweep_orphaned_extractions in src-tauri/src/main.rs), and in the system
+# folder it would be deciding whether somebody else's abandoned directory is
+# safe to remove, which is a different question from whether the directory is
+# ours. Naming a root we created turns that judgement back into a fact.
+#
+# Under the local application data folder rather than in a folder of ours
+# inside %TEMP%, because Windows cleans %TEMP% on its own: Disk Cleanup and
+# Storage Sense remove temporary files that have not been touched for some
+# days, and Storage Sense runs by itself when the drive is nearly full. Only
+# the executables and libraries of a live extraction are held open; its data
+# files are not, so such a run finds them removable while a postmaster is still
+# serving out of the directory, and the postmaster then fails on the next file
+# it goes to read. Nothing cleans the application data folder except the
+# launcher's own sweep, which asks first. The price is that a user who moved
+# %TEMP% to another drive now gets the unpacking on the system drive.
+#
+# Windows only, and not for lack of trying elsewhere. The bootloader expands
+# environment variables in this string on Windows and documents that it does
+# NOT do so on POSIX, where `~` and `$HOME` are taken literally. Every path we
+# could name there would therefore be the same path for every user on the
+# machine, in a world-writable directory, which is a name somebody else can
+# create first. The system folder's own per-user handling is better than that,
+# so POSIX keeps it, and the launcher's sweep does not run there at all.
+#
+# Measured rather than assumed, with PyInstaller 6.21.0, the version the release
+# workflow pins: a one-file probe built with
+# `--runtime-tmpdir %LOCALAPPDATA%\OCE_probe462\deep\nested` printed a
+# `sys._MEIPASS` of `C:\Users\<name>\AppData\Local\OCE_probe462\deep\nested\_MEI314762`,
+# having expanded the variable and created the whole missing parent chain
+# itself, and removed the `_MEI` directory again on a clean exit, leaving the
+# empty chain behind.
+#
+# The launcher has to resolve the same directory to sweep it and to measure the
+# free space on it, so it carries this string as EXTRACTION_ROOT_SPEC_LITERAL
+# and a test in main.rs reads this file and fails if the two stop matching.
+_WINDOWS_RUNTIME_TMPDIR = r"%LOCALAPPDATA%\OpenConstructionERP\extract"
+
 # Build a SINGLE self-contained executable (onefile), not a onedir folder.
 # Tauri ships the sidecar as an externalBin, which must be one standalone file;
 # a onedir build (exe + a separate _internal/ folder) cannot be used that way,
@@ -340,7 +500,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    runtime_tmpdir=None,
+    runtime_tmpdir=(_WINDOWS_RUNTIME_TMPDIR if sys.platform == "win32" else None),
     console=True,  # Keep console for server logging
     disable_windowed_traceback=False,
     argv_emulation=False,

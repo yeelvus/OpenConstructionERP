@@ -5,11 +5,12 @@ Anchor for insertion: line containing "onboarding.mod_collaboration_desc" in eac
 
 Run:  python scripts/backfill_support_onboarding_mod.py
 """
+
 from __future__ import annotations
 
+import pathlib
 import re
 import sys
-import pathlib
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -3612,19 +3613,23 @@ TRANSLATIONS["id"] = {
 def main() -> None:
     assert len(ORDERED_KEYS) == 134, f"Expected 134 keys, got {len(ORDERED_KEYS)}"
     anchor_pat = re.compile(rf'^\s*"{re.escape(ANCHOR_KEY)}"\s*:')
-    key_pat = re.compile(
-        r'"(?:support\.[a-z_]+|onboarding\.mod_[a-z0-9_]+)"\s*:'
-    )
+    key_pat = re.compile(r'"(?:support\.[a-z_]+|onboarding\.mod_[a-z0-9_]+)"\s*:')
 
     for locale, mapping in TRANSLATIONS.items():
         path = LOCALES_DIR / f"{locale}.ts"
-        text = path.read_text(encoding="utf-8")
+        # Read preserving line endings: Path.read_text has no newline= and would
+        # translate CRLF to LF, which turns a key insert into a whole-file diff.
+        with open(path, encoding="utf-8", newline="") as fh:
+            text = fh.read()
+        eol = "\r\n" if "\r\n" in text else "\n"
 
         # Skip if already backfilled (idempotent)
-        existing_keys = set(re.findall(
-            r'"((?:support\.[a-z_]+|onboarding\.mod_[a-z0-9_]+))"',
-            text,
-        ))
+        existing_keys = set(
+            re.findall(
+                r'"((?:support\.[a-z_]+|onboarding\.mod_[a-z0-9_]+))"',
+                text,
+            )
+        )
         to_insert = [k for k in ORDERED_KEYS if k not in existing_keys]
         if not to_insert:
             print(f"{locale}: already complete (skip)")
@@ -3652,10 +3657,10 @@ def main() -> None:
             v = mapping[k]
             # Escape backslashes then double quotes for JSON-string safety
             v_esc = v.replace("\\", "\\\\").replace('"', '\\"')
-            block_lines.append(f'    "{k}": "{v_esc}",\n')
+            block_lines.append(f'    "{k}": "{v_esc}",{eol}')
 
         new_lines = lines[: anchor_idx + 1] + block_lines + lines[anchor_idx + 1 :]
-        path.write_text("".join(new_lines), encoding="utf-8")
+        path.write_text("".join(new_lines), encoding="utf-8", newline="")
         print(f"{locale}: inserted {len(to_insert)} keys after line {anchor_idx + 1}")
 
 

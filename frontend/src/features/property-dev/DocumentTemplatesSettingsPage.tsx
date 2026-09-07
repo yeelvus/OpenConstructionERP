@@ -74,6 +74,7 @@ import {
   ConfirmDialog,
 } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
+import { DocumentAppearancePanel } from './DocumentAppearancePanel';
 import { useToastStore } from '@/stores/useToastStore';
 import { getErrorMessage } from '@/shared/lib/api';
 import {
@@ -95,6 +96,7 @@ import {
   type DocumentTemplateVariableGroup,
   type PropDevDocType,
 } from './api';
+import { fmtList } from '@/shared/lib/formatters';
 
 // Static icon map for the known built-in doc_types. Custom or
 // jurisdiction-specific doc_types (e.g. ``escritura_publica``,
@@ -441,6 +443,11 @@ export function DocumentTemplatesSettingsPage() {
         </Button>
       </Card>
 
+      {/* How the documents look. Above the template list on purpose: it is
+          the setting that applies to all of them, and to every other PDF
+          the platform generates. */}
+      <DocumentAppearancePanel />
+
       {/* Upload custom template */}
       <UploadCustomTemplateForm
         onUploaded={() => dataQ.refetch()}
@@ -713,7 +720,7 @@ function UploadCustomTemplateForm({
           type: 'error',
           title: t('property_dev.doc_templates.upload_bad_ext', {
             defaultValue: 'Unsupported file type. Allowed: {{exts}}',
-            exts: allowedExtensions.join(', '),
+            exts: fmtList(allowedExtensions),
           }),
         });
         setFile(null);

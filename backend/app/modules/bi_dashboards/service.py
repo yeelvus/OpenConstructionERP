@@ -16,11 +16,16 @@ from datetime import date as _date
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import event_bus
+from app.modules.bi_dashboards import kpi_spec as _kpi_spec
 from app.modules.bi_dashboards import kpis as _kpis
-from app.modules.bi_dashboards.alert_dsl import evaluate_alert_expression
+from app.modules.bi_dashboards.alert_dsl import (
+    evaluate_alert_expression,
+    validate_alert_expression,
+)
 from app.modules.bi_dashboards.models import (
     AlertRule,
     Dashboard,
@@ -44,6 +49,7 @@ from app.modules.bi_dashboards.schemas import (
     DashboardRenderResponse,
     DashboardUpdate,
     KPIComputeResponse,
+    KPIDefinitionCreate,
     KPIHistoryPoint,
     ReportDefinitionCreate,
     ReportDefinitionUpdate,
@@ -59,6 +65,113 @@ from app.modules.bi_dashboards.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: What a custom KPI's ``formula_ref`` says. It names no Python function
+#: on purpose - the behaviour lives in ``spec_json``, and a lookup of this
+#: string in ``KPI_FORMULAS`` is meant to miss so the spec path runs.
+_CUSTOM_FORMULA_REF = "spec"
+
+
+class CustomKPICodeInUse(Exception):
+    """The requested KPI code is already taken."""
+
+    def __init__(self, code: str, reason: str) -> None:
+        self.code = code
+        self.reason = reason
+        super().__init__(f"KPI code '{code}' is not available: {reason}.")
+
+
+class CustomKPINotFound(Exception):
+    """No KPI definition row carries the requested code."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(f"No KPI definition with code '{code}'.")
+
+
+class CustomKPIIsSystem(Exception):
+    """A built-in KPI cannot be deleted - it would come back on next boot."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(f"KPI '{code}' is a built-in definition and cannot be deleted.")
+
+
+class EstimateNotFound(Exception):
+    """The requested estimate does not exist."""
+
+    def __init__(self, boq_id: uuid.UUID) -> None:
+        self.boq_id = boq_id
+        super().__init__(f"No estimate with id '{boq_id}'.")
+
+
+class KPIScopeUnavailable(Exception):
+    """The reading that was asked for is not the reading this KPI gives.
+
+    Two directions, one failure: an estimate asked of a KPI that has no
+    estimate of its own, and a project-wide number asked of a KPI that is
+    defined per estimate. Raised instead of quietly answering with the
+    other scope, because both figures are always reachable and are
+    plausible numbers of the right order of magnitude. That is what makes
+    returning one under the other's label the worst available failure -
+    nothing in the reading says it is not the answer that was asked for.
+    """
+
+    def __init__(self, code: str, reason: str, *, asked_for: str = "a single estimate") -> None:
+        self.code = code
+        self.reason = reason
+        self.asked_for = asked_for
+        super().__init__(f"KPI '{code}' cannot be computed for {asked_for}: {reason}.")
+
+
+#: How each referrer kind is named in a refusal, in the order they are
+#: listed. Adding a kind to
+#: :meth:`~app.modules.bi_dashboards.repository.BIDashboardsRepository.list_kpi_code_referrers`
+#: without adding it here would leave the refusal counting it as nothing.
+_REFERRER_LABELS: tuple[tuple[str, str], ...] = (
+    ("widgets", "widget(s)"),
+    ("alerts", "alert rule(s)"),
+    ("reports", "report definition(s)"),
+)
+
+
+class CustomKPIInUse(Exception):
+    """Something still points at the KPI, so deleting it would blind them."""
+
+    def __init__(self, code: str, referrers: dict[str, list[uuid.UUID]]) -> None:
+        self.code = code
+        self.referrers = referrers
+        # Only the kinds that actually hold something are named. A message
+        # that reports "0 widget(s)" next to the real referrer reads as a
+        # contradiction of itself, which is the kind of quietly wrong text
+        # this guard is here to avoid producing.
+        counted = [f"{len(referrers.get(key) or [])} {label}" for key, label in _REFERRER_LABELS if referrers.get(key)]
+        listed = ", ".join(counted) if counted else "something that could not be named"
+        super().__init__(
+            f"KPI '{code}' is still referenced by {listed}. Repoint or remove them first.",
+        )
+
+
+def _widget_estimate_id(widget: Any) -> uuid.UUID | None:
+    """The estimate a widget is pinned to, or ``None`` for the project.
+
+    Mirrors how a widget has always pinned its project: a key in
+    ``config_json``, read defensively because that column is user-editable
+    JSON and an unparseable id there must render the project figure rather
+    than raise on a dashboard.
+    """
+    config = widget.config_json
+    if not isinstance(config, dict):
+        return None
+    raw = config.get("boq_id")
+    if not raw:
+        return None
+    if isinstance(raw, uuid.UUID):
+        return raw
+    try:
+        return uuid.UUID(str(raw))
+    except Exception:
+        return None
 
 
 def _safe_publish(name: str, data: dict[str, Any]) -> None:
@@ -200,11 +313,219 @@ class BIDashboardsService:
             project_id=project_id,
         )
 
+    async def create_custom_kpi(self, payload: KPIDefinitionCreate) -> Any:
+        """Register a user-defined KPI from a whitelisted spec.
+
+        The spec is validated here, not at compute time. A definition that
+        survives this call is one the evaluator can run; a definition that
+        does not survive it tells the caller which part was refused.
+
+        ``formula_ref`` and ``is_system`` are set by the server rather
+        than accepted from the payload - see
+        :class:`~app.modules.bi_dashboards.schemas.KPIDefinitionCreate`.
+
+        Args:
+            payload: The submitted definition.
+
+        Returns:
+            The persisted :class:`KPIDefinition` row.
+
+        Raises:
+            KPISpecError: The spec is outside the whitelist, or asks for a
+                scope its entity cannot carry.
+            CustomKPICodeInUse: The code already belongs to a registered
+                Python formula or to another definition row.
+        """
+        spec = _kpi_spec.validate_spec(payload.spec)
+        code = payload.code
+        # Refused here rather than at compute time, for the same reason the
+        # spec itself is: a definition asking for one estimate from an entity
+        # whose rows belong to a project would be stored, put on a dashboard,
+        # and only then have nowhere to get its number from. The catalog is
+        # what answers this, so the answer does not depend on which modules
+        # happen to be installed on the machine taking the call.
+        if payload.scope == _kpi_spec.SCOPE_ESTIMATE and not _kpi_spec.entity_narrows_to_estimate(spec["entity"]):
+            raise _kpi_spec.KPISpecError(
+                "spec.entity",
+                f"entity '{spec['entity']}' has no estimate of its own, so a KPI over it "
+                f"cannot be scoped to one. Its rows belong to a project.",
+                value=spec["entity"],
+                allowed=sorted(n for n, e in _kpi_spec.ENTITY_CATALOG.items() if e.narrows_to_estimate),
+            )
+        # A registered formula wins the lookup in ``kpis.compute``, so a
+        # custom definition sharing its code would be stored and never
+        # consulted. Refuse rather than accept a KPI that cannot run.
+        if code in _kpis.KPI_FORMULAS or code in _kpis.SYSTEM_KPI_META:
+            raise CustomKPICodeInUse(code, "a built-in KPI formula is registered under this code")
+        if await self.repo.get_kpi_definition_by_code(code) is not None:
+            raise CustomKPICodeInUse(code, "a KPI definition already exists under this code")
+        row = await self.repo.create_custom_kpi_definition(
+            code=code,
+            name=payload.name,
+            description=payload.description,
+            formula_ref=_CUSTOM_FORMULA_REF,
+            source_modules=_kpi_spec.source_modules_for(spec),
+            unit=payload.unit,
+            target_default=payload.target_default,
+            aggregation=payload.aggregation,
+            category=payload.category,
+            is_system=False,
+            spec_json=spec,
+            project_id=payload.project_id,
+            scope=payload.scope,
+        )
+        _safe_publish(
+            "bi.kpi.definition_created",
+            {
+                "kpi_code": code,
+                "entity": spec.get("entity"),
+                "aggregation": spec.get("aggregation"),
+                "project_id": str(payload.project_id) if payload.project_id else None,
+                "scope": payload.scope,
+            },
+        )
+        return row
+
+    async def delete_custom_kpi(self, code: str, *, user_id: str) -> None:
+        """Delete a custom KPI, refusing while anything still points at it.
+
+        Widgets, alert rules and report definitions hold the code as data
+        rather than as a foreign key, so the database would let the row go
+        and leave them reading a permanent zero - a dashboard tile that
+        looks like a measurement and is not one, or a client-facing PDF
+        printing 0.0000. Validation is a first-class part of this
+        workflow, so the delete is refused and the refusal names every
+        referrer, letting the user repoint or remove them and try again.
+
+        ``user_id`` is required rather than optional, and it is checked
+        the way :meth:`create_custom_kpi`'s caller checks the project it
+        pins a definition to. Codes are globally unique, so without this
+        any holder of ``bi.kpi.write`` could delete a KPI belonging to a
+        project they cannot even read. The check runs before the system
+        and referrer answers, so a caller who cannot see the project does
+        not learn from the error which of those the KPI is.
+
+        Args:
+            code: The KPI code to delete.
+            user_id: The authenticated caller, access-checked against the
+                project the definition is pinned to. A company-wide
+                definition carries no project and needs no check.
+
+        Raises:
+            CustomKPINotFound: No definition row carries this code.
+            CustomKPIIsSystem: The code belongs to a built-in KPI.
+            CustomKPIInUse: Something still references it.
+            HTTPException: 404 when the caller cannot reach the project
+                the definition belongs to.
+        """
+        row = await self.repo.get_kpi_definition_by_code(code)
+        if row is None:
+            raise CustomKPINotFound(code)
+        if row.project_id is not None:
+            from app.dependencies import verify_project_access
+
+            await verify_project_access(row.project_id, user_id, self.session)
+        if row.is_system or code in _kpis.KPI_FORMULAS:
+            raise CustomKPIIsSystem(code)
+        referrers = await self.repo.list_kpi_code_referrers(code)
+        # Asked of the whole answer rather than of two named keys: a
+        # referrer kind the repository learns about later is then refused
+        # by default instead of being collected and silently ignored.
+        if any(referrers.values()):
+            raise CustomKPIInUse(code, referrers)
+        await self.repo.delete_kpi_definition(code)
+        _safe_publish("bi.kpi.definition_deleted", {"kpi_code": code})
+
+    async def _refuse_a_reading_this_kpi_does_not_give(self, code: str, boq_id: uuid.UUID | None) -> None:
+        """Refuse where the reading asked for and the KPI's own scope disagree.
+
+        Asked for one estimate, three ways a code cannot answer, and all
+        three would otherwise return the project's number:
+
+        * it is one of the built-in Python formulas, none of which takes an
+          estimate;
+        * it is a custom KPI over an entity whose rows belong to a project
+          rather than to a bill - ``project``, whose one row per building is
+          exactly what makes its area worth having and what stops an
+          estimate owning it, and ``cost_item_usage``, whose ledger records
+          which project a rate was applied to and not which bill;
+        * it is not registered anywhere, in which case the honest answer is
+          that there is nothing to scope.
+
+        Asked for a whole project, one way, and it is the direction that is
+        easy to leave open: the definition declares ``scope="estimate"``,
+        the caller named no estimate, and the spec path answers with a
+        zero. A zero is not a refusal. It is a number, it renders like a
+        measurement, and under a tile reading "margin per estimate" it says
+        the margin is nothing rather than that nobody said which estimate.
+
+        Costs one extra ``load_custom_spec`` on the custom-KPI path, which
+        loads the same row again a moment later. Worth it: the alternative
+        is threading the definition through :func:`kpis.compute`, and the
+        row is a single lookup on a unique index.
+        """
+        if code in _kpis.KPI_FORMULAS or code in _kpis.SYSTEM_KPI_META:
+            if boq_id is not None:
+                raise KPIScopeUnavailable(
+                    code,
+                    "it is a built-in KPI, and those are computed for a project or the whole portfolio",
+                )
+            return
+        loaded = await _kpi_spec.load_custom_spec(self.session, code)
+        if loaded is None:
+            if boq_id is not None:
+                raise CustomKPINotFound(code)
+            # An unregistered code that nobody tried to scope keeps the
+            # answer it has always given - a zero and a warning out of
+            # kpis.compute. Raising here would turn every stale dashboard
+            # tile into a 404 on a path that has nothing to do with #447.
+            return
+        entity = loaded.spec.get("entity", "")
+        if boq_id is not None:
+            if not _kpi_spec.entity_narrows_to_estimate(entity):
+                raise KPIScopeUnavailable(
+                    code,
+                    f"it reads '{entity}', whose rows belong to a project rather than to one estimate",
+                )
+            return
+        if loaded.scope == _kpi_spec.SCOPE_ESTIMATE:
+            raise KPIScopeUnavailable(
+                code,
+                "it is defined as a per-estimate reading, so it has to be told which estimate",
+                asked_for="a whole project",
+            )
+
+    async def estimate_owner_project(self, boq_id: uuid.UUID) -> uuid.UUID:
+        """The project one estimate belongs to.
+
+        Carries no access check of its own, and the name should not be
+        read as one: it answers for any estimate in the database. What the
+        caller checks is the project that comes back.
+
+        The access check for an estimate-scoped read has to start here.
+        ``boq_id`` is a caller-supplied identifier that ``allowed_project_ids``
+        knows nothing about, and the predicate it adds sits alongside a
+        project predicate the row already satisfies - so an estimate id from
+        a project the caller cannot reach would answer with that project's
+        data unless the estimate is resolved to its owner first and the owner
+        is the thing that gets checked.
+
+        Raises:
+            EstimateNotFound: No such estimate.
+        """
+        from app.modules.boq.models import BOQ
+
+        owner = (await self.session.execute(select(BOQ.project_id).where(BOQ.id == boq_id))).scalar_one_or_none()
+        if owner is None:
+            raise EstimateNotFound(boq_id)
+        return owner
+
     async def compute_kpi(
         self,
         code: str,
         *,
         project_id: uuid.UUID | None = None,
+        boq_id: uuid.UUID | None = None,
         period_start: _date | None = None,
         period_end: _date | None = None,
         filters: dict[str, Any] | None = None,
@@ -225,7 +546,20 @@ class BIDashboardsService:
         non-admin never aggregates over projects they cannot access. ``None``
         means unrestricted (admin), or a single-project call already gated by
         ``verify_project_access``.
+
+        ``boq_id`` narrows the reading to one estimate. The caller must have
+        access-checked the project that estimate belongs to - see
+        :meth:`estimate_owner_project`, which is how the router gets it.
+
+        Raises:
+            KPIScopeUnavailable: The reading asked for is not the reading
+                this KPI gives, in either direction - an estimate from a
+                KPI that has none of its own, or no estimate at all from a
+                KPI defined per estimate. Loud rather than answered with
+                the other scope, because that figure is reachable,
+                plausible and not what was asked for.
         """
+        await self._refuse_a_reading_this_kpi_does_not_give(code, boq_id)
         result = await _kpis.compute(
             code,
             self.session,
@@ -234,12 +568,14 @@ class BIDashboardsService:
             period_end=period_end,
             filters=filters,
             allowed_project_ids=allowed_project_ids,
+            boq_id=boq_id,
         )
         now = _now()
         if persist and result.source_record_count > 0:
             kv = KPIValue(
                 kpi_code=code,
                 project_id=project_id,
+                boq_id=boq_id,
                 period_start=period_start or now.date(),
                 period_end=period_end or now.date(),
                 value=result.value,
@@ -255,6 +591,7 @@ class BIDashboardsService:
                     "value": str(result.value),
                     "unit": result.unit,
                     "project_id": str(project_id) if project_id else None,
+                    "boq_id": str(boq_id) if boq_id else None,
                 },
             )
 
@@ -263,6 +600,7 @@ class BIDashboardsService:
             history = await self.repo.list_kpi_values(
                 code,
                 project_id=project_id,
+                boq_id=boq_id,
                 limit=12,
                 allowed_project_ids=allowed_project_ids,
             )
@@ -303,12 +641,14 @@ class BIDashboardsService:
         code: str,
         *,
         project_id: uuid.UUID | None = None,
+        boq_id: uuid.UUID | None = None,
         limit: int = 12,
         allowed_project_ids: set[uuid.UUID] | None = None,
     ) -> list[KPIHistoryPoint]:
         rows = await self.repo.list_kpi_values(
             code,
             project_id=project_id,
+            boq_id=boq_id,
             limit=limit,
             allowed_project_ids=allowed_project_ids,
         )
@@ -438,6 +778,7 @@ class BIDashboardsService:
             widget.kpi_code,
             self.session,
             project_id=widget.config_json.get("project_id") if isinstance(widget.config_json, dict) else None,
+            boq_id=_widget_estimate_id(widget),
         )
         now = _now()
         dashboard = await self.repo.get_dashboard(widget.dashboard_id)
@@ -694,18 +1035,27 @@ class BIDashboardsService:
         # is constant for this call, so fetch each distinct (kpi_code,
         # project_id) series exactly once up front and look it up in the loop
         # rather than re-querying per widget.
-        chart_kpi_codes = {
-            w.kpi_code for w in widgets if w.kpi_code is not None and w.widget_type in ("line_chart", "bar_chart")
+        #
+        # Keyed by ``(kpi_code, boq_id)`` rather than by code alone, because
+        # two chart widgets can now read the same KPI at different scopes and
+        # a per-code cache would hand both of them whichever series was
+        # fetched first - a chart drawn under one estimate's title out of
+        # another one's numbers.
+        chart_series_keys = {
+            (w.kpi_code, _widget_estimate_id(w))
+            for w in widgets
+            if w.kpi_code is not None and w.widget_type in ("line_chart", "bar_chart")
         }
-        history_by_kpi: dict[str, list[dict[str, Any]]] = {}
-        for kpi_code in chart_kpi_codes:
+        history_by_kpi: dict[tuple[str, uuid.UUID | None], list[dict[str, Any]]] = {}
+        for kpi_code, series_boq_id in chart_series_keys:
             history_rows = await self.repo.list_kpi_values(
                 kpi_code,
                 project_id=project_id_val,
+                boq_id=series_boq_id,
                 limit=12,
                 allowed_project_ids=allowed_project_ids,
             )
-            history_by_kpi[kpi_code] = [
+            history_by_kpi[kpi_code, series_boq_id] = [
                 {
                     "period_start": h.period_start.isoformat(),
                     "period_end": h.period_end.isoformat(),
@@ -733,9 +1083,13 @@ class BIDashboardsService:
                     breakdown = cached[2]
                 # When cross-filter is OFF we deliberately call compute
                 # with NO project/period/filter args. That mirrors the
-                # static render path byte-for-byte - important for the
-                # forward-compat contract: dashboards that haven't opted
-                # in must keep returning today's values.
+                # static render path - important for the forward-compat
+                # contract: dashboards that haven't opted in must keep
+                # returning today's values. The one argument it does pass
+                # is the widget's own estimate, which is not a cross-filter
+                # input: it is part of what the widget IS, and a widget
+                # that says which estimate it reads has to read that one
+                # whether or not the dashboard filters.
                 elif cross_filter:
                     # Fall back to widget.config_json["project_id"] when the
                     # caller didn't supply one - preserves the per-widget
@@ -753,6 +1107,21 @@ class BIDashboardsService:
                                 )
                             except Exception:
                                 effective_project = None
+                    # A widget points at an estimate the same way it points at
+                    # a project: through its own config. There is no caller
+                    # override to fall back from, because a dashboard filter
+                    # names a project and a project holds several estimates -
+                    # "the current estimate" is not a thing the filter bar can
+                    # mean.
+                    #
+                    # Safe without an access check of its own: the reading is
+                    # already narrowed by ``allowed_project_ids``, so an
+                    # estimate belonging to a project the caller cannot reach
+                    # contributes nothing rather than leaking. That is the
+                    # opposite of the API path, where the estimate id comes
+                    # from the caller and has to be resolved to its owner
+                    # before anything is read.
+                    effective_estimate = _widget_estimate_id(widget)
                     computation = await _kpis.compute(
                         widget.kpi_code,
                         self.session,
@@ -761,6 +1130,7 @@ class BIDashboardsService:
                         period_end=period_end_val,
                         filters=kpi_filters or None,
                         allowed_project_ids=allowed_project_ids,
+                        boq_id=effective_estimate,
                     )
                     value = computation.value
                     unit = computation.unit
@@ -770,6 +1140,7 @@ class BIDashboardsService:
                         widget.kpi_code,
                         self.session,
                         allowed_project_ids=allowed_project_ids,
+                        boq_id=_widget_estimate_id(widget),
                     )
                     value = computation.value
                     unit = computation.unit
@@ -781,7 +1152,7 @@ class BIDashboardsService:
             # the batch-prefetched cache to avoid an N+1 per chart widget.
             series: list[dict[str, Any]] = []
             if widget.kpi_code is not None and widget.widget_type in ("line_chart", "bar_chart"):
-                series = list(history_by_kpi.get(widget.kpi_code, []))
+                series = list(history_by_kpi.get((widget.kpi_code, _widget_estimate_id(widget)), []))
 
             results.append(
                 WidgetEvaluateResult(
@@ -1148,6 +1519,25 @@ class BIDashboardsService:
     # ── Alerts ────────────────────────────────────────────────────
 
     async def create_alert(self, payload: AlertRuleCreate) -> AlertRule:
+        """Persist an alert rule, checking its expression on the way in.
+
+        The composite expression is validated here rather than when the
+        rule runs, for the same reason a custom KPI spec is (see
+        :meth:`create_custom_kpi`): a rule checked at evaluation time
+        fails once a cycle forever, in a log nobody is watching, and is
+        indistinguishable from a rule that simply has nothing to report.
+
+        Args:
+            payload: The submitted rule.
+
+        Returns:
+            The persisted :class:`AlertRule` row.
+
+        Raises:
+            AlertExpressionError: ``expression_json`` is a tree the
+                evaluator could only fail on.
+        """
+        validate_alert_expression(payload.expression_json)
         alert = AlertRule(
             name=payload.name,
             kpi_code=payload.kpi_code,
@@ -1340,15 +1730,30 @@ class BIDashboardsService:
             allowed_project_ids=allowed_project_ids,
         )
         if not records:
-            # Fallback: synthesise rows from the breakdown + history
+            # Fallback: synthesise rows from the breakdown + history.
+            #
+            # Every custom KPI lands here - a spec has no registered record
+            # provider, so ``drilldown`` returns nothing for it - which
+            # makes this the drill-down a custom KPI actually shows. A
+            # labelled group carries its name inside ``value``, so a
+            # breakdown per estimate arrived as a column of ids with the
+            # names buried one level down. The name is a field of the
+            # record, beside the id rather than under it, so it reaches
+            # every reader of the drill-down and not just the drawer.
             for k, v in (result.breakdown or {}).items():
-                records.append({"kind": "breakdown", "key": k, "value": v})
+                record: dict[str, Any] = {"kind": "breakdown", "key": k}
+                if isinstance(v, dict) and "label" in v and "value" in v:
+                    record["label"] = v["label"]
+                    record["value"] = v["value"]
+                else:
+                    record["value"] = v
+                records.append(record)
             history = await self.repo.list_kpi_values(
                 code,
                 project_id=project_id,
                 limit=depth * 12,
                 allowed_project_ids=allowed_project_ids,
-            )
+            )  # project-level: drill-down has no estimate of its own to pass
             for h in history:
                 records.append(
                     {
@@ -1486,12 +1891,18 @@ class BIDashboardsService:
             return None
         kpi_code = widget.kpi_code or ""
         if kpi_code:
+            estimate_id = _widget_estimate_id(widget)
             result = await _kpis.compute(
                 kpi_code,
                 self.session,
                 project_id=(widget.config_json.get("project_id") if isinstance(widget.config_json, dict) else None),
+                boq_id=estimate_id,
             )
-            history_rows = await self.repo.list_kpi_values(kpi_code, limit=24)
+            # The exported trend has to be the trend of the exported value.
+            # Left project-level under an estimate-scoped headline, the CSV
+            # would carry one number from one scope and twenty-four from
+            # another, and nothing in the file would say so.
+            history_rows = await self.repo.list_kpi_values(kpi_code, boq_id=estimate_id, limit=24)
             history = [
                 {
                     "period_start": h.period_start.isoformat(),

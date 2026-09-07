@@ -38,6 +38,7 @@ import {
   searchRecords,
 } from './api';
 import { buildHighlightTerms, HighlightedText } from './highlight';
+import { NoProjectState } from './NoProjectState';
 import { SavedSearches } from './SavedSearchesPanel';
 import {
   clearRecent,
@@ -47,7 +48,7 @@ import {
   readRecent,
 } from './savedSearches';
 import type { RetrievalQuery, RetrievalResult, SavedSearch } from './types';
-import { fmtFixed } from '@/shared/lib/formatters';
+import { fmtList, fmtFixed } from '@/shared/lib/formatters';
 
 type BadgeVariant = 'neutral' | 'blue' | 'success' | 'warning' | 'error';
 type SortMode = 'relevance' | 'date' | 'type';
@@ -340,7 +341,7 @@ export function RetrievalPage() {
     const to = q.date_to?.trim();
     if (to) parts.push(t('retrieval.saved_to', { defaultValue: 'to {{date}}', date: to }));
     return parts.length > 0
-      ? parts.join(', ')
+      ? fmtList(parts)
       : t('retrieval.saved_all', { defaultValue: 'All records' });
   };
 
@@ -391,17 +392,7 @@ export function RetrievalPage() {
   }, [page, pageCount]);
 
   if (!projectId) {
-    return (
-      <div className="p-4">
-        <EmptyState
-          icon={<FileSearch className="h-6 w-6" />}
-          title={t('retrieval.no_project_title', { defaultValue: 'No project selected' })}
-          description={t('retrieval.no_project_desc', {
-            defaultValue: 'Select a project to search across its records.',
-          })}
-        />
-      </div>
-    );
+    return <NoProjectState />;
   }
 
   const rangeFrom = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;

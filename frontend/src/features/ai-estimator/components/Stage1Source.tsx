@@ -35,6 +35,7 @@ import {
   type SourceTabDef,
   type SuggestedConfig,
 } from '../api';
+import { fmtList } from '@/shared/lib/formatters';
 
 /** Humanise a construction-stage enum value ("06_Superstructure") into a
  *  readable default ("Superstructure") used when no translation exists. */
@@ -157,7 +158,7 @@ export function Stage1Intake(props: Stage1IntakeProps) {
                 'flex flex-col gap-1.5 rounded-xl border p-3 text-left transition-all',
                 active
                   ? 'border-oe-blue bg-oe-blue/5 ring-1 ring-oe-blue/30'
-                  : 'border-border-light hover:border-border hover:bg-surface-muted',
+                  : 'border-border-light hover:border-border hover:bg-surface-secondary',
               )}
             >
               <span className={clsx('text-content-primary', active && 'text-oe-blue')}>
@@ -208,7 +209,7 @@ export function Stage1Intake(props: Stage1IntakeProps) {
                 'flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors',
                 dragOver
                   ? 'border-oe-blue bg-oe-blue/5'
-                  : 'border-border-light hover:border-border hover:bg-surface-muted',
+                  : 'border-border-light hover:border-border hover:bg-surface-secondary',
               )}
             >
               <Upload className="h-7 w-7 text-content-tertiary" />
@@ -236,7 +237,7 @@ export function Stage1Intake(props: Stage1IntakeProps) {
                 {files.map((f, i) => (
                   <li
                     key={`${f.name}-${i}`}
-                    className="flex items-center justify-between rounded-lg border border-border-light bg-surface-muted px-3 py-1.5 text-xs"
+                    className="flex items-center justify-between rounded-lg border border-border-light bg-surface-secondary px-3 py-1.5 text-xs"
                   >
                     <span className="truncate text-content-primary">{f.name}</span>
                     <button
@@ -284,7 +285,7 @@ export function Stage1Intake(props: Stage1IntakeProps) {
                   const checked = selectedDocIds.includes(d.id);
                   return (
                     <li key={d.id}>
-                      <label className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm hover:bg-surface-muted">
+                      <label className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm hover:bg-surface-secondary">
                         <input
                           type="checkbox"
                           checked={checked}
@@ -421,7 +422,7 @@ export function Stage1Confirm(props: Stage1ConfirmProps) {
               <p className="mt-1 text-xs text-content-secondary">{detected.summary}</p>
             )}
             {disciplines.length > 0 && (
-              <p className="mt-1 text-xs text-content-tertiary">{disciplines.join(', ')}</p>
+              <p className="mt-1 text-xs text-content-tertiary">{fmtList(disciplines)}</p>
             )}
           </div>
         </div>

@@ -262,6 +262,48 @@ def create_engine_from_settings():
     kwargs["pool_pre_ping"] = True
     kwargs["pool_recycle"] = settings.database_pool_recycle
 
+    # Bound abandoned transactions at the server, on the connection that made
+    # one - not on whoever ends up waiting behind it.
+    #
+    # A session that opens a transaction and then stops talking (a request that
+    # died between two statements, a task killed mid-work) holds every lock it
+    # took until its connection closes, and nothing on the victim's side ends
+    # that: ``statement_timeout`` does not cover a lock wait, and
+    # ``lock_timeout`` only makes each victim give up faster while the culprit
+    # stays open and waits for the next one.
+    # ``idle_in_transaction_session_timeout`` is the setting that removes the
+    # culprit, so it goes on every connection this factory builds.
+    #
+    # One engine deliberately does not come through here: ``app.core.jobs_tasks``
+    # builds a per-dispatch NullPool engine, because a pooled connection opened
+    # on one dispatch's event loop and reused from the next one's breaks asyncpg.
+    # It sets the same parameter itself, from
+    # ``Settings.database_jobs_idle_in_transaction_timeout``, on a much larger
+    # budget - a job handler is legitimately idle inside its transaction while
+    # it parses a file or calls an external service, and this value would cut
+    # that work. Two configuration paths, on purpose; do not "fix" the
+    # duplication by routing jobs through this factory, which would replace
+    # their NullPool with a sized pool.
+    #
+    # As an asyncpg *startup parameter* rather than a per-checkout ``SET``: it
+    # travels in the connection packet, so it costs no round-trip, it cannot be
+    # missed by a code path that forgot to issue the SET, and it covers pooled
+    # connections handed to background workers as well as request sessions.
+    # PostgreSQL only counts a session that is *idle* inside a transaction - a
+    # running statement is ``active`` and is never touched - so a slow
+    # migration or a long import is not at risk. See
+    # ``Settings.database_idle_in_transaction_timeout``; 0 disables it.
+    idle_in_transaction_ms = max(0, settings.database_idle_in_transaction_timeout) * 1000
+    if idle_in_transaction_ms:
+        connect_args = dict(kwargs.get("connect_args", {}))
+        connect_args["server_settings"] = {
+            **connect_args.get("server_settings", {}),
+            # asyncpg requires string values here; PostgreSQL reads a bare
+            # number as milliseconds.
+            "idle_in_transaction_session_timeout": str(idle_in_transaction_ms),
+        }
+        kwargs["connect_args"] = connect_args
+
     # Disable TLS for loopback PostgreSQL.
     #
     # asyncpg defaults to sslmode "prefer", which eagerly builds an

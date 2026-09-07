@@ -1,8 +1,32 @@
 [project]
 name = "openconstructionerp"
-version = "15.6.0"
+version = "17.0.2"
 description = "Open-source construction cost estimation, multi-currency BOQ, AI vector matching, CAD/BIM takeoff without IfcOpenShell, resource-based cost DB import with example templates, 48 regional catalogues, 29 locales. AGPL-3.0. After install, run: openconstructionerp"
 license = "AGPL-3.0-or-later"
+# The verbatim AGPL-3.0 text, so the wheel conveys the licence it declares.
+# ``license`` alone only writes ``License-Expression: AGPL-3.0-or-later`` into
+# METADATA; it ships no text. Wheels up to 15.9.1 carried no licence file at
+# all: hatchling resolves ``license-files`` against the project root, which for
+# this build is ``backend/``, and there was nothing there to find. The repo-root
+# LICENSE could not fill the gap because PEP 639 forbids paths outside the
+# project root, so ``backend/LICENSE`` is a committed byte-for-byte copy of it
+# rather than a generated one - the custom build hook runs at an undefined point
+# relative to metadata resolution, so a generated copy would be a version-
+# dependent coin flip. tests/unit/test_licence_text_ships.py keeps the two
+# copies identical. With this line hatchling writes ``License-File: LICENSE``
+# and puts the text at ``*.dist-info/licenses/LICENSE`` in the wheel.
+#
+# NOTICE is here for the same reason and by the same mechanism. The v16.0.0
+# wheel held 3860 entries and none of them was NOTICE, so a pip install
+# conveyed the AGPL text and no attribution index at all - while six bundled
+# font and font-engine licences did travel, inside ``app/``, because they sit
+# under the package directory rather than beside it. NOTICE is the file that
+# says what those six are for, which bundled binaries carry code nobody
+# declared, and where the released inventory lives, and it was the one piece a
+# reader had no way to reach. ``backend/NOTICE`` is a committed copy of the
+# repo-root file for the same PEP 639 reason as the licence, and the same test
+# keeps the pair identical.
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.12"
 authors = [
     { name = "Artem Boiko", email = "info@datadrivenconstruction.io" }
@@ -60,6 +84,17 @@ dependencies = [
     "bcrypt>=4.0.0",
     "openpyxl>=3.1.0",
     "reportlab>=4.0.0",
+    # Text shaping for Thai and Devanagari, the two bundled scripts a font alone
+    # renders wrongly rather than not at all (app/core/pdf_fonts.py explains
+    # what each gets wrong). reportlab picks it up by import when present, so
+    # this declares a capability rather than wiring anything: with it absent the
+    # faces still draw and the marks sit in the wrong places. Prebuilt abi3
+    # wheels exist for all three targets we build (Windows x86_64, macOS arm64,
+    # Linux x86_64) and for the Debian-based Docker image, so no platform builds
+    # it from source. Apache-2.0 itself; it statically links HarfBuzz, which is
+    # under the separate "Old MIT" licence and carries no notice of its own
+    # inside the wheel, so ours is in app/core/licenses/LICENSE_HARFBUZZ.
+    "uharfbuzz>=0.56.0",
     "pdfplumber>=0.11.0",
     # PDF page-overlay / merge: the approval stamp-burn (app/core/pdf_stamp.py,
     # used by file_approvals) merges a reportlab-drawn overlay onto every page
@@ -337,7 +372,7 @@ dev = [
     # formatter's output, which can shift between ruff releases. A floating
     # spec let CI pick a newer ruff than contributors ran locally, so formatted
     # code still failed the check. Bump this deliberately when adopting a new ruff.
-    "ruff==0.15.20",
+    "ruff==0.16.6",
     "mypy>=1.13.0",
     "pre-commit>=4.0.0",
     "pyinstaller>=6.0.0",
@@ -367,18 +402,65 @@ packages = ["app", "openconstructionerp"]
 # package walk so a stray one under ``app/`` can never reach the wheel even
 # when it is still on disk. scripts/check_repo_hygiene.py enforces the same
 # rule on the built wheel via ``--zip`` as a backstop.
-exclude = ["**/_*.md", "**/_*.txt", "**/__pycache__/**", "**/*.pyc"]
+#
+# The two showcase artefacts below are excluded for size, and the reason they
+# can go is that nothing runs them. PyPI enforces a 10 GiB limit on the TOTAL
+# stored size of a project, separately from the 100 MiB per-file cap that the
+# publish workflow already checks, and 17.0.1 was refused at upload with
+# "Project size too large" against 336 versions and 10164 MiB stored. Roughly
+# 10 MiB had to come off the wheel and these two are 13.23 MiB of it.
+#
+# showcase_snapshot.json.gz is 10.18 MiB and is the single largest file in the
+# wheel. It is the committed output of app/scripts/export_showcase_snapshot.py,
+# a developer tool. Its reader, seed_showcase_from_snapshot, is imported by
+# nothing under app/ and nothing under tests/, is not registered in cli.py, and
+# its own docstring calls it a manual one-off.
+#
+# showcase_geometry/ is 3.05 MiB and its reader seed_showcase_geometry() has no
+# caller anywhere in the repo. That is a bug rather than a justification: the
+# function was written to close #168, the 404 geometry_missing, and was never
+# wired into boot. Excluding the bytes from the wheel does not make the bug
+# worse, because the code that would read them never runs today. If #168 is
+# ever wired up, delete the matching line here in the same change.
+#
+# These are excluded from the WHEEL, not deleted from the repo. They are
+# showcase raw material and the input for whoever fixes #168.
+#
+# app/scripts/flagship_assets/ deliberately stays. seed_flagship.py:39 resolves
+# it and main.py:1524 imports install_flagship in the boot sequence, so it is
+# read on every server start, and seed_demo_assets.py reads the same directory
+# from main.py:13441. Both guard with .exists() and swallow failures, so
+# dropping it would not crash anything, it would quietly ship a flagship demo
+# with no geometry and no plan-set PDF. Do not add it to this list to save the
+# other 4.87 MiB.
+exclude = [
+    "**/_*.md",
+    "**/_*.txt",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "app/scripts/showcase_snapshot.json.gz",
+    "app/scripts/showcase_geometry/**",
+]
 
 # The twelve bundled demo site photos are real shipped seed assets, and the
-# package walk was dropping every one of them. .gitignore carries a global
-# ``*.jpg`` for dev screenshots and negates it for exactly this directory with
-# ``!backend/app/scripts/flagship_assets/site_photos/*.jpg``. Git honours that
-# negation, so all twelve are tracked and a CI checkout has them; hatchling's
-# VCS walker reads the same file and does NOT honour negation, so it dropped
-# the photos while ``captions.json`` survived by not matching the glob. The
-# result was a wheel that shipped the captions for twelve pictures it did not
-# carry, and a first run that logged sixty "photos seed: asset missing" lines
-# and left the demo galleries empty.
+# package walk was dropping every one of them. The repo-root .gitignore carries
+# a global ``*.jpg`` for dev screenshots and negates it for exactly this
+# directory. Git honours that negation, so all twelve are tracked and a CI
+# checkout has them; hatchling's VCS walker read the same file and does NOT
+# honour negation, so it dropped the photos while ``captions.json`` survived by
+# not matching the glob. The result was a wheel that shipped the captions for
+# twelve pictures it did not carry, and a first run that logged sixty "photos
+# seed: asset missing" lines and left the demo galleries empty.
+#
+# Since backend/.gitignore exists, that is no longer the live mechanism.
+# hatchling stops its upward search at the nearest .gitignore, so it now reads
+# backend/.gitignore and never sees the repo-root ``*.jpg`` at all, and the
+# photos would survive the walk on their own. This line stays anyway, for two
+# reasons: it costs nothing, and it keeps the wheel correct if anyone ever adds
+# an image rule to backend/.gitignore without knowing these twelve are cargo
+# rather than screenshots. Treat it as belt-and-braces, not as the load-bearing
+# part. The negation itself moved to backend/.gitignore with the rest of the
+# backend rules, where git still honours it.
 #
 # ``artifacts`` is hatchling's mechanism for exactly this: files the VCS
 # ignores that the build must ship anyway. Not force-include, which bypasses
@@ -423,6 +505,28 @@ artifacts = ["app/scripts/flagship_assets/site_photos/*.jpg"]
 # path sits inside the ``app`` package walk, so neither is added twice.
 "alembic.ini" = "alembic.ini"
 "alembic" = "alembic"
+# The match service tuning data. app/core/match_service/data_paths.py looks
+# for a ``data/match`` directory beside the installed ``app`` package, the
+# same shape as ``locales`` and ``alembic`` above, so the walk over ``app``
+# does not carry it. Four files, about 12 KB: encoder score bands, per
+# language fuzzy cutoffs and two region overlays that operators can edit
+# without a code deploy.
+#
+# Shipping none of it produced no error for the whole life of the feature,
+# because every reader falls back to hardcoded constants when the directory
+# is missing. Nothing above debug level said so, so a pip or desktop install
+# simply matched on the baseline and looked like it was working. The readers
+# also resolved the directory by counting parent directories, which reached
+# the virtualenv's ``Lib``, so this line alone would not have helped and
+# that fix ships with it.
+#
+# Unlike ``data/catalog``, which stays out of every release artefact, these
+# bytes carry no licensing question: all four files were authored in this
+# repository, carry the project's own copyright header, and NOTICE lists no
+# basis for them because no third party is involved.
+# backend/tests/unit/test_desktop_spec_ships_wheel_data.py requires the
+# matching entry in desktop/pyinstaller.spec.
+"../data/match" = "data/match"
 # NOTE: the baked flagship/demo assets live at app/scripts/flagship_assets,
 # which is already inside the ``app`` package above, so the package walk
 # ships those tracked bytes (flagship.json, the .dae.gz geometry, the
@@ -431,6 +535,68 @@ artifacts = ["app/scripts/flagship_assets/site_photos/*.jpg"]
 # force-included is added to the archive twice, and hatchling aborts the
 # build with "a second file is being added to the wheel archive at the same
 # path". seed_demo_assets.py reads them from the installed package location.
+#
+# The community packs. app/core/partner_pack/discovery.py scans a ``packs``
+# directory sitting NEXT TO the installed ``app`` package, the same shape as
+# ``locales`` and ``alembic`` above, so the walk over ``app`` does not carry
+# them and without these lines a wheel ships none. It shipped none for its
+# whole life: the repo tree was never packaged, and discovery resolved its
+# location by counting five parent directories, which reaches the repo root in
+# a checkout and the virtualenv's ``Lib`` after an install. Every pip and
+# desktop user saw "no packs available", always.
+#
+# Each pack is named on its own line rather than force-including the tree, and
+# that is the licensing control, not verbosity. A pack whose README licence
+# section reserves its name and colours under a partnership agreement, and a
+# pack deprecated in favour of its successors, must not go out in the
+# community wheel; listing the tree would ship whichever pack lands in it
+# next, which is the wrong direction to fail in. Held back deliberately:
+# ``aus-nzs`` (carries DEPRECATED.txt, superseded by ``aus`` and ``nzs``),
+# ``batimatech-ca`` and ``bimhessen-de`` (partnership agreement stated in
+# their licence sections), and ``doker-formwork`` (licence section is plain
+# AGPL, but the pack carries a named third party's logo, partner name and
+# URL, and a PyPI release cannot be taken back).
+#
+# ``src`` only, not the pack root: the runtime reads the manifest, the locale
+# JSON and the assets under ``src/openconstructionerp_*``, and never the pack
+# README or its pyproject. That also leaves the build-tool caches which collect
+# at a pack ROOT outside these lines, ``.ruff_cache`` being the one that turns
+# up, and it matters because force-include bypasses the VCS walker and does not
+# filter gitignored bytes for us.
+#
+# Read that as the narrow statement it is. It used to say this map "keeps the
+# build-tool caches out of the archive", which reads as a filter and is not
+# one: the pack root is outside the map because of WHERE the runtime reads
+# from, and excluding those caches is a side effect of that choice, not a rule
+# being applied. Nothing here filters gitignored bytes that land INSIDE
+# ``src`` - ``__pycache__`` collects right next to the manifest, and untracked
+# ``.pyc`` files were observed under these fifteen paths. No count is recorded
+# because a count is a snapshot of a cache that every Python run in the tree
+# changes. What is or is not in the built archive as a result has not been
+# measured; the wheel-inspection step in .github/workflows/pypi-publish.yml is
+# where that question gets asked of the artefact rather than of this file.
+#
+# backend/tests/unit/test_community_packs_ship.py checks this map against the
+# licence signals in the tree, in both directions, and reads the slugs back out
+# of it to check that every file those packs' manifests name is a file they
+# actually carry and commit. Add a pack here and it comes under both.
+"../packs/aus/src" = "packs/aus/src"
+"../packs/brazil-sinapi/src" = "packs/brazil-sinapi/src"
+"../packs/china-gbt50500/src" = "packs/china-gbt50500/src"
+"../packs/hungary-hu/src" = "packs/hungary-hu/src"
+"../packs/russia-gesn/src" = "packs/russia-gesn/src"
+"../packs/india-cpwd/src" = "packs/india-cpwd/src"
+"../packs/mexico-mx/src" = "packs/mexico-mx/src"
+"../packs/modular-prefab/src" = "packs/modular-prefab/src"
+"../packs/nzs/src" = "packs/nzs/src"
+"../packs/renewables-epc/src" = "packs/renewables-epc/src"
+"../packs/retail-grocery-dach/src" = "packs/retail-grocery-dach/src"
+"../packs/saudi-vision2030/src" = "packs/saudi-vision2030/src"
+"../packs/south-africa/src" = "packs/south-africa/src"
+"../packs/uk-jct/src" = "packs/uk-jct/src"
+"../packs/us-california/src" = "packs/us-california/src"
+"../packs/us-costdata/src" = "packs/us-costdata/src"
+"../packs/us-texas/src" = "packs/us-texas/src"
 
 # Editable installs (uv pip install -e ./backend, pip install -e .) do NOT
 # need the bundled frontend — Vite's dev server serves the UI on :5173
@@ -581,7 +747,39 @@ asyncio_default_test_loop_scope = "session"
 # workers end up hammering the same database: concurrent create_all DDL races
 # and the bootstrap-admin ordering is no longer deterministic. Parallel
 # execution needs a per-worker database first; until then serial is correct.
-addopts = []
+# --strict-markers makes an unregistered marker a collection error instead
+# of a warning. Without it a typo in a decorator still exits 0, and the test
+# simply leaves whatever lane selects on that marker while the lane stays
+# green. Measured on a two-test fixture holding one correct and one
+# misspelled marker: `-m` reports "1 passed, 1 deselected" and exits 0.
+# Nothing in that output says a test went missing, and tenant_isolation has
+# 511 application sites to lose one in.
+# It catches every form that goes through pytest.mark attribute access, so
+# the decorator, a module level pytestmark, and marks= inside parametrize,
+# all three verified as exit 2. It does not catch item.add_marker with a
+# string, one site in tests/pg/conftest.py, and it does not catch a typo in
+# an -m expression, which deselects everything and exits 5 instead.
+# Switching it on breaks nothing today. The tree applies 12 distinct marker
+# names: 5 pytest builtins, asyncio and anyio from auto-loaded plugins that
+# register through addinivalue_line, and the 5 declared below. Counted over
+# every tracked .py plus the untracked ones, 2026-08-30.
+#
+# -p no:anyio un-registers the second async plugin. It is here because the two
+# of them claimed the same tests: pytest-asyncio takes every async test under
+# asyncio_mode auto, anyio's plugin takes anything carrying pytest.mark.anyio,
+# and when one won the fixture while the other won the body, an asyncpg
+# connection opened on one event loop was handed a savepoint from another. Which
+# plugin won was decided by registration order in the installed environment
+# rather than by anything in the tree, so the suite was green here and 217
+# failures out of 880 on the runner, four runs running, same count each time.
+# The markers were corrected in 095e15533; this closes the door behind them.
+# Nothing uses anyio directly, measured rather than assumed: no import of it in
+# app or tests, no anyio_backend fixture, no remaining pytest.mark.anyio, and it
+# is not a declared dependency, it arrives under starlette and httpx. With the
+# plugin off, its marker is no longer registered, so --strict-markers above
+# turns any future pytest.mark.anyio into a collection error in every lane
+# instead of a silent split of the event loop.
+addopts = ["--strict-markers", "-p", "no:anyio"]
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
@@ -589,6 +787,12 @@ markers = [
     "unit: Unit tests (no database)",
     "integration: Integration tests (requires database)",
     "slow: Slow tests (>5s)",
+    # Opt out of the outbound-HTTP guard in tests/conftest.py. The suite is
+    # meant to be hermetic, so reaching a real third-party host is a defect
+    # rather than a configuration choice: it makes the run depend on somebody
+    # else's uptime and can spend money against a real key. Carry this marker
+    # only where talking to the network IS the thing under test.
+    "allow_network: Test may make real outbound HTTP calls",
     "benchmark: Recall/perf benchmarks — opt-in via `pytest -m benchmark`",
     # A test earns `tenant_isolation` by what it exercises, not by what it is named.
     # It qualifies when identity is the variable under test: the test establishes who

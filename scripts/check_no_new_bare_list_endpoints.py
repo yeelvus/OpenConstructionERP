@@ -88,6 +88,20 @@ CANNOT_TRUNCATE: frozenset[str] = frozenset(
         # which statute their hours are recorded under has to see every statute
         # on offer, so a short answer would be a correctness bug, not a page.
         "field_time/router.py::list_working_time_regimes",
+        # An aggregate over a closed vocabulary, not a register. The route
+        # answers one row per bar diameter present in one import, produced by a
+        # GROUP BY in weight_by_diameter, so its length is the number of
+        # distinct diameters in that file: a handful, bounded by the diameters
+        # a mill rolls rather than by anything a user can add to. There is no
+        # query parameter, no LIMIT and no state in which it holds part of the
+        # answer. And a short answer here is not a page, it is the wrong steel:
+        # the summary exists to be ordered and cut from, so a caller that
+        # received the first few diameters and no sign there were more would
+        # order short and find out on site. An envelope would carry a total
+        # equal to len(items) by construction and an incomplete-page branch
+        # nothing could reach, while advertising a truncation this endpoint
+        # must never have.
+        "rebar_schedule/router.py::cutting_summary",
     }
 )
 
@@ -289,13 +303,11 @@ ALLOWED: frozenset[str] = frozenset(
         "equipment/router.py::expiring_inspections",
         "equipment/router.py::generate_due_work_orders",
         "equipment/router.py::list_damage_reports",
-        "equipment/router.py::list_fuel_logs",
         "equipment/router.py::list_inspections",
         "equipment/router.py::list_parts_logs",
         "equipment/router.py::list_rentals",
         "equipment/router.py::list_schedules",
         "equipment/router.py::list_telemetry",
-        "equipment/router.py::list_work_orders",
         "erp_chat/router.py::get_messages",
         "esg/router.py::list_entries",
         "esg/router.py::list_metric_definitions",
@@ -303,7 +315,6 @@ ALLOWED: frozenset[str] = frozenset(
         "field_diary/router.py::list_entries",
         "field_diary/router.py::list_schedule_activities",
         "field_diary/router.py::sync_ops",
-        "field_time/router.py::list_timesheets",
         "fieldreports/router.py::get_calendar",
         "fieldreports/router.py::get_linked_documents",
         "fieldreports/router.py::list_equipment_logs",
@@ -480,7 +491,6 @@ ALLOWED: frozenset[str] = frozenset(
         "review_authority/router.py::repeat_radar",
         "review_authority/router.py::stale_remarks",
         "rom_estimate/router.py::list_estimates",
-        "safety/router.py::list_incidents",
         "safety/router.py::list_observations",
         "saved_views/router.py::list_views",
         "schedule/codes_router.py::list_activity_codes",
@@ -519,8 +529,6 @@ ALLOWED: frozenset[str] = frozenset(
         "service/router.py::list_recurring_schedules",
         "service/router.py::list_schedules",
         "service/router.py::list_slas",
-        "service/router.py::list_tickets",
-        "service/router.py::list_work_orders",
         "signing/router.py::expiring_certs",
         "signing/router.py::list_sessions",
         "site_inventory/router.py::list_items",
@@ -548,17 +556,14 @@ ALLOWED: frozenset[str] = frozenset(
         "subcontractors/router.py::list_prequalifications",
         "subcontractors/router.py::list_ratings",
         "subcontractors/router.py::list_subcontractor_contacts",
-        "subcontractors/router.py::list_subcontractors",
         "subcontractors/router.py::list_work_packages",
         "subcontractors/router.py::retention_ledger",
         "submittals/router.py::list_submittal_attachments",
         "submittals/router.py::list_submittals",
-        "supplier_catalogs/router.py::list_catalog_items",
         "supplier_catalogs/router.py::list_commodity_codes",
         "supplier_catalogs/router.py::list_tolerance_profiles",
         "supplier_catalogs/router.py::list_vendor_kyc",
         "supplier_catalogs/router.py::list_vendor_scorecards",
-        "supplier_catalogs/router.py::list_vendors",
         "supplier_catalogs/router.py::list_warehouse_balances",
         "supplier_catalogs/router.py::list_warehouses",
         "supplier_catalogs/router.py::price_comparison",
@@ -566,8 +571,6 @@ ALLOWED: frozenset[str] = frozenset(
         "takeoff/router.py::list_documents",
         "takeoff/router.py::list_measurements",
         "takeoff/router.py::plan_read_proposals",
-        "tasks/router.py::list_tasks",
-        "tasks/router.py::my_tasks",
         "tax_withholding/router.py::list_deductions",
         "tax_withholding/router.py::list_determinations",
         "tax_withholding/router.py::list_expiring_party_statuses",
@@ -622,9 +625,7 @@ def bare_list_routes(tree: ast.AST) -> list[str]:
         for dec in fn.decorator_list:
             if not isinstance(dec, ast.Call) or getattr(dec.func, "attr", "") != "get":
                 continue
-            response_model = next(
-                (k.value for k in dec.keywords if k.arg == "response_model"), None
-            )
+            response_model = next((k.value for k in dec.keywords if k.arg == "response_model"), None)
             if response_model is not None:
                 if _is_bare_list(response_model):
                     found.append(fn.name)
@@ -839,11 +840,7 @@ def commented_lines_inside_allowed() -> list[int]:
         target = getattr(node, "target", None)
         if isinstance(target, ast.Name) and target.id == "ALLOWED":
             end = node.end_lineno or node.lineno
-            return [
-                n
-                for n in range(node.lineno, end + 1)
-                if lines[n - 1].lstrip().startswith("#")
-            ]
+            return [n for n in range(node.lineno, end + 1) if lines[n - 1].lstrip().startswith("#")]
     print(
         f"ERROR: no ALLOWED assignment found in {source}, so the check that keeps\n"
         "comments out of the machine-written region cannot have looked at it.",
@@ -979,8 +976,7 @@ def main() -> int:
 
     print(f"\nfiles read under backend/app/modules: {files}")
     print(
-        f"OK: no new bare-list GET routes. {len(ALLOWED)} still waiting to be migrated,"
-        f" {len(CANNOT_TRUNCATE)} exempt."
+        f"OK: no new bare-list GET routes. {len(ALLOWED)} still waiting to be migrated, {len(CANNOT_TRUNCATE)} exempt."
     )
     return 0
 

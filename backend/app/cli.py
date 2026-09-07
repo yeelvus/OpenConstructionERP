@@ -17,6 +17,10 @@ explicit subcommands are still there for advanced use:
     openconstructionerp seed    [--demo] [--data-dir DIR]
     openconstructionerp version
 
+``openconstructionerp --version`` (or ``-V``) prints the same report as the
+``version`` subcommand. It is the spelling most people reach for first, and it
+used to exit 2 with an argparse error.
+
 ``openconstructionerp doctor`` runs pre-flight checks and prints OK /
 WARNING / ERROR per check so you can diagnose install problems.
 """
@@ -45,6 +49,95 @@ try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
+
+
+# ── Re-execution by multiprocessing in a frozen build ─────────────────────
+#
+# In a PyInstaller build ``sys.executable`` is this binary, so when the
+# standard library starts one of its own helper processes it re-executes us.
+# Two different command lines arrive and they need different handling.
+#
+# ``multiprocessing.spawn.get_command_line`` has a ``sys.frozen`` branch, so a
+# spawned child is started as ``<exe> --multiprocessing-fork ...`` and
+# ``freeze_support()`` answers it. The resource tracker has no such branch:
+# ``multiprocessing/resource_tracker.py`` builds ``[exe] +
+# _args_from_interpreter_flags() + ['-c', code]`` unconditionally, so the
+# frozen binary is handed a command line only an interpreter can answer.
+#
+# Measured on macos-latest in run 33834902654. The sidecar served the cold
+# start, and then on a restart over its own data printed
+#
+#     openconstructionerp: error: argument command: invalid choice:
+#     'from multiprocessing.resource_tracker import main;main(18)'
+#
+# and died with ``Abort trap: 6`` without ever answering /api/health. On a
+# user's machine that is the launcher stopping at "Starting the application
+# server" on the second launch, having worked on the first.
+#
+# ``freeze_support()`` on its own does not cover it, and this is the half that
+# is easy to get wrong: ``spawn.is_forking`` returns True only for
+# ``--multiprocessing-fork``, so the ``-c`` line above walks straight past it
+# into argparse. Both guards are needed. Both are gated on ``sys.frozen``,
+# because outside a frozen build the standard library re-executes the real
+# interpreter it finds through ``sys._base_executable`` and never reaches us.
+#
+# What may precede ``-c`` is whatever ``subprocess._args_from_interpreter_flags``
+# derives from the parent's ``sys.flags``: -O and -OO, repeats of -d -B -S -v
+# -b and -q, -I -E -s -P, -W with its value attached, and -X with its value as
+# a separate argument. A frozen build commonly runs with no_site, so testing
+# ``argv[1] == "-c"`` would pass on a CI runner and fail on a user's machine.
+
+_INTERPRETER_FLAG_LETTERS = frozenset("OdBSvbqIEsP")
+
+
+def interpreter_code_argument(argv: list[str]) -> str | None:
+    """Return the code of an interpreter-style ``-c`` invocation, else None.
+
+    ``argv`` is the argument list with the program name already removed. The
+    scan stops at the first argument that is not an interpreter flag, so an
+    ordinary invocation such as ``serve --port 8741`` is declined and reaches
+    the parser unchanged.
+    """
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "-c":
+            return argv[index + 1] if index + 1 < len(argv) else None
+        if arg == "-X":
+            index += 2
+            continue
+        if arg.startswith("-W") and len(arg) > 2:
+            index += 1
+            continue
+        if len(arg) > 1 and arg[0] == "-" and set(arg[1:]) <= _INTERPRETER_FLAG_LETTERS:
+            index += 1
+            continue
+        return None
+    return None
+
+
+def _answer_multiprocessing_re_execution() -> None:
+    """Answer the command lines multiprocessing uses to start its helpers.
+
+    Returns normally for an ordinary invocation. Does not return when the
+    arguments belong to the standard library rather than to a user.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+
+    import multiprocessing
+
+    # Exits the process when the arguments are a spawned child's.
+    multiprocessing.freeze_support()
+
+    code = interpreter_code_argument(sys.argv[1:])
+    if code is None:
+        return
+    # What an interpreter does with -c. This grants nobody anything new:
+    # whoever can choose this process's arguments can already run whatever
+    # they like in the shell they typed them into.
+    exec(compile(code, "<multiprocessing>", "exec"), {"__name__": "__main__"})
+    raise SystemExit(0)
 
 
 def _stdout_supports_unicode() -> bool:
@@ -228,17 +321,24 @@ def print_startup_banner(
 ) -> None:
     """Print a friendly multi-line startup banner.
 
-    Shown after the server has bound its socket and is ready to accept
-    connections. Designed to be scanned in under three seconds: what URL
-    to open, how to log in, where the data lives, how to stop.
+    Designed to be scanned in under three seconds: what URL to open, how to log
+    in, where the data lives, how to stop.
+
+    Shown BEFORE uvicorn starts, which is the only place it is called from, so
+    that a boot taking minutes still puts the address and the credentials in
+    front of the user straight away. That is also why the heading says the
+    application is starting rather than that it is running, under no tick: on a
+    first run the server does not answer for a good while yet, and a green tick
+    over "is running" beside an address is an instruction to click now. Somebody
+    who follows it gets a browser error from an install that is working
+    perfectly.
     """
     url = f"http://{host}:{port}"
     bar = _bar()
-    check = _green(_u("✔", "OK"))
     print()
     print(_amber(_BANNER_ART))
     print()
-    print(f"  {bar}  {check} {_bold('OpenConstructionERP is running')}  {_dim('v' + version)}")
+    print(f"  {bar}  {_bold('OpenConstructionERP is starting')}  {_dim('v' + version)}")
     print(f"  {bar}")
     print(f"  {bar}  {_bold('Open in your browser')}")
     print(f"  {bar}     {_amber(url)}")
@@ -448,6 +548,41 @@ def check_data_dir(data_dir: Path) -> Check:
         )
 
 
+def check_path_length(data_dir: Path) -> Check | None:
+    """Report a Windows install too deep for the bundled PostgreSQL to read itself.
+
+    ``None`` away from Windows, where paths run into the thousands and this line
+    would be noise in a report people read top to bottom. The platform answer
+    comes from ``embedded_pg`` rather than being spelled again here, so the
+    doctor and the boot refusal can never disagree about who they apply to.
+
+    Ungated on the cluster, unlike the refusal in
+    :func:`app.core.embedded_pg.boot`. That one goes quiet once the cluster
+    exists, because an existing cluster is proof the paths were once short enough
+    and refusing a database that opened yesterday would be the worse bug. Doctor
+    is where somebody looks after it stops working, and reinstalling into a
+    deeper directory while keeping the data directory lands exactly there, so
+    this one always measures.
+
+    Imported inside the function because this file keeps its top-level imports to
+    the standard library so the CLI starts fast.
+    """
+    from app.core.embedded_pg import path_limit_applies, windows_path_limit_problem
+
+    if not path_limit_applies():
+        return None
+
+    problem = windows_path_limit_problem(data_dir / "pgdata")
+    if problem is None:
+        return Check("Path length", "ok", "Windows can open the bundled PostgreSQL files")
+    return Check(
+        "Path length",
+        "error",
+        f"{problem.directory} is {problem.length} characters, and {problem.limit} is the maximum",
+        problem.message,
+    )
+
+
 def check_port_free(host: str, port: int) -> Check:
     """Verify nothing is already listening on the requested port."""
     try:
@@ -621,7 +756,15 @@ def check_locales_bundled() -> Check:
             f"{len(loaded)} of {len(locales)} locales loaded, absent: {missing}",
             _repair_hint("Reinstall the pip package to get the whole catalogue."),
         )
-    return Check("Translation catalogue", "ok", f"all {len(loaded)} locales loaded")
+    # "all N loaded" on its own reads as full language coverage and is not.
+    # This catalogue holds the strings the SERVER writes, and it is a different
+    # and shorter list than the languages the UI offers: 28 against 41 at the
+    # time of writing, with nine of the offered languages having no file here
+    # at all and reading English for anything the server produces. Counting
+    # them here would mean the backend reading a frontend source file, which it
+    # does nowhere else, so this says what it is counting instead and leaves
+    # the comparison to the guard that owns it.
+    return Check("Translation catalogue", "ok", f"all {len(loaded)} server-side locales loaded")
 
 
 def check_env_overrides() -> Check:
@@ -1065,6 +1208,10 @@ def run_preflight(
         check_locales_bundled(),
         check_env_overrides(),
     ]
+    # Windows only, and the check itself decides that: see check_path_length.
+    path_length = check_path_length(data_dir)
+    if path_length is not None:
+        checks.append(path_length)
     # Base tabular deps (pandas, pyarrow) are ERROR-level: the onboarding
     # load-cwicr endpoint hard-requires them. Run on every preflight so
     # `serve` also catches a broken install before uvicorn spins up.
@@ -1075,6 +1222,50 @@ def run_preflight(
 
 
 # ── Commands ──────────────────────────────────────────────────────────────
+def _run_fatal_preflight(data_dir: Path, host: str, port: int) -> None:
+    """Run the blocking pre-flight checks, or exit 1 with a readable report.
+
+    Only the checks that are cheap and that can be answered without any of the
+    runtime environment ``_setup_env`` builds. Keeping the set to that is what
+    lets the caller run it first; see the note at the call site for why running
+    it first matters.
+
+    Args:
+        data_dir: The resolved data directory the server would use.
+        host: Interface the server would bind.
+        port: Port the server would bind.
+
+    Raises:
+        SystemExit: With code 1 when any check reports ``error``.
+    """
+    fatal_checks = [
+        check_python_version(),
+        check_data_dir(data_dir),
+        check_port_free(host, port),
+        *check_core_tabular_deps(),
+    ]
+    if not any(c.status == "error" for c in fatal_checks):
+        return
+
+    print(
+        _red(
+            _bold(
+                _u(
+                    "Cannot start OpenConstructionERP — pre-flight checks failed:",
+                    "Cannot start OpenConstructionERP - pre-flight checks failed:",
+                )
+            )
+        )
+    )
+    print()
+    for c in fatal_checks:
+        c.print()
+    print()
+    print(_dim("Run 'openconstructionerp doctor' for full diagnostics."))
+    print(_dim(f"Troubleshooting: {TROUBLESHOOTING_URL}"))
+    sys.exit(1)
+
+
 def cmd_serve(args: argparse.Namespace) -> None:
     """Start the OpenConstructionERP server."""
     data_dir = _data_dir_from_args(args)
@@ -1098,36 +1289,22 @@ def cmd_serve(args: argparse.Namespace) -> None:
         os.environ["SEED_DEMO"] = "true"
         write_demo_seed_choice(True, data_dir)
 
-    _setup_env(data_dir, args.host, args.port)
+    # The fatal preflight runs BEFORE _setup_env, and the order is the whole
+    # point. _setup_env boots the embedded PostgreSQL cluster, which on a first
+    # run means an initdb: about twenty seconds and forty megabytes under the
+    # data dir. Every one of these four checks is independent of it, and two of
+    # them describe conditions that make the boot pointless. Running them after
+    # meant a first-time user with something else on port 8080 - the single most
+    # common thing to be wrong on a machine we have never seen - waited out the
+    # whole initdb to be told about a conflict that costs microseconds to
+    # detect. Worse, check_data_dir never got to speak at all: _setup_env's own
+    # unguarded data_dir.mkdir() is three lines into the function, so an
+    # unwritable path raised FileNotFoundError there and the user got a pathlib
+    # traceback instead of the sentence naming --data-dir that this check exists
+    # to print.
+    _run_fatal_preflight(data_dir, args.host, args.port)
 
-    # Run only the fatal preflight checks before attempting to start.
-    # If a check fails hard, we stop here with a readable message instead
-    # of letting uvicorn crash with a stack trace.
-    fatal_checks = [
-        check_python_version(),
-        check_data_dir(data_dir),
-        check_port_free(args.host, args.port),
-        *check_core_tabular_deps(),
-    ]
-    blocking = [c for c in fatal_checks if c.status == "error"]
-    if blocking:
-        print(
-            _red(
-                _bold(
-                    _u(
-                        "Cannot start OpenConstructionERP \u2014 pre-flight checks failed:",
-                        "Cannot start OpenConstructionERP - pre-flight checks failed:",
-                    )
-                )
-            )
-        )
-        print()
-        for c in fatal_checks:
-            c.print()
-        print()
-        print(_dim("Run 'openconstructionerp doctor' for full diagnostics."))
-        print(_dim(f"Troubleshooting: {TROUBLESHOOTING_URL}"))
-        sys.exit(1)
+    _setup_env(data_dir, args.host, args.port)
 
     try:
         from app.config import get_settings
@@ -1149,14 +1326,25 @@ def cmd_serve(args: argparse.Namespace) -> None:
             data_dir=data_dir,
             serve_frontend=True,
         )
-        print(
-            _dim(
-                _u(
-                    "  Starting server… first run may take up to 30 seconds.",
-                    "  Starting server... first run may take up to 30 seconds.",
-                )
-            )
-        )
+        # No fixed number here, on purpose. This line used to promise thirty
+        # seconds. Timed on a real first boot of the release candidate, GET /
+        # answered after 50.55s and /api/health after about 490s, most of that
+        # last figure being the demo seed, so the promise was out by an order of
+        # magnitude and a stranger who took us at our word sat in front of a
+        # hanging tab for minutes on an install that was working perfectly.
+        #
+        # Replacing it with 490 would only move the lie. Those numbers came off
+        # one Windows machine, the demo seed that dominates them is skipped
+        # under --no-demo, and the next box is a different number again. What
+        # somebody watching a blank tab actually wants is evidence that
+        # something is happening, which the startup log gives them a step at a
+        # time - app.main logs a section header per stage and uvicorn announces
+        # the port when it binds. So this says what the wait is for and points
+        # at the thing that is already telling the truth, and commits only to
+        # the order of magnitude both measurements agree on.
+        print(_dim("  The address above does not answer yet. A first run builds the database, loads the"))
+        print(_dim("  modules and writes the seed data first, which takes minutes rather than seconds."))
+        print(_dim("  Each step is logged below as it finishes. Open the browser once startup is complete."))
         print()
 
     if args.open:
@@ -1269,6 +1457,12 @@ def _register_all_module_models() -> tuple[int, int, list[tuple[str, str]]]:
     try:
         from app.core import audit as _audit_core  # noqa: F401
         from app.core import audit_log as _audit_log_core  # noqa: F401
+
+        # oe_data_repair_ledger, same case: declared in app.core, so the
+        # app.modules loop below never reaches it and create_all would not
+        # build it. Without the table the repairs still run and only the record
+        # of them is lost, which is the failure that module exists to stop.
+        from app.core import data_repairs as _data_repairs_core  # noqa: F401
     except Exception as exc:  # noqa: BLE001
         logger.warning("schema: core audit models not registered: %s", exc)
 
@@ -1383,6 +1577,29 @@ def cmd_init_db(args: argparse.Namespace) -> None:
                 await widen_classified_at(conn)
         except Exception as exc:  # noqa: BLE001
             logger.warning("init-db: classified_at widening skipped: %s", exc)
+        # The data half of an upgrade. The heal above moves the schema and
+        # rewrites no rows, so a migration that backfills or renames never runs
+        # on any install brought up this way. Same registry the first serve
+        # would run, here so init-db leaves the database in the state that boot
+        # would have reached anyway - see app.core.data_repairs. Every entry is
+        # idempotent, so running it in both places costs a scan that finds
+        # nothing the second time.
+        try:
+            from app.core.data_repairs import run_data_repairs
+            from app.database import async_session_factory
+
+            repair_report = await run_data_repairs(async_session_factory, app_version=_resolve_version())
+            if repair_report.failed:
+                logger.error(
+                    "init-db: data repairs FAILED: %s. Rows this release expects to have been "
+                    "corrected are still wrong; the causes are logged above and the repairs are "
+                    "retried on the next start.",
+                    ", ".join(repair_report.failed),
+                )
+            elif repair_report.rows_changed:
+                logger.info("init-db: data repairs rewrote %d row(s)", repair_report.rows_changed)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("init-db: data repairs could not run: %s", exc, exc_info=True)
         # Provision row-level-security roles + policies when enabled. No-op
         # while settings.rls_enforce is off, so a default init-db is unchanged.
         try:
@@ -1471,17 +1688,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
 def cmd_version(_args: argparse.Namespace) -> None:
     """Print version information."""
-    try:
-        from importlib.metadata import version as _v
-
-        version = _v("openconstructionerp")
-    except Exception:
-        try:
-            from app.config import Settings
-
-            version = Settings.model_fields["app_version"].default
-        except Exception:
-            version = "unknown"
+    version = _resolve_version()
 
     print(f"OpenConstructionERP v{version}")
     print(f"Python {sys.version.split()[0]} ({sys.platform})")
@@ -1588,16 +1795,46 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
 
 
 def _resolve_version() -> str:
-    """Best-effort version lookup shared by welcome/version commands."""
-    try:
-        from importlib.metadata import version as _v
+    """Best-effort version lookup shared by welcome, version and upgrade.
 
-        return _v("openconstructionerp")
+    Settings first, package metadata second. It used to be the other way round,
+    and that made this command disagree with the server it was standing next
+    to. ``importlib.metadata`` reports whatever distribution is installed in
+    the environment, which on a source checkout with any earlier
+    ``pip install openconstructionerp`` in it is not the code that is running:
+    this printed v15.2.0 for a tree at 15.9.1 while ``/api/health`` on the same
+    interpreter correctly said 15.9.1. Settings resolves through
+    ``config._detect_version``, which prefers the pyproject beside the running
+    source and exists for exactly this reason, so asking it puts the two back
+    in agreement. The metadata lookup stays as the fallback, which is what a
+    real installed copy hits anyway since there is no source tree above it.
+
+    ``doctor`` still asks the metadata directly and should: the question there
+    is whether a distribution is installed at all, not what the running code
+    is.
+
+    The Settings branch reads the field rather than the model because
+    ``app_version`` is declared with ``default_factory``, and a field declared
+    that way has no ``default``: pydantic stores the ``PydanticUndefined``
+    sentinel there. That sentinel has a ``__str__``, so the old code did not
+    raise and did not fall through to "unknown" either. It printed
+    ``OpenConstructionERP vPydanticUndefined`` at the one moment that path
+    exists for. Both branches are kept because either declaration is
+    legitimate and this function must not break the next time somebody changes
+    which one is used.
+    """
+    try:
+        from app.config import Settings
+
+        field = Settings.model_fields["app_version"]
+        if field.default_factory is not None:
+            return str(field.default_factory())  # type: ignore[call-arg]
+        return str(field.default)
     except Exception:
         try:
-            from app.config import Settings
+            from importlib.metadata import version as _v
 
-            return Settings.model_fields["app_version"].default
+            return _v("openconstructionerp")
         except Exception:
             return "unknown"
 
@@ -2261,6 +2498,26 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    # ``--version`` as a top-level flag, because that is what a reader types
+    # before they know the tool has subcommands at all, and it answered with an
+    # argparse error and exit 2 for the whole life of the CLI.
+    #
+    # Two details are load-bearing. It stores a flag instead of using
+    # ``action="version"`` so ``main`` can hand the work to :func:`cmd_version`
+    # and the two spellings print one report from one implementation. And it
+    # names its own dest: the ``upgrade`` subcommand declares a ``--version`` of
+    # its own for pinning a release, and a subparser parses into a fresh
+    # namespace whose every key is then copied onto this one, so sharing the
+    # dest would make ``upgrade --version 2.6.10`` print a version report and
+    # never upgrade anything. ``-V`` is free; ``-h`` is the only other short
+    # option this parser declares.
+    parser.add_argument(
+        "-V",
+        "--version",
+        dest="show_version",
+        action="store_true",
+        help="Show version information and exit (same report as the 'version' command)",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     # serve
@@ -2418,8 +2675,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     """CLI entry point."""
+    # Before the parser is built, because the command lines this answers are
+    # not commands and argparse rejects them. See the block near the top.
+    _answer_multiprocessing_re_execution()
+
     parser = _build_parser()
     args = parser.parse_args()
+
+    # Answered before the command is looked at, because the case that was
+    # broken is the one with no command at all: it falls through to the bare
+    # invocation branch at the bottom, which starts a server.
+    if getattr(args, "show_version", False):
+        cmd_version(args)
+        return
 
     # Embedded PostgreSQL is the default (see embedded_pg.is_requested). The
     # flag is an explicit override mapped to the same env var _setup_env reads

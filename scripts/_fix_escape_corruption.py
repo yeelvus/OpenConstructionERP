@@ -1,15 +1,17 @@
-# -*- coding: utf-8 -*-
 """‌⁠‍Fix the escape corruption introduced by earlier passes.
 
 Earlier passes did `value.replace("\\\\", "\\\\\\\\")` which doubled all backslashes,
 then escaped quotes again, producing `\\\\\\\\\"` where there should be just `\\\"`.
 This pass detects and fixes such corruption.
 """
-import re
+
 from pathlib import Path
 
 MN_PATH = Path("frontend/src/app/locales/mn.ts")
-mn = MN_PATH.read_text(encoding="utf-8")
+# Read and write preserving line endings: Path.read_text has no newline= and
+# Path.write_text with the default would rewrite every line of the file.
+with open(MN_PATH, encoding="utf-8", newline="") as fh:
+    mn = fh.read()
 
 # Find any line with corruption pattern: \\\" (4 chars: \\, \, ") should be \" (2 chars: \, ")
 # Simply: collapse `\\\\"` (4 chars in file = 4 chars `\`, `\`, `\`, `"`) into `\\"` (2 chars in file = `\`, `"`)
@@ -20,6 +22,6 @@ out = mn.replace('\\\\\\"', '\\"')
 if out == mn:
     print("No corruption found")
 else:
-    diffs = sum(1 for c, o in zip(mn, out) if c != o)
-    MN_PATH.write_text(out, encoding="utf-8")
+    diffs = sum(1 for c, o in zip(mn, out, strict=False) if c != o)
+    MN_PATH.write_text(out, encoding="utf-8", newline="")
     print(f"Fixed escape corruption: removed {len(mn) - len(out)} chars total")

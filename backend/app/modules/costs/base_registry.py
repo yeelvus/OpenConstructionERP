@@ -64,7 +64,27 @@ class BaseVariant:
         catalog_token: Region token embedded in the catalog CSV file name
             (``DDC_CWICR_<token>_Catalog.csv``); differs from ``region`` for the
             national bases whose export keeps a short country prefix.
-        bundled: Whether the base ships locally (loads without any network).
+        bundled: True on the eight national families, home card and market cards
+            alike, and on nothing else. The name is a claim about packaging and
+            the value does not carry it. No release artefact holds a work-item
+            parquet. Neither the wheel's force-include map nor the desktop spec
+            ships one, ``app/data/cwicr`` is created empty on purpose because a
+            single parquet runs 25 to 60 MB, and ``_find_cwicr_file`` ends at a
+            GitHub download. The remaining search paths resolve only on a
+            machine that also has the data repository checked out beside this
+            one, which is a developer's machine and not an install.
+
+            So the field is read in two ways that do not agree, and neither
+            reader is wrong about its own meaning. ``github_snapshot_files``
+            takes it as "national base, carries no published vector snapshot",
+            which is true of all eight. The cost-base picker takes it as the
+            promise the name makes and labels the base Included with a Load
+            button, then downloads. Flipping it to False would make the picker
+            honest and in the same move offer eight snapshot files that were
+            never published, turning a clean 404 from
+            ``POST /costs/vector/restore-snapshot/{db_id}`` into a failed
+            download. The two readings have to be separated before either one
+            moves; until then this field means the second one.
         coefficient: Whether it is a codeless coefficient base (no priced
             resources of its own; estimable via a resource price sheet).
         variant_id: Unique UI id. Global and national HOME variants use their
@@ -633,6 +653,33 @@ def github_workitems_files() -> dict[str, str]:
     language swap without appearing in the ``/available-databases`` listing.
     """
     return {v.region: v.workitems_path for v in iter_variants()}
+
+
+#: Suffix shared by every pre-built 3072-dimension vector snapshot in the data repo.
+_SNAPSHOT_SUFFIX = "_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot"
+
+# One market names its snapshot unlike the rest of its own folder: Canada ships
+# an ENG_TORONTO parquet and catalog beside an EN_TORONTO snapshot. Deriving the
+# file name from the region is right for the other twenty-nine markets and
+# silently wrong for this one, so the exception lives here, as data the deriving
+# code reads, rather than as a comment somewhere that code cannot see.
+_SNAPSHOT_TOKEN_OVERRIDES: dict[str, str] = {"ENG_TORONTO": "EN_TORONTO"}
+
+
+def github_snapshot_files() -> dict[str, str]:
+    """Map region id to its pre-built vector snapshot path (repo-root relative).
+
+    Only the global markets have one. The national bases ship bundled and carry
+    no vector export, so they are absent from this map rather than present and
+    pointing at a file that was never published.
+    """
+    files: dict[str, str] = {}
+    for variant in iter_variants():
+        if variant.bundled:
+            continue
+        token = _SNAPSHOT_TOKEN_OVERRIDES.get(variant.region, variant.region)
+        files[variant.region] = f"{variant.catalog_folder}/{token}{_SNAPSHOT_SUFFIX}"
+    return files
 
 
 # ── Per-language work-item parquets for the national bases ──────────────────

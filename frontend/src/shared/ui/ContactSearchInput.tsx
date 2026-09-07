@@ -300,7 +300,7 @@ export function ContactSearchInput({
                 {/* Filter input inside dropdown */}
                 <div className="p-2 border-b border-border-light">
                   <div className="relative">
-                    <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 text-content-tertiary">
+                    <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center pl-2.5 text-content-tertiary">
                       <Search size={13} />
                     </div>
                     <input
@@ -309,7 +309,7 @@ export function ContactSearchInput({
                       value={browseFilter}
                       onChange={(e) => setBrowseFilter(e.target.value)}
                       placeholder={t('contacts.filter_contacts', { defaultValue: 'Filter contacts...' })}
-                      className="h-8 w-full rounded-md border border-border bg-surface-primary pl-8 pr-3 text-xs focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
+                      className="h-8 w-full rounded-md border border-border bg-surface-primary ps-8 pe-3 text-xs focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
                     />
                   </div>
                 </div>

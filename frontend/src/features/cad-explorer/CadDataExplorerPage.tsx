@@ -79,7 +79,7 @@ import {
 } from './thresholds';
 import { ThresholdRulesModal } from './ThresholdRulesModal';
 import { cadExplorerGuide } from './cadExplorerGuide';
-import { fmtPercent, getIntlLocale } from '@/shared/lib/formatters';
+import { fmtList, fmtPercent, getIntlLocale } from '@/shared/lib/formatters';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
 
 /* ── Recharts - lazy-loaded so the initial Data Explorer bundle stays lean.
@@ -318,7 +318,7 @@ function SlicerBanner() {
               title={t('explorer.delete_view', { defaultValue: 'Remove' })}
             >
               <span className="max-w-[140px] truncate">
-                {s.column} = {s.values.join(', ')}
+                {s.column} = {fmtList(s.values)}
               </span>
               <X size={10} />
             </button>
@@ -559,7 +559,7 @@ function DataTableTab({ sessionId, describe }: { sessionId: string; describe: De
             className="h-7 w-full rounded-md border border-border bg-surface-primary pl-7 pr-2 text-xs focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue outline-none"
           />
           {globalSearch && (
-            <button onClick={() => setGlobalSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-content-quaternary hover:text-content-secondary">
+            <button aria-label={t('common.clear_search', { defaultValue: 'Clear search' })} onClick={() => setGlobalSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-content-quaternary hover:text-content-secondary">
               <X size={12} />
             </button>
           )}
@@ -1738,7 +1738,7 @@ function PivotTab({ sessionId, describe, thresholdRules, setThresholdRules }: Pi
                         </tr>
                         {isOpen && children.map((g) => (
                           <tr key={Object.values(g.key).join('-')} className="border-b border-border-light">
-                            <td className="px-3 py-1.5 pl-8 text-content-quaternary">{g.key[groupBy[0]!]}</td>
+                            <td className="px-3 py-1.5 ps-8 text-content-quaternary">{g.key[groupBy[0]!]}</td>
                             {groupBy.slice(1).map((col) => <td key={col} className="px-3 py-1.5 text-content-secondary">{g.key[col] || '—'}</td>)}
                             <td className="px-3 py-1.5 text-right tabular-nums text-content-secondary">{g.count.toLocaleString(getNumberLocale())}</td>
                             {aggCols.map((col) => {
@@ -2516,7 +2516,7 @@ function DrillDownModal({
             onClick={onClose}
             data-testid="chart-drill-close"
             aria-label={t('common.close', { defaultValue: 'Close' })}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:text-content-primary hover:bg-surface-hover"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:text-content-primary hover:bg-surface-secondary"
           >
             <X size={18} />
           </button>
@@ -2598,7 +2598,7 @@ function ViewsDrawer({ open, onClose }: ViewsDrawerProps) {
           <button
             onClick={onClose}
             aria-label={t('common.close', { defaultValue: 'Close' })}
-            className="h-7 w-7 rounded-lg hover:bg-surface-hover flex items-center justify-center"
+            className="h-7 w-7 rounded-lg hover:bg-surface-secondary flex items-center justify-center"
             data-testid="views-drawer-close"
           >
             <X size={16} />
@@ -2987,7 +2987,7 @@ function CreateBOQFromPivotModal({ open, onClose, groups, groupByColumns, aggCol
           <button
             onClick={onClose}
             aria-label={t('common.close', { defaultValue: 'Close' })}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:text-content-primary hover:bg-surface-hover transition-colors"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:text-content-primary hover:bg-surface-secondary transition-colors"
           >
             <X size={18} />
           </button>

@@ -18,6 +18,7 @@ import importlib
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -84,7 +85,120 @@ def served_paths(app: FastAPI) -> Iterator[str]:
         yield path
 
 
+def _same_dir(left: Path, right: Path) -> bool:
+    """Whether two paths name one directory, as the filesystem sees it.
+
+    Delegates to :func:`app.core.module_runtime_root.same_dir`, which is the
+    implementation that knows about symlinks and about Windows spelling one
+    directory two ways (case, 8.3 short names). Imported on demand and guarded,
+    for the reason :meth:`ModuleLoader._module_roots` gives: the loader has to
+    keep working on an installation where the runtime root is unavailable, and
+    string equality is a correct-but-conservative answer there - it can only
+    ever report two spellings of one directory as two directories, which costs
+    a warning that is not needed, never a collision that goes unreported.
+    """
+    with contextlib.suppress(Exception):
+        from app.core.module_runtime_root import same_dir
+
+        return same_dir(left, right)
+    return left == right
+
+
 _LOADER_BUILD_TAG: str = "42bfabefac2dd435"
+
+
+class InferenceRole(StrEnum):
+    """What a module does with inference.
+
+    The vocabulary is closed rather than free text on purpose. Nearly two
+    hundred modules and an open string become ``calls_model``, ``calls-model``,
+    ``llm`` and ``model_call`` within a quarter, and a register that has to be
+    quoted to somebody outside the project cannot be spelled four ways.
+    """
+
+    CALLS_MODEL = "calls_model"
+    """Runs or requests an inference itself.
+
+    A hosted model over the network, or a trained model loaded into this
+    process. The distinction from :attr:`CONSUMES_RESULT` is who asks, not who
+    benefits.
+    """
+
+    CONSUMES_RESULT = "consumes_result"
+    """Stores, renders, routes or acts on an inference another module produced.
+
+    Produces none of its own. A module that calls another module's public
+    service function, which happens to run a model inside, is consuming that
+    module's inference; the obligation sits with the producer.
+    """
+
+    RULE_BASED = "rule_based"
+    """Computes a suggestion, score or classification with no trained model.
+
+    Predefined rules, thresholds or arithmetic. This is a claim that the result
+    is not the output of an AI system as the term is defined, so it must record
+    the ground for the claim in :attr:`InferenceDeclaration.basis`. A claim with
+    no ground recorded reads as evasion and is reported as a gap.
+    """
+
+    NONE = "none"
+    """Nothing here infers anything, and somebody checked."""
+
+
+@dataclass(frozen=True)
+class InferenceDeclaration:
+    """A module's own statement about what it does with inference.
+
+    A module whose answer changes with how it is called declares one of these
+    per case; see :attr:`when` and :meth:`ModuleManifest.inference_declarations`.
+
+    Args:
+        role: One of :class:`InferenceRole`. A plain string is accepted and
+            converted, since that is what people write in a manifest.
+        when: The condition under which this role is the right one. Empty means
+            always, which is the common case. Required as soon as a manifest
+            carries more than one declaration, because two unconditional
+            statements about the same module contradict rather than complement
+            each other.
+        what: What is inferred, and on what data. The question a reader has
+            after the role.
+        basis: Why the role is the right one, where that needs an argument
+            rather than a look. Required for :attr:`InferenceRole.RULE_BASED`.
+    """
+
+    role: InferenceRole
+    when: str = ""
+    what: str = ""
+    basis: str = ""
+
+    def __post_init__(self) -> None:
+        # A role outside the vocabulary is a WRONG statement rather than an
+        # incomplete one, so it raises here, in the manifest that wrote it,
+        # where a typo is one line from its author. Incompleteness is handled
+        # differently; see gaps().
+        if not isinstance(self.role, InferenceRole):
+            object.__setattr__(self, "role", InferenceRole(self.role))
+
+    def gaps(self) -> list[str]:
+        """What this declaration is missing before it is worth quoting.
+
+        Returned rather than raised, deliberately. An under-filled declaration
+        is a documentation defect, and a manifest that raises takes the module
+        off the air entirely - the loader logs it and moves on, so every
+        endpoint in it would answer 404 over a missing sentence. That trades a
+        paper problem for a real outage. The gate collects these instead.
+        """
+        missing: list[str] = []
+        if self.role is InferenceRole.CALLS_MODEL and not self.what.strip():
+            missing.append("calls_model has to say in `what` what it infers, and on what data")
+        if self.role is InferenceRole.CONSUMES_RESULT and not self.what.strip():
+            missing.append("consumes_result has to say in `what` whose inference it consumes")
+        if self.role is InferenceRole.RULE_BASED and not self.basis.strip():
+            missing.append(
+                "rule_based is a claim that this is not an AI system, so `basis` has to record "
+                "the ground: what computes the result, and why that is not a trained model"
+            )
+        return missing
 
 
 @dataclass
@@ -102,6 +216,67 @@ class ModuleManifest:
     display_name_i18n: dict[str, str] = field(default_factory=dict)  # {"de": "...", "ru": "..."}
     auto_install: bool = False
     enabled: bool = True
+    # What this module does with inference, or None when nobody has said yet.
+    #
+    # The default is None rather than InferenceRole.NONE, and the difference is
+    # the whole point of the field. Absent means no one has looked at this
+    # module. None means someone looked and there is nothing there. Defaulting
+    # to NONE would turn every module that has never been read into a module
+    # asserting it performs no inference, producing a register that reads as
+    # complete while being populated by silence - which is worse than one that
+    # is visibly empty, because an empty register is not quoted and a wrong one
+    # is.
+    #
+    # A tuple is accepted because one answer per module is the wrong shape for
+    # a real case in this tree. The catalogue matcher runs a predefined string
+    # rule in lexical mode and a learned encoder in semantic and hybrid mode,
+    # with the mode chosen by a request parameter, so a single role records the
+    # wrong answer for whichever calls it does not describe. Splitting by
+    # `when` keeps both true statements instead of averaging them into a false
+    # one.
+    inference: InferenceDeclaration | tuple[InferenceDeclaration, ...] | None = None
+
+    def inference_declarations(self) -> tuple[InferenceDeclaration, ...]:
+        """Every declaration this manifest carries, in one shape.
+
+        The field is stored as authored - one declaration or a tuple - because
+        a manifest is read by people as often as by code, and wrapping the
+        common case in a one-element tuple costs every reader a trailing comma
+        that silently stops being a tuple when somebody drops it.
+        """
+        if self.inference is None:
+            return ()
+        if isinstance(self.inference, InferenceDeclaration):
+            return (self.inference,)
+        return tuple(self.inference)
+
+    def inference_gaps(self) -> list[str]:
+        """What this module's declarations are missing before they are quotable.
+
+        Collected rather than raised, for the reason given on
+        :meth:`InferenceDeclaration.gaps`. The two rules that only exist across
+        declarations live here: more than one declaration means each has to say
+        when it applies, and two of them may not claim the same condition,
+        since a register cannot report both.
+        """
+        declarations = self.inference_declarations()
+        missing = [gap for declaration in declarations for gap in declaration.gaps()]
+        if len(declarations) < 2:
+            return missing
+
+        seen: set[str] = set()
+        for declaration in declarations:
+            condition = declaration.when.strip()
+            if not condition:
+                missing.append(
+                    f"{declaration.role} is one of several declarations here, so it has to say in "
+                    "`when` which calls it describes"
+                )
+            elif condition in seen:
+                missing.append(f"two declarations both claim `when` {condition!r}, so neither can be reported")
+            else:
+                seen.add(condition)
+        return missing
 
 
 @dataclass
@@ -122,6 +297,11 @@ class ModuleLoader:
         self._modules: dict[str, LoadedModule] = {}
         self._load_order: list[str] = []
         self._disabled: set[str] = set()  # modules disabled via state persistence
+        # Which directory each registry key was claimed from, and how early on
+        # the import path that directory's root sits, so a second directory
+        # claiming the same key is both recognisable and rankable. See
+        # _claim_name.
+        self._manifest_dirs: dict[str, tuple[Path, int]] = {}
 
     @property
     def loaded_modules(self) -> dict[str, LoadedModule]:
@@ -138,13 +318,20 @@ class ModuleLoader:
 
         An explicit ``modules_dir`` scans only that directory.
         """
+        roots = self._module_roots()
+
         if modules_dir is not None:
-            return self._discover_in(modules_dir)
+            # Rank it as the import system would. A directory that is one of the
+            # search roots keeps that root's precedence; one that is not on the
+            # path at all outranks nothing, because nothing there is importable
+            # as ``app.modules.<name>`` in the first place.
+            rank = next((i for i, root in enumerate(roots) if _same_dir(root, modules_dir)), len(roots))
+            return self._discover_in(modules_dir, root_rank=rank)
 
         manifests: list[ModuleManifest] = []
         seen: set[str] = set()
-        for root in self._module_roots():
-            for manifest in self._discover_in(root, skip=seen):
+        for rank, root in enumerate(roots):
+            for manifest in self._discover_in(root, skip=seen, root_rank=rank):
                 manifests.append(manifest)
         return manifests
 
@@ -157,8 +344,12 @@ class ModuleLoader:
             return module_search_paths()
         return [MODULES_DIR]
 
-    def _discover_in(self, scan_dir: Path, skip: set[str] | None = None) -> list[ModuleManifest]:
-        """Read every manifest in one directory, recording names into ``skip``."""
+    def _discover_in(self, scan_dir: Path, skip: set[str] | None = None, root_rank: int = 0) -> list[ModuleManifest]:
+        """Read every manifest in one directory, recording names into ``skip``.
+
+        ``root_rank`` is this directory's position on ``app.modules.__path__``,
+        which is what decides a name collision; see :meth:`_claim_name`.
+        """
         manifests: list[ModuleManifest] = []
 
         if not scan_dir.exists():
@@ -185,7 +376,8 @@ class ModuleLoader:
                 mod = importlib.import_module(module_path)
                 manifest = getattr(mod, "manifest", None)
                 if isinstance(manifest, ModuleManifest):
-                    self._manifests[manifest.name] = manifest
+                    if not self._claim_name(manifest, module_dir, root_rank):
+                        continue
                     manifests.append(manifest)
                     logger.info(
                         "Discovered module: %s v%s (%s)",
@@ -199,6 +391,74 @@ class ModuleLoader:
                 logger.exception("Failed to load manifest from %s", module_dir.name)
 
         return manifests
+
+    def _claim_name(self, manifest: ModuleManifest, module_dir: Path, root_rank: int = 0) -> bool:
+        """Register ``manifest`` under its name. False when a better claim holds it.
+
+        The registry is keyed on ``manifest.name``, not on the directory the
+        manifest was read from, and the two are only ever tied together again in
+        :meth:`_load_module`, which derives the package to import back from the
+        name. So a directory declaring a name some other directory already
+        claimed does not get loaded in addition - it replaces the other one's
+        entry while the other one's code is what still runs. Overwriting silently
+        made that a takeover with no trace anywhere: an installed module naming
+        itself ``oe_boq`` from a directory called anything at all inherited the
+        shipped module's routes and handed it its own ``category``, and a
+        ``category`` that is no longer ``core`` is a module :meth:`disable_module`
+        will happily take off the air.
+
+        The winner is the one whose root comes first on ``app.modules.__path__``,
+        which is the precedence the import system itself applies, so the entry
+        describes the code that will run. ``module_runtime_root`` promises
+        exactly this - roots are appended, never prepended, so a shipped module
+        always wins - and reports the collisions it can see; but it compares
+        *directory* names, and this collision is invisible to it, because the
+        directories differ and only the names are the same.
+
+        Ranking by root rather than by which directory was scanned first matters
+        because scan order is not fixed. :meth:`discover` re-runs after every
+        runtime install, and its single-directory form scans one root on its own,
+        so a runtime module read before the shipped tree would otherwise hold the
+        name permanently - first claim, worse claim.
+
+        Re-registration from the same directory is the normal case and stays
+        quiet: every module the registry already knows comes round again on each
+        re-discovery.
+        """
+        claim = self._manifest_dirs.get(manifest.name)
+        if claim is not None and not _same_dir(claim[0], module_dir):
+            held_by, held_rank = claim
+            loser, winner = (module_dir, held_by) if root_rank >= held_rank else (held_by, module_dir)
+            logger.warning(
+                "Module directory %s declares the name %r, which %s also declares. "
+                "The name resolves to one package, so only %s loads and the other "
+                "directory is dead code. Rename it.",
+                module_dir,
+                manifest.name,
+                held_by,
+                winner,
+            )
+            if loser is module_dir:
+                return False
+        self._manifest_dirs[manifest.name] = (module_dir, root_rank)
+        self._manifests[manifest.name] = manifest
+        return True
+
+    def forget_module(self, module_name: str) -> bool:
+        """Drop a module from the registry entirely. Returns whether it was there.
+
+        For a module whose files are gone, which is the one case where
+        :meth:`disable_module` is not enough. Disabling deliberately keeps the
+        manifest, because that is what a later enable reads; but a manifest kept
+        for a directory that no longer exists is a module the API still lists,
+        the health count still counts, and ``POST /modules/<name>/enable`` still
+        accepts - the last of which then fails inside ``importlib`` with a
+        ``ModuleNotFoundError`` rather than the 404 the caller deserves.
+        """
+        self._modules.pop(module_name, None)
+        self._disabled.discard(module_name)
+        self._manifest_dirs.pop(module_name, None)
+        return self._manifests.pop(module_name, None) is not None
 
     def resolve_order(self) -> list[str]:
         """Topological sort of modules by dependencies."""

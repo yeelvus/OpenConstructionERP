@@ -56,7 +56,7 @@ def _get_leaf_positions(context: ValidationContext) -> list[dict[str, Any]]:
     otherwise emit false-positive errors against every header in the
     tree, drowning real findings on a fresh user's first validation run.
 
-    Detection: a row is a section if (a) `metadata.type == "section"`
+    Detection: a row is a section if (a) its `type` field says so
     (explicit), or (b) any other row in the dataset names this row as
     its parent (implicit - derived from the parent_id graph). The
     implicit branch covers seed/import paths that don't stamp the type
@@ -114,6 +114,36 @@ def _position_currency(pos: dict[str, Any]) -> str:
                 if isinstance(val, str) and val.strip():
                     return val.strip().upper()
     return ""
+
+
+def _boq_document(context: ValidationContext) -> dict[str, Any]:
+    """The bill's own fields, as the shared payload builder supplies them.
+
+    A document-level rule asks a different question from a line-level one: not
+    whether a line is measured correctly but whether the estimate says what it
+    is. The base date, the standard it was measured to, the contract it is
+    priced against - all of that lives on the bill and on none of its lines.
+    """
+    data = context.data
+    block = data.get("boq") if isinstance(data, dict) else None
+    return block if isinstance(block, dict) else {}
+
+
+def _boq_document_metadata(context: ValidationContext) -> dict[str, Any]:
+    """What the bill records about itself, the bill first and the run second.
+
+    The run metadata carries the request locale and nothing a person authored,
+    so a rule reading only there is asking a question the product has no way
+    to answer: it can never pass, and a warning nobody can clear teaches the
+    reader to skip the whole rule set. It stays second in the lookup because a
+    caller driving one rule directly still hands its fixture in that way.
+    """
+    meta = _boq_document(context).get("metadata")
+    merged = dict(meta) if isinstance(meta, dict) else {}
+    if isinstance(context.metadata, dict):
+        for key, value in context.metadata.items():
+            merged.setdefault(key, value)
+    return merged
 
 
 def _position_metadata(pos: dict[str, Any]) -> dict[str, Any]:
@@ -726,7 +756,7 @@ class DIN276CostGroupRequired(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         results: list[RuleResult] = []
-        for pos in _get_positions(context):
+        for pos in _get_leaf_positions(context):
             kg = (pos.get("classification") or {}).get("din276", "")
             passed = bool(kg) and len(str(kg)) >= 3
             if passed:
@@ -1022,8 +1052,15 @@ class GAEBEinheitspreisSanity(ValidationRule):
             if pos_type == "section":
                 continue
             unit = str(pos.get("unit") or "").strip().lower()
-            if unit in self.LUMP_SUM_UNITS:
-                continue  # Lump-sum positions are allowed to have arbitrary pricing shape
+            # Lump sums are allowed an arbitrary pricing shape, but the skip
+            # is applied AFTER the negative check rather than before it. A
+            # negative Einheitspreis is invalid under every unit and in every
+            # phase, so it never needed the unit to decide. Skipping first
+            # made the block unreachable on X84, the one phase that actually
+            # carries bidder prices: its schema forbids QU on an item, so the
+            # importer sees no unit, normalises to a lump sum, and this rule
+            # stepped over every position in the file.
+            is_lump_sum = unit in self.LUMP_SUM_UNITS
             rate = pos.get("unit_rate")
             if rate is None:
                 # Missing rate is covered by PositionHasUnitRate; skip to keep signals orthogonal
@@ -1057,6 +1094,12 @@ class GAEBEinheitspreisSanity(ValidationRule):
                         suggestion=translate("gaeb.einheitspreis_sanity.suggestion", locale=locale),
                     )
                 )
+                continue
+
+            if is_lump_sum:
+                # Past the negative check, a lump sum is left alone exactly as
+                # before: a zero or an unusual figure on one carries no meaning
+                # this rule can read.
                 continue
 
             if rate_val == 0 and not _is_provisional_position(pos) and not _is_unpriced_phase(context, pos):
@@ -1650,6 +1693,30 @@ _METRIC_BOQ_UNITS: frozenset[str] = frozenset(
         "公里",
         "升",
         "公顷",
+        "克",
+        "公吨",
+        # Linear metre. 线性米 is the platform's own Chinese for it - the zh
+        # locale renders the canonical "lm" that way - and 延长米 / 延米 are what
+        # a bill writes for a run of skirting, kerb or handrail. The Latin "lm"
+        # a few lines up was already here; its Chinese spellings were not, so a
+        # linear-metre row written in Chinese was unrecognised.
+        "线性米",
+        "延长米",
+        "延米",
+        # Everyday contractions of 平方米 / 立方米. Both are written in bills and
+        # in the quota tables rates are quoted from, and both already appear in
+        # the cost matcher's own locale table.
+        "平米",
+        "立米",
+        "平方",
+        "立方",
+        # Traditional / zh-TW and zh-HK spellings of the same four units. The
+        # cost matcher already folds these; the rule did not know them, so the
+        # two disagreed about the same bill.
+        "公尺",
+        "平方公尺",
+        "立方公尺",
+        "公噸",
         # Full-width Latin, produced by a Chinese IME left in full-width mode.
         # ``str.lower()`` folds full-width capitals to full-width lowercase but
         # never to ASCII, and nothing on the write path applies NFKC, so these
@@ -1695,6 +1762,35 @@ _IMPERIAL_BOQ_UNITS: frozenset[str] = frozenset(
         "ton_us",  # short ton, the canonical boq/units.py emits for "ton"
         "gal",
         "gallon",
+        # Imperial units written in Chinese, and the half of the Chinese
+        # vocabulary that a Chinese project actually depends on.
+        #
+        # The rule reads the set for the system the project is NOT in. China is
+        # metric, so on a Chinese bill it is this set that gets read and the
+        # Chinese metric words above are never consulted - they earn their keep
+        # on an imperial project carrying a Chinese row. Adding the metric
+        # words alone therefore left the Chinese market exactly as unprotected
+        # as before: an imperial row in a Chinese bill is written 英尺, not
+        # "ft", and an unrecognised unit is skipped rather than flagged.
+        #
+        # 英尺, 平方英尺, 立方码 and 线性英尺 are the platform's own spellings -
+        # the zh locale renders ft, sqft, cy and lf that way. The rest are the
+        # standard Chinese names for the same family, listed because a document
+        # that reaches for one reaches for its siblings.
+        "英尺",
+        "平方英尺",
+        "立方英尺",
+        "线性英尺",
+        "英寸",
+        "平方英寸",
+        "码",
+        "平方码",
+        "立方码",
+        "英里",
+        "磅",
+        "盎司",
+        "短吨",
+        "加仑",
     },
 )
 
@@ -1853,27 +1949,19 @@ class BOQUnitSystemConsistencyRule(ValidationRule):
 
 
 # ── Wave 27: classification country-mismatch nudge (INFO) ──────────────────
-# Preferred classification standard per country. The rule fires an INFO
-# nudge when a position has classifications but is missing the standard
-# the country normally uses (e.g. a German project with MasterFormat
-# only and no DIN 276).
-_PREFERRED_STANDARD_BY_COUNTRY: dict[str, str] = {
-    # DACH → DIN 276
-    "DE": "din276",
-    "AT": "din276",
-    "CH": "din276",
-    # UK → NRM
-    "GB": "nrm",
-    # US → MasterFormat
-    "US": "masterformat",
-}
-
-# Fallback when only ``region`` is set (no ``country_code``).
-_REGION_TO_DEFAULT_COUNTRY: dict[str, str] = {
-    "DACH": "DE",
-    "UK": "GB",
-    "US": "US",
-}
+# The preferred standard per country and the region-to-country reduction
+# both come from :mod:`app.core.classification_registry` now. This file
+# used to keep its own five-country copy of the first and its own
+# three-region copy of the second, which meant a project in Poland or
+# Australia got no nudge at all while the match pipeline happily ranked
+# it against a standard.
+#
+# The nudge itself stays scoped to the standards it can actually
+# crosswalk. Suggesting a DIN 276 group for a MasterFormat division is
+# something the tables below can do; suggesting a UNTEC or GESN code is
+# not, so a country whose standard is outside this set skips silently
+# rather than nudging with an empty suggestion.
+_CROSSWALKABLE_STANDARDS: frozenset[str] = frozenset({"din276", "nrm", "masterformat"})
 
 _COUNTRY_TO_DISPLAY_NAME: dict[str, str] = {
     "DE": "Germany",
@@ -1962,13 +2050,25 @@ def _normalize_country_code(
     metadata: dict[str, Any],
     region: str | None,
 ) -> str | None:
-    """Resolve the active country code from metadata or fall back to region."""
+    """Resolve the active country code from metadata or fall back to region.
+
+    The region branch goes through the classification registry, so a
+    city-suffixed region reduces to the same country as the bare code and
+    a macro region reduces to the country it stands for.
+
+    Args:
+        metadata: Validation context metadata, may carry ``country_code``.
+        region: ``project.region``, possibly empty.
+
+    Returns:
+        Alpha-2 country code, or ``None`` when neither source names one.
+    """
+    from app.core.classification_registry import normalise_region
+
     cc = metadata.get("country_code") if isinstance(metadata, dict) else None
     if cc:
         return str(cc).strip().upper()
-    if region:
-        return _REGION_TO_DEFAULT_COUNTRY.get(str(region).strip().upper())
-    return None
+    return normalise_region(region)
 
 
 class ClassificationCountryMismatchRule(ValidationRule):
@@ -1991,8 +2091,8 @@ class ClassificationCountryMismatchRule(ValidationRule):
     severity = Severity.INFO
     category = RuleCategory.COMPLIANCE
     description = (
-        "Nudge when a project's classifications don't include the country's "
-        "preferred standard (DIN 276 for DACH, NRM for UK, MasterFormat for US)."
+        "Nudge when a project's classifications don't include the standard its "
+        "country reads, for the standards this rule can crosswalk (DIN 276, NRM, MasterFormat)."
     )
 
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
@@ -2002,9 +2102,11 @@ class ClassificationCountryMismatchRule(ValidationRule):
         country = _normalize_country_code(metadata, region)
         # No country context → cannot judge → nothing to emit.
         # Return [] so an otherwise-empty / unregioned BOQ stays SKIPPED (E-VAL-008).
-        if not country or country not in _PREFERRED_STANDARD_BY_COUNTRY:
+        from app.core.classification_registry import standard_for_country
+
+        preferred = standard_for_country(country)
+        if not country or preferred not in _CROSSWALKABLE_STANDARDS:
             return []
-        preferred = _PREFERRED_STANDARD_BY_COUNTRY[country]
         country_display = _COUNTRY_TO_DISPLAY_NAME.get(country, country)
         positions = _get_positions(context)
 
@@ -2551,7 +2653,7 @@ class NRMClassificationRequired(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         results: list[RuleResult] = []
-        for pos in _get_positions(context):
+        for pos in _get_leaf_positions(context):
             nrm = (pos.get("classification") or {}).get("nrm", "")
             passed = bool(nrm) and len(str(nrm)) >= 3
             if passed:
@@ -2688,6 +2790,464 @@ class NRMCompleteness(ValidationRule):
         return results
 
 
+# ── NRM cost-plan rules (UK) ─────────────────────────────────────────────
+#
+# The three rules above ask whether each line is classified. These ask
+# whether the cost plan is a cost plan: whether it says what date its rates
+# are current at, which stage it was produced for, and whether the money that
+# is never measured - preliminaries, overheads and profit, risk - is in it at
+# all. Those are three of the things a UK cost plan is sent back for, and
+# none of them is visible line by line.
+
+
+def _nrm_groups(context: ValidationContext) -> set[str]:
+    """The NRM group elements the bill's lines actually carry."""
+    groups: set[str] = set()
+    for pos in _get_positions(context):
+        code = str((pos.get("classification") or {}).get("nrm", "")).strip()
+        if code:
+            groups.add(code.split(".")[0])
+    return groups
+
+
+def _is_nrm_bill(context: ValidationContext) -> bool:
+    """Whether this dataset is measured to NRM at all.
+
+    A document-level rule has nothing to attach itself to on a bill that was
+    never classified to NRM, and a finding about a missing base date on a
+    German bill reads as the rule set malfunctioning rather than as advice.
+    """
+    return bool(_nrm_groups(context))
+
+
+def _markup_categories(context: ValidationContext) -> set[str]:
+    """The categories of the bill's active markup lines.
+
+    A UK cost plan carries preliminaries, overheads and profit either as NRM
+    group elements or as markup lines on top of the measured work, and both
+    are correct. A rule reading only the group elements convicts every
+    estimate built the second way, which is most of them.
+    """
+    data = context.data
+    raw = data.get("markups") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return set()
+    return {
+        str(markup.get("category") or "").strip().lower()
+        for markup in raw
+        if isinstance(markup, dict) and markup.get("is_active", True)
+    }
+
+
+class NRMBaseDateDeclared(ValidationRule):
+    rule_id = "nrm.base_date_declared"
+    name = "NRM Cost Plan Base Date Declared"
+    standard = "nrm"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "A cost plan must state the date its rates are current at"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        if not _is_nrm_bill(context):
+            return []
+        locale = _get_locale(context)
+        document = _boq_document(context)
+        meta = _boq_document_metadata(context)
+        declared = document.get("base_date") or meta.get("base_date") or meta.get("price_level")
+        passed = bool(str(declared or "").strip())
+        return [
+            RuleResult(
+                rule_id=self.rule_id,
+                rule_name=self.name,
+                severity=self.severity,
+                category=self.category,
+                passed=passed,
+                message=(_ok(locale) if passed else translate("nrm.base_date_declared.fail", locale=locale)),
+                element_ref=None,
+                details={"base_date": str(declared) if declared else None},
+                suggestion=(None if passed else translate("nrm.base_date_declared.suggestion", locale=locale)),
+            )
+        ]
+
+
+class NRMCostPlanStageDeclared(ValidationRule):
+    rule_id = "nrm.cost_plan_stage_declared"
+    name = "NRM Cost Plan Stage Declared"
+    standard = "nrm"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "A cost plan must say which design stage it was produced for"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        if not _is_nrm_bill(context):
+            return []
+        locale = _get_locale(context)
+        meta = _boq_document_metadata(context)
+        declared = (
+            meta.get("phase")
+            or meta.get("riba_stage")
+            or meta.get("stage")
+            or _boq_document(context).get("estimate_type")
+        )
+        passed = bool(str(declared or "").strip())
+        return [
+            RuleResult(
+                rule_id=self.rule_id,
+                rule_name=self.name,
+                severity=self.severity,
+                category=self.category,
+                passed=passed,
+                message=(_ok(locale) if passed else translate("nrm.cost_plan_stage_declared.fail", locale=locale)),
+                element_ref=None,
+                details={"stage": str(declared) if declared else None},
+                suggestion=(None if passed else translate("nrm.cost_plan_stage_declared.suggestion", locale=locale)),
+            )
+        ]
+
+
+class NRMContractorCostsPresent(ValidationRule):
+    rule_id = "nrm.contractor_costs_present"
+    name = "NRM Main Contractor's Preliminaries and Overheads and Profit Present"
+    standard = "nrm"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLETENESS
+    description = "A cost plan must carry the main contractor's preliminaries and its overheads and profit"
+
+    #: The NRM 1 group element, and the markup category that carries the same
+    #: money when the estimate prices it on top of the measured work rather
+    #: than as an element of it.
+    CARRIERS = (
+        ("preliminaries", "9", "overhead"),
+        ("overheads_and_profit", "10", "profit"),
+    )
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        if not _is_nrm_bill(context):
+            return []
+        locale = _get_locale(context)
+        groups = _nrm_groups(context)
+        categories = _markup_categories(context)
+        results: list[RuleResult] = []
+        for what, group, markup_category in self.CARRIERS:
+            as_element = group in groups
+            as_markup = markup_category in categories
+            passed = as_element or as_markup
+            results.append(
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=passed,
+                    message=(
+                        _ok(locale)
+                        if passed
+                        else translate(f"nrm.contractor_costs_present.{what}", locale=locale, group=group)
+                    ),
+                    element_ref=None,
+                    details={"carried_as_element": as_element, "carried_as_markup": as_markup, "group": group},
+                    suggestion=(
+                        None if passed else translate("nrm.contractor_costs_present.suggestion", locale=locale)
+                    ),
+                )
+            )
+        return results
+
+
+class NRMRiskAllowancePresent(ValidationRule):
+    rule_id = "nrm.risk_allowance_present"
+    name = "NRM Risk Allowance Present"
+    standard = "nrm"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLETENESS
+    description = "A cost plan must carry a risk allowance"
+
+    RISK_GROUP = "13"
+    RISK_CATEGORY = "contingency"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        if not _is_nrm_bill(context):
+            return []
+        locale = _get_locale(context)
+        as_element = self.RISK_GROUP in _nrm_groups(context)
+        as_markup = self.RISK_CATEGORY in _markup_categories(context)
+        passed = as_element or as_markup
+        return [
+            RuleResult(
+                rule_id=self.rule_id,
+                rule_name=self.name,
+                severity=self.severity,
+                category=self.category,
+                passed=passed,
+                message=(_ok(locale) if passed else translate("nrm.risk_allowance_present.fail", locale=locale)),
+                element_ref=None,
+                details={"carried_as_element": as_element, "carried_as_markup": as_markup},
+                suggestion=(None if passed else translate("nrm.risk_allowance_present.suggestion", locale=locale)),
+            )
+        ]
+
+
+# ── UK statutory rules (Construction Act, CDM 2015, Building Safety Act) ──
+#
+# These read what the estimate records about itself rather than its lines.
+# They sit in a rule set of their own because they are the law of one country
+# rather than a method of measurement, and a project elsewhere that happens
+# to measure to NRM must not be asked about a CDM appointment.
+#
+# Every one of them checks that a thing is stated, not what it says. The
+# percentages, the notice periods and the retention rate are commercial terms
+# this platform has no basis to assert. The single exception is the
+# higher-risk building test, where the threshold is statute and an estimate
+# can be wrong about it in a way that costs a gateway application.
+
+
+def _uk_answered(meta: dict[str, Any], *keys: str) -> Any:
+    """The first of ``keys`` the bill actually answers, or ``None``.
+
+    A blank string, an empty mapping and a mapping whose every value is blank
+    all read as unanswered. Accepting one would turn these rules into a check
+    that somebody had opened the dialogue, which is the failure where a
+    placeholder that passes is worse than one that does not.
+    """
+    for key in keys:
+        value = meta.get(key)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict) and any(entry not in (None, "", {}, []) for entry in value.values()):
+            return value
+        if isinstance(value, (int, float)):
+            return value
+    return None
+
+
+def _uk_finding(
+    rule: ValidationRule,
+    context: ValidationContext,
+    *,
+    passed: bool,
+    key: str,
+    details: dict[str, Any],
+    **params: Any,
+) -> list[RuleResult]:
+    """One document-level finding, in the shape every rule below returns."""
+    locale = _get_locale(context)
+    return [
+        RuleResult(
+            rule_id=rule.rule_id,
+            rule_name=rule.name,
+            severity=rule.severity,
+            category=rule.category,
+            passed=passed,
+            message=(_ok(locale) if passed else translate(f"{key}.fail", locale=locale, **params)),
+            element_ref=None,
+            details=details,
+            suggestion=(None if passed else translate(f"{key}.suggestion", locale=locale)),
+        )
+    ]
+
+
+class UKContractFormDeclared(ValidationRule):
+    rule_id = "uk.contract_form_declared"
+    name = "UK Contract Form Declared"
+    standard = "uk_statutory"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "An estimate must name the contract form it is priced against"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        declared = _uk_answered(_boq_document_metadata(context), "contract_form", "contract", "contract_suite")
+        return _uk_finding(
+            self,
+            context,
+            passed=declared is not None,
+            key="uk.contract_form_declared",
+            details={"contract_form": declared if isinstance(declared, str) else None},
+        )
+
+
+class UKPaymentRegimeDeclared(ValidationRule):
+    rule_id = "uk.payment_regime_declared"
+    name = "UK Payment Regime Declared"
+    standard = "uk_statutory"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "The payment mechanism must fix when a payment becomes due and its final date for payment"
+
+    #: The two dates the Housing Grants, Construction and Regeneration Act
+    #: 1996, as amended, requires a construction contract to fix. A contract
+    #: that fixes neither is not thereby free of them: the Scheme for
+    #: Construction Contracts supplies both, and the parties then find their
+    #: payment terms in a statutory instrument rather than in what they signed.
+    DUE = ("due_date", "due_date_days", "payment_due")
+    FINAL = ("final_date_for_payment", "final_date_for_payment_days", "final_date")
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        meta = _boq_document_metadata(context)
+        block = _uk_answered(meta, "payment_regime", "payment_terms")
+        source = block if isinstance(block, dict) else meta
+        due = _uk_answered(source, *self.DUE)
+        final = _uk_answered(source, *self.FINAL)
+        missing = [name for name, value in (("due date", due), ("final date for payment", final)) if value is None]
+        return _uk_finding(
+            self,
+            context,
+            passed=not missing,
+            key="uk.payment_regime_declared",
+            details={"due_date": due, "final_date_for_payment": final},
+            missing=", ".join(missing) or "-",
+        )
+
+
+class UKRetentionDeclared(ValidationRule):
+    rule_id = "uk.retention_declared"
+    name = "UK Retention Declared"
+    standard = "uk_statutory"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "An estimate must say what retention applies, including that none does"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        declared = _uk_answered(_boq_document_metadata(context), "retention", "retention_terms")
+        return _uk_finding(
+            self,
+            context,
+            passed=declared is not None,
+            key="uk.retention_declared",
+            details={"retention": declared if isinstance(declared, (str, dict)) else None},
+        )
+
+
+class UKCDMDutyHoldersDeclared(ValidationRule):
+    rule_id = "uk.cdm_duty_holders_declared"
+    name = "CDM 2015 Duty Holders Declared"
+    standard = "uk_statutory"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "A project with more than one contractor must record its principal designer and principal contractor"
+
+    ROLES = ("principal_designer", "principal_contractor")
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        meta = _boq_document_metadata(context)
+        block = _uk_answered(meta, "cdm_2015", "cdm")
+        appointments = block if isinstance(block, dict) else {}
+        missing = [role for role in self.ROLES if _uk_answered(appointments, role) is None]
+        return _uk_finding(
+            self,
+            context,
+            passed=not missing,
+            key="uk.cdm_duty_holders_declared",
+            details={role: appointments.get(role) for role in self.ROLES},
+            missing=", ".join(role.replace("_", " ") for role in missing) or "-",
+        )
+
+
+class UKHigherRiskBuildingRegime(ValidationRule):
+    rule_id = "uk.hrb_regime_declared"
+    name = "Building Safety Act Higher-Risk Building Regime"
+    standard = "uk_statutory"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "An estimate must say whether the building is higher-risk, and agree with its own dimensions"
+
+    #: The statutory test: height OR storeys, AND an occupancy the regime is
+    #: about. The occupancy half is the one that gets dropped, and dropping it
+    #: puts a ten-storey speculative office into a gateway regime that has
+    #: nothing to do with it. Wrong in either direction costs real money - a
+    #: programme nobody needed, or a missed gateway that stops the building
+    #: being occupied.
+    #:
+    #: Two dwellings is the occupancy that carries through both phases. A care
+    #: home and a hospital meet it for design and construction and not for
+    #: occupation, which is why they are read as flags the estimate sets
+    #: rather than folded into the dwelling count: the count is a number the
+    #: building has, and these are a question about what the building is for.
+    HEIGHT_M = 18.0
+    STOREYS = 7
+    RESIDENTIAL_UNITS = 2
+    OCCUPANCY_FLAGS = ("care_home", "hospital")
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        meta = _boq_document_metadata(context)
+        block = _uk_answered(meta, "building_safety_act", "bsa_2022")
+        declaration = block if isinstance(block, dict) else {}
+        declared = declaration.get("higher_risk_building")
+        if not isinstance(declared, bool):
+            return _uk_finding(
+                self,
+                context,
+                passed=False,
+                key="uk.hrb_regime_declared",
+                details={"higher_risk_building": None, "derived": None},
+                reason=translate("uk.hrb_regime_declared.unanswered", locale=locale),
+            )
+
+        height = _to_number(declaration.get("height_m"))
+        storeys = _to_number(declaration.get("storeys"))
+        units = _to_number(declaration.get("residential_units"))
+        flagged = any(bool(declaration.get(flag)) for flag in self.OCCUPANCY_FLAGS)
+        if (units is None and not flagged) or (height is None and storeys is None):
+            # Declared but not checkable. Reported as passing rather than as
+            # a second finding: the estimate answered the question it was
+            # asked, and inventing a dimension to disagree with it would be
+            # the rule making something up.
+            return _uk_finding(
+                self,
+                context,
+                passed=True,
+                key="uk.hrb_regime_declared",
+                details={"higher_risk_building": declared, "derived": None},
+            )
+
+        tall_enough = (height is not None and height >= self.HEIGHT_M) or (
+            storeys is not None and storeys >= self.STOREYS
+        )
+        derived = tall_enough and (flagged or (units is not None and units >= self.RESIDENTIAL_UNITS))
+        return _uk_finding(
+            self,
+            context,
+            passed=declared == derived,
+            key="uk.hrb_regime_declared",
+            details={
+                "higher_risk_building": declared,
+                "derived": derived,
+                "height_m": height,
+                "storeys": storeys,
+                "residential_units": units,
+                "occupancy_flags": [flag for flag in self.OCCUPANCY_FLAGS if declaration.get(flag)],
+            },
+            reason=translate(
+                "uk.hrb_regime_declared.disagrees",
+                locale=locale,
+                declared=str(declared).lower(),
+                derived=str(derived).lower(),
+            ),
+        )
+
+
+class UKVATTreatmentDeclared(ValidationRule):
+    rule_id = "uk.vat_treatment_declared"
+    name = "UK VAT Treatment Declared"
+    standard = "uk_statutory"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "An estimate must say how VAT is treated, whether by a rate, a relief or the reverse charge"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        declared = _uk_answered(_boq_document_metadata(context), "vat_treatment", "vat")
+        as_markup = "tax" in _markup_categories(context)
+        return _uk_finding(
+            self,
+            context,
+            passed=declared is not None or as_markup,
+            key="uk.vat_treatment_declared",
+            details={"vat_treatment": declared if isinstance(declared, str) else None, "carried_as_markup": as_markup},
+        )
+
+
 # ── MasterFormat Rules (US) ──────────────────────────────────────────────
 
 
@@ -2702,7 +3262,7 @@ class MasterFormatClassificationRequired(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         results: list[RuleResult] = []
-        for pos in _get_positions(context):
+        for pos in _get_leaf_positions(context):
             mf = (pos.get("classification") or {}).get("masterformat", "")
             passed = bool(mf) and len(str(mf).replace(" ", "")) >= 4
             if passed:
@@ -2858,7 +3418,7 @@ class SINAPICodeRequired(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         results: list[RuleResult] = []
-        for pos in _get_positions(context):
+        for pos in _get_leaf_positions(context):
             code = (pos.get("classification") or {}).get("sinapi", "")
             passed = bool(code) and len(str(code)) >= 4
             if passed:
@@ -3043,7 +3603,7 @@ class GESNCodeRequired(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         results: list[RuleResult] = []
-        for pos in _get_positions(context):
+        for pos in _get_leaf_positions(context):
             code = (pos.get("classification") or {}).get("gesn", "")
             passed = bool(code) and len(str(code)) >= 5
             if passed:
@@ -3121,6 +3681,195 @@ class GESNValidCode(ValidationRule):
         return results
 
 
+# Units a labour resource is measured in. The Russian one is a man-hour and
+# is written three ways in the wild (with the dot, without it, and
+# transliterated), so the comparison folds all of them rather than picking a
+# spelling and calling the other two absent.
+_GESN_LABOUR_UNITS = frozenset(
+    {
+        "чел.-ч",
+        "чел-ч",
+        "чел.ч",
+        "человеко-час",
+        "man-hour",
+        "man-hours",
+        "chel.-ch",
+        "chel-ch",
+    }
+)
+
+
+def _gesn_code(pos: dict[str, Any]) -> str:
+    """The GESN/FER norm code on a position, whitespace stripped."""
+    code = (pos.get("classification") or {}).get("gesn", "")
+    return re.sub(r"\s+", "", str(code))
+
+
+def _gesn_resources(pos: dict[str, Any]) -> list[dict[str, Any]]:
+    """The resource decomposition an import left on a position.
+
+    Read from ``metadata["gesn"]["resources"]`` first and from a bare
+    ``metadata["resources"]`` second, because an import that knows it is
+    reading a Russian base namespaces the block and a generic import does not.
+    Anything that is not a list of mappings is treated as absent rather than
+    as malformed: a rule that distinguishes the two would be reporting on the
+    importer, and the reader cannot act on that.
+    """
+    meta = _position_metadata(pos)
+    block = meta.get("gesn")
+    raw = block.get("resources") if isinstance(block, dict) else meta.get("resources")
+    if not isinstance(raw, list):
+        return []
+    return [entry for entry in raw if isinstance(entry, dict)]
+
+
+def _gesn_is_russian_estimate(context: ValidationContext) -> bool:
+    """Whether this dataset is a Russian estimate at all.
+
+    The document-level rule below has nothing to attach itself to on a bill
+    that never came from the Russian base, and firing there would put a
+    finding about a price level on an estimate that has no norm codes in it.
+    """
+    return any(_gesn_code(pos) for pos in _get_positions(context))
+
+
+class GESNResourceBreakdown(ValidationRule):
+    rule_id = "gesn.resource_breakdown"
+    name = "GESN Resource Breakdown Present"
+    standard = "gesn"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "A line citing a norm should carry the labour, plant and material the norm consumes"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        results: list[RuleResult] = []
+        for pos in _get_leaf_positions(context):
+            code = _gesn_code(pos)
+            if not code:
+                # Not a line that cites the norm base. A Russian company still
+                # imports plenty of bills that do not, and flagging every one
+                # of them would train the reader to ignore the rule set.
+                continue
+            resources = _gesn_resources(pos)
+            passed = bool(resources)
+            if passed:
+                message = _ok(locale)
+                suggestion = None
+            else:
+                message = translate(
+                    "gesn.resource_breakdown.fail",
+                    locale=locale,
+                    code=code,
+                    ordinal=pos.get("ordinal", "?"),
+                )
+                suggestion = translate("gesn.resource_breakdown.suggestion", locale=locale)
+            results.append(
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=passed,
+                    message=message,
+                    element_ref=pos.get("id"),
+                    details={"code": code, "resource_count": len(resources)},
+                    suggestion=suggestion,
+                )
+            )
+        return results
+
+
+class GESNLabourHoursPresent(ValidationRule):
+    rule_id = "gesn.labour_hours_present"
+    name = "GESN Labour Hours Present"
+    standard = "gesn"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "A resource decomposition must include labour hours, the base overhead and profit are normed on"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        results: list[RuleResult] = []
+        for pos in _get_leaf_positions(context):
+            resources = _gesn_resources(pos)
+            if not resources:
+                # Absent decomposition is the rule above. Reporting it twice
+                # would double the finding count without adding a finding.
+                continue
+            passed = any(str(entry.get("unit", "")).strip().lower() in _GESN_LABOUR_UNITS for entry in resources)
+            if passed:
+                message = _ok(locale)
+                suggestion = None
+            else:
+                message = translate(
+                    "gesn.labour_hours_present.fail",
+                    locale=locale,
+                    code=_gesn_code(pos) or "?",
+                    ordinal=pos.get("ordinal", "?"),
+                )
+                suggestion = translate("gesn.labour_hours_present.suggestion", locale=locale)
+            results.append(
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=passed,
+                    message=message,
+                    element_ref=pos.get("id"),
+                    suggestion=suggestion,
+                )
+            )
+        return results
+
+
+class GESNPriceLevelDeclared(ValidationRule):
+    rule_id = "gesn.price_level_declared"
+    name = "GESN Price Level Declared"
+    standard = "gesn"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "An estimate against the norm base must say which price level its roubles are in"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        if not _gesn_is_russian_estimate(context):
+            return []
+        locale = _get_locale(context)
+        meta = _boq_document_metadata(context)
+        block = meta.get("gesn")
+        declared = (
+            (block.get("price_level") if isinstance(block, dict) else None)
+            or meta.get("price_level")
+            # The bill carries a base date in a column of its own, and an
+            # estimate that states one has said which roubles it is in. Reading
+            # only the metadata blob would have called that estimate silent.
+            or _boq_document(context).get("base_date")
+        )
+        # An empty string is not a declaration. The published base carries the
+        # level as a date, and a blank field reads as a level of nothing.
+        passed = bool(str(declared or "").strip())
+        if passed:
+            message = _ok(locale)
+            suggestion = None
+        else:
+            message = translate("gesn.price_level_declared.fail", locale=locale)
+            suggestion = translate("gesn.price_level_declared.suggestion", locale=locale)
+        return [
+            RuleResult(
+                rule_id=self.rule_id,
+                rule_name=self.name,
+                severity=self.severity,
+                category=self.category,
+                passed=passed,
+                message=message,
+                element_ref=None,
+                details={"price_level": str(declared) if declared else None},
+                suggestion=suggestion,
+            )
+        ]
+
+
 # ── DPGF Rules (France) ─────────────────────────────────────────────────
 
 
@@ -3135,7 +3884,7 @@ class DPGFLotRequired(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         results: list[RuleResult] = []
-        for pos in _get_positions(context):
+        for pos in _get_leaf_positions(context):
             lot = (pos.get("classification") or {}).get("dpgf", "") or pos.get("section", "")
             passed = bool(lot)
             if passed:
@@ -3308,6 +4057,33 @@ class ONORMDescriptionLength(ValidationRule):
 
 
 # ── GB/T 50500 Rules (China) ────────────────────────────────────────────
+#
+# One standard, two spellings, and until 2026-08 the two readers of a Chinese
+# cost item disagreed about which one to use. The classification registry names
+# the standard ``gb50500`` and ``classification_order`` hands that name to the
+# section path builder in ``match_elements``; these rules looked the code up
+# under ``gbt50500``, which is what the shipped demo bills were keyed with. The
+# result was that the rules below worked and the section path never rendered,
+# for every line of both Chinese demo projects.
+#
+# The demo data now carries the registry's spelling. The rule ids, the
+# ``standard`` attribute and the ``validation_rule_sets`` entry keep the older
+# one, because those live in the rule-set namespace, resolve through a
+# different registry, and renaming them would break every manifest that
+# declares the set and every message key in four locales for no gain.
+#
+# The legacy key is still read. An installation that has been storing bills
+# since before this change has rows keyed the old way, and a hard switch would
+# turn a bill that passed yesterday into one that fails today, which is a worse
+# thing to do to a user than carrying one extra lookup.
+
+
+def _gb50500_code(pos: dict[str, Any]) -> str:
+    """The Chinese item code on a position, under either spelling."""
+    classification = pos.get("classification") or {}
+    if not isinstance(classification, dict):
+        return ""
+    return str(classification.get("gb50500") or classification.get("gbt50500") or "")
 
 
 class GBT50500CodeRequired(ValidationRule):
@@ -3321,8 +4097,8 @@ class GBT50500CodeRequired(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         results: list[RuleResult] = []
-        for pos in _get_positions(context):
-            code = (pos.get("classification") or {}).get("gbt50500", "")
+        for pos in _get_leaf_positions(context):
+            code = _gb50500_code(pos)
             passed = bool(code) and len(str(code)) >= 6
             if passed:
                 message = _ok(locale)
@@ -3364,7 +4140,7 @@ class GBT50500ValidCode(ValidationRule):
         locale = _get_locale(context)
         results: list[RuleResult] = []
         for pos in _get_positions(context):
-            code = str((pos.get("classification") or {}).get("gbt50500", ""))
+            code = _gb50500_code(pos)
             if not code:
                 continue
             passed = code.isdigit() and len(code) in (9, 12)
@@ -3406,7 +4182,7 @@ class CPWDCodeRequired(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         results: list[RuleResult] = []
-        for pos in _get_positions(context):
+        for pos in _get_leaf_positions(context):
             code = (pos.get("classification") or {}).get("cpwd", "")
             passed = bool(code) and len(str(code)) >= 3
             if passed:
@@ -3503,6 +4279,317 @@ class CPWDMeasurementUnits(ValidationRule):
         return results
 
 
+# ── Hungarian Rules (magasépítési és infrastruktúra tételrend) ──────────
+#
+# Hungarian bills of quantities are written against a sectoral item order
+# (tételrend) rather than a cost-group hierarchy. Two of them are in use and
+# both are represented here, because a Hungarian contractor meets both:
+#
+#   building       a nine segment code, ``MA`` for building works followed by
+#                  a two digit chapter (fejezet) and up to seven further
+#                  numeric levels, written with hyphens: ``MA-01-11-01``. The
+#                  seventeen chapters are fixed and are listed below.
+#   infrastructure a six or seven digit item number (tételszám) drawn from a
+#                  per project code dictionary, plus a row number that makes
+#                  the pairing unique inside one project.
+#
+# The other thing that makes a Hungarian bill Hungarian is the split of every
+# priced line into anyag (material) and díj (labour and plant fee). They are
+# quoted, summed and reported separately all the way up to the cover sheet,
+# and the two together are the line's rate. A bill whose split does not
+# reconcile with its own totals is not a formatting problem there: the two
+# columns are what the client compares between tenderers.
+#
+# The chapter names are the standard's own, in Hungarian. They are data, not
+# prose, and an English gloss sits beside each so a reader outside Hungary can
+# follow the tree.
+HU_BUILDING_SECTOR = "MA"
+
+HU_BUILDING_CHAPTERS: dict[str, str] = {
+    "01": "ÁLTALÁNOS, JÁRULÉKOS KÖLTSÉGEK",  # general and ancillary costs
+    "02": "ELŐKÉSZÍTŐ MUNKÁK",  # preparatory works
+    "03": "FÖLDMUNKA, ALAPOZÁS",  # earthworks and foundations
+    "04": "SZERKEZETÉPÍTÉSI MUNKÁK",  # structural works
+    "05": "KÜLSŐ SZAKIPARI MUNKÁK, ÉPÜLET ZÁRÁS",  # envelope and external trades
+    "06": "ÉPÍTÉSZETI, SZAKIPARI MUNKÁK",  # architectural and finishing trades
+    "07": "BELSŐÉPÍTÉSZETI MUNKÁK",  # interior fit out
+    "08": "MŰEMLÉKI, RESTAURÁTORI MUNKÁK",  # heritage and restoration works
+    "09": "ÉPÜLETGÉPÉSZET",  # mechanical services
+    "10": "TŰZVÉDELMI RENDSZEREK, OLTÓRENDSZER",  # fire protection and suppression
+    "11": "ERŐSÁRAMÚ MUNKÁK",  # electrical power
+    "12": "GYENGEÁRAMÚ MUNKÁK",  # extra low voltage and communications
+    "13": "AUTOMATIKA",  # building automation
+    "14": "SPECIÁLIS TECHNOLÓGIA",  # specialist technology
+    "15": "FELVONÓK, EMELŐSZERKEZETEK",  # lifts and lifting equipment
+    "16": "KÜLSŐ MUNKÁK",  # external works
+    "17": "ÁTADÁS",  # handover
+}
+
+# ``MA`` plus a chapter, then up to seven further levels. Sub chapter numbers
+# run to three digits (a chapter that overflows its two digit range continues
+# at 101, 199 and so on), which is why the segment length is a range and not a
+# constant.
+_HU_BUILDING_CODE_RE = re.compile(r"^MA-(0[1-9]|1[0-7])(?:-\d{2,3}){0,7}$")
+
+# The infrastructure item number is written either closed up or with a single
+# space after the third digit, so the space is removed before the shape is
+# judged rather than being admitted into the pattern.
+#
+# The length is a range because the delivered files say so, not because a
+# range is safer. Six or seven digits covers 335 of the 350 lines in the file
+# this was measured on; the rest are a five digit number, a single digit on
+# the top line of the project, and two lines carrying a letter suffix after an
+# underscore. A pattern written from the common case alone would have called
+# fifteen correct lines invalid.
+_HU_INFRA_CODE_RE = re.compile(r"^\d{1,7}(?:_[A-Za-z0-9]{1,4})?$")
+
+
+def _hu_block(pos: dict[str, Any]) -> dict[str, Any]:
+    """The Hungarian payload an import left on a position, or an empty dict.
+
+    Positions that never came from a Hungarian bill carry nothing here, and
+    every rule below treats that as "not my row" rather than as a failure.
+    A pack switched on for a Hungarian company still sees plenty of BOQs
+    imported from elsewhere, and flagging all of them would train the reader
+    to ignore the whole rule set.
+    """
+    block = _position_metadata(pos).get("hu")
+    return block if isinstance(block, dict) else {}
+
+
+def _hu_code(pos: dict[str, Any]) -> str:
+    """The Hungarian item code on a position, whitespace normalised."""
+    code = (pos.get("classification") or {}).get("tetelrend", "")
+    return re.sub(r"\s+", "", str(code)).upper()
+
+
+class HungarianItemCodeRequired(ValidationRule):
+    rule_id = "hungary.item_code_required"
+    name = "Hungarian Item Code Required"
+    standard = "hungary"
+    severity = Severity.ERROR
+    category = RuleCategory.COMPLIANCE
+    description = "Priced lines must carry an item code from one of the Hungarian sectoral item orders"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        results: list[RuleResult] = []
+        for pos in _get_leaf_positions(context):
+            code = _hu_code(pos)
+            passed = bool(_HU_BUILDING_CODE_RE.match(code) or _HU_INFRA_CODE_RE.match(code))
+            if passed:
+                message = _ok(locale)
+                suggestion = None
+            elif code:
+                message = translate(
+                    "hungary.item_code_required.invalid",
+                    locale=locale,
+                    code=code,
+                    ordinal=pos.get("ordinal", "?"),
+                )
+                suggestion = translate("hungary.item_code_required.suggestion", locale=locale)
+            else:
+                message = translate(
+                    "hungary.item_code_required.fail",
+                    locale=locale,
+                    ordinal=pos.get("ordinal", "?"),
+                )
+                suggestion = translate("hungary.item_code_required.suggestion", locale=locale)
+            results.append(
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=passed,
+                    message=message,
+                    element_ref=pos.get("id"),
+                    details={"given_code": code},
+                    suggestion=suggestion,
+                )
+            )
+        return results
+
+
+class HungarianChapterRecognised(ValidationRule):
+    rule_id = "hungary.chapter_recognised"
+    name = "Hungarian Chapter Is One of the Seventeen"
+    standard = "hungary"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "The chapter segment of a building item code must be one of the seventeen in the sectoral order"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        results: list[RuleResult] = []
+        for pos in _get_positions(context):
+            code = _hu_code(pos)
+            # Only the building order carries chapters. An infrastructure item
+            # number is not a failure here, it is a different order.
+            if not code.startswith(f"{HU_BUILDING_SECTOR}-"):
+                continue
+            segments = code.split("-")
+            chapter = segments[1] if len(segments) > 1 else ""
+            passed = chapter in HU_BUILDING_CHAPTERS
+            if passed:
+                message = _ok(locale)
+            else:
+                message = translate(
+                    "hungary.chapter_recognised.fail",
+                    locale=locale,
+                    chapter=chapter or "?",
+                    ordinal=pos.get("ordinal", "?"),
+                )
+            results.append(
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=passed,
+                    message=message,
+                    element_ref=pos.get("id"),
+                    details={"chapter": chapter, "chapter_name": HU_BUILDING_CHAPTERS.get(chapter, "")},
+                )
+            )
+        return results
+
+
+class HungarianMaterialFeeSplit(ValidationRule):
+    """The anyag and díj halves of a line have to add up to the line.
+
+    Deliberately not "every line must carry both halves". Design fees, permit
+    charges and site management are quoted as díj alone and carry no material,
+    and a supply only line carries no fee; a rule that demanded both would be
+    wrong about a large and perfectly correct part of any Hungarian bill.
+    What is always true is that the two halves are the rate, which is the
+    invariant the summary sheets are built on, and it is the one a bill can
+    actually break by editing a rate without editing its split.
+    """
+
+    rule_id = "hungary.material_fee_split"
+    name = "Material and Fee Add Up to the Rate"
+    standard = "hungary"
+    severity = Severity.WARNING
+    category = RuleCategory.CONSISTENCY
+    description = "The anyag and díj unit prices of a position must sum to its unit rate"
+
+    REL_TOLERANCE = 0.01
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        results: list[RuleResult] = []
+        for pos in _get_leaf_positions(context):
+            block = _hu_block(pos)
+            if "material_unit_rate" not in block and "fee_unit_rate" not in block:
+                continue
+            material_p = _to_number(block.get("material_unit_rate"))
+            fee_p = _to_number(block.get("fee_unit_rate"))
+            rate_p = _to_number(pos.get("unit_rate"))
+            if rate_p is None or rate_p is _NOT_A_NUMBER:
+                continue
+            rate_val: float = rate_p  # type: ignore[assignment]
+            if rate_val <= 0:
+                continue
+            material = material_p if isinstance(material_p, float) else 0.0
+            fee = fee_p if isinstance(fee_p, float) else 0.0
+            split_total = material + fee
+            diff_ratio = abs(split_total - rate_val) / rate_val
+            passed = diff_ratio <= self.REL_TOLERANCE
+            if passed:
+                message = _ok(locale)
+                suggestion = None
+            else:
+                message = translate(
+                    "hungary.material_fee_split.fail",
+                    locale=locale,
+                    ordinal=pos.get("ordinal", "?"),
+                    material=_fmt_decimal(material),
+                    fee=_fmt_decimal(fee),
+                    rate=_fmt_decimal(rate_val),
+                )
+                suggestion = translate("hungary.material_fee_split.suggestion", locale=locale)
+            results.append(
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=passed,
+                    message=message,
+                    element_ref=pos.get("id"),
+                    details={
+                        "material_unit_rate": material,
+                        "fee_unit_rate": fee,
+                        "unit_rate": rate_val,
+                        "difference_ratio": diff_ratio,
+                        "tolerance": self.REL_TOLERANCE,
+                    },
+                    suggestion=suggestion,
+                )
+            )
+        return results
+
+
+class HungarianItemNumberUnique(ValidationRule):
+    """The infrastructure order's per project item number has to stay unique.
+
+    The number is the row's identity for the client's monitoring system: it is
+    what the progress figures, the payment applications and the programme
+    activities are matched on. Two lines sharing one number do not fail any
+    arithmetic, they merge silently at the far end, which is why this is an
+    error and not a warning.
+    """
+
+    rule_id = "hungary.item_number_unique"
+    name = "Project Item Numbers Are Unique"
+    standard = "hungary"
+    severity = Severity.ERROR
+    category = RuleCategory.CONSISTENCY
+    description = "Each per-project item number may appear on only one position"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        seen: dict[str, int] = {}
+        for pos in _get_positions(context):
+            number = str(_hu_block(pos).get("item_number", "")).strip()
+            if number:
+                seen[number] = seen.get(number, 0) + 1
+
+        results: list[RuleResult] = []
+        for pos in _get_positions(context):
+            number = str(_hu_block(pos).get("item_number", "")).strip()
+            if not number:
+                continue
+            count = seen.get(number, 0)
+            passed = count == 1
+            if passed:
+                message = _ok(locale)
+                suggestion = None
+            else:
+                message = translate(
+                    "hungary.item_number_unique.fail",
+                    locale=locale,
+                    number=number,
+                    count=count,
+                )
+                suggestion = translate("hungary.item_number_unique.suggestion", locale=locale)
+            results.append(
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=passed,
+                    message=message,
+                    element_ref=pos.get("id"),
+                    details={"item_number": number, "occurrences": count},
+                    suggestion=suggestion,
+                )
+            )
+        return results
+
+
 # ── Birim Fiyat Rules (Turkey) ──────────────────────────────────────────
 
 
@@ -3517,7 +4604,7 @@ class BirimFiyatCodeRequired(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         results: list[RuleResult] = []
-        for pos in _get_positions(context):
+        for pos in _get_leaf_positions(context):
             code = (pos.get("classification") or {}).get("birimfiyat", "")
             passed = bool(code) and len(str(code)) >= 4
             if passed:
@@ -3609,7 +4696,7 @@ class SekisanCodeRequired(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         results: list[RuleResult] = []
-        for pos in _get_positions(context):
+        for pos in _get_leaf_positions(context):
             code = (pos.get("classification") or {}).get("sekisan", "")
             passed = bool(code) and len(str(code)) >= 3
             if passed:
@@ -3713,9 +4800,16 @@ class BC3CodeRequired(ValidationRule):
 
     BC3 ties every partida back to a concept code (``~C`` record); a
     position without one cannot be exported back to FIEBDC-3 without
-    losing the original catalogue reference. Rule fires only when the
-    project's classification_standard is bc3 or region is ES / LATAM -
-    other regions can leave the field blank without penalty.
+    losing the original catalogue reference.
+
+    The rule does not guard on the project's classification standard or
+    region, whatever this docstring used to claim: it checks every leaf
+    position it is handed. Scope comes from selecting the ``bc3`` rule
+    set and from nowhere else, so a project that runs it outside Spain
+    gets an ERROR on every position with no concept code. That was
+    harmless while nothing reached the set; the Spanish compliance pack
+    now runs it at contract signature, and the next reader has to know
+    the rule does not scope itself.
     """
 
     rule_id = "bc3.code_required"
@@ -3728,10 +4822,7 @@ class BC3CodeRequired(ValidationRule):
     async def validate(self, context: ValidationContext) -> list[RuleResult]:
         locale = _get_locale(context)
         results: list[RuleResult] = []
-        for pos in _get_positions(context):
-            # Skip section rows - chapters carry their own code in ordinal.
-            if (pos.get("type") or "position") == "section":
-                continue
+        for pos in _get_leaf_positions(context):
             classification = pos.get("classification") or {}
             code = classification.get("bc3_code") or classification.get("code") or ""
             passed = bool(str(code).strip())
@@ -8304,6 +9395,17 @@ def register_builtin_rules() -> None:
         (NRMClassificationRequired(), None),
         (NRMValidElement(), None),
         (NRMCompleteness(), None),
+        (NRMBaseDateDeclared(), None),
+        (NRMCostPlanStageDeclared(), None),
+        (NRMContractorCostsPresent(), None),
+        (NRMRiskAllowancePresent(), None),
+        # UK statutory (Construction Act, CDM 2015, Building Safety Act)
+        (UKContractFormDeclared(), None),
+        (UKPaymentRegimeDeclared(), None),
+        (UKRetentionDeclared(), None),
+        (UKCDMDutyHoldersDeclared(), None),
+        (UKHigherRiskBuildingRegime(), None),
+        (UKVATTreatmentDeclared(), None),
         # MasterFormat (US)
         (MasterFormatClassificationRequired(), None),
         (MasterFormatValidDivision(), None),
@@ -8317,6 +9419,9 @@ def register_builtin_rules() -> None:
         # GESN (Russia/CIS)
         (GESNCodeRequired(), None),
         (GESNValidCode(), None),
+        (GESNResourceBreakdown(), None),
+        (GESNLabourHoursPresent(), None),
+        (GESNPriceLevelDeclared(), None),
         # DPGF (France)
         (DPGFLotRequired(), None),
         (DPGFPricingComplete(), None),
@@ -8329,6 +9434,11 @@ def register_builtin_rules() -> None:
         # CPWD (India)
         (CPWDCodeRequired(), None),
         (CPWDMeasurementUnits(), None),
+        # Hungary (magasepitesi and infrastructure item orders)
+        (HungarianItemCodeRequired(), None),
+        (HungarianChapterRecognised(), None),
+        (HungarianMaterialFeeSplit(), None),
+        (HungarianItemNumberUnique(), None),
         # Birim Fiyat (Turkey)
         (BirimFiyatCodeRequired(), None),
         (BirimFiyatValidPoz(), None),

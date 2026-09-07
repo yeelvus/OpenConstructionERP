@@ -21,7 +21,7 @@ import logging
 import math
 import re
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -33,6 +33,7 @@ from fastapi import HTTPException, status
 if TYPE_CHECKING:
     from app.modules.boq.schemas import PositionLinksResponse
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import event_bus
@@ -264,8 +265,22 @@ async def _safe_audit(
 # Re-exported under its own name so ``from app.modules.boq.service import
 # DEFAULT_MARKUP_TEMPLATES`` keeps resolving for the readers that predate the
 # move. The table itself lives in a module the methodology catalogue can import.
+from app.modules.boq.markup_templates import (
+    CONSTRUCTION_TIER_COUNTRIES,
+    region_key_for_country,
+    resolve_region_lines,
+)
 from app.modules.boq.markup_templates import DEFAULT_MARKUP_TEMPLATES as DEFAULT_MARKUP_TEMPLATES
-from app.modules.boq.markup_templates import resolve_region_lines
+from app.modules.i18n_foundation.repository import TaxConfigRepository
+from app.modules.i18n_foundation.tax_rules import TaxRuleError
+from app.modules.i18n_foundation.tax_rules import resolve as resolve_tax
+from app.modules.i18n_foundation.tax_rules import row_from_orm as tax_row_from_orm
+
+#: A full ISO date and nothing else. ``BOQ.base_date`` is a free-text column
+#: and the shipped demo packs fill it with ``"2026-Q1"`` and ``"2026-01"``, so
+#: what it holds has to be tested before it can be used as a date. See
+#: :meth:`BOQService._seeded_vat_rate`.
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 from app.modules.boq.models import (
     BOQ,
     BOQActivityLog,
@@ -485,10 +500,17 @@ def _str_to_float(value: str | None) -> float:
     return f
 
 
+#: The spellings a section header's ``unit`` is stored with. The demo seeders
+#: write ``""``; ``create_section`` and every file importer write ``"section"``.
+#: One concept written two ways, so both readers of it below take their
+#: vocabulary from here rather than each carrying a literal of its own.
+SECTION_UNITS: tuple[str, ...] = ("", "section")
+
+
 def _is_section(position: Position) -> bool:
     """Determine whether a position is a section/sub-section header.
 
-    A section is any position whose unit is empty or ``"section"``
+    A section is any position whose unit is one of :data:`SECTION_UNITS`
     and whose quantity and unit_rate are both zero.
     Sections can exist at any depth (top-level or nested under another section).
     This enables multi-level BOQ hierarchies (3-4+ levels).
@@ -496,7 +518,50 @@ def _is_section(position: Position) -> bool:
     unit = (position.unit or "").strip().lower()
     qty = _str_to_float(position.quantity)
     rate = _str_to_float(position.unit_rate)
-    return unit in ("", "section") and qty == 0.0 and rate == 0.0
+    return unit in SECTION_UNITS and qty == 0.0 and rate == 0.0
+
+
+def is_empty_position(position: Any) -> bool:
+    """Determine whether a position is a placeholder nobody has filled in yet.
+
+    "Add Position" in the editor creates the row on the server straight away
+    and opens its description cell for typing, so a bill legitimately holds
+    rows that carry nothing yet. Such a row is not a priced line: it must not
+    be counted as one and it must not reach an export. It becomes a real line
+    the moment it carries a description or a quantity, which is the first
+    thing the estimator types into it.
+
+    Section headers are a separate concept and are never empty in this sense -
+    they carry no quantity by definition - so they are excluded here and stay
+    subject to :func:`_is_section` alone. Without that guard every seeded
+    header (unit ``""``, and often no description) would read as empty and
+    vanish from the exports that render it.
+
+    ``total`` is always ``quantity x unit_rate`` (:func:`_compute_total`), so a
+    row this returns ``True`` for provably carries no money: dropping it from
+    an export can never change what that export sums to.
+
+    Args:
+        position: An ORM ``Position`` or any response object exposing
+            ``description``, ``quantity``, ``unit`` and ``unit_rate``.
+
+    Returns:
+        True when the row carries neither a description nor a quantity.
+    """
+    if _is_section(position):
+        return False
+    description = (getattr(position, "description", "") or "").strip()
+    return not description and _str_to_float(getattr(position, "quantity", 0)) == 0.0
+
+
+def exportable_positions(positions: Iterable[Any]) -> list[Any]:
+    """Narrow a position list to the rows an export is allowed to emit.
+
+    Drops the placeholder rows :func:`is_empty_position` identifies and keeps
+    everything else, section headers included - a header is structure an
+    export needs, an untouched blank line is not.
+    """
+    return [p for p in positions if not is_empty_position(p)]
 
 
 def _stamp_resource_breakdown(metadata: dict[str, Any]) -> None:
@@ -881,8 +946,91 @@ def _leaf_total_base_with_resources(
     )
 
 
-def _build_position_response(pos: Position) -> PositionResponse:
-    """Build a PositionResponse from a Position ORM instance."""
+#: Word-shaped ``confidence`` values persisted by older seeds and importers,
+#: which the numeric 0-1 contract has no room for. Read back as representative
+#: floats rather than dropped, because a PATCH that answered 422 on one of these
+#: rows stopped the whole grid saving. ``estimate_basis.derivation`` folds the
+#: same three words and says why it repeats the map instead of importing it.
+_CONFIDENCE_LABELS: dict[str, float] = {"high": 0.9, "medium": 0.6, "med": 0.6, "low": 0.3}
+
+
+def _coerce_confidence(raw: object) -> float | None:
+    """Best-effort coerce a stored confidence value to a float in 0.0-1.0.
+
+    Args:
+        raw: Whatever the column holds - a number, a numeric string, one of the
+            legacy labels, or something unparseable.
+
+    Returns:
+        The confidence as a float, or None when the row claims none and when the
+        stored value cannot be read as one. Non-finite values come back None
+        too: NaN and Infinity are not JSON, and a response that carries them is
+        rejected by the client rather than merely wrong.
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+    else:
+        text = str(raw).strip().lower()
+        if text in _CONFIDENCE_LABELS:
+            return _CONFIDENCE_LABELS[text]
+        try:
+            value = float(text)
+        except ValueError:
+            return None
+    if value != value or value in (float("inf"), float("-inf")):
+        return None
+    return value
+
+
+def _cost_item_id_of(pos: object) -> uuid.UUID | None:
+    """Issue #79: the CostItem this line is linked to, from its metadata.
+
+    Args:
+        pos: A Position ORM instance, or any row-shaped object standing in for
+            one.
+
+    Returns:
+        The linked cost item id, or None for rows that pre-date the linkage.
+        A non-UUID string is data rather than a programming error - metadata is
+        written by clients too - so it reads as None instead of breaking a GET.
+    """
+    raw_meta = getattr(pos, "metadata_", None)
+    if not isinstance(raw_meta, dict):
+        return None
+    raw_cid = raw_meta.get("cost_item_id")
+    if not raw_cid:
+        return None
+    try:
+        return uuid.UUID(str(raw_cid))
+    except (ValueError, TypeError):
+        return None
+
+
+def build_position_response(pos: Position) -> PositionResponse:
+    """Build a PositionResponse from a Position ORM instance.
+
+    The single builder for this entity. It used to have a twin in the router,
+    and the twin is how issue #457 shipped half-done in v16.8.1: the whole-bill
+    read answered the norm provenance and every single-position read answered
+    null about the same row. Six fields had drifted, in both directions, so a
+    client's answer depended on which endpoint it asked. Adding a field here now
+    reaches every endpoint that returns a position.
+
+    ``linked_instance_count`` is the one thing deliberately left unset. It needs
+    a project-wide query per row, so the list paths do not pay for it and
+    ``router._position_to_response_with_links`` fills it in for the single-
+    position endpoints that can afford it.
+
+    Args:
+        pos: The position to render. Read with ``getattr`` throughout, because
+            this also runs over rows built by fixtures and by importers that
+            construct a Position without touching every column.
+
+    Returns:
+        The position as the API returns it, from any endpoint.
+    """
     return PositionResponse(
         id=pos.id,
         boq_id=pos.boq_id,
@@ -899,7 +1047,15 @@ def _build_position_response(pos: Position) -> PositionResponse:
         total=pos.total,
         classification=pos.classification,
         source=pos.source,
-        confidence=(_str_to_float(pos.confidence) if pos.confidence is not None else None),
+        # Label-tolerant: a seed row storing "high" reads back 0.9 rather than
+        # the 0.0 a plain float coercion produced, which is what the single-
+        # position endpoints already answered for the same row.
+        confidence=_coerce_confidence(pos.confidence),
+        # Issue #453.
+        risk_dispersion=(
+            _str_to_float(pos.risk_dispersion) if getattr(pos, "risk_dispersion", None) is not None else None
+        ),
+        price_basis=getattr(pos, "price_basis", None),
         cad_element_ids=pos.cad_element_ids,
         # Issue #347: surface the owning BIM model so the grid picker resolves
         # against the right model in multi-model projects.
@@ -909,10 +1065,22 @@ def _build_position_response(pos: Position) -> PositionResponse:
         sort_order=pos.sort_order,
         created_at=pos.created_at,
         updated_at=pos.updated_at,
+        # Issue #79: the CostItem linkage, read back out of the metadata the
+        # client sent it in.
+        cost_item_id=_cost_item_id_of(pos),
+        # BUG-CONCURRENCY01: the row's optimistic-concurrency token, so clients
+        # can echo it on the next PATCH.
+        version=int(getattr(pos, "version", 0) or 0),
         # Issue #127: surface the reuse-group fields read-only.
         reference_code=getattr(pos, "reference_code", None),
         link_role=getattr(pos, "link_role", None),
         link_group_id=getattr(pos, "link_group_id", None),
+        # Issue #457: the production norm this line was priced from, read-only.
+        # Written at the storage boundary from the metadata, not accepted from a
+        # client: it is provenance, and a caller that could set it could claim a
+        # norm predicted a price it never saw.
+        norm_id=getattr(pos, "norm_id", None),
+        norm_work_key=getattr(pos, "norm_work_key", None),
     )
 
 
@@ -1180,6 +1348,62 @@ def _coerce_uuid_or_none(value: object) -> uuid.UUID | None:
         return uuid.UUID(value.strip())
     except ValueError:
         return None
+
+
+def _norm_provenance_from_metadata(metadata: object) -> tuple[uuid.UUID | None, str | None]:
+    """Read the production-norm identity out of a position's metadata.
+
+    Issue #457. The path that applies an assembly to a bill already writes
+    ``norm_id`` and ``work_key`` into the metadata when the assembly was itself
+    built from a production norm. Lifting them onto their own columns here, at
+    the one storage boundary every create goes through, means the writer needs
+    no change and every writer benefits: an importer, a template expansion or a
+    module that has not been written yet all get the column for free as soon as
+    they put the identity in the metadata, which is the shape the platform
+    already agreed on.
+
+    Metadata is a free-form dict written by clients as well as by us, so a
+    malformed id is data rather than a programming error and comes back as None
+    instead of raising out of a create. The key is only returned when the id
+    resolved, so the two columns can never disagree about whether this row was
+    priced from a norm.
+    """
+    if not isinstance(metadata, dict):
+        return None, None
+    norm_id = _coerce_uuid_or_none(metadata.get("norm_id"))
+    if norm_id is None:
+        return None, None
+    raw_key = metadata.get("work_key")
+    work_key = raw_key.strip()[:120] if isinstance(raw_key, str) and raw_key.strip() else None
+    return norm_id, work_key
+
+
+def _norm_provenance_of_copy(source: object, metadata: object) -> tuple[uuid.UUID | None, str | None]:
+    """Norm provenance for a position copied from an existing one.
+
+    A copy of a line priced from a norm was priced from that same norm, so the
+    identity travels with the copy. It has to be lifted explicitly at every copy
+    site because these paths build the row field by field rather than going
+    through ``add_position``: without this a duplicated line, a linked instance,
+    a bill revision and a restored snapshot would each carry the identity in
+    their copied metadata against a NULL column. This coalesce is the only one
+    in the feature. The read side has none - both readers take the column and
+    only the column - so a copy that missed it would not merely be untidy: it
+    would report no norm at all, on exactly the bills that have been worked on
+    most, and a GROUP BY over the column would give a fraction of the work as
+    the whole of it.
+
+    The source's own columns come first because they are already normalised;
+    a row written before the column existed carries nothing there and its
+    copied metadata still answers.
+    """
+    norm_id = _coerce_uuid_or_none(getattr(source, "norm_id", None))
+    if norm_id is None:
+        return _norm_provenance_from_metadata(metadata)
+    raw_key = getattr(source, "norm_work_key", None)
+    if isinstance(raw_key, str) and raw_key.strip():
+        return norm_id, raw_key.strip()[:120]
+    return norm_id, _norm_provenance_from_metadata(metadata)[1]
 
 
 def _read_bands(metadata: object) -> list[tuple[Decimal | None, Decimal]]:
@@ -2085,6 +2309,9 @@ class BOQService:
         if link_group_id is not None:
             _root_meta["_link_src"] = str(source.id)
 
+        # Issue #457: a clone of a norm-priced line was priced from that norm.
+        _root_norm_id, _root_norm_key = _norm_provenance_of_copy(source, _root_meta)
+
         root = Position(
             boq_id=boq_id,
             parent_id=new_parent_id,
@@ -2100,10 +2327,19 @@ class BOQService:
             classification=dict(source.classification) if source.classification else {},
             source=source.source,
             confidence=source.confidence,
+            # Issue #453: a duplicated line carries the judgement that was made
+            # about it. Dropping these would leave the copy looking unjudged,
+            # and an unjudged line is excluded from the dispersion average
+            # rather than counted as certain - so the copy would quietly
+            # improve the risk picture of the bill it was added to.
+            risk_dispersion=getattr(source, "risk_dispersion", None),
+            price_basis=getattr(source, "price_basis", None),
             cad_element_ids=list(source.cad_element_ids) if source.cad_element_ids else [],
             # Issue #347: carry the owning model so a duplicate resolves its BIM
             # links against the same model as the original.
             cad_model_id=getattr(source, "cad_model_id", None),
+            norm_id=_root_norm_id,
+            norm_work_key=_root_norm_key,
             validation_status="pending",
             metadata_=_root_meta,
             sort_order=max_order + 1,
@@ -2128,6 +2364,7 @@ class BOQService:
                 _child_meta = _copy_definition_metadata(child.metadata_)
                 if link_group_id is not None:
                     _child_meta["_link_src"] = str(child.id)
+                _child_norm_id, _child_norm_key = _norm_provenance_of_copy(child, _child_meta)
                 cloned_child = Position(
                     boq_id=boq_id,
                     parent_id=new_parent,
@@ -2140,9 +2377,13 @@ class BOQService:
                     classification=(dict(child.classification) if child.classification else {}),
                     source=child.source,
                     confidence=child.confidence,
+                    risk_dispersion=getattr(child, "risk_dispersion", None),
+                    price_basis=getattr(child, "price_basis", None),
                     cad_element_ids=(list(child.cad_element_ids) if child.cad_element_ids else []),
                     # Issue #347: carry the owning model onto the cloned child.
                     cad_model_id=getattr(child, "cad_model_id", None),
+                    norm_id=_child_norm_id,
+                    norm_work_key=_child_norm_key,
                     validation_status="pending",
                     metadata_=_child_meta,
                     sort_order=max_order,
@@ -2395,6 +2636,68 @@ class BOQService:
     ) -> tuple[list[BOQ], int]:
         """List BOQs for a given project with pagination."""
         return await self.boq_repo.list_for_project(project_id, offset=offset, limit=limit)
+
+    async def count_line_items(self, boq_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """Count the priced line items of each BOQ, excluding section headers.
+
+        This is the figure a bill's card shows in the list. It has to be the
+        same figure ``get_boq_with_positions`` reports for the same bill, and
+        that endpoint counts by calling ``_is_section`` on every loaded row.
+        A list of bills must not load every row of every bill to answer, so
+        the exclusion is pushed into SQL here rather than being open-coded by
+        each caller that needs it.
+
+        Args:
+            boq_ids: BOQs to count. An empty list returns an empty mapping.
+
+        Returns:
+            ``{boq_id: line_item_count}``. A BOQ with no line items is absent
+            from the mapping rather than present with a zero.
+        """
+        if not boq_ids:
+            return {}
+
+        from sqlalchemy import func
+
+        rows = (
+            await self.session.execute(
+                select(Position.boq_id, func.count())
+                .where(Position.boq_id.in_(boq_ids))
+                .where(Position.unit.notin_(SECTION_UNITS))
+                .group_by(Position.boq_id)
+            )
+        ).all()
+        counts: dict[uuid.UUID, int] = {boq_id: count for boq_id, count in rows}
+
+        # Subtract the placeholder rows "Add Position" leaves behind, so a
+        # blank line the estimator has not typed into yet does not inflate the
+        # figure the listing shows.
+        #
+        # The emptiness test stays in Python (``is_empty_position``) because
+        # ``quantity`` is a String column: "0", "0.00" and "" are three
+        # spellings of one zero and no portable comparison catches all of
+        # them. Restating the predicate in SQL is the mistake ``SECTION_UNITS``
+        # exists to prevent, so the query only narrows to the rows that could
+        # possibly be empty - a row carrying a description never is - and
+        # Python decides each candidate. That candidate set is precisely the
+        # blank rows we are trying to stop counting, so it stays small even on
+        # a bill with thousands of priced lines.
+        blank = (
+            await self.session.execute(
+                select(Position.boq_id, Position.quantity)
+                .where(Position.boq_id.in_(boq_ids))
+                .where(Position.unit.notin_(SECTION_UNITS))
+                .where(func.trim(func.coalesce(Position.description, "")) == "")
+            )
+        ).all()
+        for boq_id, quantity in blank:
+            if _str_to_float(quantity) == 0.0:
+                counts[boq_id] = counts.get(boq_id, 0) - 1
+
+        # A BOQ whose every line item turned out to be a placeholder drops out
+        # of the mapping rather than reporting a zero, matching the contract
+        # above for a BOQ with no line items at all.
+        return {boq_id: count for boq_id, count in counts.items() if count > 0}
 
     async def compute_boq_totals(
         self,
@@ -2780,6 +3083,11 @@ class BOQService:
         # the position is always referenceable.
         resolved_reference_code = await self._resolve_create_reference_code(project_id, supplied_code or None)
 
+        # Issue #457 - lift the production-norm identity out of the metadata
+        # onto its own columns so a per-norm rollup can group by it instead of
+        # matching the serialised JSON by string shape.
+        norm_id, norm_work_key = _norm_provenance_from_metadata(merged_metadata)
+
         position = Position(
             boq_id=data.boq_id,
             parent_id=data.parent_id,
@@ -2793,8 +3101,12 @@ class BOQService:
             classification=data.classification,
             source=data.source,
             confidence=str(data.confidence) if data.confidence is not None else None,
+            risk_dispersion=(str(data.risk_dispersion) if data.risk_dispersion is not None else None),
+            price_basis=data.price_basis,
             cad_element_ids=data.cad_element_ids,
             metadata_=merged_metadata,
+            norm_id=norm_id,
+            norm_work_key=norm_work_key,
             # BUG-B-013 (cost-item unit/currency) + BUG-B-014 (duplicate
             # content) both surface on the validation traffic-light.
             validation_status=("warnings" if (_cost_compat_warned or _dup_ordinal is not None) else "pending"),
@@ -3087,6 +3399,10 @@ class BOQService:
                 position_currency=currency_hint if isinstance(currency_hint, str) else None,
             )
 
+            # Issue #457, same derivation as the single-position create: the
+            # bulk path builds its rows directly rather than calling through it.
+            _bulk_norm_id, _bulk_norm_key = _norm_provenance_from_metadata(merged_metadata)
+
             new_positions.append(
                 Position(
                     boq_id=boq_id,
@@ -3101,6 +3417,8 @@ class BOQService:
                     source=data.source,
                     confidence=(str(data.confidence) if data.confidence is not None else None),
                     cad_element_ids=data.cad_element_ids,
+                    norm_id=_bulk_norm_id,
+                    norm_work_key=_bulk_norm_key,
                     metadata_=merged_metadata,
                     validation_status="warnings" if _bulk_cost_warned else "pending",
                     sort_order=max_order + offset,
@@ -3377,10 +3695,55 @@ class BOQService:
         if "confidence" in fields:
             val = fields["confidence"]
             fields["confidence"] = str(val) if val is not None else None
+        if "risk_dispersion" in fields:
+            val = fields["risk_dispersion"]
+            fields["risk_dispersion"] = str(val) if val is not None else None
 
         # Map 'metadata' key to the model's 'metadata_' column
         if "metadata" in fields:
             fields["metadata_"] = fields.pop("metadata")
+
+        # ── Unit provenance dies with the value it described ──────────────
+        # A GAEB import records the source file's own <QU> in
+        # ``metadata['gaeb_unit_original']``, writing the empty string when the
+        # file stated no unit (an X84 item cannot carry one). The importer then
+        # guesses a unit so the row can be stored, and the empty key is what
+        # marks that stored unit as ours rather than the file's.
+        #
+        # The key is therefore making two claims at once: what the source said,
+        # and whether the current value is still our guess. They agree at import
+        # and come apart the moment a person edits the row. An estimator who
+        # corrects an invented "lsum" to "m3" has stated a unit; leaving the key
+        # empty would keep asserting nobody did, and every reader of the claim -
+        # the GAEB export among them - would go on discarding a value a human
+        # deliberately supplied, on exactly the rows somebody cared enough to
+        # fix. So a real change to the unit retires the claim.
+        #
+        # The claim is dropped rather than rewritten. It says this unit came
+        # from our fallback because the file could not state one, and once a
+        # person types "m3" that is not superseded, it is false. Storing the new
+        # unit under the same key would keep a slot alive that reads as
+        # provenance and no longer is, for the next person to interpret or write
+        # into. Absence is the honest form of "we have no claim about where this
+        # value came from", and every reader already handles it: an absent key
+        # means the row is not one we guessed for, which is exactly true.
+        #
+        # Only a change counts. Re-submitting the identical unit is not a person
+        # stating anything - it is a form round-tripping, a bulk update touching
+        # every row, an import re-running - and if those cleared the claim the
+        # provenance would evaporate on any workflow that rewrites rows
+        # wholesale, invisibly.
+        if "unit" in fields:
+            _new_unit = str(fields["unit"] or "").strip()
+            _old_unit = str(position.unit or "").strip()
+            if _new_unit and _new_unit.casefold() != _old_unit.casefold():
+                _meta_now = fields.get("metadata_")
+                if not isinstance(_meta_now, dict):
+                    _stored_meta = position.metadata_ if isinstance(position.metadata_, dict) else {}
+                    _meta_now = dict(_stored_meta)
+                if "gaeb_unit_original" in _meta_now:
+                    _meta_now.pop("gaeb_unit_original", None)
+                    fields["metadata_"] = _meta_now
 
         # If metadata contains resources, derive unit_rate from resource totals.
         #
@@ -4420,7 +4783,7 @@ class BOQService:
         # Build a single-key PositionUpdate. Float fields need numeric
         # coercion so a stringified '12.5' still validates cleanly.
         payload_kwargs: dict[str, Any] = {}
-        if field in {"quantity", "unit_rate", "confidence"}:
+        if field in {"quantity", "unit_rate", "confidence", "risk_dispersion"}:
             try:
                 payload_kwargs[field] = None if value is None or value == "" else float(value)
             except (TypeError, ValueError) as exc:
@@ -5371,7 +5734,126 @@ class BOQService:
         )
         return direct_cost, calculated
 
-    async def apply_default_markups(self, boq_id: uuid.UUID, region: str) -> list[BOQMarkup]:
+    async def project_for_boq(self, boq_id: uuid.UUID) -> Any | None:
+        """The project a BOQ belongs to, or ``None`` if it cannot be reached.
+
+        Loaded through the BOQ rather than taken as an argument, so a caller
+        holding only a BOQ or a position does not have to carry a project id it
+        never asked for. That is what let the markup seeding keep its public
+        signature when it started needing the project.
+
+        Fail-soft on purpose, and the reason differs by caller: seeding default
+        markups must not abort because a project row could not be read, and a
+        price analysis must still render for a position whose project is
+        missing. Both want "no opinion" rather than an exception, so the
+        failure is logged and swallowed here instead of at each call site,
+        where the second copy of that decision would eventually disagree with
+        the first.
+        """
+        try:
+            boq = await self.boq_repo.get_by_id(boq_id)
+            if boq is None or not getattr(boq, "project_id", None):
+                return None
+            from app.modules.projects.repository import ProjectRepository  # noqa: PLC0415
+
+            return await ProjectRepository(self.session).get_by_id(boq.project_id)
+        except Exception:  # noqa: BLE001 - a missing project is "no opinion", never an error
+            logger.debug("project lookup failed for boq %s", boq_id, exc_info=True)
+            return None
+
+    async def _seeded_vat_rate(self, country_code: str | None, base_date: str | None) -> str | None:
+        """The country's own standard VAT rate from the shipped tax seed.
+
+        The bill used to price a country with no project override off its
+        region's stack, which is a neighbour's rate wherever a region serves
+        more than one market: Austria was invoiced at Germany's 19, Switzerland
+        at 19 against its own 8.1, Saudi Arabia at the Gulf 5 against its own
+        15. The methodology catalogue has read the country's own rate all
+        along, so the two engines disagreed about the same project.
+
+        The in-force rule is not reimplemented here. ``resolve`` owns it,
+        including the part that is easy to get wrong: Israel ships two rows
+        both flagged ``is_default``, correct because only the rows in force on
+        the queried date are ever compared. Reading ``is_default`` directly
+        would pick between them by file order.
+
+        Args:
+            country_code: The project's ISO 3166-1 alpha-2 code, or None.
+            base_date: The bill's own base date, used only when it is a full
+                ISO date. The column is ``String(40)`` with no format
+                validation and the shipped demo packs put ``"2026-Q1"`` and
+                ``"2026-01"`` in it, which are not dates. Passing those through
+                would not fail - ``active_rows`` compares date strings, so
+                ``"2026-Q1"`` sorts after ``"2026-02-01"`` because ``"Q"`` is
+                above ``"0"`` while ``"2026-01"`` sorts before it. The two
+                shipped formats therefore select windows in opposite
+                directions, both silently. Anything that is not
+                ``YYYY-MM-DD`` is dropped and the resolver dates the bill
+                today.
+
+        Returns:
+            The rate as a decimal-string percentage, or None when the country
+            is unknown, has no row in force, or the table is empty - the last
+            being every database that has not been seeded yet. None means the
+            region's own line stands, which the caller records rather than
+            leaving indistinguishable from a rate that was resolved.
+
+        Raises:
+            Nothing. A rate that cannot be read is not a reason a bill cannot
+            be seeded. The two ways that happens are told apart on the way
+            out, because they are not the same event: an absent seed is the
+            expected state of a fresh install, and a present-but-broken row is
+            a defect in somebody's data that nothing else would report.
+        """
+        if not country_code:
+            return None
+        if country_code.upper() in CONSTRUCTION_TIER_COUNTRIES:
+            # The seed answers "what is this country's standard rate", which is
+            # not what a bill of quantities asks where construction has a tier
+            # of its own. China's headline rate is 13 and its construction rate
+            # is 9; the 9 is on the regional stack, so leaving it alone is the
+            # answer rather than a gap.
+            return None
+        on_date = base_date.strip() if base_date and _ISO_DATE.fullmatch(base_date.strip()) else None
+        try:
+            configs = await TaxConfigRepository(self.session).list(country_code=country_code)
+        except SQLAlchemyError:
+            # The table could not be read at all, which is what an install
+            # missing the i18n tables looks like. Seeding a bill must not fail
+            # for that, the same fail-soft ``project_for_boq`` takes. An empty
+            # table does NOT arrive here: zero rows resolve to
+            # ``no_configuration`` and leave by the check below, which is the
+            # ordinary state of the ten priced countries the seed says nothing
+            # about.
+            logger.debug("Tax table unreadable for %s; the region's own VAT line stands", country_code)
+            return None
+        try:
+            resolution = resolve_tax([tax_row_from_orm(c) for c in configs], country_code, on_date=on_date)
+        except TaxRuleError as exc:
+            # A row that is present and wrong, which is a different event from
+            # a row that is absent and must not be reported as one. ``resolve``
+            # raises this for a rate_pct that is not a number and for two rates
+            # that each claim to replace the federal one, both reachable
+            # because the column is text and rows predating these rules exist.
+            # The bill still seeds, because refusing to price a project is
+            # worse than pricing it off the regional stack, and the stored line
+            # says ``region_template`` either way - so this line at warning is
+            # the only thing that tells an operator their seed is broken rather
+            # than merely empty.
+            logger.warning(
+                "Tax seed for %s breaks rule %s (%s); the region's own VAT line stands",
+                country_code,
+                exc.code,
+                exc.message,
+            )
+            return None
+        if not resolution.resolved or resolution.combined_rate_pct is None:
+            return None
+        # Explicitly against None: "0" is Kuwait's and Qatar's real answer and
+        # a truthiness test here would send both back to the Gulf region's 5.
+        return resolution.combined_rate_pct
+
+    async def apply_default_markups(self, boq_id: uuid.UUID, region: str | None = None) -> list[BOQMarkup]:
         """Replace all markups on a BOQ with the default template for a region.
 
         Deletes existing markups and creates the standard set.
@@ -5381,9 +5863,36 @@ class BOQService:
         regional template's default. Other markup rows (overhead, profit,
         contingency) keep their regional defaults.
 
+        ``region=None`` means "decide from the project", and is what the
+        endpoint now sends when a caller names no region. Until v3319 there was
+        nothing safe to decide from: the project's country column was NOT NULL
+        with a 'DE' default, so a project where nobody had chosen a country was
+        stored identically to a German one, and deriving from it would have
+        quoted an unstated market with German overheads, German profit and
+        German VAT. The column is nullable now, so an unknown country is
+        expressible and falls to the neutral international stack, which is what
+        the caller used to get in every case including the Hungarian one.
+
+        The derivation is deliberately one-way. A country the markup table does
+        not cover resolves to DEFAULT rather than to the nearest neighbour,
+        because the table's header is explicit that a country's absence is the
+        honest answer that we ship the neutral method for that market.
+
+        Rows written before v3319 still carry 'DE' and will derive DACH. That
+        is not a new wrong answer - it is the same stored value the working
+        calendar and the payment-application gate have always read - but it is
+        why an explicit ``region`` still wins over the derivation.
+
+        The return value does not name the region it used, and deliberately so:
+        the seeded lines carry the market's own wording, so a bill that came
+        back with Altalanos koltseg and AFA is visibly Hungarian and one that
+        came back with Baustellengemeinkosten is visibly German. A caller that
+        needs the key rather than the evidence should send one.
+
         Args:
             boq_id: Target BOQ identifier.
-            region: Region code - "DACH", "UK", "US", "RU", "GULF", or "DEFAULT".
+            region: A key of ``DEFAULT_MARKUP_TEMPLATES``, or None to resolve
+                it from the owning project's country.
 
         Returns:
             List of newly created BOQMarkup objects.
@@ -5392,28 +5901,38 @@ class BOQService:
             HTTPException 404 if BOQ not found.
             HTTPException 409 if the BOQ is locked.
         """
-        await self._ensure_not_locked(boq_id)
+        boq = await self._ensure_not_locked(boq_id)
 
-        region_key = region.upper()
+        region_key = region.upper() if region else "DEFAULT"
 
-        # Resolve the project's per-project VAT override, if any. Loaded
-        # via the BOQ → Project chain so we don't need a project_id arg
-        # (keeps backwards compat with the existing public signature).
+        # One project lookup serving two questions: the per-project VAT
+        # override, and - when the caller named no region - which national
+        # stack this project's market uses. Loaded via the BOQ -> Project chain
+        # so no project_id argument is needed, which is what let the older
+        # public signature stay compatible.
         # ``default_vat_rate`` is a decimal-string percentage (e.g. ``"21"``).
         project_vat_override: str | None = None
-        try:
-            boq = await self.boq_repo.get_by_id(boq_id)
-            if boq is not None and getattr(boq, "project_id", None):
-                from app.modules.projects.repository import ProjectRepository
+        country_code: str | None = None
+        project = await self.project_for_boq(boq_id)
+        if project is not None:
+            raw = getattr(project, "default_vat_rate", None)
+            if raw is not None and str(raw).strip() != "":
+                project_vat_override = str(raw).strip()
+            country_code = getattr(project, "country_code", None)
+            if region is None:
+                region_key = region_key_for_country(country_code)
 
-                project = await ProjectRepository(self.session).get_by_id(boq.project_id)
-                if project is not None:
-                    raw = getattr(project, "default_vat_rate", None)
-                    if raw is not None and str(raw).strip() != "":
-                        project_vat_override = str(raw).strip()
-        except Exception:  # noqa: BLE001 - best-effort, never break seeding
-            logger.debug("default_vat_rate lookup failed for boq %s", boq_id, exc_info=True)
-            project_vat_override = None
+        # Where the VAT number comes from, in precedence order, and the answer
+        # is recorded on the line rather than only used. A region serves many
+        # countries - DACH prices Austria and Switzerland off Germany's stack -
+        # so the region's line is the last resort, not the default.
+        vat_rate = project_vat_override
+        rate_source = "project"
+        if vat_rate is None:
+            vat_rate = await self._seeded_vat_rate(country_code, getattr(boq, "base_date", None))
+            rate_source = "country_seed"
+        if vat_rate is None:
+            rate_source = "region_template"
 
         # Remove existing markups
         await self.markup_repo.delete_all_for_boq(boq_id)
@@ -5423,7 +5942,17 @@ class BOQService:
         # out here, because the methodology catalogue reads the same table and a
         # rule written twice is a rule that will be true in one place.
         new_markups: list[BOQMarkup] = []
-        for entry in resolve_region_lines(region_key, vat_rate=project_vat_override or None):
+        for entry in resolve_region_lines(region_key, vat_rate=vat_rate):
+            # ``vat_override`` keeps its existing meaning: this line's rate was
+            # replaced. ``vat_rate_source`` is added on tax lines only, and is
+            # read off the line rather than off the decision above, because a
+            # multi-levy region refuses the swap inside ``resolve_region_lines``
+            # and its lines keep the market's own rates whatever was resolved.
+            metadata: dict[str, object] = {}
+            if entry["vat_override"]:
+                metadata["vat_override"] = True
+            if entry["category"] == "tax":
+                metadata["vat_rate_source"] = rate_source if entry["vat_override"] else "region_template"
             markup = BOQMarkup(
                 boq_id=boq_id,
                 name=str(entry["name"]),
@@ -5434,7 +5963,7 @@ class BOQService:
                 apply_to=str(entry.get("apply_to", "direct_cost")),
                 sort_order=int(entry["sort_order"]),  # type: ignore[arg-type]
                 is_active=True,
-                metadata_={"vat_override": True} if entry["vat_override"] else {},
+                metadata_=metadata,
             )
             new_markups.append(markup)
 
@@ -5545,6 +6074,16 @@ class BOQService:
         source_name = source_boq.name
         source_description = source_boq.description
         source_metadata = dict(source_boq.metadata_) if source_boq.metadata_ else {}
+        # Issue #435: a revision or scenario of a variation request's bill is
+        # still that request's bill. Dropping the link here would quietly turn
+        # the copy into a bill of the project at large - it would appear in the
+        # project's bill register and become a candidate for the change-order
+        # writeback, which is the laundering this column exists to prevent. It
+        # is NULL on every project bill, so the copy of one is unaffected.
+        # Plain attribute access, not getattr with a default: a silent None is
+        # exactly the laundering described above, and it is what a rename or a
+        # dropped column would produce. Let it raise instead.
+        source_variation_request_id = source_boq.variation_request_id
 
         # Create the new BOQ shell
         new_boq = BOQ(
@@ -5552,6 +6091,7 @@ class BOQService:
             name=f"{source_name} (Copy)",
             description=source_description,
             status="draft",
+            variation_request_id=source_variation_request_id,
             metadata_=source_metadata,
         )
         new_boq = await self.boq_repo.create(new_boq)
@@ -5594,6 +6134,10 @@ class BOQService:
             # DELIBERATELY NOT carried: a revision instance must not follow
             # the original BOQ's master definition.
             pos_reference_code = getattr(pos, "reference_code", None)
+            # Issue #457: a revision of a bill is still priced from the same
+            # norms, and the revision is where the outturn comparison is most
+            # often read from.
+            pos_norm_id, pos_norm_work_key = _norm_provenance_of_copy(pos, pos_metadata)
 
             captured_positions.append({"id": pos_id, "parent_id": pos_parent_id})
 
@@ -5611,6 +6155,8 @@ class BOQService:
                 confidence=pos_confidence,
                 cad_element_ids=pos_cad_element_ids,
                 cad_model_id=pos_cad_model_id,
+                norm_id=pos_norm_id,
+                norm_work_key=pos_norm_work_key,
                 validation_status="pending",
                 reference_code=pos_reference_code,
                 metadata_=pos_metadata,
@@ -6369,13 +6915,16 @@ class BOQService:
         boq = await self.get_boq(boq_id)
         positions = await self.position_repo.list_all_for_boq(boq_id)
 
-        # Build position responses + count (section headers carry no unit and
-        # are excluded from money / counts).
+        # Build position responses + count. Section headers carry no unit and
+        # are excluded from money / counts, and so are the placeholder rows
+        # "Add Position" creates before the estimator has typed into them.
+        # ``positions`` itself keeps both: the editor renders from this list
+        # and has to show the row it just asked the server to create.
         position_responses = []
         position_count = 0
         for pos in positions:
-            position_responses.append(_build_position_response(pos))
-            if not _is_section(pos):
+            position_responses.append(build_position_response(pos))
+            if not _is_section(pos) and not is_empty_position(pos):
                 position_count += 1
 
         # Money via the shared currency-aware path so detail matches the list
@@ -6511,7 +7060,7 @@ class BOQService:
         for section_id, section_pos in section_map.items():
             child_responses: list[PositionResponse] = []
             for child in children_map.get(section_id, []):
-                child_responses.append(_build_position_response(child))
+                child_responses.append(build_position_response(child))
 
             rolled = _rolled(section_id, set())
             sections.append(
@@ -6532,7 +7081,7 @@ class BOQService:
         ungrouped_responses: list[PositionResponse] = []
         for pos in remaining_ungrouped:
             if not _is_section(pos):
-                ungrouped_responses.append(_build_position_response(pos))
+                ungrouped_responses.append(build_position_response(pos))
                 direct_cost += _leaf_total_base(pos)
 
         # Calculate markups
@@ -6590,6 +7139,25 @@ class BOQService:
             net_total=_round_currency(net_total),
             grand_total=_round_currency(net_total),
         )
+
+    async def get_boq_structured_for_export(self, boq_id: uuid.UUID) -> BOQWithSections:
+        """:meth:`get_boq_structured` with the unfilled placeholder rows removed.
+
+        Every export format reads the structured payload, and none of them may
+        emit a blank line: a delivered bill that carries one is a defect the
+        recipient sees. The editor endpoint deliberately keeps calling
+        :meth:`get_boq_structured` instead, because a row the user just created
+        has to appear on screen for them to type into.
+
+        Money is untouched. An emptied row has a zero quantity and therefore a
+        zero total, so the subtotals and grand total computed over the full set
+        stay correct for the narrowed one.
+        """
+        structured = await self.get_boq_structured(boq_id)
+        structured.positions = exportable_positions(structured.positions)
+        for section in structured.sections:
+            section.positions = exportable_positions(section.positions)
+        return structured
 
     async def get_export_fx(
         self,
@@ -7550,6 +8118,10 @@ class BOQService:
         # be re-threaded in a second pass below.
         old_to_new: dict[str, Position] = {}
         for pdata in data.get("positions", []):
+            # Issue #457. Derived from the snapshot's metadata rather than
+            # added to what ``create_snapshot`` captures, which recovers the
+            # provenance from snapshots taken before the column existed too.
+            _snap_norm_id, _snap_norm_key = _norm_provenance_from_metadata(pdata.get("metadata"))
             pos = Position(
                 boq_id=boq_id,
                 ordinal=pdata["ordinal"],
@@ -7560,6 +8132,8 @@ class BOQService:
                 total=pdata.get("total", "0"),
                 classification=pdata.get("classification", {}),
                 source=pdata.get("source", "manual"),
+                norm_id=_snap_norm_id,
+                norm_work_key=_snap_norm_key,
                 metadata_=pdata.get("metadata", {}),
                 sort_order=pdata.get("sort_order", 0),
             )
@@ -9029,7 +9603,10 @@ class BOQService:
         if not boq:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="BOQ not found")
 
-        positions = await self.position_repo.list_by_boq(boq_id)
+        # Unbounded read: the analysis reports total_positions and summarises the
+        # whole BOQ, so the paginated list_for_boq (1000-row cap, returns a tuple)
+        # would both under-state a large tender and hand back the wrong shape.
+        positions = await self.position_repo.list_all_for_boq(boq_id)
         if not positions:
             return {
                 "completeness_score": 0.0,
@@ -9211,7 +9788,7 @@ class BOQService:
             _select(Position)
             .join(BOQ, Position.boq_id == BOQ.id)
             .where(BOQ.project_id == project_id)
-            .where(Position.unit != "")
+            .where(Position.unit.notin_(SECTION_UNITS))
             .order_by(Position.sort_order, Position.ordinal)
             .limit(self._PI_POSITION_CAP)
             .options(_noload(Position.children), _noload(Position.parent))

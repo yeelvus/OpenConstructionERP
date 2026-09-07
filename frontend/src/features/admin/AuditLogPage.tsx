@@ -74,7 +74,7 @@ import {
   WELL_KNOWN_ENTITY_TYPES,
   WELL_KNOWN_ACTIONS,
 } from './api';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtList, getIntlLocale } from '@/shared/lib/formatters';
 
 const DEFAULT_LIMIT = 50;
 const LIMIT_OPTIONS = [25, 50, 100, 200] as const;
@@ -309,7 +309,7 @@ function FilterBar({
             {t('audit.search_label', { defaultValue: 'Search' })}
           </label>
           <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-content-tertiary" size={14} />
+            <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 text-content-tertiary" size={14} />
             <input
               id="audit-search"
               type="search"
@@ -319,7 +319,7 @@ function FilterBar({
                 defaultValue: 'Search actor, entity, IP, payload…',
               })}
               data-testid="audit-search"
-              className="h-9 w-full rounded-lg border border-border bg-surface-primary pl-8 pr-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
+              className="h-9 w-full rounded-lg border border-border bg-surface-primary ps-8 pe-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
             />
           </div>
         </div>
@@ -330,7 +330,7 @@ function FilterBar({
             {t('audit.filter_user', { defaultValue: 'User' })}
           </label>
           <div className="relative">
-            <UserIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 text-content-tertiary" size={14} />
+            <UserIcon className="absolute start-2.5 top-1/2 -translate-y-1/2 text-content-tertiary" size={14} />
             <input
               type="text"
               role="combobox"
@@ -344,7 +344,7 @@ function FilterBar({
                 setUserQuery(e.target.value);
                 if (draft.userId) onChange({ ...draft, userId: null });
               }}
-              className="h-9 w-full rounded-lg border border-border bg-surface-primary pl-8 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
+              className="h-9 w-full rounded-lg border border-border bg-surface-primary ps-8 pe-8 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
             />
             {(draft.userId || userQuery) && (
               <button
@@ -354,7 +354,7 @@ function FilterBar({
                   onChange({ ...draft, userId: null });
                 }}
                 aria-label={t('common.clear', { defaultValue: 'Clear' })}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-content-tertiary hover:text-content-primary"
+                className="absolute end-2 top-1/2 -translate-y-1/2 text-content-tertiary hover:text-content-primary"
               >
                 <X size={14} />
               </button>
@@ -414,14 +414,14 @@ function FilterBar({
             {t('audit.filter_action', { defaultValue: 'Action' })}
           </label>
           <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-content-tertiary" size={14} />
+            <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 text-content-tertiary" size={14} />
             <input
               type="text"
               list="audit-action-suggestions"
               value={draft.action ?? ''}
               onChange={(e) => onChange({ ...draft, action: e.target.value || null })}
               placeholder={t('audit.filter_action_placeholder', { defaultValue: 'create, update, delete…' })}
-              className="h-9 w-full rounded-lg border border-border bg-surface-primary pl-8 pr-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
+              className="h-9 w-full rounded-lg border border-border bg-surface-primary ps-8 pe-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
               aria-label={t('audit.filter_action', { defaultValue: 'Action' })}
             />
             <datalist id="audit-action-suggestions">
@@ -557,7 +557,6 @@ function TimelineRow({ entry, user, onOpen }: TimelineRowProps) {
         }
       }}
       tabIndex={0}
-      role="button"
       aria-label={`${entry.action} ${entry.entity_type}`}
       className={clsx(
         'group cursor-pointer border-b border-border-light bg-surface-primary',
@@ -612,7 +611,7 @@ function TimelineRow({ entry, user, onOpen }: TimelineRowProps) {
             {hasDiff
               ? 'before/after available'
               : diff.raw
-                ? Object.keys(diff.raw).slice(0, 3).join(', ')
+                ? fmtList(Object.keys(diff.raw).slice(0, 3))
                 : '—'}
           </span>
           <Eye

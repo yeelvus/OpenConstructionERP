@@ -20,6 +20,7 @@ import { extractErrorMessageFromBody } from '@/shared/lib/api';
 import { isTauri } from '@/shared/lib/desktop';
 import { HEX_PORTRAIT_ASPECT, HEX_PORTRAIT_CLIP } from '@/shared/lib/honeycomb';
 import { APP_VERSION } from '@/shared/lib/version';
+import { loginFailureKindFromResponse } from './loginError';
 import { AuthBackground } from './AuthBackground';
 import {
   shouldAttemptDesktopBootstrap,
@@ -247,8 +248,23 @@ export function LoginPage() {
         body: JSON.stringify({ email, password }),
       });
       if (!res.ok) {
+        // A proxy answering 502 for a backend that is down is a response, not
+        // a network error, so the catch below never sees it. Without this the
+        // outage lands on the credentials wording and the person is told the
+        // one thing we know is untrue: nothing read their password. A 4xx
+        // carrying no message we can read is that same outage told by whatever
+        // stands in front of us, so the body decides alongside the status.
         const data = await res.json().catch(() => null);
         const parsed = extractErrorMessageFromBody(data);
+        if (loginFailureKindFromResponse(res.status, parsed) === 'unavailable') {
+          setError(
+            t('auth.server_unavailable', {
+              defaultValue:
+                'The server did not answer, so your details were never checked. Try again in a moment.',
+            }),
+          );
+          return;
+        }
         setError(parsed || t('auth.invalid_credentials', 'Invalid email or password'));
         return;
       }
@@ -262,6 +278,13 @@ export function LoginPage() {
     }
   };
 
+  // Mirrors the seeded demo accounts in backend/app/main.py::_seed_demo_account:
+  // every email here has to be one that seeder creates, and each name has to
+  // match that account's full_name. The admin tile shows the role word instead
+  // of the seeded person on purpose - that is what a first-time visitor scans
+  // for. No password is listed on purpose either: the seeder generates a fresh
+  // random one per install, so any literal printed here would be wrong on every
+  // install. The tiles sign in through /auth/demo-login/ instead.
   const demoAccounts = [
     { email: 'demo@openconstructionerp.com', name: 'Admin', role: t('auth.demo_role_admin', 'Administrator'), color: 'bg-blue-500', letter: 'A' },
     { email: 'manager@openconstructionerp.com', name: 'Michael Carter', role: t('auth.demo_role_manager', 'Manager'), color: 'bg-[#7cd0ff]', letter: 'M' },
@@ -417,7 +440,7 @@ export function LoginPage() {
           Restrained palette - single faint sky blob behind the marketing
           column so the headline / stats sit on a near-white field.
           Dark mode keeps the original richer blob set for depth. */}
-      <div className="absolute inset-y-0 left-0 right-1/2 z-0 pointer-events-none overflow-hidden hidden lg:block">
+      <div className="absolute inset-y-0 start-0 end-1/2 z-0 pointer-events-none overflow-hidden hidden lg:block">
         <div className="absolute top-[-12%] left-[-6%] w-[520px] h-[520px] rounded-full bg-sky-300/10 dark:bg-oe-blue/35 blur-[120px] animate-blob-slow-1 mix-blend-screen" />
         <div className="absolute bottom-[-18%] right-[2%] w-[400px] h-[400px] rounded-full bg-cyan-200/10 dark:bg-violet-500/35 blur-[110px] animate-blob-slow-4 mix-blend-screen hidden dark:block" />
       </div>
@@ -550,7 +573,7 @@ export function LoginPage() {
         </div>
 
         {/* Divider */}
-        <div className="mt-5 mb-4 h-px bg-gradient-to-r from-content-primary/[0.06] via-content-primary/[0.1] to-transparent animate-stagger-in" style={{ animationDelay: '220ms' }} />
+        <div className="mt-5 mb-4 h-px bg-gradient-to-r from-black/[0.06] via-black/[0.1] dark:from-white/10 dark:via-white/[0.14] to-transparent animate-stagger-in" style={{ animationDelay: '220ms' }} />
 
         {/* Module honeycomb - proper pointy-top hex grid where every cell
             shares an edge with its neighbours. Layout is intentionally
@@ -840,7 +863,10 @@ export function LoginPage() {
               </div>
 
               {error && (
-                <div className="flex items-start gap-2 rounded-lg bg-semantic-error-bg px-3 py-2 text-xs text-semantic-error animate-stagger-in">
+                <div
+                  data-testid="login-error"
+                  className="flex items-start gap-2 rounded-lg bg-semantic-error-bg px-3 py-2 text-xs text-semantic-error animate-stagger-in"
+                >
                   <span className="shrink-0 mt-0.5">!</span><span>{error}</span>
                 </div>
               )}
@@ -1018,7 +1044,7 @@ export function LoginPage() {
           <div className="absolute inset-0 bg-black/70 backdrop-blur-lg" onClick={() => setShowInfo(false)} />
 
           <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl border border-border-light bg-surface-elevated shadow-2xl">
-            <button
+            <button aria-label={t('common.close', { defaultValue: 'Close' })}
               onClick={() => setShowInfo(false)}
               className="sticky top-0 float-right m-3 p-1.5 rounded-lg text-content-tertiary hover:text-content-primary hover:bg-surface-secondary transition-colors z-10 bg-surface-elevated/80 backdrop-blur-sm"
             >

@@ -856,6 +856,14 @@ class PositionActualsRow(BaseModel):
     cost_line_code: str = ""
     on_cost_spine: bool = False
 
+    #: The production norm this line was priced from, empty on a line that was
+    #: not (issue #457). Carried here so a reader looking at one item of work can
+    #: see which norm predicted it without going back to the bill. The
+    #: comparison across every line priced from the same norm is one grain up,
+    #: at ``GET /api/v1/postcalc/projects/{id}/norm-outturn``.
+    norm_id: str = ""
+    norm_work_key: str = ""
+
     estimate_quantity: Decimal = Decimal("0")
     estimate_unit_rate: Decimal = Decimal("0")
     estimate_amount: Decimal = Decimal("0")
@@ -875,6 +883,17 @@ class PositionActualsRow(BaseModel):
     consumed_quantity: Decimal = Decimal("0")
     consumed_amount: Decimal = Decimal("0")
 
+    #: Net hours booked against this position on approved, unreversed field
+    #: timesheets. Labour and plant stay apart: only labour compares with a
+    #: productivity norm.
+    labour_hours: Decimal = Decimal("0")
+    plant_hours: Decimal = Decimal("0")
+    #: Labour hours per unit of work actually IN PLACE, or None when no progress
+    #: has been reported for the position. Deliberately not hours over the
+    #: billed quantity, which would make a half-built item read as twice as
+    #: productive as it is and an untouched one as the best on the project.
+    labour_hours_per_installed_unit: Decimal | None = None
+
     @field_serializer(
         "estimate_quantity",
         "estimate_unit_rate",
@@ -889,6 +908,9 @@ class PositionActualsRow(BaseModel):
         "installed_amount",
         "consumed_quantity",
         "consumed_amount",
+        "labour_hours",
+        "plant_hours",
+        "labour_hours_per_installed_unit",
         when_used="json",
     )
     def _ser_money(self, v: Decimal | None) -> str | None:

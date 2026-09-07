@@ -110,11 +110,29 @@ class Project(Base):
     # G702/G703 country gate (US/CA/AU only). The column already exists in
     # the DB with server_default 'DE'; mapping it here lets the ORM and the
     # project response surface it without a new migration.
-    country_code: Mapped[str] = mapped_column(
+    #
+    # Nullable since v3319, and the note this replaced is worth keeping in
+    # summary because the shape of the bug recurs. The column used to be
+    # NOT NULL DEFAULT 'DE' while the API accepted the field as optional, so a
+    # create that omitted a country stored the project as German: "nobody
+    # chose" and "somebody chose Germany" were the same row, and every
+    # consumer answered for Germany without anything saying it was a guess.
+    #
+    # It was left that way on the reasoning that the two consumers, the CPM
+    # working calendar and the AIA payment-application gate, were tolerable
+    # places to be wrong. A third consumer changed that: markup-region
+    # resolution reads this column, so an unstated market would have been
+    # quoted with German overheads, German profit and German VAT.
+    #
+    # NULL means the country is unknown, not that it is neutral. Every reader
+    # has to decide what to do with that; none of them may substitute a
+    # plausible country for it. Rows written before v3319 still carry 'DE' and
+    # the distinction is not recoverable for them, which the migration says at
+    # length rather than papering over.
+    country_code: Mapped[str | None] = mapped_column(
         String(2),
-        nullable=False,
-        default="DE",
-        server_default="DE",
+        nullable=True,
+        default=None,
     )
 
     # ── Phase 12 expansion fields (all nullable for backward compat) ─────

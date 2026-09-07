@@ -8,9 +8,10 @@ import { apiGet, apiPost, type Page } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { fmtFixed } from '@/shared/lib/formatters';
+import { fmtList, fmtFixed } from '@/shared/lib/formatters';
 import { SUPPORTED_LANGUAGES } from '@/app/i18n';
 import { uploadDocument, fetchDocuments, type DocumentItem } from '@/features/documents/api';
+import { CostDatabaseInvite } from '@/features/costs/CostDatabaseInvite';
 import {
   FolderPlus,
   ArrowRight,
@@ -125,6 +126,12 @@ const InspectionsQualityCard = lazy(() =>
 );
 const PunchListQualityCard = lazy(() =>
   import('./PunchListQualityCard').then((m) => ({ default: m.PunchListQualityCard })),
+);
+const RegionalPackCard = lazy(() =>
+  import('./RegionalPackCard').then((m) => ({ default: m.RegionalPackCard })),
+);
+const DashboardMarketCasesCard = lazy(() =>
+  import('./DashboardMarketCasesCard').then((m) => ({ default: m.DashboardMarketCasesCard })),
 );
 
 /**
@@ -662,6 +669,19 @@ function OnboardingSteps({
 
   return (
     <div>
+      {/* Nothing imported yet, so the checklist opens with the one thing that
+          unblocks the rest. Same invitation the /costs page shows, in its band
+          density, and it leaves on its own the moment `hasDatabase` turns true
+          - no second query, no permanent advertisement. */}
+      {!hasDatabase && (
+        <div className="mb-5 animate-card-in" style={{ animationDelay: '60ms' }}>
+          <CostDatabaseInvite
+            variant="compact"
+            onImport={() => navigate('/costs/import')}
+          />
+        </div>
+      )}
+
       {/* Section header */}
       <div
         className="mb-5 flex items-center justify-between animate-card-in"
@@ -949,10 +969,7 @@ function KpiRibbon({
       icon: <FileText size={20} strokeWidth={1.75} />,
       value: loaded ? `${activeEstimates}` : null,
       sublabel: loaded
-        ? t('dashboard.kpi_estimates_unit', {
-            defaultValue: 'estimate{{s}}',
-            s: activeEstimates === 1 ? '' : 's',
-          }).replace('{{s}}', activeEstimates === 1 ? '' : 's')
+        ? t('dashboard.kpi_estimates_unit', { defaultValue: 'estimates' })
         : '',
       label: t('dashboard.kpi_active_estimates', { defaultValue: 'Active Estimates' }),
       color: 'text-violet-600 dark:text-violet-400',
@@ -1687,12 +1704,20 @@ function ProjectMetricCards({
 
 function SystemStatusSummary({
   projects,
-  boqs,
+  boqCount,
   boqsLoading = false,
 }: {
   projects?: ProjectSummary[];
-  boqs?: BOQWithTotal[];
-  /** True while the dashboard rollup that feeds `boqs` is still in flight. */
+  /**
+   * Non-archived BOQs across the whole workspace, straight from
+   * ``boq_summary.active_boqs``. Do NOT derive this from the synthesized
+   * ``allBoqs`` stubs - those hold ONE entry per project rather than one
+   * per BOQ, so a workspace with 13 projects and 25 BOQs would show "13"
+   * here (same root cause KpiRibbon's activeEstimates tile hit, see the
+   * comment there).
+   */
+  boqCount?: number;
+  /** True while the dashboard rollup that feeds `boqCount` is still in flight. */
   boqsLoading?: boolean;
 }) {
   const { t } = useTranslation();
@@ -1724,7 +1749,7 @@ function SystemStatusSummary({
   // pulse instead of a misleading "0" on a cold server. `null` = pending.
   const moduleCount = modules ? modules.modules?.length ?? 0 : null;
   const projectCount = projects ? projects.length : null;
-  const boqCount = boqsLoading ? null : boqs?.length ?? 0;
+  const boqBadgeCount = boqsLoading ? null : boqCount ?? 0;
   const userCount = canListUsers ? (usersList ? usersList.length : null) : 0;
 
   const badges = [
@@ -1738,7 +1763,7 @@ function SystemStatusSummary({
     },
     {
       icon: <FileSpreadsheet size={12} strokeWidth={2} />,
-      value: boqCount,
+      value: boqBadgeCount,
       label: t('dashboard.ss_boqs', { defaultValue: 'BOQs' }),
       color: 'text-[#7c3aed]',
       bg: 'bg-[#7c3aed]/10',
@@ -2492,7 +2517,7 @@ function DashboardPageInner() {
             {/* Map (left) and sites list (right) share one fixed-height row on
                 desktop so the two columns always line up; both children fill it
                 (map via h-full, panel via its own h-full + internal scroll). */}
-            <div className="grid grid-cols-1 gap-3 lg:h-[19rem] lg:grid-cols-[1.5fr_1fr]">
+            <div className="grid grid-cols-1 gap-3 lg:h-[19rem] lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
               <DashboardProjectsMap className="lg:h-full" projects={mapPins} />
               <DashboardSitesPanel projects={mapPins} />
             </div>
@@ -2584,6 +2609,16 @@ function DashboardPageInner() {
     submittals_pending: <SubmittalsPendingCard />,
     inspections_quality: <InspectionsQualityCard />,
     punch_quality: <PunchListQualityCard />,
+
+    // Never in WIDGET_NULL_FALLBACK: unlike the delivery cards above, this one
+    // always resolves to something. A deployment with no pack applied is the
+    // case it most needs to speak up in, so a self-hiding version would go
+    // silent exactly where it is needed.
+    regional_pack: <RegionalPackCard />,
+    // Same rule: never in WIDGET_NULL_FALLBACK. It waits for the pack answer
+    // so the market it leads with is decided once, and the grid's skeleton
+    // stands in meanwhile rather than a card that flips.
+    cases_market: <DashboardMarketCasesCard />,
 
     weather_site: <WeatherSiteWidget projects={projects} />,
     labour_cost: <LabourCostWidget />,
@@ -2751,7 +2786,11 @@ function DashboardPageInner() {
         <span aria-hidden className="h-3 w-px bg-border-light" />
 
         {/* System status pills */}
-        <SystemStatusSummary projects={projects} boqs={allBoqs} boqsLoading={rollup.isLoading} />
+        <SystemStatusSummary
+          projects={projects}
+          boqCount={boqSummary?.active_boqs}
+          boqsLoading={rollup.isLoading}
+        />
       </div>
 
       {/* Start here: Cases (learn by example) is now a registry widget
@@ -3256,7 +3295,7 @@ function SystemStatus() {
       name: t('dashboard.ai_providers', { defaultValue: 'AI Providers' }),
       status: aiConfigured ? 'connected' : 'offline',
       detail:
-        status?.ai?.providers?.map((p) => p.name).join(', ') ||
+        fmtList(status?.ai?.providers?.map((p) => p.name) ?? []) ||
         (hasUserAiKey
           ? t('dashboard.status_user_keys', { defaultValue: 'User keys' })
           : t('dashboard.not_configured', { defaultValue: 'Not configured' })),

@@ -275,7 +275,10 @@ def _parse_user_uuid(user_id: str | None) -> uuid.UUID | None:
 # ── Autocomplete metadata helpers (Phase F v2.7.0) ────────────────────────
 
 
-_BREAKDOWN_KEYS: tuple[str, ...] = ("labor_cost", "material_cost", "equipment_cost")
+# ``other_cost`` is the catch-all a reprice stamps for component types that are
+# none of the three named buckets, a subcontractor line being the common one.
+# Without it the breakdown would be short of the rate it explains.
+_BREAKDOWN_KEYS: tuple[str, ...] = ("labor_cost", "material_cost", "equipment_cost", "other_cost")
 
 
 def _extract_cost_breakdown(metadata: dict[str, Any] | None) -> dict[str, float] | None:
@@ -842,6 +845,7 @@ async def search_cost_items(
                         "labor_cost",
                         "material_cost",
                         "equipment_cost",
+                        "other_cost",
                         "labor_hours",
                         "workers_per_unit",
                         "scope_of_work",
@@ -1180,9 +1184,21 @@ async def reprice_region_endpoint(
 
 @router.post(
     "/base-market/{base_region}/{market_token}",
-    # Loading public reference data is a viewer-level action, same as
-    # ``/load-cwicr/{db_id}`` and the reprice endpoints above.
-    dependencies=[Depends(RequirePermission("costs.read"))],
+    # Editor-level, NOT viewer-level: despite the "load" in the name this
+    # endpoint rewrites the shared reference catalogue rather than reading it.
+    # On one request it overwrites the region's ``ResourcePrice`` rows from the
+    # market CSV (deliberately including ``source == 'user'`` edits, so it
+    # discards saved price work), reprices every work item's ``rate``, stamps
+    # the market ``currency`` onto every ``oe_costs_item`` row in the region,
+    # and swaps the work-item text to the market's language. Those rows are
+    # global by design - ``oe_costs_item`` is listed in
+    # ``app.core.rls_setup._NEVER_POLICY`` precisely so it is never
+    # tenant-filtered - so the result is what every tenant on the deployment
+    # reads afterwards, not a per-caller view. Switching the pricing basis of a
+    # shared catalogue is an administrative act, so it is gated like the
+    # reprice endpoints above rather than like a read. Contrast
+    # ``/load-cwicr/{db_id}``, which stays viewer-level on purpose.
+    dependencies=[Depends(RequirePermission("costs.update"))],
 )
 async def load_base_market(
     base_region: str,
@@ -1372,11 +1388,26 @@ async def vector_v3_status(
         ),
     ),
 ) -> dict[str, Any]:
-    """Per-language CWICR v3 collection readiness for /match-elements.
+    """Per-language CWICR v3 collection readiness.
 
-    Used by the match-elements page to surface a "vector DB ready / missing"
-    banner in the same style as the BIM converter status panel. Single
-    Qdrant probe - does NOT trigger reindexing; that lives on /costs.
+    One probe of the CWICR store, the same one the ranker opens. Does NOT
+    trigger reindexing; that lives on /costs.
+
+    ``status_band`` values: ``ready``, ``empty``, ``missing``,
+    ``unreadable``, ``disconnected``, ``no_country``. The two that mean "we
+    could not look", ``unreadable`` and ``disconnected``, carry ``error``.
+    ``unreadable`` means the collection is present but could not be read,
+    which is deliberately distinct from ``missing``.
+
+    This docstring deliberately does not say who calls this endpoint. It
+    used to name a match-elements banner that reads ``status_band``, and no
+    such reader existed. That sentence was repeated to a colleague, believed,
+    and turned into work: a check was commissioned against a consumer that
+    was never there. A comment naming a consumer carries the authority of
+    the source and has no gate behind it, so it cannot go stale loudly. If
+    a consumer is ever worth naming here, it needs a test that fails when
+    that consumer disappears; without one, the honest thing is to describe
+    only what this function does.
 
     When ``project_id`` is supplied, also returns ``language_mismatch``
     diagnostics so the UI can warn about a cross-language catalogue
@@ -1385,13 +1416,31 @@ async def vector_v3_status(
     region and the bound catalogue id through ``language_for``.
     """
     from app.core.match_service.region_language import language_for
-    from app.core.vector import vector_status as vs
-    from app.modules.costs.qdrant_adapter import country_to_collection
+    from app.modules.costs.qdrant_adapter import (
+        _get_client,
+        country_to_collection,
+        resolve_cwicr_target,
+    )
 
-    base = vs()
+    # Everything below describes the CWICR v3 store, which is the one the
+    # ranker opens. It used to describe the GENERAL vector store instead:
+    # engine and connected came from app.core.vector.vector_status() and the
+    # collection probe used that store's client, while the collection NAME
+    # came from country_to_collection, which is CWICR naming. So the answer
+    # was assembled from two different servers. On a default install the
+    # ranker reads the embedded store and this endpoint reported on
+    # localhost:6333, which means a catalogue that was installed and
+    # matching fine could be reported absent, and vice versa.
+    #
+    # There is no non_qdrant band any more. It existed because the general
+    # store can be LanceDB, and it gated the probe so that a LanceDB
+    # install never looked at the v3 collections at all. The CWICR store is
+    # a Qdrant by construction, server or embedded, so VECTOR_BACKEND says
+    # nothing about it and the gate only ever suppressed a real answer.
+    target = resolve_cwicr_target()
     payload: dict[str, Any] = {
-        "engine": base.get("engine", "unknown"),
-        "connected": bool(base.get("connected")),
+        "engine": "qdrant" if target.is_server else "qdrant-embedded",
+        "connected": False,
         "country": country or "",
         "language": language_for(country) if country else "",
         "collection": "",
@@ -1427,53 +1476,61 @@ async def vector_v3_status(
             else:
                 payload["language_mismatch"] = await _detect_language_mismatch(db, project_id)
 
-    if not payload["connected"]:
-        payload["error"] = base.get("error", "")
+    # Reaching the store at all is its own outcome, separate from what the
+    # store then says about the collection. Kept ahead of the no_country
+    # branch so that band keeps meaning "store is reachable, caller did not
+    # name a collection" rather than becoming silent about reachability.
+    try:
+        client = _get_client()
+        names = {c.name for c in client.get_collections().collections}
+    except Exception as exc:
+        # The reason names the failure class, not the resolved location.
+        # This endpoint answers anonymous callers, so the URL or on-disk
+        # path of the store is not ours to hand out; the detail goes to the
+        # log, where an operator can already see the address anyway.
+        logger.warning("CWICR v3 status: store unreachable", exc_info=True)
+        payload["status_band"] = "disconnected"
+        payload["error"] = f"CWICR vector store unreachable ({type(exc).__name__})"
         return payload
 
+    payload["connected"] = True
+
     if not country:
-        # Engine reachable but the caller didn't ask about a specific collection.
+        # Store reachable but the caller didn't ask about a specific collection.
         payload["status_band"] = "no_country"
         return payload
 
     payload["collection"] = country_to_collection(country)
 
-    if base.get("engine") != "qdrant":
-        # LanceDB or other backend - v3 collection naming doesn't apply.
-        payload["status_band"] = "non_qdrant"
+    if payload["collection"] not in names:
+        payload["status_band"] = "missing"
         return payload
 
+    payload["exists"] = True
+
     try:
-        from app.core.vector import _get_qdrant
+        col = client.get_collection(payload["collection"])
+        # Version-tolerant: ``points_count`` → ``vectors_count``
+        # (older qdrant-client) → live count().
+        pc_raw = getattr(col, "points_count", None)
+        if pc_raw is None:
+            pc_raw = getattr(col, "vectors_count", None)
+        if pc_raw is None:
+            pc_raw = client.count(payload["collection"]).count
+        pc = int(pc_raw or 0)
+    except Exception as exc:
+        # This used to report "ready". A collection we could not read was
+        # being described with the one band that means "go ahead", which is
+        # a confident answer produced without looking. The caller now gets a
+        # third outcome it can tell apart from both present and absent, and
+        # a reason, because "we could not look" is not a kind of "no".
+        logger.warning("CWICR v3 status: collection found but unreadable", exc_info=True)
+        payload["status_band"] = "unreadable"
+        payload["error"] = f"collection exists but could not be read ({type(exc).__name__})"
+        return payload
 
-        client = _get_qdrant()
-        if client is None:
-            payload["status_band"] = "disconnected"
-            return payload
-        names = {c.name for c in client.get_collections().collections}
-        if payload["collection"] in names:
-            payload["exists"] = True
-            try:
-                col = client.get_collection(payload["collection"])
-                # Version-tolerant: ``points_count`` → ``vectors_count``
-                # (older qdrant-client) → live count().
-                pc_raw = getattr(col, "points_count", None)
-                if pc_raw is None:
-                    pc_raw = getattr(col, "vectors_count", None)
-                if pc_raw is None:
-                    pc_raw = client.count(payload["collection"]).count
-                pc = int(pc_raw or 0)
-                payload["points_count"] = pc
-                payload["status_band"] = "ready" if pc > 0 else "empty"
-            except Exception:
-                payload["status_band"] = "ready"
-        else:
-            payload["status_band"] = "missing"
-    except Exception:
-        logger.warning("Qdrant v3 status probe failed", exc_info=True)
-        payload["error"] = "Qdrant status probe failed"
-        payload["status_band"] = "disconnected"
-
+    payload["points_count"] = pc
+    payload["status_band"] = "ready" if pc > 0 else "empty"
     return payload
 
 
@@ -2118,23 +2175,32 @@ async def load_vector_from_github(
     }
 
 
-# Mapping db_id to GitHub folder and snapshot filename (3072d embeddings)
-_GITHUB_SNAPSHOT_FILES: dict[str, str] = {
-    "USA_USD": "US___DDC_CWICR/USA_USD_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-    "UK_GBP": "UK___DDC_CWICR/UK_GBP_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-    "DE_BERLIN": "DE___DDC_CWICR/DE_BERLIN_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-    "ENG_TORONTO": "EN___DDC_CWICR/EN_TORONTO_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-    # CA_TORONTO alias - same canonical id as the cost-DB map above.
-    "CA_TORONTO": "EN___DDC_CWICR/EN_TORONTO_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-    "FR_PARIS": "FR___DDC_CWICR/FR_PARIS_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-    "SP_BARCELONA": "ES___DDC_CWICR/SP_BARCELONA_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-    "PT_SAOPAULO": "PT___DDC_CWICR/PT_SAOPAULO_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-    "RU_STPETERSBURG": "RU___DDC_CWICR/RU_STPETERSBURG_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-    "AR_DUBAI": "AR___DDC_CWICR/AR_DUBAI_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-    "ZH_SHANGHAI": "ZH___DDC_CWICR/ZH_SHANGHAI_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-    "ZH_CHINA": "ZH___DDC_CWICR/ZH_SHANGHAI_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-    "HI_MUMBAI": "HI___DDC_CWICR/HI_MUMBAI_workitems_costs_resources_EMBEDDINGS_3072_DDC_CWICR.snapshot",
-}
+# Mapping db_id to the pre-built 3072d vector snapshot under the CWICR repo,
+# built from the same base registry as the parquet map further down so the two
+# cannot drift. This was a hand-written table until the data repo moved every
+# market under CIS-Russia-GESN-FER-TER/, which left all thirteen of its paths
+# naming files that no longer existed, while the parquet map, already derived,
+# went on working. Deriving it also reaches the nineteen markets the hand table
+# never listed.
+#
+# The two aliases below are not the same kind of thing, whatever the line they
+# used to share said. CA_TORONTO is one market under two names, and both maps
+# put it in the same folder as ENG_TORONTO. ZH_CHINA is the China Dinge
+# national base, whose own work items are Asia-China-Dinge/ZH_CHINA…parquet at
+# 10486 positions, and this hands it the global base's Shanghai snapshot, built
+# from a different catalogue of 55719. It arrived with the first national bases
+# and the six that followed got nothing, so TR_NATIONAL and the other six
+# answer 404 here.
+#
+# Do not make that symmetric by adding them. No national base has a published
+# vector snapshot, which is exactly what github_snapshot_files() leaves out and
+# what test_every_downloadable_base_has_a_snapshot_and_no_other_one_does
+# guards; a second alias would walk another one past it. Whether ZH_CHINA
+# should keep this line or join the other seven is open, because what a
+# ZH_CHINA search reads afterwards has not been measured.
+_GITHUB_SNAPSHOT_FILES: dict[str, str] = base_registry.github_snapshot_files()
+_GITHUB_SNAPSHOT_FILES.setdefault("CA_TORONTO", _GITHUB_SNAPSHOT_FILES["ENG_TORONTO"])
+_GITHUB_SNAPSHOT_FILES.setdefault("ZH_CHINA", _GITHUB_SNAPSHOT_FILES["ZH_SHANGHAI"])
 
 
 @router.post(
@@ -2153,16 +2219,61 @@ async def restore_qdrant_snapshot(
     import asyncio
     import time
 
-    from app.core.vector import _get_qdrant
+    from app.modules.costs.qdrant_adapter import (
+        _get_client,
+        describe_server_write_mismatch,
+        resolve_cwicr_target,
+    )
 
     start = time.monotonic()
 
-    client = _get_qdrant()
-    if client is None:
+    # Refuse BEFORE the download rather than after it. Below, this handler
+    # can spend 600 s pulling ~1.1 GB and only then discover it has nowhere
+    # to put it that the ranker will read - or worse, push it to a server
+    # the ranker never opens and report success. Resolving the target first
+    # turns that into one sentence naming both settings, and costs nothing.
+    mismatch = describe_server_write_mismatch()
+    if mismatch:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, mismatch)
+
+    # Resolved once and held, so that a reader counting the places this
+    # handler decides where the CWICR store lives finds exactly one.
+    target = resolve_cwicr_target()
+
+    # Every client operation in this handler talks to the CWICR store, which
+    # is the one the ranker reads. It used to acquire the GENERAL vector
+    # client here, which resolves on a different setting, so the collection
+    # was created and later counted on one server while the snapshot was
+    # uploaded to another whenever the two differed - an empty collection
+    # left behind on the wrong host and a vectors_count read from a
+    # collection that never received the data.
+    #
+    # The availability probe is kept, and moved onto that same store. The
+    # old one connected to the general server and called get_collections()
+    # on it, which is a real reachability check aimed at the wrong host: it
+    # passed while the CWICR target was down and refused while it was fine.
+    # It has to stay in some form, because it is what stands between an
+    # unreachable server and a 1.1 GB download that can only fail after it
+    # finishes. Probing the store the upload actually targets is the whole
+    # of the fix; deleting the probe as "redundant" would restore the wait.
+    #
+    # One property is deliberately not carried over. The old probe built a
+    # throwaway client with timeout=2s; this one uses the shared CWICR
+    # client and so inherits the qdrant-client default instead. Passing 2s
+    # into _get_client would reach the ranker too, where a two-second
+    # ceiling on a real search over a large collection is a bug rather than
+    # a safeguard. A few extra seconds on a failure path that precedes a
+    # 1.1 GB download is not worth a second connection path to maintain.
+    try:
+        client = _get_client()
+        await asyncio.to_thread(client.get_collections)
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except Exception as exc:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "Qdrant not available. Start Qdrant: docker run -p 6333:6333 qdrant/qdrant",
-        )
+            f"CWICR Qdrant at {target.location} is not reachable: {exc}",
+        ) from exc
 
     snapshot_path = _GITHUB_SNAPSHOT_FILES.get(db_id)
     if not snapshot_path:
@@ -2245,7 +2356,11 @@ async def restore_qdrant_snapshot(
 
         target_url = _v3_qdrant_url()
         if not target_url:  # nowhere to send the restore request
-            detail = "Qdrant URL not configured - set QDRANT_URL or CWICR_QDRANT_URL"
+            # Unreachable in practice: the same resolution refused at the top
+            # of this handler, before the download. Kept correct rather than
+            # kept stale, and no longer offering QDRANT_URL as a remedy - it
+            # is not one, because the ranker never reads it.
+            detail = describe_server_write_mismatch() or "Qdrant URL not configured - set CWICR_QDRANT_URL"
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail)
         restore_kwargs = {
             "qdrant_url": target_url,
@@ -2371,16 +2486,23 @@ def _snapshot_error_hint(err: str) -> str | None:
 def _v3_qdrant_url() -> str | None:
     """Resolve the server-mode Qdrant URL for the v3 catalogue path.
 
-    Prefers ``settings.cwicr_qdrant_url`` (the dedicated v3 setting);
-    falls back to ``settings.qdrant_url`` which the legacy adapter uses
-    - in single-server dev they point at the same instance and the
-    fallback removes one configuration step. Returns ``None`` when
-    neither is set so the caller can surface a clear "no server" error.
-    """
-    from app.config import get_settings
+    Returns ``None`` when the store this install actually searches is the
+    embedded one, so a caller can surface a clear "no server" error.
 
-    s = get_settings()
-    return getattr(s, "cwicr_qdrant_url", None) or getattr(s, "qdrant_url", None)
+    This used to fall back to ``settings.qdrant_url`` on the grounds that
+    "in single-server dev they point at the same instance and the fallback
+    removes one configuration step". They do not point at the same instance
+    by default: ``qdrant_url`` is defaulted to ``http://localhost:6333``
+    and ``cwicr_qdrant_url`` is not defaulted at all, so the fallback made
+    this helper name a server on a fresh install while the ranker opened
+    the embedded store. The saved configuration step cost a silent wrong
+    answer on the default path, which is why it now resolves through the
+    single shared resolution instead.
+    """
+    from app.modules.costs.qdrant_adapter import resolve_cwicr_target
+
+    target = resolve_cwicr_target()
+    return target.location if target.is_server else None
 
 
 def _demo_mode_enabled() -> bool:
@@ -2399,7 +2521,7 @@ def _demo_mode_enabled() -> bool:
 
 @router.get("/catalogues-v3/")
 async def list_v3_catalogues() -> dict:
-    """List the 30 CWICR v3 catalogues with install status.
+    """List the 48 CWICR v3 catalogues with install status.
 
     Frontend powers the `/setup/databases` "Quick install from DDC" grid
     from this endpoint. Each row gets a flag, name, currency, size,
@@ -2424,7 +2546,7 @@ async def list_v3_catalogues() -> dict:
     qdrant_url = _v3_qdrant_url()
 
     # Probe Qdrant once for the whole list. A single REST call is much
-    # cheaper than per-region collection lookups, especially for the 30
+    # cheaper than per-region collection lookups, especially for the 48
     # cards where most regions share a language collection anyway.
     server_collections: set[str] = set()
     server_reachable = False
@@ -2544,12 +2666,15 @@ async def install_v3_catalogue(
             "OpenConstructionERP on your own machine: pip install openconstructionerp.",
         )
 
+    from app.modules.costs.qdrant_adapter import describe_server_write_mismatch
+
     qdrant_url = _v3_qdrant_url()
     if not qdrant_url:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "No Qdrant server configured. Set CWICR_QDRANT_URL or QDRANT_URL "
-            "and ensure the server is reachable (docker compose up -d qdrant).",
+            describe_server_write_mismatch()
+            or "No Qdrant server configured. Set CWICR_QDRANT_URL and ensure the server "
+            "is reachable (docker compose up -d qdrant).",
         )
 
     start = time.monotonic()
@@ -3110,7 +3235,15 @@ async def _enforce_item_catalog_ownership(
     await catalog_service.get_owned_catalog(item.catalog_id, owner_id=owner_id, is_admin=is_admin)
 
 
-@router.get("/{item_id}")
+# The ``:uuid`` convertor is load-bearing, do not drop it back to a bare
+# ``{item_id}``. Starlette matches routes in registration order, so an
+# unconstrained catch-all here swallows every later single-segment literal
+# route in this router - ``/base-catalog`` (registered ~1300 lines below) was
+# read as an item id, the UUID parse failed, and the caller got an opaque
+# ``400 {"error": "Invalid request"}`` from the path-param sanitiser in
+# app.main instead of the catalogue. Constraining the convertor makes the
+# literal routes win and turns a genuinely unknown path back into a 404.
+@router.get("/{item_id:uuid}")
 async def get_cost_item(
     item_id: uuid.UUID,
     user: OptionalUserPayload,
@@ -3180,7 +3313,8 @@ async def preview_mass_apply(
 
 
 @router.patch(
-    "/{item_id}",
+    # Same ``:uuid`` constraint as the read route above, for the same reason.
+    "/{item_id:uuid}",
     response_model=CostItemResponse,
     dependencies=[Depends(RequirePermission("costs.update"))],
 )
@@ -3209,7 +3343,8 @@ async def update_cost_item(
 
 
 @router.delete(
-    "/{item_id}",
+    # Same ``:uuid`` constraint as the read route above, for the same reason.
+    "/{item_id:uuid}",
     status_code=204,
     dependencies=[Depends(RequirePermission("costs.delete"))],
 )
@@ -4491,6 +4626,16 @@ async def get_base_catalog(session: SessionDep) -> dict:
     # is public reference content (no confidentiality), and gating it to
     # editor+ would block viewers from completing onboarding. Permission
     # ``costs.read`` (VIEWER level) is used instead of ``costs.create``.
+    #
+    # Deliberately viewer-level even though the sibling
+    # ``/base-market/{base_region}/{market_token}`` is editor-level, so please
+    # do not "even these up". This one only ever populates a region that was
+    # empty: it early-returns ``already_loaded`` when the region has rows, and
+    # only swaps the work-item language when ``imported > 0``. It therefore
+    # cannot overwrite established shared state the way the market switch can,
+    # and it sits in the first-run path (the onboarding wizard and the database
+    # setup page), where raising the gate would lock a viewer out of the very
+    # step they are in the middle of.
     dependencies=[Depends(RequirePermission("costs.read"))],
 )
 async def load_cwicr_database(

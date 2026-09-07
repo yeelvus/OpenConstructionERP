@@ -59,9 +59,21 @@ export interface KpiDefinition {
   is_system: boolean;
   /** Null means the definition is company-wide and shows on every project. */
   project_id: string | null;
+  /**
+   * What one value of this KPI is a value OF.
+   *
+   * `project` is what every definition registered before this field existed
+   * means, and stays the default. `estimate` says the KPI is only readable
+   * one bill at a time, which is the honest reading for anything normalised:
+   * a project holding several separately quoted estimates has one figure per
+   * estimate and no meaningful average of them.
+   */
+  scope: KpiScope;
   created_at: string;
   updated_at: string;
 }
+
+export type KpiScope = 'project' | 'estimate';
 
 export interface KpiHistoryPoint {
   period_start: string;
@@ -301,10 +313,14 @@ export function listKpis(params?: {
 
 export function getKpiHistory(
   code: string,
-  params?: { project_id?: string; limit?: number },
+  params?: { project_id?: string; boq_id?: string; limit?: number },
 ): Promise<KpiHistoryResponse> {
   const qs = new URLSearchParams();
   if (params?.project_id) qs.set('project_id', params.project_id);
+  // Narrows the trend to one estimate. Omitting it is the project-level
+  // series, which is what every stored point was before estimates existed -
+  // the server reads the absence as `boq_id IS NULL` rather than as "any".
+  if (params?.boq_id) qs.set('boq_id', params.boq_id);
   if (params?.limit !== undefined) qs.set('limit', String(params.limit));
   const q = qs.toString();
   return apiGet<KpiHistoryResponse>(
@@ -316,6 +332,16 @@ export function computeKpi(
   code: string,
   payload: {
     project_id?: string | null;
+    /**
+     * Read one estimate rather than the whole project.
+     *
+     * The server resolves it to the project that owns it and checks access
+     * against that, so passing it alone is enough and passing a `project_id`
+     * that disagrees with it is refused rather than silently resolved.
+     * A KPI that cannot be read per estimate answers 422 instead of
+     * returning the project figure under the estimate's name.
+     */
+    boq_id?: string | null;
     period_start?: string | null;
     period_end?: string | null;
     filters?: Record<string, unknown>;
@@ -326,6 +352,135 @@ export function computeKpi(
     `${BASE}/kpis/${encodeURIComponent(code)}/compute`,
     payload,
   );
+}
+
+/* ── Custom KPI (issue #441) ──────────────────────────────────────────── */
+
+/** A field kind decides which aggregations and filter operators it accepts. */
+export type KpiSpecFieldKind = 'numeric' | 'text' | 'uuid' | 'bool';
+
+export interface KpiSpecField {
+  name: string;
+  kind: KpiSpecFieldKind;
+}
+
+export interface KpiSpecJsonPathField {
+  name: string;
+  kind: KpiSpecFieldKind;
+  /** The shape to show, e.g. `classification.<key>`. */
+  example: string;
+}
+
+/** One entity a custom KPI may aggregate over, as the catalog describes it. */
+export interface KpiSpecEntity {
+  name: string;
+  source_module: string;
+  description: string;
+  fields: KpiSpecField[];
+  /** Fields that can be measured. */
+  numeric_fields: string[];
+  /** Fields a breakdown can be keyed by, or a group labelled with. */
+  groupable_fields: string[];
+  /**
+   * Id field -> the field that names it.
+   *
+   * Grouping by an id gives a breakdown keyed by identifiers, and the
+   * server fills the label in from this map when the spec leaves it out.
+   * The form reads the same map so what it shows is what will be stored.
+   */
+  display_name_for: Record<string, string>;
+  /**
+   * JSON columns a `<column>.<key>` path may be built on.
+   *
+   * There is no finite list of paths to offer - the keys live in the data,
+   * because these columns hold classification schemes - so the picker offers
+   * the column and prompts for the key.
+   */
+  json_path_fields: KpiSpecJsonPathField[];
+  /**
+   * Whether one row of this entity belongs to exactly one estimate.
+   *
+   * False for `project`, whose one row per building is what makes its floor
+   * area worth measuring, and for `cost_item_usage`, whose ledger records
+   * which project a rate was applied to and not which bill. Offering
+   * estimate scope on those would be offering the project's number under an
+   * estimate's label.
+   */
+  narrows_to_estimate: boolean;
+}
+
+/**
+ * The whole vocabulary a spec may be written in, served by the backend.
+ *
+ * The form is built from this rather than from a copy kept here: the
+ * whitelist is the server's to define, and a picker offering a field the
+ * server has since dropped would only be refused on submit.
+ */
+export interface KpiSpecCatalog {
+  entities: KpiSpecEntity[];
+  aggregations: string[];
+  filter_operators: string[];
+  max_breakdown_groups: number;
+}
+
+export interface KpiSpecFilter {
+  field: string;
+  op: string;
+  /** `is_null` / `not_null` carry none; `in` carries a list. */
+  value?: unknown;
+}
+
+export interface KpiSpec {
+  entity: string;
+  aggregation: string;
+  /** Every aggregation but `count` needs a numeric field. */
+  field?: string;
+  /** `weighted_avg` only. */
+  weight_field?: string;
+  /** Keys the breakdown. */
+  group_by?: string;
+  /** Names each group of the breakdown, so ids read as words. */
+  label_field?: string;
+  filters?: KpiSpecFilter[];
+}
+
+export interface CreateKpiPayload {
+  code: string;
+  name: string;
+  description?: string;
+  unit?: string;
+  target_default?: number | string | null;
+  /** How stored values roll up over time - not what the KPI measures. */
+  aggregation?: string;
+  category?: KpiCategory;
+  project_id?: string | null;
+  /**
+   * Defaults to `project`. `estimate` is refused at creation when the spec's
+   * entity has no estimate of its own, rather than accepted and found
+   * unanswerable once it is on a dashboard.
+   */
+  scope?: KpiScope;
+  spec: KpiSpec;
+}
+
+export function getKpiSpecCatalog(): Promise<KpiSpecCatalog> {
+  return apiGet<KpiSpecCatalog>(`${BASE}/kpis/spec-catalog`);
+}
+
+/**
+ * Register a custom KPI.
+ *
+ * A 422 carries `{path, value, allowed, message}` naming the part of the
+ * spec that was refused; `getErrorMessage` surfaces the message, which
+ * already starts with that path.
+ */
+export function createKpi(payload: CreateKpiPayload): Promise<KpiDefinition> {
+  return apiPost<KpiDefinition>(`${BASE}/kpis`, payload);
+}
+
+/** Delete a custom KPI. Refused with 409 while anything still reads it. */
+export function deleteKpi(code: string): Promise<void> {
+  return apiDelete<void>(`${BASE}/kpis/${encodeURIComponent(code)}`);
 }
 
 /* ── Dashboards ───────────────────────────────────────────────────────── */

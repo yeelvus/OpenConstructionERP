@@ -1,6 +1,6 @@
 # OpenConstructionERP documentation
 
-OpenConstructionERP is an open, self-hosted platform for construction estimating and project delivery. It covers the whole job in one place: build a bill of quantities, take off quantities from drawings and models, price the work against national cost bases, turn a BIM model into cost and carbon, run a tender, plan and control the programme, and capture what happens on site. It is modular, so you enable only the parts you need, and more than 160 modules ship in the box.
+OpenConstructionERP is an open, self-hosted platform for construction estimating and project delivery. It covers the whole job in one place: build a bill of quantities, take off quantities from drawings and models, price the work against national cost bases, turn a BIM model into cost and carbon, run a tender, plan and control the programme, and capture what happens on site. It is modular, so you enable only the parts you need, and 190 modules ship in the box.
 
 This page is the map for the written documentation. Pick the path that matches why you are here, or scroll the sections below.
 
@@ -35,6 +35,8 @@ Price, check, deliver:
 
 - [World cost bases and multi-base comparison](./user-guide/world-cost-bases.md) - what the national cost databases are and how currency-aware pricing and cross-region comparison work.
 - [Importing your own cost database](./cost-database-import.md) - load your rates from Excel or CSV, as a flat rate sheet or as resource-based assemblies, straight into the cost database.
+- [Building a regional cost database](./US_COST_DATABASE_METHODOLOGY.md) - the decisions to make before you collect any numbers, where rates come from, and how to tell whether the result is defensible.
+- [A worked example](./US_COST_DATABASE_PILOT.md) - the whole pipeline end to end on the two template files that ship in this repository, with figures you can reproduce.
 
 ## Modules
 
@@ -46,6 +48,7 @@ For developers extending or building on OpenConstructionERP.
 
 - [Platform and builder guide](./platform/README.md) - the developer story: the module loader, manifests, auto-discovery, events, hooks, and the first-module tutorial.
 - [Module development quickstart](./module-development/quickstart.md) - zero to a running module in about ten minutes.
+- [Frontend module development guide](../frontend/src/modules/MODULE_DEVELOPMENT_GUIDE.md) - the other half of the job. The quickstart above builds the Python package that serves the data; this one builds the React screen that shows it, covering the `manifest.ts` that declares routes, nav rows and bundled translations, registering it in the module registry, and the shared conventions for fetching from the API, toasts, UI components and vitest tests. One caveat while reading it: its translation steps still describe editing per-language blocks inside `frontend/src/app/i18n.ts`, which is no longer where the strings live. Each language now has its own file under `frontend/src/app/locales/`.
 - [BOQ importer plugin walkthrough](./module-development/boq-importer-plugin.md) - a worked example that builds a real import module.
 - Live API reference: a running instance publishes an interactive OpenAPI reference at `/docs`, and every module mounts its endpoints under `/api/v1/<module>/`.
 
@@ -65,7 +68,9 @@ For developers extending or building on OpenConstructionERP.
 
 - [Linux install guide](./INSTALL_LINUX.md) - set up on a server.
 - [Desktop install guide](./desktop/INSTALL.md) - set up on a workstation.
+- [Desktop remote server](./desktop/REMOTE_SERVER.md) - point desktop installations at one server your organisation already runs, instead of a separate database per desk.
 - [Email and SMTP setup](./email-setup.md) - configure outbound mail for password resets, tender invitations and notifications, pick the right port, and check whether it is working.
+- [Backup freshness monitoring](./backup-monitoring.md) - point the staleness check at your database dumps, set the age threshold to match your backup schedule, and route the three exit codes so a backup that quietly stopped is heard.
 
 ## How the platform fits together
 

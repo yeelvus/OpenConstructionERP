@@ -61,7 +61,7 @@ import {
   type CreateSubmissionPayload,
 } from './api';
 import { authoritySubmissionGuide } from './authoritySubmissionGuide';
-import { fmtFixed } from '@/shared/lib/formatters';
+import { fmtList, fmtFixed } from '@/shared/lib/formatters';
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
 
@@ -374,7 +374,7 @@ function ValidationReportCard({ report }: { report: Submission['validation_repor
       {report.missing_required.length > 0 && (
         <p className="text-content-secondary">
           {t('authority_submission.missing_required', { defaultValue: 'Missing required:' })}{' '}
-          {report.missing_required.join(', ')}
+          {fmtList(report.missing_required)}
         </p>
       )}
       {report.type_mismatches.length > 0 && (
@@ -1014,7 +1014,7 @@ export function AuthoritySubmissionPage() {
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as SubmissionStatus | '')}
             aria-label={t('authority_submission.filter_all_status', { defaultValue: 'All Statuses' })}
-            className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-44"
+            className="h-10 appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-44"
           >
             <option value="">
               {t('authority_submission.filter_all_status', { defaultValue: 'All Statuses' })}

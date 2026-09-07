@@ -5,6 +5,1425 @@ All notable changes to OpenConstructionERP are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [17.0.2] - 2026-09-07
+
+This is the release that actually reaches PyPI. Both 17.0.0 and 17.0.1 are tagged and neither put a package there, so `pip install openconstructionerp` has been serving 16.9.0 throughout. 17.0.1 repaired the build and was then refused at upload for a second, unrelated reason: PyPI limits the total stored size of a project as well as the size of each file, and this project holds 10164 MiB of a 10 GiB allowance across 336 versions, which leaves less room than one wheel needs. Nothing that 17.0.0 or 17.0.1 describes is withdrawn or changed, and this release carries all of it.
+
+The wheel is about 72.8 MiB rather than about 86. Two showcase artefacts no longer ship in it: a 10.18 MiB exported snapshot, which was the single largest file in the package and the committed output of a developer script, and 3.05 MiB of showcase geometry. Nothing in the running application reads either of them. The readers are still in the package, the source files are still in the repository, and the flagship demo assets that the server does load on every start are untouched, so there is no user-visible difference. The check that measures the wheel before publishing now reads the project total as well as the file size; it had been asserting the per-file limit carefully while a differently named limit was the one being hit.
+
+This is the last release that fits. After it the project has roughly 3.7 MiB of headroom, so the next one cannot be published at any size until the project's PyPI allowance is raised or old releases are removed to free space. Both of those are account actions rather than code changes.
+
+## [17.0.1] - 2026-09-07
+
+Version 17.0.0 published its release notes and nothing else: no package, no container image and none of the four desktop installers. Seven test files still passed an option to the translation library that its version 26 had removed, and the frontend type check rejects it, so every build that produces something a user installs failed on the same eight lines. Nothing that 17.0.0 describes is withdrawn or changed. This release carries all of it with the build repaired, and it is the version to install.
+
+The option is replaced by the name version 26 gives the same behaviour. That behaviour matters here rather than being a spelling: each of these files starts the translation library without waiting for it and then reads the active language immediately, so an initialisation that deferred would leave them reading a library that had not finished starting. The removed option had in fact been doing nothing at all since the library was upgraded, because it no longer exists in the shipped code either, only in the calls that still named it.
+
+The gate that let this through was green and honest, which is the part worth recording. Neither of the two checks we treat as authoritative type checks the frontend, so both passed on the tagged commit while all three of the workflows a tag triggers build the frontend and all three failed. The check that does type check it had already gone red on that same commit and was not read before the tag was cut.
+
+## [17.0.0] - 2026-09-07
+
+Every screen that opens a PDF now goes through one binding, and that binding ships the decoders a scanned drawing needs. Five viewers configured the PDF library independently: the markup annotator, the drawing comparison, the plan room, the punch pin board and the takeoff viewer. Since version 5 the library fetches WebAssembly decoders for JBIG2 and JPEG 2000 images and an ICC profile for CMYK colour from paths the host has to supply, and a viewer that does not supply them draws a blank page for exactly the scanned drawings a takeoff receives most often. Five separate configurations meant five chances to get that wrong and no way to fix it once. There is now a single place that names the library, the decoders are published under a path carrying the library's version, and the version in that path is load bearing: those files keep their names between releases and everything under assets is served as immutable for a year, so without it a future upgrade would pair a new worker with a decoder cached from the old one. The binding takes the conservative build on purpose, because the default one expects browser features that a desktop WebView on an older macOS and a browser in a site office do not have. Two library functions that no longer exist are handled rather than guarded around, so no viewer can go on calling a method that was removed while leaking the parsed document for the life of the tab.
+
+The case hub opens on the reader's own market. The shelf used to be ordered by country code, which in a German interface read Australien, Brasilien, Kanada, China, Deutschland and put the reader's own market fifth and unmarked, in an order that is alphabetical in no language. It now opens with that market, says so on a badge, and ranks the rest by how many cases they hold, using the total rather than the count under the current filters so that choosing a company type never reshuffles the tiles under the cursor. The chosen market is carried in the address, which answers the reader who is sent a link rather than only the reader who comes back: a filtered hub used to read as the bare catalogue address, so a colleague pasting a link, or a regional pack's own onboarding, handed the receiver their own stored market or none at all. Each tile also says where its regional pack stands, applied, present but switched off, or absent from this build, and says nothing at all while the pack list is still in flight, because no pack is the wrong answer for every market that has one and would flip a moment later. Search now matches a market's name in the reader's language as well as its English name and its country code, since typing the country you work in is the most natural question this page can be asked and it used to answer that nothing matched.
+
+The guided cases are now written in Russian and Chinese. Six hundred and twenty six keys covering the step by step pages, what you put in, what comes out, what a step is for and why it matters, for work like issuing a compliant XRechnung, running the VOB payment clock and closing a month against a KS-2 act. Both languages were reading those pages in English. German document names are deliberately left in German where they name a document rather than describe one, because a Russian reader working a German payment case needs to recognise Abschlagsrechnung and GAEB X84 Hauptangebot on the paperwork in front of them, and translating those would make the page harder to use rather than easier. A further two hundred and eighty two keys were filled across German, Spanish, French, Portuguese, Russian and Chinese, covering property development, advanced health and safety, management of change, risk, meetings, approval routes and the BIM rule screens.
+
+Czech and Romanian have their accents back across a wide stretch of the interface, and two new checks make sure they stay. Words were shipping stripped of their diacritics in files that spell those same words correctly everywhere else, which makes them different words rather than untidy ones. Each was written out by hand in the spelling its own file already uses in quantity, never restored by a pass over the file that adds marks by rule, because that pass is what once turned the German locale into non words. One Romanian repair shows why the distinction matters. A single commit rewrote three strings, and the five letters baza occur in two of them with opposite verdicts: moneda de baza had to gain its mark and became moneda de bază, while pe baza a ce s-a cheltuit was left exactly as it stood, because there the same letters are the definite form and already correct. The second of those sits inside a string that same commit was editing anyway, for three other words in it, so a pass adding marks by rule would have had its hands on the correct word too. A word list is not enough on its own either, and one candidate word was dropped from a list of eighteen after reading all twenty one of its occurrences and finding every one of them an English abbreviation, a loanword compound or a data exchange code rather than the Romanian preposition it looks like. The two checks that now guard this are worth describing, because repairing this class of defect creates work rather than finishing it: fixing a bare word removes the cover that was hiding other bare words, so the detector reports more the moment a repair lands, and that is the repair working rather than a regression.
+
+A bug report can no longer be filed with no description. The report used to accept an empty body and send it, which produces a ticket nobody can act on and a reporter who believes they have been heard.
+
+## [16.9.0] - 2026-09-06
+
+The dashboard now leads with the cases written for the country the reader works in. Eighty of the 220 guided cases name a market, and until now nothing on the front page said so: a site manager in Germany opened seventeen tiles of which none was necessarily German, while thirteen German cases sat in the catalogue behind a market row they had to know to look for. The new card decides which market to lead with in three steps and says out loud which one answered. An applied regional pack goes first, because switching a pack on is a plainer statement about where somebody works than the language their software is in, and a German speaker on a United States job is not a rare shape. Then the country the language registry declares, through the same helper the catalogue already orders itself by, so the hub and the dashboard can never disagree about what a language means. Then, and only for a language whose own country has no cases, the nearest market its readers work to. That third step is a suggestion and it is worded as one: a reader in Chile is offered the Spanish cases under a heading that says cases by market rather than cases for your market, because telling somebody in Santiago that Spanish payment law is theirs would be worse than saying nothing. Below the cases sits every market that has any, the reader's own first and the rest by how many they hold, as chips that switch the list in place. Pressing a chip is looking rather than choosing, so it does not quietly narrow the catalogue the reader opens next; only the button that names a market hands one to the hub. A case whose market has a pack on disk that is switched off says which pack it needs, in the same words the catalogue's own strip uses.
+
+A quantity can now be measured by hand, with no drawing and no model. Not every quantity comes from a file, and the ones that do not were the ones the product had nothing to say about: a length paced on site, a count made from a photograph, a figure a subcontractor gave over the phone. They were typed into the bill as a number with the working kept somewhere else, usually a spreadsheet nobody else can find, and a figure whose derivation is missing is a figure that cannot be checked, which is the whole premise of measurement. A bill position now carries a measurement sheet. Each line has a description, how many times it repeats, up to three dimensions and a plus or minus, and shows its own subtotal; the sheet shows the measured total beside the position's current quantity and says by how much the two differ, and applying it writes the total into the quantity while keeping the lines under the position, so the number can be traced back to where it came from. A locked bill shows the sheet and lets nobody change it. The engine behind this had shipped several releases ago, measurement lines, a safe formula evaluator, the REB 23.003 and OENORM A 2063 presets and both endpoints, and nothing in the interface had ever called any of it, which is a particular kind of waste: the hard half was done and the answer to the person asking was still no.
+
+The case catalogue now speaks the reader's language in far more of it. Card strings for the newest market cases went into thirty locales, the ten Indian cases were finished in Bengali, the Spanish market steps were written in Chilean and Colombian Spanish, and eighty cards were translated for both of those locales. The card tier is genuinely complete in twenty nine languages now, which is what the reader meets first: a case whose title and description arrive in English tells a reader in Warsaw or Bangkok that this catalogue was not written for them, whatever the steps inside it say. A ratchet records what each locale already answers and fails the build when a locale answers less, so the work cannot quietly regress, and the floor is measured from the committed tree rather than from anybody's working copy, which it has to be: measured from a working copy it twice recorded translations that were never committed and then failed every push over a regression that had not happened.
+
+Two desktop faults are fixed. Showing a file in its folder did nothing at all, because the command that does it had been registered inside the test module rather than in the handler list, so the build carried the code and never exposed it. And a forced stop used to leave its unpacked copies behind, which accumulate, so the sweep clears them and the launcher no longer forces the stop that produced them.
+
+Six locale bundles were briefly committed in a state where they could not be parsed at all, which is worth recording because the fix is a gate rather than an apology. The strings were correct on disk every time. They were staged through a patch taken with no context lines, and a patch like that carries only line numbers, so when it is applied to an index that does not share the working tree's line numbers the keys land past the brace that closes the translations, some of them after the file's export. Every check that ran read the working tree, where nothing was wrong. There is now a check that reads what is actually being committed, and the compiler's own parser answers it, since the compiler is the only reader whose opinion decides whether the application starts.
+
+Smaller corrections, each found by reading rather than by a gate. Five words were wrong in shipped locales. The last of the geographic base layer keys and a lock label were still resolving to English. The Geo Hub's second step shipped without its accents in Chilean and Colombian Spanish, where the words it uses carry them and the versions without are different words. And the measurement sheet's add or deduct column is written the same way in every language we ship, so it is recorded as a symbol rather than being reported forever as an untranslated string. Czech lost its accents in two places and has them back: ten module names in the catalogue, which offered Rizeni projektu and Seznam nedodelku while the same file spells those words with their accents everywhere else, and seven help texts around the development and clash pages. Each one is written out by hand in the spelling the file already uses in quantity, rather than by a pass over the file that restores marks by rule, which is exactly the pass that once turned the German locale into non words.
+
+The build machinery moved forward in two places that had been left behind: the frontend builds on Node 24 everywhere the container image already did, and the desktop packaging action is on its current major version.
+
+## [16.8.3] - 2026-09-06
+
+A case page named a market and then said nothing about the pack that carries its standards. Filtering the catalogue to Germany gave thirteen cards each announcing that German standards apply, with nothing on that screen to act on, because the control that installs a regional pack existed only inside a case a reader had already opened, which is after the point where they choose the market they work in. Each card whose market has a pack now carries a one line strip naming what the case needs, and the market band carries the full offer once a market is selected, since a pack is a property of the market rather than of thirteen separate cards. The strip opens the same dialog the modules page and the case page already open, so there is one install path and not a second one: a dry run of what would change, an explicit confirm for any module it would switch off, then a streamed install with named steps. Pressing the strip applies nothing. Three states and no fourth. A pack on disk and switched off offers to set it up, an applied pack reads as a statement because there is nothing left to press, and a reader who is not an administrator is told so in words, since the server guards the apply with an administrator role and self registration hands out a viewer. A market with no pack renders nothing at all, which is the right answer for the 140 of 220 cases that name no market.
+
+Thirty three of the eighty cases that do name a market resolve no pack on a released install, and all thirty three used to render nothing: no control, no explanation and no route anywhere. It could not be reproduced from a checkout, which is why it lasted. The source tree carries twenty packs and the wheel force includes seventeen, so Germany and Canada resolve a pack while developing and resolve nothing on the build a user installs, and ten Spanish cases are empty for a different reason again, since no pack declares Spain at all. Silence was the wrong answer to both, because nothing on the screen separated a case that needs no pack from a market whose pack is not in this build. The second is now stated in words and linked to the module registry, where uploading a pack is a real route rather than a dead end. That link is administrator only, because the controls it leads to are administrator only on the server and sending a viewer there would offer an action that screen cannot give them. The absence is claimed only once the server has answered, since a panel keyed on an empty result alone would put a false line on every case page for as long as the request takes.
+
+A pack that ships in the community wheel reached no market at all. The country of a pack falls back to the region subtag of its default locale when the manifest names no country, and the retail pack for German speaking Europe carries a bare locale with no subtag to take, so the fallback yielded nothing and the matcher matched it against nothing. It was force included and live, so this shipped rather than being theoretical, and it was invisible because a pack that matches no market looks exactly like a pack nobody asked for. The manifest declares XX now, the documented value for a pack serving no single market and the one both sibling industry packs already carry, rather than a country it does not exclusively serve. The visible outcome is unchanged and it is now what the manifest states rather than what a missing field happened to produce.
+
+A country case used to be a whole page written again, so nine countries meant nine copies of one workflow, and the pack list is longer than nine. The composer that produced the eight jurisdiction pages shipped earlier was never in the tree, so the repository carried the pages and not the thing that makes them. The workflow is written once as a spine with slots, and a country is a small file saying which steps it surfaces, in what order, and what its own words are for the things those slots name. Nothing downstream changes, since it writes an ordinary playbook and the existing generators run as before. Two rules are build gates rather than comments, because a rule that lives only in prose gets broken by the fifth country: two layers overriding the same spine step fails the build, and two slots that a sentence contrasts resolving to the same value fails as well. The second one is not hypothetical. A layer that gave the valuation and the payment document the same name composed a sentence asking the reader to raise a document against itself, which a hand written page never says because a person reads it.
+
+A separate check closes a hole nothing else could see. The pipeline localises by key, so rewording the English under an existing key leaves every other language serving a faithful translation of a sentence that no longer exists, while the key still resolves and no fallback report goes red. It runs as a ratchet, listing the keys already owed and failing on any other drift, so the existing debt is neither hidden nor quietly added to. Two test fixtures were rebuilt on the packs the wheel ships rather than the packs a checkout holds, which was the same defect in test form. One had been proving the pack strip on a market no release can install, so Germany was the best covered market in that suite and every assertion ran against a pack no user could reach. The other described itself as the wheel's own list while missing two of the packs the wheel force includes, and the two failure modes there are not equally visible: one market has no curated preset and offers nothing when its pack is missing, while the other falls back to a preset, which is a confident and plausible answer that is not the pack the user installed and the harder of the two to notice because it looks like success.
+
+## [16.8.2] - 2026-09-05
+
+The first person to open the application after a restart used to wait about a minute for the front page. FastAPI builds a route's dependency tree, its response model and its operation id the first time a request reaches route matching, for every route the router holds, at once and on the event loop. With 190 module routers mounted that measured 32.1 seconds against 0.04 for the second request, and the bill fell on whichever request arrived first rather than on an expensive one: the front page is a static file that touches no database and it paid the same 32 seconds a health check did, with everything issued alongside it queued behind. A health check sent at that moment answered 33.9 seconds later, five times the 12 second deadline the desktop launcher allows each poll, which is how a splash screen came to sit in front of a backend that was alive, listening and reporting itself unreachable. The work is not avoidable, so it happens during startup now, before the listening socket exists, where a client either cannot connect yet, which every launcher already handles and the boot log narrates a step at a time, or connects to a process that answers. The warm up is a synthetic request aimed at a path that matches nothing on purpose, because matching stops at the first route that matches and replaying a plausible request would have left every later router cold, which is the same defect moved somewhere harder to find. The API reference document is no longer built during startup either. It takes 73 seconds once the route table is warm and 134 on a first run, for 2923 paths, and its only readers are the three reference endpoints, none of which is on the startup path, so every launch spent a minute of a core filling a cache that most installations never read. Whoever opens one of those pages pays for it there instead, cached and locked exactly as before, and an operator serving them to other people can have the old behaviour back with OE_PRIME_OPENAPI_SCHEMA. Measured on one Windows machine with a warm data directory and no demo seed, the port used to accept at 110.6 seconds and the first page took 58.7 of the 169.8 seconds it took to arrive, with the process staying slow until 229. The port now accepts at 143.6 seconds with the route table already built, and the first page arrives in single digit seconds. Two runs of that last measurement disagree with each other and agree on the order of magnitude, so the order of magnitude is what is claimed here rather than a decimal only one of them supports.
+
+The project list drew the wrong kind of map. Every card painted one static tile of shaded relief at zoom 6, which is as deep as that source goes and carries no streets at any zoom, so the picture was geographically correct and of no use to anybody: a person opening a project list wants roads, street names and building footprints, and got landform. Nothing caught it because it looked like a map, the request answered 200 and the image decoded. Cards now render the vendored vector style through an offscreen map, read the canvas once and destroy the context, rather than holding a live one open for each of the dozen or so cards a grid shows at once, and the renders are serialised so a full grid still only ever has one context alive. Measured through a real graphics context rather than assumed: at zoom 15 six European cities came back with 95 to 235 road segments and 12 to 46 building footprints apiece, against zero buildings and zero street names at the zoom that was retired. Deliberately no tighter than that, because a card's coordinates often come from geocoding a city and a country, which answers with a centroid, and framing an arbitrary downtown block would hide from the reader that the pin is approximate. The relief tile stays on as the fallback, shown until the render arrives and kept if it never does, so a browser without WebGL still gets a picture instead of an empty box.
+
+The map on the project detail page had been two pixels tall. The shell went out carrying two height utilities at once, its own default and the one the page asked for, and appending the caller's class after the default does not decide which one applies: both names reach the emitted stylesheet and the one written last there wins, whatever order they sit in on the element. The page asked for 32rem, got a full height against an auto height parent, computed to 2 pixels, and the shell's own clipping cropped a live 300 pixel map canvas down to a hairline. Nothing could catch that except looking, because the map mounted, the canvas painted at the right size, the attribution was correct, no request failed and the console was clean. Two comments in the file asserted the opposite of the truth and are the reason it lasted, and both are corrected rather than deleted, because the next reader would otherwise derive the same wrong conclusion from them again. The default stands down now when the caller states a height of its own. A minimum height does not count as one, so the layout that pairs the two keeps working, and a height that only applies above a breakpoint does not count either, because treating it as a stated height would leave the element with no height at all below that breakpoint.
+
+A bill position answered a different norm depending on which endpoint you asked. The production norm behind a price shipped in 16.8.1 with the write side done and the headline read side not, because a position was turned into a response by two separate builders and only one of them knew about the new fields. Reading the whole bill returned the provenance, reading the single position returned nothing, with the value sitting in the column the whole time. The two builders had drifted on six fields in both directions, so the whole bill read had also been reporting the concurrency token as zero on every row and the two of them disagreed about a confidence figure. There is one builder now, and adding a field to it reaches every endpoint that returns a position. A row priced before the column existed still reads back empty and is repaired by being copied or by the backfill in the migration, which is the behaviour that was asked for.
+
+The API reference page fetched itself from a content delivery network. It served the stock page, which pulls its script from one external host, its fonts from another and its icon from a third, so on an install with no route out to the internet the shell arrived, nothing upgraded it, and the reader got a white page with nothing in the console to search for. Self-hosting is the premise of this platform rather than an edge case. The renderer now ships in the product at a pinned version, one route serves the assets of both API pages, the fonts are dropped rather than vendored so headings fall back to the system typeface, and the icon points at the install. It costs less on the wire than the assets already there and adds no dependency. Verified by rendering the page with every off-host request refused, and the one image request that still leaves the machine is written down in the test and the README rather than left to be found in a network log.
+
+A status check that answers without credentials could still launch four converter binaries. The converter listing takes a flag that runs a smoke test on every installed converter, and a smoke test is not a file stat: it starts the executable and waits up to eight seconds for it, four of those on a full install, for a caller who never signed in. The route next door asks for a permission for exactly that reason, and this one said in its own documentation that it stays open because it only looks at files, which was true of the default call and not of that one. The listing still answers everybody and no sign-in requirement was added. A caller without a usable token is declined the smoke test rather than refused the request, so the answer comes back in the shape every reader already handles, and all three callers that set the flag are things an operator does while signed in.
+
+Two build faults that had been invisible because git agreed with itself. Forty three ignore rules meant for the backend sat in the wrong file and were inert for the wheel build, so an internal defect log, two seeding scripts and 495 entries of a stale frontend bundle rode into a locally built archive, about eleven percent of it. Published releases build on clean runners and carry none of it, so the exposure was a hand made upload, and the source archive had no exclusion list protecting it at all. The rules move to where the build reads them, the wheel drops from 4698 entries to 4200 and from 96.6 to 85.8 MiB, and the tree guard gained the structural question instead of four more names: does the archive hold a file that git does not track.
+
+And 16.8.1 shipped with no desktop installers at all, which is fixed here in the machinery rather than in the product. The check that opens the built application ran all three of its legs against one port while the Windows helper process survives every stop signal available to it, so one process that would not die failed the whole job and took the four installers with it. Each leg now takes its own port instead of queueing behind the last one, all three report the same workspace so the restart leg is still proving what it was written to prove, and the command that was supposed to kill the helper no longer discards the message where it says it could not.
+
+The cost base browser answered an error to the address its own documentation gives, and showed a spinner for ever when it did. Routes match in registration order, and the costs router declared an unconstrained single segment catch all about 1300 lines above the literal base catalogue route, so the literal path was read as a cost item identifier, the parse failed, and the path sanitiser collapsed that into an opaque bad request which named nothing wrong because nothing was. The item routes take an identifier shape now, so the literal routes win and a genuinely unknown single segment path under that prefix answers not found rather than bad request. The trailing slash form had been reaching the handler all along, which is why the screens worked while the documented form did not. The other half is what a reader saw when a request did fail: that query does not retry, so a failure leaves the data undefined for good, and the import page, the database setup page and the onboarding wizard all read only the data and treated undefined as still loading. One frame meant both wait a moment and this is never arriving, with nothing on screen to say which, or that there was anything to be done about it. There is an error panel now that names what failed, quotes the reason the server gave, says the list comes from the server and offers a retry.
+
+Getting paid for a month of work is now written out in the words and the paperwork of eight more places: the boletim de medicao in Brazil, the estimacion invoiced as a CFDI in Mexico, the KS-2 act and the KS-3 certificate in Russia, the teljesitesigazolas in Hungary, the security of payment clock in Australia, a payment claim under the Construction Contracts Act in New Zealand, and the interim payment certificate in Saudi Arabia and South Africa. It is one case rather than eight, and that is the point of the shape: a single spine describes the job, each jurisdiction contributes a layer naming its own documents, deadlines and signatures, and a reader anywhere in that list meets the sequence they already follow rather than somebody else's with a note attached. The catalogue entries are translated into the four languages that carry the full catalogue, because a case added without them renders English to every reader of those languages and nothing else reports it, and a guard now fails the build rather than letting that ship. Uzbek is a smaller instance of the same thing: four cost strings had been written with a plain ASCII apostrophe, which is not the mark that language uses, and they are spelled properly again.
+
+## [16.8.1] - 2026-09-05
+
+A patch release, and most of it is money. An invoice total was written for a reader and then read back as a number, so from a thousand upwards the field came up empty and nine thousand left the browser as nine, while a reader whose decimal mark is a comma lost the cents off every invoice at any size. Nothing was stored wrong, and that is the rest of the story: the server replaced whatever total arrived with subtotal plus tax on every write, so the database stayed right while the client had been sending a truncated figure for weeks and nothing anywhere reported it. The total is entered plainly now, the server keeps a total the caller asserts and refuses one that does not add up, with two cents of tolerance and a cent a line for the rounding that accumulates, and the same formatter had been emptying the pitch box in the PDF take-off for exactly the same reason. Two older faults in that form turn up on the way. Typing only a total sent a subtotal of zero, and since the server derived the total from the subtotal the invoice was stored at zero beside a line item carrying the real figure. And a hand typed total that disagreed with subtotal plus tax was discarded without a word, so the manual override had never once reached an invoice; the disagreement is named on screen now, before the request is built.
+
+An approved invoice offered no way to record its payment. Approving moves an invoice to sent, which is what the state machine has written since the nomenclature was unified, and the Mark Paid button was still gated on the older status name, so it never appeared for the invoice that had just been approved and the payment could not be recorded from the register at all. The table row, the phone card and the card's action strip each tested the status themselves and now ask one shared question, so a fix cannot reach some of them and strand the rest. The edit modal was renaming the same state on its way to the screen, so one invoice read as Sent in the register and Approved in the editor, and the interface shows the state the machine wrote.
+
+Four modules in the project sidebar reported themselves empty on every install no matter how much data they held. The probe that decides whether to dim an entry asks each module's table whether the active project has a row in it, and Equipment, Service, Portal and Assets asked a question their schema cannot answer: three of those tables carry no project column at all and the asset register is a view over tracked BIM elements rather than a table. Each probe raised, the caller swallowed the error and answered no, so absent and broken read the same to the user. The cost was not only the wrong dimming. Every sweep sent four statements that were certain to fail, and each failure also forces a rollback, which in one reporter's launcher log covering seventy eight days came to ninety one thousand nine hundred and forty eight server side errors and nearly half of a fifty two megabyte file. Equipment and the portal user list take the company scope the contacts book already uses, service tickets reach a project through their contract, and assets are probed through their model.
+
+A Windows installation too deep to read itself was reported as a corrupted one. Windows caps a path at 259 characters for programs that do not declare long path support, and the bundled PostgreSQL binaries do not declare it, so the machine wide setting does nothing for them. An install deep enough to push its own support files past that cap cannot open them, the database tool reports them as missing and hints that the installation may be corrupt, and our message on top of that sent the reader to a reinstall that downloads eighty four megabytes into the same folder to fail the same way. The bring up now measures both directories before it creates a cluster and refuses with the path, its length, the limit and the fix, with the two numbers a reader can act on leading the line, because the folder that carries them runs past two hundred characters by construction on the machines this fires on and the line does not wrap. It only refuses while a cluster still has to be created, since a database that opened yesterday is proof the paths were once short enough, and the repair command runs the same measurement with no such condition.
+
+Three routes that answer without credentials described the machine while doing it. The converter version check returned the folder it was installed in, the converter listing returned the same folder twice, and the install progress poll carried both a path and a message quoting the install location back for the few minutes a finished record lingers. On a default install those paths sit under the operator's home directory, so what went to anyone who could reach the port was the home directory layout and the operating system account name of whoever runs the server. The routes stay open and stop describing the disk, which keeps the screens that call them before anyone signs in working. A caller asking whether a converter is installed is answered by whether it is installed, one asking whether a newer build exists is answered by comparing two checksums, and a signed in operator is still given the path, because the settings panel prints it and somebody repairing a broken install needs the folder name.
+
+The project header clipped its right edge in German and Russian, and the clipped part could not be scrolled to. A bare fractional grid track keeps a minimum of its own content, so where two of them share a row the longer language walks past its share and the row grows past the viewport. Eighteen track lists in the tree carried two or more of them and now hold a floor of zero. One of those, in the five whys panel, also separated its tracks with commas, which reaches the stylesheet as invalid CSS, so the browser had been dropping the declaration and collapsing that row to a single column in every language. Relative timestamps stayed English in all forty two languages, because the date library does not read the ambient language and quietly defaults to American English, and there is now one place that answers which locale a reader reads in and five call sites that ask it. Filipino, Kyrgyz and Urdu have no locale published and still fall back to English, which is named in the code and asserted rather than left to happen quietly. Nineteen German strings under element matching had their diacritics stripped in a single batch and are spelled properly again.
+
+A first boot told the user to add by hand what the seeder was about to write. The two seed reconcilers run from the data repair registry, which the application calls well before the seeder, so on a fresh data directory they met an empty table, read it as a database whose seed cannot be dated, and warned that the tax rates and the working calendars had to be entered manually. About seven minutes later eighty four tax lines and thirty six calendars arrived. An empty table is not an undatable database, it is an unseeded one, and the seeders fill this pair whenever they are empty, so the rows are always on their way. The warning is untouched where it is true, on a database that holds rows but none of the ones that date a seed, because that install really does need somebody to add them and this is the only notice it will ever get.
+
+The startup banner promised thirty seconds and put a green tick over an address that did not answer. Timed on a real first boot, the front page answered after about fifty seconds and the health endpoint after roughly eight minutes, most of that last figure being the demo seed, which a flag skips and which is a different number on the next machine anyway. Replacing one wrong number with another would only move the lie, so the line says what the wait is for, commits only to the order of magnitude both measurements agree on, and points at the startup log, which is already telling the truth a step at a time. The banner is still printed before the server starts listening, deliberately, because a boot taking minutes should put the address and the credentials in front of the user straight away, but beside an address a tick is an instruction, so it says the application is starting and no longer claims it is running.
+
+A validation run that finished between two ticks of the clock reported that it took no time. Durations were measured with a clock that on Windows is backed by the interrupt timer and advances about every sixteen milliseconds, so a pass over a few hundred rules already held in memory routinely started and finished on one reading, the report stored a duration of zero, and the page printed it as though the run had been measured and found instant. What rules out a genuinely instant run is the spread of the values that were stored, every one a whole number of ticks with nothing in between and nine of twenty five sitting at zero. The four places in validation that difference two readings use the high resolution clock now, and a short duration carries the two decimals that were always on the wire rather than being rounded back to the same zero an untimed run produces. Reports already stored keep the zeros they were measured with, since no change to a clock can reach a number written down months ago.
+
+A bill priced from a production norm can now be compared against what the job actually spent. The writing half of this shipped earlier and nothing read it: applying an assembly built from a norm recorded the norm in the position's metadata, which is enough to keep a fact and not enough to answer a question about it, so the comparison the feature exists for could not be run. The identity is a column now, backfilled from the bills priced in between, and it is derived at every writer rather than only at the first, so a duplicated line, a bill revision, a restored snapshot and a bulk import all carry it. There is no foreign key to the norm library on purpose, because a norm can be edited or deleted after a bill was priced from it and provenance that has to be resolved through a mutable row is not provenance, so the human readable work key survives the deletion of the row it names. The report answers one row per norm with what the bill predicted, what the library says today, what was installed, what was spent and the productivity between them. Four limits are deliberate and visible in the answer: a norm with nothing recorded against it is named as such rather than reported as perfect productivity, a norm used by several positions sums across them instead of averaging per line factors, the two baselines are reported apart, and a group whose positions are not in one unit says so rather than adding metres to square metres.
+
+A money figure on a custom dashboard can say which currency it is in. Every money measure a custom KPI can reach sits on the bill position, that entity offered no currency, and read across a portfolio, which is what happens whenever no project is named in the address bar, it added up every accessible project's lines whatever they were priced in with nothing in the result saying so. The demo data ships projects in four currencies, so a fresh install can produce that number. The currency is now a breakdown key and a filter, reached through the join the query already made. No figure on an existing dashboard changes, because making the headline of a grouped figure currency aware would change readings that are already saved, and that is a separate decision.
+
+An entity type the collaboration module does not lock at all answered not found rather than bad request. The tenant check that resolves a lock target to its owning project ran ahead of the list of types that can be locked, and a type with no resolver came back as a missing entity, which left the documented refusal unreachable and its guard with no callers. The check runs first now, on acquiring a lock and on looking one up. The allowlist is a static part of the published schema, so naming it tells a caller nothing about any row. The integration suite for this module had been failing since the tenant check landed, because every test locked a freshly minted identifier and an identifier belonging to no project is exactly what that check exists to refuse; it seeds a real bill position now, and nobody noticed because these tests run on a nightly lane that had been red for weeks.
+
+Two more things a running installation notices. Every start replayed the whole PostgreSQL log rather than the lines that start had written, and the compression library that reads archives is pinned away from a version that can hang on a malformed one.
+
+The API reference froze the whole application the first time anyone opened it. The document is large, 2922 paths and 3601 component schemas, and it was built on demand by whoever asked for it first, on the event loop, so on the 16.8.0 stand that one request took 141 seconds during which the process answered nothing at all, health checks included. Every later request came back from the cache in about a second, so the cost was in generating the document rather than in sending it. It is built during startup now, on a worker thread so requests keep being served while it runs, and after the module loader has mounted its routers, because a reference primed before those exist would be missing most of the API. A visitor arriving mid build waits on the same work instead of starting a second copy of it. The cached copy is also rebuilt when the route table changes, which it was not before, so a module an operator switched on at runtime no longer stays invisible in the reference until the next restart. The page itself loaded its script and its icon from two outside hosts and rendered as an empty shell on any install without outbound internet, and a self hosted server is the premise here rather than an edge case, so those files ship in the package. The alternative reference page keeps the stock route and still needs a network, which is recorded rather than fixed here. A production process publishes neither page, and it no longer spends those minutes building a document it has no route to hand out.
+
+The health reference named two conditions that drop an installation to degraded where the endpoint has seven, and told the reader to read the database field alongside the status to tell those two apart. Both halves were wrong and the method was the worse half: an operator whose install is degraded by a schema that no longer matches the models reads database ok, concludes a module failed to load, and goes looking in the boot log for something that is not there. All seven are named now, the five fields the sample document did not show are in it, and the polarity is stated for each, because it is not uniform and alerting on truthiness instead of on the exact value fires on every deployment whose database is not PostgreSQL. That correction was written after 16.8.0 was tagged, and the notes for 16.8.0 were briefly rewritten to describe it, which would have left a published version claiming a page it does not ship. Those notes were restored to what the tag carries and the correction belongs here instead.
+
+The front page counted from an older tree. The language picker offers forty two entries where the text said forty one in six places and the badge said twenty nine, the flag row advertised a language that is deliberately not offered so a reader who picked it would not find it in the app, the module count read one hundred and eighty in two places against one hundred and ninety in two others, the validation engine registers one hundred and forty two built in rules across thirty one sets rather than one hundred and twenty five across twenty nine, the dashboard holds twenty six widgets, the cost item badge said fifty five thousand where the rest of the page says a hundred and twenty thousand, and four table of contents links pointed at nothing. The guide to invoices described a lifecycle that skipped the state an approved invoice is actually in, and the note beside the empty table guards named one of their two callers. On the documentation page itself the download link for the walkthrough video pointed at a file that is not in the repository and answered a not found, and four of the sidebar entries were dead anchors, two of them still naming sections that had since been renamed and two pointing at cards that never carried an identifier at all.
+
+Seven sets of tests were repaired, and in six of them the test was the thing that was wrong. One compared a quantity against a number the interface stopped returning several majors ago, one asserted a preview row unconfirmed two lines after confirming the group whose state it mirrors, one expected a forbidden where the product deliberately answers not found so that a caller cannot use the status code to learn which projects exist, and one required the health endpoint to say healthy in a run that has no frontend build and therefore cannot produce that word. Another read every flag with a lookup that yields nothing for a missing key, so a renamed field would have passed every check without a word, which is silent exactly on the change most worth hearing about. The sixth was measuring an invoice tolerance only in the half of its range where the rule it tested applies. The seventh is the pair of integration suites for schedules and cost intelligence, which had gone stale against an authentication hardening and sent no credentials at all to routes that now require them, so eight of them were failing on the same rejection with no product code involved.
+
+None of that would have been seen for another month. The nightly lane that owns the integration and module suites, two hundred and sixty eight files that no other lane runs, had completed forty times in a row, failed forty times and succeeded never, and not one of those runs came from a push because the workflow had never had a push trigger. A month of red where every red looks exactly like the one before it is a slower way of not running the tests at all. The obvious repair, triggering it on every push, was measured and rejected: the concurrency ceiling on this repository is twenty jobs and main takes twenty five to fifty pushes a day, so adding thirty four jobs to each of them would queue the lane that does block a release behind the one that does not.
+
+## [16.8.0] - 2026-09-04
+
+This release is about the first ten minutes with the product: downloading it,
+installing it, opening it a second time, and moving to a new version. Almost
+everything here was found by running the thing we ship rather than by reading
+the code that builds it. It also carries everything that was prepared as 16.7.1
+and never published.
+
+The desktop application carried a file that documented itself as the frozen
+entry point and was not the frozen entry point. Every guard in it, including the
+one that stops a frozen build from misreading the command lines Python's own
+multiprocessing sends its children, has been dead in every artifact we ever
+released, because the build freezes a different file. On macOS the second launch
+died: the resource tracker re-executed the application with an instruction to
+run, the argument parser saw a command it did not recognise, and the process
+aborted while the launcher sat on "Starting the application server". The guard
+now lives where the build actually enters, it understands the interpreter flags
+a frozen build can carry before that instruction, and a pipeline step asserts it
+with no network so the check cannot be settled by luck.
+
+Two more defects came out of the same root. Every installed copy signed its
+tokens with the secret that is printed in the public source, because the routine
+that exists to replace that literal stood down for anything calling itself a
+development environment, and the desktop launcher calls itself exactly that.
+Existing installs will be signed out once, on the launch that provisions a real
+secret, and the sessions being invalidated are the ones anybody could have
+minted. And the model that powers semantic search was built three times at once
+on a restart: the worker pool warmed one job per worker in the same instant
+against a lazy singleton with nothing guarding it, on the assumption that the
+model had already been loaded by a step that only runs when an environment
+variable nobody sets is set.
+
+Removing that did not stop the macOS crash, and being wrong about it in public
+is worth more than being quietly right later. The second launch went on dying,
+which said plainly that building the model three times was a real defect but not
+this one. So the next round measured instead of guessing. The encoder had been
+constructed without naming a device, and a library left to choose picks Metal on
+any Apple Silicon machine; the pool then ran several encode calls at once
+against that one model object, inside a frozen bundle, which is a combination we
+neither test nor need. A frozen build and the desktop sidecar now name the CPU,
+a server install is still free to use its own accelerator, and anyone who wants
+the accelerator on their own desktop build can ask for it. The pipeline now
+starts the binary it ships and prints the device it chose, on a cold start and
+on a restart over existing data, because not printing it is why this took two
+rounds instead of one.
+
+A start that failed before any of our code ran was reported as our server failing.
+Not because the launcher guessed, but because there was nothing to guess from: a
+death during unpacking emits no stage marker and no traceback, so it fell past
+every branch that reads one and reached the last resort, which describes the
+application server because that is the only thing the launcher knows it started.
+A genuine crash still reports its own reason and always did. That last resort now
+recognises the shapes a bootloader failure takes, and every cause that already
+reported something specific reports exactly what it did before.
+
+The Windows installer asked whether the word python resolved to something, which
+on a stock Windows is a stub that opens a store page and exits zero. It now asks
+whether there is a Python it can actually use. Neither script a stranger runs
+first had a single test before this release. The Windows one now has thirty three
+cases and the shell one twenty seven, and a lane runs all of them on every change
+to either, the shell cases on Linux and on macOS because what broke in them was an
+interaction with the shell rather than anything a Windows runner would meet.
+
+That same installer then decided whether the product had come up by waiting for
+the word healthy and calling everything else a failure, and this release would
+have turned that into a lie. An enabled module that does not load now reports the
+installation as degraded, so a running, usable install would have announced itself
+as one that did not install, in the same release that made the state reachable. It
+now tells the three answers apart, and inside degraded it separates a module that
+did not load, where every page still works, from a database it cannot reach, where
+none do. The step that initialises the database was reading the exit code of a
+command that may never have run, because calling a missing executable raises rather
+than running and leaves the previous command's success standing, so a database that
+was never created was reported ready. And the shell installer never checked
+anything at all: it announced the application was running the moment the containers
+were created, which is well before anything serves. It waits now too, which is the
+harder of the two to have noticed, because a script that never reports a problem
+never looks wrong.
+
+Upgrading by re-running the one-liner kept installing the version you had asked
+for the first time. Both installers record a requested version beside the two
+secrets and neither could remove one, and that file is read on every command run
+in its directory afterwards, so the first install decided the version for every
+install after it. The pull succeeded, the containers came up, and the script said
+the installation was complete. Asking for the latest version now clears a pin as
+well as declining to write one, and says that it did. If you pinned a version
+once and have been re-running the default command since, this is the release
+where you start getting the one you asked for.
+
+The reference for the health endpoint described a status this release changed. It
+said a pending migration degrades it, which is deliberately untrue, and did not
+mention the cause that now fires. That page is written for somebody pointing a
+load balancer or an uptime monitor at us, so it says which two conditions degrade
+the status, that they are not equally serious, and that a check requiring the
+literal word healthy will take a working installation out of rotation over one
+missing module.
+
+A second person signing in on a shared Windows machine opened the first person's
+workspace. An installation whose migration history had forked refused to accept
+its own stamp and stayed refusing, on every upgrade, for good. The serve command
+built a database before checking whether it could run at all, so a machine that
+was never going to work spent a minute proving it. A module dropped into the
+runtime root could take the name of a module we ship and be loaded instead of
+it. Applying a regional pack could report success while recording nothing. And
+the health endpoint's count of loaded modules was counting the modules we had
+merely found, so a module that failed to load was reported as running.
+
+That last one is worth a sentence to anybody who watches that number. It counted
+every manifest that parsed, and it now counts the modules that actually loaded,
+with what was found and what is enabled reported separately beside it. So the
+figure can legitimately fall across this upgrade, and a fall is the old number
+having been wrong rather than a module having broken. A module that is enabled
+and did not load now reports the installation as degraded, which is a state it
+could not previously reach.
+
+The plain text half of every outgoing message kept the words on a link and threw
+the link away. Someone reading the password reset in a plain text client was
+told to press a button that is not there, with no address anywhere in the
+message and no way to reset a password. Every template we send puts its link in
+the same single call to action button, so there was no message that kept one,
+and the password reset is the one that cannot be sent without it.
+
+An activity accepted a planned cost and discarded it. The six fields that carry
+cost and progress rigour exist on the model and have been read and written by
+the schedule import and export all along, but none of them appeared on the
+create, update or response shapes of the API, which ignores what it does not
+declare. A client that posted a planned cost was answered with a success and an
+activity with no cost on it, and the earned value rollup then reported a budget
+at completion of zero with nothing anywhere reporting an error.
+
+A schedule import fix from the last release turned out to decline the very file
+it was written for. The reader will not name a code page until enough high bytes
+are on the table to mean anything, and that floor was set from the smallest file
+in the test vocabulary rather than from the smallest file a person actually has,
+so a two row export carrying one byte less than the floor was declined and went
+back to arriving as mojibake. Separately, a Hebrew schedule could be read as
+Greek. The reader tells the four non Latin code pages apart by counting the most
+frequent letters of each language, and Hebrew's six were the least informative of
+the four by a wide margin. Two of them, yod and vav, sit on the bytes Greek uses
+for iota and epsilon. The other four Greek letters, alpha, omicron, nu and tau,
+sit on four common Hebrew letters the Hebrew profile was not counting at all. So
+the Greek profile scored on Hebrew text with all six of its letters, while the
+Hebrew profile was blind to four of the commonest letters in front of it, and the
+lead Hebrew held fell under the margin. Hebrew now counts ten letters rather than
+six. Hebrew was alone in this, and it stayed hidden because the thresholds had been
+calibrated on a population that cannot show it.
+
+The desktop pipeline now starts the server it ships and waits for it to answer,
+on a cold start and on a restart over an existing data directory. It already ran
+the frozen binary, to print its version, to run the doctor and to prepare a
+database, so the thing that had never run anywhere was the path those three do not
+touch: building the application, firing the startup event and loading the modules.
+That is the path a person meets on the first launch, and it was the one the
+pipeline could not have caught anything on.
+
+A bill line priced from a production norm now says which norm predicted it. The
+identity was recorded on the assembly and never copied onto the position, so an
+estimate built from norms could not be compared against the norms behind it. It
+is copied rather than resolved through the assembly on purpose, because that row
+can be edited or deleted after a bill was priced from it, and provenance that
+changes retroactively is not provenance.
+
+On the language side, Uzbek had been offered to users for several days while
+being invisible to every test that iterates the locales, because the aggregator
+those tests read was never updated when the language was switched on. The file
+carried a comment instructing whoever switched it on to do exactly that, which
+is the argument for the test that now checks the two lists against each other in
+both directions instead. The ten Indian cases added in the last release now
+carry their own title and description in every offered language rather than
+falling back to English.
+
+A corrected variation order left its mirror posting the original amount, so the
+two sides of one change disagreed about what it cost.
+
+In the estimate itself, exporting draft minutes downloaded the previous save
+while the screen showed the edits, and four links in the interface went nowhere,
+two of them on paths a person cannot avoid.
+
+## [16.7.0] - 2026-09-03
+
+India reads its own numbers. A bill of quantities is grouped in lakh and crore
+rather than in thousands and millions, which is the grouping every Indian
+estimator writes by hand and then has to correct in an export. Ten Indian cases
+ship with the case library, carried in the four reference languages rather than
+in English with an Indian title on top. And the demo answered a question nobody
+asked: the labour welfare cess, which is a levy on the contract value, was
+standing where GST belonged, so an Indian demo priced its tax at one percent and
+looked deliberate about it.
+
+A schedule exported from a machine that does not run in English imports as what
+was exported. A P6 XER file declares no encoding anywhere in it, and the reader
+worked down a ladder that ended in Latin-1, which accepts every byte and raises
+nothing. So an Arabic, Russian, Greek or Hebrew activity name arrived as
+mojibake, was stored that way, and the only evidence was on a Gantt chart weeks
+later. The reader now weighs the file against the code pages those exports are
+actually written in, and an MSPDI file, which does declare its encoding, is
+handed to the parser as bytes so that the declaration can still be acted on.
+
+The same reader now declines to guess. Scoring letter frequency needs letters,
+and a schedule is mostly ASCII, so a file carrying two words of Arabic put five
+high bytes on the table and every score became a multiple of a fifth. A
+meaningless lead cleared the confidence margin by arithmetic, and the code page
+it named was reported to the importer as a fact. Across roughly seven and a half
+thousand name shaped samples the reader named a page the bytes were not written
+in for four hundred and sixty five of them. It now says nothing below a measured
+floor of evidence and falls to the Western default, which is where those files
+were already going, so declining costs a file only the answer it used to get
+anyway.
+
+An input with something at both ends keeps both of its paddings in Arabic. The
+control set its spacing in physical left and right, so in a right to left
+language the icon and the field's padding ended up on the same side and the text
+ran underneath the icon. Dragging a GAEB file onto the import area now does
+something: the drop zone accepted the file and gave no sign it had, so the
+obvious gesture looked broken and people used the file picker instead.
+
+Two checks that were passing without checking anything have been repaired. The
+tenant isolation tests for clash detection were satisfied by a route that served
+nobody, so they would have gone on passing after the route was removed, and the
+snapshot that guards the input control rendered only one of the three
+arrangements it has, so five of the eight direction classes in the change above
+had no test that could see them.
+
+## [16.6.0] - 2026-09-03
+
+A bill is priced by the country that owns the project. That reads like something
+that was already true, and it was not. The rate came from whichever table was
+nearest to hand, so a bill could be charged the VAT of the region it sat in
+rather than of its country, a project rate could be applied twice on a Brazilian
+bill, and the exported bill charged its tax a second time on top of a server
+total that already carried it. Israel was seeded at seventeen percent a year
+after the rise to eighteen, with a comment in the code stating the old figure as
+though it were the law. Kuwait and Qatar levy no VAT on construction and now say
+so, in their own languages rather than in English inside an otherwise translated
+table. A tax row that is present but broken no longer falls back as quietly as a
+missing one, because the quiet fallback is what let all of the above stay
+plausible for as long as it did.
+
+The exported bill stops calling a figure net when the tax is inside it. The
+GAEB export wrote the total including VAT under the TotalNet element, and Netto
+in a German exchange format is the figure before VAT, so a reader who trusted
+the label was short by the whole tax. The PDF exports were corrected for this
+once already and the GAEB path was never in that change; it now calls the same
+helper rather than carrying a second copy of the arithmetic, and there are
+tests with an actual tax line in them, which there were not before.
+
+The compliance gate names its rule packs. It held four names written by hand
+against sixteen packs in the registry, so twelve of them showed as a lowercase
+id with the underscores swapped for spaces, "mx compliance" sitting beside
+"Germany / DACH". The names were never missing, they are published by the
+catalogue endpoint the project settings screen already reads, so the hand
+written copy is gone and a seventeenth pack will arrive named.
+
+Twenty two more markets price with their own national method, and the six
+markets we sell a country pack or a demo for that had no method at all now have
+one. A price analysis opens in the shape its market reads, with all six sheets
+offered and the right one open. A bill takes its markup stack from the project's
+own country. Installing a country pack leaves the workspace knowing which
+country it is in, which is what makes every one of those choices resolvable
+later without asking again.
+
+Packs now reach the countries they were written for. Eight countries had
+national rules and no pack that delivered them, three countries resolved to a
+compliance pack belonging to somebody else, and sixteen country presets promised
+an example project during onboarding and installed nothing. A German take-off
+could not be measured under German rules, which is the kind of gap that only
+shows up when somebody tries to do the ordinary thing in their own market.
+
+Two gates that looked like gates were not. Nothing that blocks anything had ever
+linted the backend, so a lint failure there reddened only a lane that gets
+cancelled on main and nothing anyone reads. The tests that price a bill ran in
+no blocking lane either. Both now run where a failure stops something.
+
+The PostgreSQL lane is green again after failing 217 of 880 on every run. Two
+async plugins were claiming the same tests: pytest-asyncio takes every async
+test in the tree, and anyio's plugin takes anything carrying its marker, so 29
+files that carried both got their fixture from one plugin and their body from
+the other, and a database connection opened on one event loop was handed work
+from another. The marker was configuring nothing, because nothing in that suite
+imports anyio at all. Which plugin won was decided by the order the plugins load
+in a given environment, which is why the same commit was green on a laptop and
+red on the runner four times running.
+
+## [16.5.0] - 2026-09-01
+
+An estimate can now be compared against its own outturn at the level it was
+written. Progress said how far a bill item had got and nothing said what it cost
+or how long it took, so a ceiling estimated at 0.30 hours per square metre that
+took 0.42 had nowhere for the 0.42 to land, and the next estimate used 0.30
+again. Field timesheet lines can name the bill position the hours were spent on,
+supplier invoice lines can name the bill position the money paid for, and
+position actuals reports the hours beside the money. Neither link is mandatory
+and neither replaces the cost code: a day that covered six items honestly names
+none of them, and a line that names nothing stays where it is.
+
+Two decisions inside that reading are worth stating, because both would
+otherwise have produced a number that is plausible and wrong. Only approved
+timesheets count, and only those that have not been reversed. Correcting an
+approved timesheet does not edit it: the original is marked reversed and a
+mirror sheet is written whose hours are still positive, because in that module
+the sign lives on the sheet rather than on the row. Filtering on approved alone
+drops the original and counts the mirror at face value, so a cancelled day would
+report its hours once, in full, in the wrong direction. And the per unit rate
+divides by what is installed rather than by what was billed, and is blank where
+no progress has been reported, because hours over the billed quantity flatter
+every unfinished item and flatter an untouched one most of all. What this
+deliberately does not report is the estimated side of the comparison. Nothing
+records which productivity norm a bill line was priced from, so the measured
+half is reported and the other half is not invented.
+
+The value agreed on a variation is recorded rather than inherited. The approver
+typed a decided amount, the platform checked it against a cap and then threw it
+away, and conversion copied the requested estimate onto the variation order. A
+change requested at 12000 and agreed at 7200 became a variation order for 12000,
+with nothing in the record saying the client had agreed to anything else. A
+request now freezes the bill it was submitted with and that bill's total at
+submission, approval records the amount agreed and which of three bases it rests
+on, and a named amount that departs from the submitted total with no note is
+refused. Where nothing was agreed explicitly the old behaviour is unchanged, so
+nothing already stored moves. The change order mirrored from a variation is also
+no longer a second price: editing its amount is refused and points at the
+variation order it mirrors.
+
+An estimate carries judgement as well as arithmetic. A position can record the
+dispersion around its price, the basis that price rests on and the schedule
+activity it belongs to, and a dispersion of zero is now a statement somebody made
+rather than the absence of one.
+
+The item code column knew three classification standards and the product ships
+eighteen. Positions coded in any of the other fifteen exported an empty code to
+Excel, which is nine of the thirty three demo projects, and several country rule
+sets require exactly those codes. Thirteen of the eighteen can be stored today
+and the column says which, rather than presenting a picker whose values fall back
+to a default in silence.
+
+The country packs stopped promising work they did not do. The United Kingdom
+pack advertised ninety seven checks the engine did not have, and published one
+version while reporting another. The India pack said it preloaded seven cities of
+rates and shipped one. The Hungarian and Russian packs had no demo project to
+install, both Hungarian demos asked for a rule set that does not exist, and no
+Chinese cost item could produce a section path although the pack that ships them
+had nothing else to read. A Russian estimate had no norm base and its markup
+stack was written but unreachable. All of that is now built rather than
+described.
+
+Custom KPIs can break down by a key inside a classification, read one estimate at
+a time, and draw on floor area, price age and markup rates.
+
+Four alembic revisions created tables the boot sequence had already built. On any
+installation that had started once before the upgrade was run, the first of them
+raised a duplicate object error, rolled the whole upgrade back and skipped every
+later revision, so the schema stopped moving and the health report still called
+it healthy.
+
+A project total joined its estimates together instead of adding them, which
+multiplied the figure by the number of estimates on the project.
+
+A large restoration of diacritics runs through this release. Twelve languages had
+shipped strings with their marks deleted, in some cases across a whole panel, and
+the gate meant to catch it had been reading the breadth of the damage as evidence
+that nothing was wrong: a word stripped everywhere in a file looks like a word
+that has no mark. Italian alone shipped 689 of them. Alongside that, ten
+languages carried English sentences the picker was offering as translations, four
+shipped an em dash that had been read through the wrong code page, and the
+Romanian comma below and breve were restored across the guide, the case library
+and the module help. The detector now compares a string against the language
+rather than against the file it sits in.
+
+Uzbek is offered in the language picker. The file had shipped for some time but
+stayed out of the picker while 942 keys still answered in English, with the
+insights panels and the case library English from end to end. Those bands are
+translated now, what is left is an ordinary tail rather than a whole panel, and
+the desktop startup screen answers Uzbek as well, so the language is offered
+rather than promised.
+
+## [16.4.0] - 2026-08-31
+
+How a generated PDF looks is a setting now. Until this release the accent colour
+across the top of every export, the grey of the footer under it, the page size,
+the margin and the size of the body type were literals in the drawing code, so a
+workspace that wanted paper of its own had either to edit the renderer or to
+accept ours. Property development settings now carry a document appearance panel:
+the two colours, A4, Letter or Legal, the margin in millimetres, the base type
+size, which corner the brand sits in, a footer line in your own wording, and
+whether pages are numbered. The controls sit beside a live preview of the page
+they describe, so the effect is visible before anything is exported, only an
+administrator can save, and one button returns everything to the defaults the
+platform ships with. The settings live in a single file next to the rest of the
+instance data and are read fresh each time a document is drawn, so a change
+applies to the next export rather than to the next restart. A settings file that
+cannot be read at all falls back to those same defaults instead of failing the
+export, because a malformed preference must never lose a document somebody is
+waiting for.
+
+Changing the body type size moves the whole family with it. Raising one number
+and leaving the headings where they were would set a fourteen point paragraph
+under a heading sized for a ten point one, which reads as a broken document
+rather than a larger one.
+
+One of those controls defers to a layout, and the panel now says so rather than
+leaving you to discover it. Bills of quantities, daily diaries and methodology
+statements print a title of their own in the header and hold the brand in the
+opposite corner deliberately, so that the two never sit on top of each other.
+Choosing Left, opening one of those three and finding the logo still on the right
+reads as a control that does not work. It is a deliberate deference, the panel
+explains it in place, and the setting is honoured everywhere else.
+
+## [16.3.0] - 2026-08-30
+
+Three things worth knowing before you upgrade.
+
+PostgreSQL 16 is the floor and it is checked at startup now. Until this release
+the application built its schema and took writes without ever asking the server
+what it was, so an unsupported or unidentifiable server surfaced much later as a
+broken query with nothing pointing back at the cause. It now reads the version
+number the server itself computes and refuses to start against anything below
+16, and equally against anything that will not answer with a number at all,
+which is what some connection poolers and wire protocol proxies do. If you have
+one of those in front of your database, this is the first thing you will meet
+after upgrading. The failure message names the server as the server described
+itself. Installs on SQLite are not affected.
+
+Working weeks are repaired on the way in, and dates move because of it. Saudi
+Arabia was stored as a week containing a day number that the code reading that
+column never produces, so one day of the week matched nothing and the country
+counted a four day week. The week of 4 January 2026 came back as four working
+days where it should be five, and nothing reported a problem, because a short
+week is a perfectly ordinary answer. Separately, a country whose calendar
+shipped after a database was seeded never received it, so six countries were
+resolving through the Monday to Friday fallback rather than their own week, and
+four of those six work Sunday to Thursday, which means the fallback was
+answering with confident wrong dates rather than declining. Both are corrected
+in place on the databases that carry them, and Qatar, Kuwait, Bahrain and Oman
+get a calendar of their own with their 2026 public holidays, having had none at
+all before. Any schedule or deadline computed in those countries changes, and it
+changes towards the right answer. A deliberate four day week that somebody
+configured is left alone: the repair keys on the impossible value rather than on
+the shape of the week.
+
+Figures on the cost database screens move, and there is a paragraph further down
+explaining why. In short, a recipe component carrying no readable quantity used
+to price to nothing while reporting the work item as fully priced, and it no
+longer does.
+
+A row nobody has typed into is no longer a position. Add Position in the editor
+creates the row on the server straight away and puts the cursor in its
+description cell, which is the right behaviour and is not changing, so a bill
+legitimately holds rows carrying nothing yet. What was wrong is that such a row
+was counted, inflating the position tally on the bill's card and again in its
+detail, and that it reached every export, so a delivered bill could carry a line
+with no description, no quantity and no rate. Section headers had the same
+problem from the other side. They are stored under one of two spellings of a
+position's unit, the seeded bills using one and every file importer the other,
+and the list of bills counted in SQL against a single spelling while the bill's
+own detail view classified in Python, so an imported 27 position document read
+39 on its card. Both readers now take their vocabulary from one place, and an
+empty row is neither counted nor exported until something is typed into it.
+
+The GAEB import in the bill editor reads the file. It had been running an inline
+walker rather than the registered importer, and that walker could not read a
+conformant file at all: GAEB DA XML 3.3 keeps an item's wording nested several
+elements deep, every text helper in the walker read only an element's own text,
+so it found whitespace, fell back to a second element that is whitespace for the
+same reason, and skipped the item for having no description. Every item, every
+file. Uploading a bill through the editor therefore appeared to work and
+imported nothing. It goes through the real importer now.
+
+Files this platform writes stop stating units the source never stated. An X84
+item cannot carry a unit at all, so the importer guesses one in order to store
+the row and records the source's silence beside it. The X83 export then wrote
+that guess out as a real GAEB code, so a file that said nothing about units came
+back out of here saying something on every line: measured on the conformance
+fixture, 27 of 27 items carried psch, which a bidder reads as a lump sum
+position somebody chose. Those items now carry no unit element, which is what
+the source said. The claim also retires properly when a person edits the row,
+because an estimator who corrects an invented unit to cubic metres has stated a
+unit and the file no longer gets to assert that nobody did. On the model
+exchange side, the exported document was writing our internal tokens into a
+field that takes GAEB codes, so a lump sum left as lsum and a piece as pcs,
+neither of which a reader working from the GAEB lexicon can resolve. They are
+now psch and Stk. That same export was also carrying section headers through as
+measurable positions, priced and measured in pieces, sitting beside the work
+they were only meant to head.
+
+A negative unit price is refused on the exchange phase that actually carries
+prices. The rule that blocks one consulted the unit first and stepped over
+anything that looked like a lump sum, and every X84 position looks like one,
+because the published schema does not allow a unit there and the importer
+normalises what it sees. So the single value that rule exists to refuse could be
+transferred freely on the one file format bidders price in. We also now ship our
+own schema profile for reading and writing GAEB, and the third party schema and
+conformance files the repository used to carry verbatim are gone from it.
+
+There is a module for reinforcement bending schedules. It reads and writes the
+ABS interchange format described by the BVBS guideline for the exchange of
+reinforcement data, covering the shape, mesh, coupler and general record groups,
+and it keeps each record's exact source line so that what leaves for the bending
+shop is the bytes that arrived rather than our reading of them. That matters
+because the format's checksum covers exact characters, and a line rebuilt from
+parsed columns is a different record even when every value in it is identical.
+The codec is written from the published specification and checked against the
+guideline's own worked examples. The module also appears in the module catalogue
+by name, which it did not at first.
+
+Four attribute names were wrong in four different places, and two of them had a
+whole feature on the floor. Every one of the reinforcement module's seven
+endpoints answered with a server error, because the access check was called with
+its arguments in the wrong order at all seven call sites. Worth being exact,
+because a mis-called access check sounds like a bypass and this is the opposite:
+the check could not run, every request failed before it reached any data, and
+nobody ever saw a project they should not have. The module was unusable rather
+than unsafe, and it was unusable completely. The assistant's schedule tool read
+progress off a field that does not exist on the schema it was handed, so any
+project with a schedule carrying at least one activity got an error card back
+instead of its programme. The ISO 19650 naming scan guarded on a column name the
+photo model does not have, and a guard written against a name that is not there
+does not fail, it narrows the scan, so site diary photos were missing from every
+naming report with nothing raised anywhere. And the bill completeness analysis
+read positions through the paginated call, which caps at a thousand rows, so a
+large tender was summarised from the first thousand lines and reported a
+position total to match.
+
+A variation request can be priced as its own bill of quantities. A request used
+to carry an estimated value with nothing underneath it, so the number a client
+was asked to approve had no priced scope behind it, and nothing tied the
+eventual work back to the request that authorised it. The request now owns a
+bill whose lines trace back to it, and the screen shows those lines, what they
+come to, and the estimate the request was raised with, so the gap between what
+was asked for and what it costs is on the page. Two validation rules cover it,
+one holding that every line traces to its request and one that the priced total
+agrees with the estimate, and both report rather than block, because a quantity
+surveyor is expected to see a difference and decide about it rather than be
+stopped by it. The rule messages ship in all four validation languages. The card
+listing those checks also stopped printing the same finding twice.
+
+A KPI can be defined from the screen. The 16.2.0 notes said in as many words
+that creating one went through the API and that there was no form for it in the
+interface, and this is that form. The dialog builds the same declarative
+specification the server already accepted, an entity, an aggregation, a field
+and any filters, with every option in it coming from the server's own catalogue
+of what it will accept, so nothing a person types is free text that has to be
+trusted. In the same module, an alert threshold now has to be a number when the
+rule is written. The coercion in front of the comparison fell back to zero only
+when a value failed to parse, and not a number, signalling not a number and
+infinity all parse perfectly well in any spelling, so what they met was the
+comparison itself, and an ordering comparison against not a number raises out of
+the evaluator once every cycle for as long as the rule exists.
+
+Records that could not be removed can be removed. This is the largest single
+theme in the release and it ran across six registers. A storage location or a
+stock item on the site inventory, a lead in the pipeline, a vendor, a catalogue
+item, a warehouse or a tolerance profile in the supplier catalogues, a labour
+rate template, and a purchase order raised by mistake were all permanent once
+created. In most of those the endpoint had been there the whole time and no
+screen called it, so the gap was the control rather than the capability, and the
+workaround people actually used was to edit the row into meaninglessness and
+leave it in the list, which is how a supplier list ends up with three spellings
+of the same firm. The supplier catalogue screen also gained editing, since
+everything on it could be created and nothing could be changed, and renaming a
+tolerance profile used to answer with success and the old name, because the
+update schema never declared a name field and the request was discarded during
+validation before anything saw it.
+
+Where a record is held, the product now says what is holding it. Removing a site
+inventory item would have taken its whole movement ledger with it and removing a
+location would have turned a record of where something went into a record of
+nowhere, both silently and both reported as success, so those deletes are
+refused with the reason rather than performed. Site records in construction
+control are checked twice, once for whether their own status permits removal and
+once for whether anything still points at them, and the refusal names the report
+to deal with rather than only saying no. A purchase order is held still while
+the decision to remove it is made. The refusals are translated into every
+language rather than answering in English prose, and where a count is quoted the
+verb agrees with it.
+
+Deleting a lead used to take its whole activity log with it, silently. The
+delete was two lines, fetch the row and remove it, and the foreign key
+underneath cascades, so a lead with twenty logged calls, emails and meetings on
+it neither refused nor warned. The lead went, the database took the trail, and
+the caller got a success. That is now surfaced before anything is destroyed.
+
+The dashboard no longer sends every site's coordinates to a weather service on
+behalf of someone who never asked for a forecast. The forecast widget is opt in
+and the project list and the project detail page both honour that; the sites
+panel did not, and rendered a forecast for every located site on every load
+whatever the setting said. Each of those cells is a request the browser makes
+directly to a public weather host naming that site's latitude and longitude, so
+this was disclosing where a customer's sites are, not ignoring a display
+preference. The panel reads the same setting the other two surfaces read now,
+and the cities, their counts and their links do not depend on the forecast, so
+the panel keeps working with the widget off. The widget itself also stopped
+drawing an empty card headed with a forecast title when the network refused it,
+and it remembers a refusal for a short while so a dashboard full of sites stops
+hammering a host that has just turned it away.
+
+External links work again in the desktop application, and they no longer travel
+through a command shell on the way out. Opening a link on Windows used to run it
+through the command interpreter, which re-parses its own variable syntax inside
+quotes as readily as outside, so a link carrying a variable reference had it
+substituted on the way past. Measured on Windows 11 with the exact command line
+the old code produced, the account name and the full working directory path were
+both expanded and sent to whatever host the link named, while the user saw an
+ordinary page load. That path is gone. Separately, every external link in the
+shipped desktop product had stopped doing anything at all when clicked, along
+with the menu item and toolbar button that open the running application in a
+browser and both buttons on the update notice, because the launcher serves the
+interface from a local address that the desktop framework classifies as remote,
+and nothing had granted those commands. All of them work now. The update notice
+also stopped claiming a choice had been saved before it had been told that it
+was: the opt out link used to rewrite its own label to say update checks were
+off and then ask for them to be turned off, and on the path where the request
+was refused the label said a setting had been written that had not been.
+
+A desktop installation can be pointed at a server the organisation already runs.
+The application has only ever talked to a server it starts itself, which is
+right for one person on one machine and wrong for an office, because every desk
+then keeps its own separate database and nobody sees anybody else's work. Four
+places can now say where the server is, the setting inside the application, an
+environment variable, a file an administrator deploys, and the default of
+starting one locally, and the first that says anything wins. The user's own
+choice sits on top of that order deliberately, so somebody whose configured
+server is unreachable can always get back to a working local start without
+having to be told where to look.
+
+The desktop startup screen speaks the language the machine is set to. It is the
+first thing every desktop user sees and every word on it was English, the boot
+checklist, the first run wait, the failure message and the one time question
+about opening in an application window or a browser. It cannot use the
+application's translation stack, because it runs before the bundle it would load
+exists, so it carries its own tables, and it now has one for every language the
+picker offers. One of those mattered more than the rest: Brazilian Portuguese
+used to fall through to European Portuguese, so a Brazilian user read one word
+for file on the first screen of the product and a different one on every screen
+after it. The log path also stays readable on the right to left layouts, where
+it had been reordered into something no operator could paste.
+
+The Windows installer is about 19 MB smaller and carries less of somebody else's
+code. The bundle shipped both programs out of the upstream converter folder, the
+one this codebase actually runs and a graphical one nothing here opens, and the
+second dragged a user interface toolkit and its plugin folders along with it.
+Those are dropped from the release and from the runtime installer that repairs a
+broken converter, and the build fails if one of them survives.
+
+The sign-in screen stops telling people their password is wrong when the service
+is down. A failed attempt was sorted into two boxes, either no answer at all,
+which produced a connection message, or a response that came back not ok, which
+was read as the server having checked the credentials and rejected them. A
+gateway error in front of us is a response, so it landed in the second box and
+the user was told their email or password was wrong when nothing had ever
+reached the part of the system that could have an opinion about it. The newer of
+the two sign-in screens also stopped advertising a demo account under a name no
+seeder anywhere creates.
+
+Search results carry a real score, and a contact found by their email comes back
+with a name on the row. The score was not lost on the way to the screen, it was
+never computed: the helper that builds a result declares it with a default of
+zero and every one of the roughly fifteen places that calls the helper omitted
+the argument, so every result on every search read zero percent relevance.
+Separately, the label built for a result stopped at company name or person name
+with no third fallback, so a contact who has only an email address was findable
+by typing that address and then came back as a row with an empty title. That
+same display rule was written out by hand in four places, three of which read a
+column that does not exist, and it now lives in one. The retainage report was
+hitting the same fault and losing every vendor name on the page while recording
+the fact at debug level, which is not where a report that has stopped naming its
+counterparties belongs.
+
+The workspace stops counting its estimates by counting projects. The header chip
+and the estimates tile sat on the same screen showing thirteen against twenty
+five for the same thing, because the chip was counting a list built one entry
+per project and wearing an estimate's label.
+
+The dashboard says what the active regional pack actually set up. A pack is the
+largest piece of setup this product does on anyone's behalf, loading a market's
+cost database, setting the currency, wiring the tax template, turning on that
+market's validation standards, choosing the starting modules and switching the
+interface into that market's language, and until now the only thing any screen
+said about it was its name on a badge. An estimator could work for weeks on one
+market's prices and another market's tax treatment with nothing on screen to
+check against. In the same area, a case study now says which regional pack
+serves its market, naming packs this deployment actually has rather than ones it
+does not; the first run wizard offers a market preset for countries where no
+pack exists, instead of offering nothing at all as though the product had
+nothing to say about that market, which was the experience in three of the
+markets with the most case studies; the Brazilian pack now moves a user into
+Brazilian Portuguese rather than European Portuguese, which it had been renaming
+their own dialect out from under them; and a pack no longer advertises a logo it
+does not carry, which had the client fetching a file that was not there.
+
+Fifty two controls highlight when you point at them. Read that as a behaviour
+change rather than a colour rename: those buttons, menu rows and list items were
+written as though they had a hover state, using two colour names this theme does
+not define, and the answer to an unknown colour name is to emit no rule at all,
+so nothing ever happened when the pointer crossed them. Thirty more elements
+across fifteen files were painting nothing whatsoever for a related reason, a
+colour that cannot take a transparency modifier being given one, which also
+drops the declaration silently. There is no missing key to report and no type to
+fail in either case, because the class sits in the source spelled exactly the
+way the palette would have spelled it if the palette had that word.
+
+An unexpected answer from the projects list no longer blanks the entire
+application. The header's project picker asked for a list and trusted what came
+back, and when the endpoint answered successfully with an object rather than an
+array the picker called a list method on it, threw, and left the browser holding
+an empty document. Not a fallback, not an error card, nothing at all: no
+application shell and no text on the page.
+
+A check that crashed while looking at a case is now shown as a crash. Case rules
+run behind a guard, because a broken rule must not stop somebody saving their
+work, and that guard returned an empty list, which is also exactly what a case
+that has been checked and found clean returns. One value carried two meanings,
+and the caller that mattered was the publish gate, which asked for blocking
+findings, got none and shared the case with the team. So a case nobody could
+validate was published as validated. Downstream of that, the editor was not
+reading the flag that distinguishes a remark about the case from a rule that
+fell over while looking at it, so both went into one list under the same heading
+with the crash wearing the same badge as the advice, and an outage read as an
+opinion about somebody's work.
+
+Rates that come out of a cost recipe change, and this is the one to read if you
+keep a cost database. Repricing read a component's quantity through a helper
+that answers zero for a missing key, so a component carrying no quantity
+contributed nothing, counted as a priced line, and left the work item reported
+as fully priced. The rate was then overwritten with zero and every figure in the
+response agreed the run had gone well. A rate of zero that announces itself as
+fully priced is indistinguishable from a measurement, and the person who finds
+out is whoever bid on it. A quantity is now read by something that can answer
+that there isn't one, blank, unparseable, negative and non finite values
+included, and a component with no usable quantity stops the item being repriced
+at all rather than being priced at nothing. An explicit zero is still a real
+quantity and is kept. Three outcomes now leave an existing rate alone and are
+reported separately rather than folded into one number: nothing priced at all, a
+recipe that cannot be read, and a fully priced recipe that computes to nothing
+while the item already carries a rate. Only an item whose rate was actually
+recomputed counts towards coverage. The stored breakdown also adds up to the
+rate it explains now, where costs used to be accumulated over every component
+type and published under three, so a subcontractor line sat inside the rate and
+was missing from its explanation: one shipped roofing recipe reprices to 442.10
+and stored a breakdown showing 17.10. Finally, the recipe template we ship wrote
+its quantities under a key nothing in the pricing engine reads, so the six work
+items in it priced to nothing while reporting themselves complete. That key is
+accepted as a legacy alias on the way in, since files written against our own
+documentation exist and have to keep working, but a file carrying both spellings
+with different values is refused rather than resolved by precedence.
+
+The labour rates screen opens on something. Fifty three modules ship seed data
+and this was not one of them, so a fresh install met an empty template picker,
+and the cost of that landed one screen away rather than on the page itself: the
+norm expansion build panel prices labour from a rate template, its own norms
+are seeded, and with no template to pick it told the user to go and create one
+first, which is a dead end on the screen that turns a production norm into a
+priced assembly. Six build-ups now ship, in euro, sterling, dollars and dirham,
+so the picker covers the currencies the demonstration portfolio is priced in,
+each hand authored in its own currency rather than converted from one base, and
+each a generic starting point an estimator is expected to tune per project and
+region. Saving a template with a blank base wage also stops failing the way it
+did. A blank field normalises to zero, which the live preview accepts and the
+save refuses, so a user who typed a name and pressed save got the server's
+validation text back with nothing in it to say which field was at fault. All
+three save buttons now read the same rule the server applies, with a line under
+them saying a base wage above zero is what saving needs.
+
+A material is matched by name before it is scored. It used to go to the lexical
+matcher alone, so a name present in the catalogue word for word could still be
+answered by a different row that merely scored well. An exact tier runs first
+now and only an exact identity is returned without review, everything else
+staying a scored proposal marked as needing one. Two related faults on the same
+endpoint are closed with it. A material whose name reduces to nothing, a lone
+hyphen for instance, was scoring a perfect confidence against any catalogue row,
+because a query with one token is trivially a subset of everything, which the
+confidence floor cannot catch since the score is not low, it is perfect. And a
+negative labour rate answered with a server error rather than a refusal.
+Separately, on the matching side, two Chinese count units meaning the same thing
+as a piece were being matched two different ways, one taking the count branch
+and the one beside it the unknown unit branch, and a bill priced in one was
+penalised against a catalogue priced in the other.
+
+A confirmed rate names the person who confirmed it. A group marked confirmed or
+overridden is what gets written into a customer's bill and what the estimate
+preview reports to validation as human confirmed, which makes the low confidence
+rule pass however weak the match was, and the endpoint let a caller set either
+status directly through the same permission that generates the suggestion, with
+nobody recorded as having agreed to anything.
+
+Installing a generated module now requires evidence that it was reviewed.
+Installing writes Python to disk and loads it into the running server, which is
+allowed because a person reads every generated file first, and until now the
+server could not tell a reviewed specification from an unreviewed one, since
+preview and install took an identical request body. The review step was enforced
+by the screen rather than by the interface behind it.
+
+The running product can show the licence texts it ships. Those texts have
+travelled inside every published artefact for the life of the product and
+nothing in the backend could read them, so the only route to one was a link to
+an external site, which on a desktop install with no network is a link to
+nothing, and that is precisely the deployment where somebody is most likely to
+be looking. The About page also stops naming our own licence and stopping there.
+The build redistributes components under two lesser general public licences, one
+of which asks that a combined work displaying copyright notices while it runs
+include a notice for the library among them and point the reader at the texts,
+and the page now lists those components and opens each text in place from the
+copy inside the artefact.
+
+There is a container image again. 16.2.0 published its package and its release
+page and no image at all, because the image build installs the package from
+inside itself and the packaging list had grown two sets of entries pointing at
+files the build was never told to copy in, so it stopped at the first one it
+could not find. Those files are copied now, and a check refuses a packaging
+entry the image build cannot satisfy, since the failure has to be caught where
+it is cheap rather than at the end of a release.
+
+What we tell a commercial licensee has been corrected, and a reader who acted on
+the old wording should know what changed. Both the readme and the attribution
+notice offered commercial licensing without the obligations of our open licence.
+That was written when it was true and it is not true now: PyMuPDF, the library
+we read and write PDF with, is separately licensed under the same terms, it is a
+base dependency present in the wheel, the container image and all four desktop
+installers, and no agreement we sign can lift obligations on code we do not own.
+That sentence survived a search for false claims about PyMuPDF precisely because
+it never mentioned PyMuPDF, which is why it is named here. The notice now says
+which features actually use it, so a customer can tell whether their deployment
+is affected at all, and what replacing it would involve. The obligations
+attached to the lesser licensed libraries in our binaries are written down in
+the same pass, the licence texts they refer to travel with the artefacts, the
+release attaches the corresponding source we are able to attach and names the
+part it cannot, and the attribution list is now resolved from the dependency
+closure rather than read off the declared list, which is a different and larger
+set.
+
+The privacy statement describes what the software does. The transfer section
+said no personal data leaves the European Economic Area except under standard
+contractual clauses put in place by us, and neither half of that held. The
+clauses half could not hold, because the inference features run on a key the
+operator supplies, which makes the account and the agreement one between the
+operator and the provider with us not a party to it. On the same subject,
+setting a project address geocodes it against a public third party service on
+save, and the five switches that turn that off had been documented only inside a
+source file, which is not where an operator reads. They are in the deployment
+environment example now, under a heading that says the feature is on by default
+rather than leaving that to be discovered.
+
+Every module that performs inference declares what it does with it. The first
+question a buyer or a regulator asks is which of the things you ship performs
+inference and on what, and until now that could only be answered by a person
+reading every module and forming an opinion, which is how a sweep of this
+platform's own inference surface finished without having opened the module that
+posts call audio to a speech to text service. A module answers for itself now,
+out of a closed vocabulary rather than free text, and a scanner checks the
+declarations against the code, because a register nobody checks drifts and this
+one gets quoted outside the project.
+
+A file shows its tags where the file is listed. They could be assigned and then
+only seen by opening the file, which is the wrong way round for the thing they
+exist to do, so a row in the list and a tile in the grid now carry them under
+the name with a count standing in for the rest.
+
+A validation finding about a person or a team says who it is about. Three team
+rules reported a finding whose details carried an identifier and nothing else,
+which reads well enough on screen next to the message but is what an export, an
+interface consumer and a validation report actually carry, and there a row
+saying a roster member is past their last day is useless without the name. The
+name travels with the identifier now, and the identifier stays, because one is
+for the reader and the other is what anything acting on the finding needs.
+
+Long text in a property development document wraps inside its column instead of
+running off the page, which had a long escrow line leaving the paper and a long
+signatory name printing over the date beside it.
+
+Romanian projects seeded from the country template price at 21 percent value
+added tax, the rate since 1 August 2025, rather than the 19 it still carried.
+This reaches new installations only. A project methodology already cloned from
+the template keeps its own rate, which is the right behaviour for a document
+somebody may have deliberately overridden.
+
+Six smaller faults where what the product said about itself was wrong. Creating
+a labour rate template with no on cost components attached, which is the
+ordinary case for a new one, died after passing validation and saved nothing.
+The endpoint the interface uses to report its own errors failed whenever the
+browser closed the connection before finishing sending, which happens routinely
+because the reporter fires as the page navigates away, so errors caught that way
+were lost and appeared in the log as something unrelated. A raster overlay whose
+header declares an implausible surface, thirty thousand pixels a side, was
+refused deliberately and said so with an unexplained error rather than a
+refusal. A frontend bundle that goes missing under a running server, a redeploy
+wiping the build directory or a volume that unmounts after boot, told the
+operator the server had crashed when the server was fine, and now answers with a
+not found that names the file. A project with no currency policy stopped being
+filed as an error on every visit to the currencies screen, since having no
+policy yet is the ordinary state. And the demonstration data stopped writing a
+bill status that nothing in the product can produce or move a bill out of.
+
+Twenty strings that had been English in every language since the day they were
+written are translated. None of them is new. A key that carries its English
+text at the point it is called never puts a raw key on screen and never fails a
+type check or a build, so nothing reported these and nothing could: five are in
+the people picker on a project, three are the subtotal lines in the assembly
+library, eight are the help text of the matching wizard, and four are on the
+validation page. Eight of them were answered by no locale at all, English
+included.
+
+The share text says 41 languages, which is what the picker offers, rather than
+the 26 it had been claiming.
+
+The cost database documentation is rewritten from the code it describes rather
+than from what it was once meant to do, and the method and the worked example
+are listed in the documentation index so they can be found without knowing they
+exist. The counts the documentation states as fact are recounted again, the rule
+count, the module count and the number of locale files, which are three numbers
+that go stale every time the product grows and had gone stale in several places
+at once.
+
+Two internal states stop being reported wrongly. A column the boot repair had to
+add as nullable, so that it could land over rows that predate it, is now
+backfilled and tightened afterwards, which is what stops the model and the
+database disagreeing quietly and the health check reporting a divergence nobody
+can act on. And the divergence warning prints the whole list rather than the
+first five entries, which had two separate instruments agreeing on five when
+nine had diverged, and looking like corroboration rather than the same
+truncation reached twice.
+
+A case page named the market whose standards it follows and gave the reader no
+way to act on it. The regional pack that carries those standards is now named at
+the foot of the process column, with the currency, the tax template and the
+version it sets, and it carries the button that switches it on. That button
+opens the same preview and confirm dialog the pack registry uses rather than a
+smaller copy of it, so the dry run of exactly what changes is still the step
+before anything is applied, and a reader without the admin role can see which
+pack the numbers on the page assume without being able to change them. A market
+with no pack on disk shows nothing at all, which is the right answer for the ten
+Spanish cases that ship without a Spanish pack, because a panel that shrugged on
+all ten would teach the reader to stop reading that part of the page. The two
+blocks of that row also end level now. The step strip is one fixed height and
+left the company comb beside it drawing a bordered box seventy pixels taller
+than the content next to it.
+
+Signing in is now something you can take back. Every pair of tokens is minted
+together with a session row that names it, so a session can be ended on its own
+instead of only by ending all of them, and changing a password ends every
+session rather than only the browser doing the changing. Refreshing rotates the
+session it already belongs to rather than opening another, so a revoked session
+cannot refresh its way back. The list of your own sessions marks the one you are
+reading it from, which is the field the whole feature turns on: without it the
+action people actually want, end everything except the device in my hand, has no
+way to tell the device in your hand apart from the rest. That list answers with a
+page rather than an array, so a caller can tell a complete answer from a first
+one, which for this list is the difference between having ended every other
+session and believing you had.
+
+Sign-in on the public demo works again. The demo refuses writes at the database
+as well as at the door, and the session row a sign-in now writes was not on the
+short list of things sign-in is allowed to write, so the write was refused, and
+because the tokens and their row are deliberately created together the refusal
+took the whole login with it rather than degrading to a session nobody could
+revoke. Anyone running with OE_DEMO_READ_ONLY on was met with a read-only
+refusal on the sign-in form itself. The permitted set now names the statement
+kinds per table, so the account row keeps the narrow permission it was given,
+an insert there still being account creation, while the session row may be
+written and rotated. Self-hosted installs were never affected: none of this
+arms unless that flag is on.
+
+## [16.2.0] - 2026-08-28
+
+Maps work again. Every map surface had been drawing tiles with API KEY REQUIRED
+printed across them. Nothing in our code changed to cause it, the free tile
+service we were calling started watermarking its output, and it did so while
+still answering with a normal 200 and a valid image, so nothing on our side
+noticed. The basemap now comes from us: shaded relief we serve ourselves, and
+keyless vector maps for the interactive views. There is no key to obtain, no
+quota to exceed and no account to hold.
+
+Two consequences worth knowing. The old watermarked tiles are still sitting in
+your browser cache, stored under a rule that tells the browser never to check for
+a newer copy, so we changed the tile addresses instead. The new addresses cannot
+collide with the old ones and the stale copies are never asked for again, which
+means there is nothing to wait out and nothing to clear by hand. The one place
+the old map can still appear is the first screen you open right after upgrading,
+because the application installs its update in the background and the page in
+front of you was loaded before that finished. Reload once and it is gone. The
+second consequence is that the small map on a project card, along with the 3D
+globe, now shows terrain rather than streets. Street detail at that size needs a
+tile service with a key, and we would rather show you a plain honest map than a
+detailed branded one.
+
+A module can be found without knowing which tab it is on. There are 189 of them
+and, until now, no way to search. Type part of a name into the field above the
+tabs and the page goes to the module, whichever tab it lives on. It matches the
+translated name as well as the English one, so Regionalpaket finds the same
+module as Regional Pack.
+
+Regional packs are in the build. Until now the packs page said no packs were
+available on every install we published, and the reason was two faults stacked on
+top of each other. The fifteen packs we ship were never copied into the wheel, and
+the code that goes looking for them worked out where they lived by counting
+directories up from its own file, which only ever pointed at a source checkout.
+Both halves are fixed. A fresh install now finds the packs it shipped with, and
+the ones it finds are the ones we meant to send.
+
+An upgraded install no longer describes itself as degraded for good. A database
+that is stamped behind the code is a fact about the database, and it is now
+reported as one. A schema that has genuinely diverged is still reported as a
+fault, which is what that field was for. If you have been looking at degraded
+since your last upgrade and could not work out what to do about it, this is
+why, and the answer was usually nothing.
+
+A KPI can be defined by someone who cannot ship Python. The definition is data
+rather than code: one entity, one aggregation, one field and a list of filters,
+and every one of those is a lookup into a published vocabulary, so nothing a
+caller writes is concatenated into SQL or evaluated. The definition is checked
+when it is created, not when it is computed, and a rejection names the part that
+failed and what that part would have accepted. That ordering is the point. A KPI
+validated at compute time reads zero forever and looks exactly like a
+measurement. One definition then works in a tile, in a chart, in an alert rule,
+in a report and in a drill-down without any of those being taught about it.
+Creating one takes the manager permission and goes through the API for now, there
+is no form for it in the interface, but it shows up in the KPI library and in the
+widget and alert pickers as soon as it exists.
+
+Creating a production norm works again. A request that carried no materials came
+back as a server error and rolled the transaction back, so nothing was saved and
+the norm you had just created was not there. Separately, sending an explicit null
+for a field you meant to leave alone reached the column and failed there, because
+an optional field marks what was not supplied and a null cannot be told apart
+from an omission after the fact. Omit a field to leave it unchanged. An explicit
+null is now refused with an explanation instead of a server error, and the
+numeric fields take zero if what you wanted was to clear them.
+
+A report exported as CSV now carries readable column headings, and if you have a
+script reading that export this is the line to read. Where a column used to be
+titled with the raw internal key, kpi_code, it is now titled KPI code. The
+reasoning is that a CSV is a document for a person and the machine readable copy
+of the same run is the rows field of the API response, which is untouched and
+still carries the raw keys. Nothing warned about this and it should have, which
+is why it is here rather than buried: a script written against the old headings
+needs its column names updating once.
+
+The dashboard opens the cases block as two rows with a link to the rest, instead
+of filling the screen with four.
+
+The command line answers --version again. It used to print the version and then
+exit with an error code anyway, which is invisible when you type it yourself and
+breaks any script that checks it.
+
+Nova Scotia bills the rate it actually charges. Databases that already exist are
+repaired on upgrade, so amounts on those screens change. The repair covers the
+rate itself and not invoices already issued against the old one.
+
+The browser no longer calls the public geocoder directly. Requests go through the
+application, so addresses your users type are not sent from their machines to a
+third party, and the dashboard map credits OpenStreetMap as its licence requires.
+
+A catalogue kept where an install keeps it is now found there. The lookup used a
+path that only resolved when the process happened to start from the project
+directory.
+
+When a repair drops a NOT NULL on the way in, it says so rather than doing it
+quietly.
+
+Building on the platform no longer means reading it first. DEVELOPING.md at the
+root explains how the place actually works in one sitting: what a module is and
+why a directory without a manifest is invisible to the loader, that the frontend
+has two different systems people keep mistaking for one, which gate is the real
+one, and where regional behaviour lives if you are adapting the platform to a
+country. It says which document wins when two disagree and points at the tree
+rather than at itself. It is also written to be handed whole to an AI coding
+assistant, since most people doing this work now use one and this codebase has
+several traps that make an assistant confidently wrong.
+
+That file also writes down something that had never been said out loud in the
+repository: this project does not take external pull requests, on supply chain
+grounds, and what the team acts on instead is issues, specifications,
+reproductions and reports from adapting the platform to a market. CONTRIBUTING.md
+had been walking first-time contributors into a fork and a pull request that was
+never going to be merged, and offering them a licence agreement to sign for it.
+Both files now say the same thing in the same place.
+
+Three things nothing was checking now are. A module directory that loses its
+manifest is the one failure this system has that produces no log line at all, and
+a guard now refuses it. The generated country portrait manifest is checked against
+the folder it is generated from. And the Python outside the backend, 116 files of
+it, was neither linted nor format checked by anything, which is now fixed along
+with the pre-commit hooks that would have quietly undone it.
+
+Documentation that had drifted is measured again. The architecture overview said
+it tracked version 10.10.0 and shipped 161 modules, and four links pointed at
+files that are not in the repository at all.
+
+## [16.1.0] - 2026-08-27
+
+Before you upgrade, four things worth knowing.
+
+On Windows, upgrading a desktop install from v15.8.0 or earlier, take the default.
+The upgrade page offers to uninstall the previous version first and its explanatory
+text still recommends doing so, but that text is wrong for these versions and it
+lives in the bundler's own translated strings where the fix cannot reach it. Every
+release from v11.7.1 to v15.8.0 shipped an uninstaller whose process-stop step waits
+with no time limit, and an upgrade runs the uninstaller already on disk rather than
+the one inside the new installer, so choosing to uninstall first can hang on closing
+the application with nothing to do but the task manager. The default is now do not
+uninstall, which avoids it. If you do get stuck, cancel the installer, close the
+application and any leftover server process, uninstall from Settings, then install
+16.1.0.
+
+If you pinned a version on Docker before 16.1.0, check what you are actually
+running. The pin used to be exported into the installing shell only, so the commands
+we told you to type next started whatever we had released most recently rather than
+the version you asked for, and you may already be on a newer image than you chose.
+Set OE_IMAGE_TAG in your .env to stay on a specific version. Installs from 16.1.0
+onward write that pin for you.
+
+Two numbers change on screens you already read, both corrections. Canadian tax
+answers go up on databases seeded before v15.5.0. Change intelligence headline
+figures go down on any project where variations were converted.
+
+Python 3.11 and earlier cannot install this release. The floor is 3.12.
+
+This is a minor rather than a patch because the boot path now writes to customer data, the health endpoint gained a field and a state it did not have, and a tax rate that resolved to zero starts resolving to five percent. None of those is a feature. The number moved because a patch promises nothing at the boundary changed, and here that promise would have been false three times over.
+
+Every route we published for installing this product with Docker was broken as written, including the headline one. The one-line installers download the compose file and start it without ever writing the file that holds the two secrets it refuses to start without, and Docker is the first branch they auto-detect, so a user with Docker who ran the command from the top of our documentation got an interpolation error and nothing else. The compose quickstart had the same hole on a fresh clone, where only the example file ships, and the instructions said to clone and run with nothing in between. That requirement landed in April, so this is four months old rather than a regression. Both installers write the file now, generating the secrets with something each platform actually has rather than assuming a Unix toolchain on Windows, and they never overwrite one that exists, because replacing a password locks somebody out of data PostgreSQL already wrote with it. A version pin is written there too, since it used to be exported into the installing shell only, so the commands we told the user to type next silently started whatever we had released most recently instead of the version they asked for.
+
+A database password with a slash in it stops being read as a hostname. The container entrypoint checks that the connection string names a host rather than leaving one to be guessed, and it looked for the at sign only as far as the first slash after the scheme, on the assumption that everything before that slash is the authority. A password may contain a slash, and a base64 password does about four times in ten. For a password of that shape the check saw a fragment, found no at sign, and passed, while the layer beneath it read the same string with a hostname nobody had typed. The operator got a name resolution failure naming a host that appears nowhere in their configuration, which is the precise failure the check exists to prevent. It reads the whole string after the scheme now, less any query, so an at sign arriving late is still an at sign.
+
+The published one-line container command is gone rather than fixed. It could not reach Python at all: the image carries no database server, so the entrypoint hits its check and exits before startup. There is no flag that repairs that, because there is no database for a flag to point at. It is replaced by the shortest sequence that actually works from the published image, and the from-a-clone route is documented beside it. Being exact about how far this was tested, because it is the kind of claim that should not be generous: the pip route was installed and run end to end on a clean machine. The container routes were reviewed at the level of the entrypoint, the compose files and the install scripts rather than executed, with the one exception that the entrypoint's handling of the database connection string is now covered by a test that runs the shipped script itself. The from-source install commands were not run.
+
+The boot path has a place to put data rewrites, which is the mechanism this release is really about. Nothing in this product runs a migration body. The schema moves at boot through the heal and the create-all, the head stamp then records the database as current, and a revision whose upgrade backfills or de-duplicates rows never executes on an ordinary install while every signal reports success. That is how a de-brand once left trademarked rows in customer databases for eleven months. There is now a registry those rewrites are written into, a ledger table recording what ran, and a contract each repair is held to, with a gate in a lane that blocks a merge.
+
+Five repairs arrive with it and four of them move money. Only the fifth does not, and that one renames the trademarked catalogue rows that started this, eleven months after they were seeded. The Romanian standard rate went from nineteen to twenty one percent in August 2025 with both reduced bands replaced by a single eleven, and the tax table is seeded only when empty, so every database created before the reform still carries the old rate and no reduced rate at all. That repair closes the old row's window and inserts the new rate beside it rather than rewriting in place, so a document priced before the reform still resolves at the rate it was priced at. The Canadian one is the opposite case and is corrected outright. A revision backfilled the column that says how a rate combines, never ran, and left the two country-wide rows on the column's default, where the resolver's federal list is empty and a Canadian caller reads zero. British Columbia was answering seven percent instead of five plus seven, Quebec 9.975 instead of 14.975, and Alberta came back as a confident zero. After this release those installs answer correctly, which means the number on that screen changes for anyone affected, upward. The two remaining tax repairs work the same seam from the other side, and both move money despite reading like bookkeeping. One labels the shipped Canadian and United States rates with the subdivision they apply in and records how each rate combines, and that second field is a branch selector in the resolver rather than a description, so writing it changes what the resolver answers. The other delivers rates that were added to the shipped tax table after a given database was seeded. That last one is the general case of the Romanian problem rather than a second instance of it. The table is seeded only when it is empty, so every rate we have added since a database was created has been missing from it, silently, with the screen reporting whatever was true on the day that database was first started.
+
+That screen deserves a sentence of its own, because it was built to refuse to invent a number and it could not defend against this one. Zero is a legitimate rate, the shipped United States federal row is genuinely zero, so a panel that treated zero as suspicious would be wrong about real data. It was being handed a well-formed wrong answer by the layer beneath it and had no way to know. The repair is the fix; the guarantee that screen offers stops at the interface boundary, and that is worth knowing before anyone reads it as fully protective.
+
+A ledger that could not be written stops reporting healthy. A repair can succeed against a database whose role may write rows but not create tables, leaving the data correct and the record of it missing, and the boot path published the repair outcomes and dropped the other half. Measured with the ledger table dropped, both repairs landed, the write failed, and health answered healthy. Nothing on that install could then say whether a given repair had ever run there, which is the one question a ledger exists to answer. Health carries a third flag beside the two it had, in the same three states and with the same polarity.
+
+The surface named as unfixed in the 16.0.0 notes is fixed. A plain table cell, the kind holding one short value rather than a wrapped block, was drawing complex scripts with the right face and the wrong shape: a Thai tone mark at the height of the vowel it belongs above, a Devanagari matra after its consonant instead of before. The cell is not a flowable, so it is drawn through a call that discards its shaping argument. The text is shaped before the table sees it now, at twelve sites across six generators, and it needs no new dependency because the shaper already ships. That reaches names and free text a Thai or Indian firm types into punch lists, meeting minutes, property summaries and dashboard exports. Four documents that printed a long cell over the column beside it are fitted to the page, six table headings stop being drawn in the colour of the fill behind them, and a long meeting action item splits across the page instead of failing the export. Two more exports, a dashboard and a regulator quarterly disclosure, were running off the paper entirely: their tables carried no column widths, so a table grew to whatever its longest value needed and hung over both edges, in the worst case by more than four inches a side. Nothing was logged and a text extractor still found every column, which is what kept it quiet. The file reads as complete and the printed page is not, so it is worth reprinting any disclosure you filed from this product.
+
+An access check on a takeoff document treated a caller with no identity as a match for a document with no owner. Both sides were coerced to strings, both absences became the empty string, and the comparison read that as ownership. A named caller was already refused, which is why the shape of the gap was easy to miss. The check requires both sides to name the same identity now, which is the form its sibling already used.
+
+A variation order promoted through the interface keeps the figures the request was approved on, and this is the one to read if you use variations. Converting an approved request built the order from the submitted payload alone, and every field of that payload carries a default, so a caller naming only a currency produced an order with no title and a value of zero. That is exactly what the variations page sends. Every order promoted through the interface therefore arrived empty, losing the title and the agreed cost and schedule impact the request had been approved on, and the change order mirroring it was priced off the same emptiness. Promotion now fills anything the caller did not name from the request itself, and the order commits the same figure the authorisation check was run against, which is where the fault actually lived: the check knew the right amount and the order was handed a different one. An order deliberately agreed at nil cost, or retitled on the way through, still gets exactly what was asked for. The contract link an order needs in order to move a contract sum can also be set after creation now, which nothing in the interface could do before, so an order raised that way could never reach a contract at all.
+
+This fix is not retroactive, and that is the part to act on. Every order already promoted through the interface is sitting at zero today and stays there, because nothing goes back and reprices it. Until those are corrected by hand against the requests they came from, the contract sums they should have moved are short by the full value of every variation promoted this way. Only conversions from this release forward arrive correct.
+
+A converted variation counts as one change rather than two. Promotion creates the order and a change order mirroring it, both carrying the same agreed money, and the committed impact and the run rate curve each read both families and added them up. Every conversion inflated the cumulative curve and the intake rate, and the committed impact too once somebody approved the mirror. This was not buried in a report nobody opens. It is the run rate tab of change intelligence, wrong in the tiles a commercial manager reads at a glance: change to date, change as a percentage, intake per month and the forecast at completion beneath them, with the cumulative curve drawn from the same doubled figures and the value report fed by them. The mirror is left out now, but only while the order it mirrors is itself counted, so a voided variation whose mirror is the only surviving record of the change still counts, and a change order nobody promoted counts as it always did. Expect this to be visible on Monday morning. On any project where variations have been converted, all four of those headline figures drop after the upgrade, with no change order to explain where the value went. The old number was inflated and the new one is right, but nobody should have to discover that from a dashboard.
+
+Money is written in the units it is denominated in, in five more places. An earned value forecast rounds to the currency it is written in rather than to two decimals; a property development contract is written in its own currency rather than the reader's; the per-currency breakdown on a variation keeps each currency in its own units; an award letter quotes a bid in the units it was bid in; and a payment application's face and its continuation sheet are written in the same units as each other, which they were not, so an owner could certify a figure in whole units above a schedule of values quoting hundredths. The change a forint or yen user actually notices is the digits, not the rounding: on all of these surfaces a currency with no minor unit stops being written with two decimal places it does not have, and a three decimal currency stops losing its third. If you price in yen, won, forint or rupiah, the figures on these documents get shorter, and they were wrong before rather than now. Rounding moves too, on the property, tendering and payment application documents, which now go half up rather than half to even. A figure landing on exactly half a cent is written up instead of to the nearest even digit, and a negative figure rounds away from zero to match. That is the rule the shared money helper already applied everywhere else, including the variations breakdown above, which is why that one reads byte for byte as before on a two decimal currency.
+
+The GAEB Exchange module is reachable from the work it belongs to. Its manifest said it is reached from the bill of quantities and nothing there reached it, so the only ways in were typing the address or following a link from a case page, and a user who saw the editor's one-click export reasonably concluded that was all the support there was. The editor's export menu and the bill overview both open it now, carrying the project and the bill, and the page reads them and preselects. The sidebar is unchanged on purpose, because a regional format does not need permanent chrome for every market.
+
+Both ways we package this product now carry the attribution file they declare. The published 16.0.0 wheel holds 3860 entries and the notice is not one of them, so installing with pip conveyed the licence text and no attribution index at all, while six bundled font and font engine licences did travel, sitting inside the package directory rather than beside it. That left the wheel carrying attributions and not the file explaining what they are for. Separately, the container build context excluded the same file through a pattern whose two readings disagree, and the reading that matters anchors at the context root, so the image built today is correct and one built after a small change to that file would not have been. What makes that half worth fixing rather than noting is that it fails silently: the entry is a glob, and a glob matching nothing is not an error.
+
+The converter version check compares against the ref the installer uses, and so does the link beside it. The endpoint and the installer had each written the repository and the commit down separately, so the two agreed by coincidence rather than by construction, and the dashboard could show an update badge whose button reinstalls identical bytes while the badge never clears. There is one declaration now and both sides read it, with the pin itself, the environment overrides and their precedence all unchanged. The manual install instructions link had the same split and a worse consequence: it pointed at the branch tip while the button beside it installs a pinned commit, so anyone following the written route ended up on a different build and then reported problems against a version we could not reproduce.
+
+A Windows upgrade stops offering the uninstaller it is replacing, and this one is worth reading if you are on any earlier desktop build. An installer upgrading an existing install runs the uninstaller already on disk rather than the one inside itself, and the stock template pre-selects exactly that. Every release from v11.7.1 to v15.8.0 shipped an uninstaller whose process-stop step waited without a time limit, so on a machine where the shell it calls has wedged, the upgrade hangs on closing the application with nothing to do but the task manager. Bounded waits landed in 15.9.0 and they only take effect one update later, which means the exposed path was the default a user takes by clicking through. The upgrade branch now starts on the option that does not run the old uninstaller, with the focus moved to match so the previous behaviour is not one key press away. The first option is still there for anyone who wants it, and the same-version, downgrade and migration paths are untouched, the last of those because it ignores the radio button entirely and would have shown a default it then disregarded. The template we had to fork to do this is held to upstream by a gate that also checks the fork is still wired in, since deleting one line of configuration would have left a perfect-looking file that nothing reads.
+
+The frozen desktop build declares every layer the backend imports by name. The repair pass above walks the modules and imports each one's repairs file, and that layer, along with four others, was reaching the sidecar only through a tree that describes itself as data. That works until the tree is not there, and the failure it produces is the one the repair pass swallows as this module has nothing to repair, so the pass would have attempted nothing, failed nothing, and left health reporting a clean boot, on the one install route that ships no migration tree at all. The test that should have caught it read its expectation out of the file it was checking, which is a test that cannot fail.
+
+Restoring a prepared cost database stops reporting failure when it succeeded. The restore downloads about a gigabyte and can take the better part of an hour, and the button gave up waiting after forty five seconds and reported an error, while the restore carried on and finished normally on the server. Anyone who saw that message reasonably concluded it had failed and tried again. The wait now derives from the budget the server actually allows rather than a number typed next to it, and if the browser does stop waiting it says the restore is still running and nothing was cancelled, rather than calling it a failure. The count it reports afterwards was wrong too, reading a field the restore does not answer with, so a restore of fifty five thousand entries announced one, or none. Both screens read the same answer now, and the setup page no longer describes a restore as indexing, which it is not.
+
+A comment on a drawing says which revision it was written against. If you are reading a remark left on V01 while the file in front of you is V02, the comment now says so instead of letting you take an old observation at face value. It stays quiet in the two cases that are not problems, a comment on the current revision and an older comment from before revisions were pinned at all. The component that draws this was written in May and nothing ever mounted it, so it sat unreachable for three months with a passing test beside it, which is the kind of test that renders a thing directly and therefore cannot notice nobody can get to it.
+
+Two estimator rules stop rejecting a well formed section header, and this one is an honesty fix rather than a visible one. A section header totals the rows beneath it and by construction carries no quantity and no cost database grounding, and two blocking rules read those absences as a missing price and an invented rate. On a bill with headers in it they would refuse to apply an estimate over rows that are perfectly correct. The reason nothing on screen changes today is that the estimator's own preview sends a flat list with no headers in it, so the fault was unreachable from the one caller that exists. It is fixed anyway, because these rules live in a shared registry where anything may ask for them, and a rule that is wrong for a payload nobody sends yet is still wrong. The guard meant to catch exactly this could only see it when an unrelated test had run first in the same process, which is a guard whose verdict depends on the order tests happen to run in, and that is being looked at separately.
+
+Translation work continues at scale. The case catalogue now reads in around two dozen further languages rather than falling back to English names, four screens reachable from a translated menu stopped being English-only, and a payment application is a claim for work rather than a piece of software in every locale that had translated the word as the latter. Uzbek spells its own letters literally again in a hundred and eighteen values, nine Kyrgyz words stop carrying a Latin letter in the middle of a Cyrillic one, and a Bulgarian word spells its o the way the rest of the file does. Those last two are the class of defect that renders identically and is invisible to every check that reads the text rather than the characters, and there is a gate for them now.
+
+There is a regional pack for China. It declares the GB 50500-2013 rules for bill of quantities valuation, the GB 50854 to 50862 measurement family, national and provincial quota systems, five contract forms, the four value added tax bands and the yuan. It carries no validation rules of its own on purpose: what it does is make an existing one reachable, because the bill of quantities unit check reads a project's measurement system and China resolved to nothing, so a Chinese bill was neither passing that check nor failing it. It was absent from it, which reads exactly like a clean bill. The pack ships with tests covering both directions of that check, and it is off by default like every other regional pack, so it appears in the module registry for anyone who wants it rather than switching itself on.
+
+## [16.0.0] - 2026-08-26
+
+This is a minor rather than a patch because three routes now refuse requests they used to accept, converted amounts change on the wire, and the install pulls a new library. Nothing here is a feature that needed a version of its own; the number moved because a patch is a promise that nothing at the boundary changed, and that promise would have been false.
+
+A computer-aided design extraction session with no recorded owner used to read as permission rather than as the absence of one. The check compared the caller against the owner field and an empty field matched everybody, so any authenticated user could read any unowned session and the extraction inside it. Sessions arrive unowned in ordinary use, not only through error. The route answers a not found now, which is what it always meant to do. Callers that were relying on the old answer were relying on a gap.
+
+Switching the market catalogue for a region was gated on read permission and described in a comment as a viewer-level action. It is not a read at all. It rewrites the description, unit and classification of every cost item in the region, and it also overwrites every stored resource price from the market file, including prices somebody had edited by hand, then reprices every work item and stamps the market currency across the region. Those rows are shared reference data that is deliberately never filtered by tenant, so a viewer in one account was destroying saved pricing work in all of them. It requires editor permission now. That closes the privilege escalation and does not make the operation tenant-safe, which is a property of the shared table rather than a defect left unfixed, and it is written down as such. Loading the reference cost database stays viewer-level on purpose, because onboarding, the command line quickstart and the partner pack installer all reach it.
+
+Converted amounts are rounded to the currency they are denominated in. The rounding was currency-blind and always went to two decimals, so a Kuwaiti dinar lost its third decimal on every conversion, and yen, forint, rupiah and Chilean peso carried two decimals that cannot be settled in those currencies at all. Both directions were wrong in a way that survives arithmetic: the first silently discards money, the second invents a precision the payment rail will refuse. Amounts on the wire move accordingly. No stored data is rewritten and no migration runs, because the values in the database were never the problem.
+
+A stored holiday means one day to every reader. The schedule engine and the progress engine read the same column through different code, and one of them walked a malformed value character by character and produced ten junk entries where there should have been one date, silently and with nothing logged. A calendar that cannot be read is now refused at the routes that write it rather than quietly degrading into a default working week, and a calendar column holding something that is not a calendar stops the read instead of returning confident dates computed from an assumption. The two country registries behind the working week are held together by an assertion now, and the assertion checks that both sides actually answered, because two lookups that both fall back to the same default agree with each other without either of them knowing anything.
+
+The full text of the licence ships where the product says it ships. The root file was a summary, the about screen told the reader the complete text came with the source, and the complete text was in the tree, the wheel and the container image nowhere. The Windows installer was showing that summary on the page where the user accepts the licence. All of them carry the verbatim text now, and the attribution file was corrected in the same pass: it filed a dependency under an optional group it had left, listed a package that is not a dependency at all, and closed by telling anyone who installed without that group that they pulled in no copyleft upstream packages, which was not true of any build we have ever shipped. It says what we ship, and it records what the previous wording claimed, because a reader who acted on the old text deserves to find that out rather than to meet a quietly corrected file.
+
+Thai and Devanagari print correctly in the wrapped text blocks that documents use for descriptions and narrative. The characters were reaching the page and landing in the wrong places: a tone mark drew at the height of the vowel it belongs above and merged with it. That needs shaping rather than a font, so the shaper ships with the product, and the desktop installers now actually contain it, which they had been promising and not doing. Korean and Chinese are correct on every surface, because those scripts need the right face rather than the shaper.
+
+One surface is not fixed, and it is named here rather than left to be discovered. A plain table cell, the kind holding one short value rather than a wrapped block, still draws complex scripts unshaped. It is placement rather than support: the correct face draws the correct characters in the wrong shape. That reaches names and free text a Thai or Indian firm types into punch lists, meeting minutes, property summaries and dashboard exports. It does not reach contract billing descriptions, which are on the wrapped path and are correct. The measurement is done and the fix is understood, and it did not land in time for this release.
+
+Two offered languages produce documents nobody can read, and this release fixes neither. Bengali sits in the language picker with a complete interface translation, and no bundled face covers the script at all, so every Bengali character in a generated document prints as an empty box. Urdu draws most of its text, but four of its characters have no face either, and they are not rare: two are among the commonest letters in the language and one is the full stop that ends every sentence. Both are a missing font rather than the placement problem above, which makes them a different piece of work, and they are named here because a release that says complex scripts print correctly should say where they do not.
+
+A country resolves to one classification standard whatever the spelling of the region it arrives as. Five hand-written tables and one derived from them disagreed, and the fallback that was supposed to recover a standard from a city-suffixed region identifier could never fire for the identifiers it was written for, because an earlier step had already put a default in the slot it tested for emptiness. Seventeen countries were resolving to the wrong standard. A region that still cannot be resolved keeps the previous default rather than changing behaviour quietly, but it now says so, and the answer carries whether it was matched or defaulted.
+
+Every offered language reports how much of itself it actually returns. A guard asks the real translation library what a reader of each language actually sees on screen, rather than parsing the files with a reader of its own, which is how a bundle with a missing comma once walked past four green gates. It found twenty five cells that render blank in Bulgarian, Italian, Romanian and Kyrgyz where English renders text, including a login headline that begins mid-sentence. Those are filled and the check is green. Case playbooks are translated across the offered languages, several screens that had never been translated at all now are, and a set of controls that had no accessible name now have one.
+
+The install pulls one new library, the text shaper described above. Anyone installing on a restricted network should expect one additional wheel.
+
+## [15.9.1] - 2026-08-25
+
+Seven partner packs ask the validation engine for a standard it already implements and have never received it. The German packs name DIN 276 as `din_276` where the engine registers `din276`, the British pack names the three NRM documents, the Brazilian pack three ABNT NBR ones and its SINAPI cost database, the Indian pack its CPWD specification, the formwork pack two cycle rule sets and the American cost pack MasterFormat. Fifteen declarations in all, each of them a standard with working rules sitting behind a name spelled slightly differently, and the installer reported only that the entry was documentation-only with no built-in engine match, which is true of the name and false of the standard. It now names the identifier that would activate the rules and still switches nothing on, because five of those rules are error severity and turning them on would start failing bills of quantities that pass today. That is a decision for whoever installs the pack; what was wrong is that nobody was in a position to make it.
+
+The documentation is where the wrong names came from. The partner-pack guide introduced a list as the rule-pack slugs the core ships and then named thirty six of which three existed, so a partner following it wrote identifiers that resolve to nothing. The list is now the registry's own and the reference example uses identifiers that work. It publishes no rule counts, deliberately: one rule set holds nineteen rules in a bare interpreter and twenty four once the module validators load, because modules register into existing sets as well as adding their own, so any single number would have described the reader's process rather than the software. The guard that checks all of this reads the manifests, which the test that came before it never did, and it runs in a lane that blocks a merge.
+
+The Uzbek bundle spells its own letters again. A batch had written nine hundred and eighty one characters as unicode escapes, eight hundred and twenty eight of them the modifier letter the language uses in its own name, in the only one of the forty three bundles doing it and in a file that writes the same character literally twenty six thousand times elsewhere. Nothing was broken, since the escape parses to the same character, but a translator opening the file to check a line saw six characters where the reader sees one. It also split two honest measurements: Uzbek came back at 1565 values identical to English on the source text and 1570 on the parsed value, because five dashes were written one way in English and the other way here. The 15.9.0 notes quoted the first of those; the reader-visible figure is 1570, and after this release the two agree, which closes the discrepancy rather than explaining it. The note beside the language entry is current again too. It had been claiming, from a measurement eight days old, that about half the interface would arrive in English; the real figure is four and a half percent against four and a half for the weakest language currently offered, so Uzbek is at the edge of the band and still last, and it stays unoffered.
+
+A regional language code is now served by its base language everywhere, which it was not. A browser announces pt-BR, es-MX or en-US rather than pt, es or en, and the interface has always resolved those to the language behind them. The server did it in one place and not in the other three. Text the server writes went straight past a translated Portuguese catalogue to English, and the route that serves that catalogue by name refused the same code outright with a not found, so one reader could be told two different things about one language depending on which way they asked. There is one resolver now and every entry point uses it, and five of the forty one languages the interface offers move from English to their own language in everything the server writes. A code with no catalogue at all still reads English and still says so, because that warning means the reader is about to read English rather than that no file is named after their exact code, and those two had been reported as the same thing. Nine of the forty one are in that position, having no server catalogue under any name, and this release does not change that; it is a separate gap and it is recorded as one rather than folded into this number.
+
+The version the command line prints is the version that is running. It asked the installed distribution first, so a source tree that had ever seen an install answered with whatever that install had left behind: a tree at 15.9.1 printed 15.2.0 while the health endpoint in the same process said 15.9.1. Anyone checking which build they were talking to had two answers and nothing to choose between them with. It reads the version beside the running code now and falls back to the installed metadata only where there is no source tree, which is the case that fallback was written for.
+
+An upgrade could not reach the current schema from the schema the product itself installs. The default runtime builds its tables from the models and stamps the migration head afterwards, so it never executes a revision, and each release leaves such an install holding the right columns behind an old stamp. Anyone who then ran an upgrade to close that gap got a duplicate column error on the first of three revisions that added a currency column without checking whether it was already there, the transaction rolled back, and the two revisions behind it never ran at all. Twenty four of the twenty seven revisions in between already guard themselves this way and these three now do too. It was found on a real installation rather than reasoned about: the same database that reported itself degraded for a stamp twenty seven revisions old now reports healthy because it is genuinely at the head, not because anything was stamped to say so. The test that holds it builds each table in both shapes and runs the revision over each, since this failure is invisible from a fresh install, which executes no revision, and invisible from a chain check, which only reads how revisions are linked.
+
+A test that proves the translation cascade survives a failing provider had stopped proving it. It passes a cache path to isolate itself, that parameter has been ignored since the cache moved into the main database, and the term it translates is written to the cache by another test in the same file, so it was reading the cache and reporting on the provider. It uses a term nothing else writes now and checks the cache misses before it starts. A locale test that accepted either of the only two answers its route can give was also holding nobody to anything.
+
+Two files that classified translation leaks are gone. Nothing read them, because the guard that owns lists of that kind looks in a different directory, and of the eighteen keys they classified fifteen do not exist in any bundle. One recorded a Thai gap on three keys the Thai bundle does not carry, and one justification offered a Portuguese word as the native equivalent a Scandinavian reader would otherwise see. Both carried a line saying they had been reviewed.
+
+A project that was never given a country is stored as Germany, and now says so. The column is not nullable and defaults to DE, so "nobody chose" and "somebody chose Germany" are written as the same row, and the two things the column drives, the working calendar and the payment-application country gate, both answer for Germany without anything marking it a guess. Pack resolution is not affected, because the service reads the country off the request before the database default applies. Nothing about that behaviour changed in this release. What changed is that the column, the schema and a test now describe it, because the fix is a migration plus a decision about what an unset country should mean, and a limitation nobody has written down is one that gets rediscovered instead of chosen.
+
+## [15.9.0] - 2026-08-25
+
+A backup that never happened could not be told from one that did. Nothing on this platform read the dumps themselves, only the schedule that was supposed to produce them, so a machine that had written nothing for nine days looked exactly like a machine that was fine. The check now reads the artefacts, their names, their sizes and their ages, and an empty directory is a verdict rather than missing input, which means it cannot pass on a host where backups have never run. That is the difference between it and everything that stayed quiet.
+
+The instrument that reports country coverage stopped claiming to know more than it did. It had been giving nine verdicts the strongest class of evidence without having it, and one of its probes answered confidently while the module it reads would not import at all, which is the failure a coverage report is least able to survive because a silent probe and a satisfied one print the same thing. Each verdict now travels with the reason it was reached and the report names the interpreter that produced it, so a number can be argued with rather than believed. Its own tests, and the guard that catches a probe still answering when its subject is broken, now run in a lane that blocks a merge instead of one nobody is required to look at.
+
+A Canadian contract standard the engine learned to recognise last release could not be selected on the screen that displayed it. The register would resolve a project to that standard and show its name on a badge while the control underneath offered five other families and not that one, because the page carries a hand written copy of the registry and nothing had ever compared the two. Both copies now carry it, and a test compares them against the engine's own set on every run. It also checks the quieter direction, which would have cost more: a value the backend cannot resolve is not rejected, it falls through to the project's own standard, so a typo in that list would have reported periods for a contract nobody chose and said nothing. The tests around that standard also learned the third answer the engine had started giving. Recognised and timed are different questions, and a family whose notice periods are deliberately held now returns no deadline rather than a twenty eight day countdown borrowed from a generic fallback, which two demonstration projects had been showing.
+
+Twelve guards now stand over the translation files and the twelfth is not like the other eleven, because it asks the compiler rather than bringing a reader of its own. A bundle with a missing comma had reached a commit past four green gates, each of which parsed the file its own way and none of which was the thing that loads it. Alongside it, a translation can no longer ask for a variable nobody passes, which is a defect no reader of any single language can see. Lists of things now join the way the reader's language joins them, rather than with a comma borrowed from Latin script, and the remaining places that still use a literal comma are counted, each carries a reason, and the count can only go down. Twenty seven strings that had been recorded as known leaks are translated instead of filed, across five languages, and the list of keys awaiting review stops being a third state that is neither solved nor open: every entry now says why it is there and which commit put it there, and the list is capped in both directions so it can neither grow unnoticed nor leave slack behind when it shrinks.
+
+Measured against English rather than described, the distance closed this release is uneven and the uneven part is worth stating. Uzbek, which was fifty times further behind than any other language a week ago, goes from five thousand four hundred and eighty nine strings identical to English down to one thousand five hundred and sixty five. German goes from one thousand one hundred and forty to eight hundred and sixty three, Dutch from one thousand six hundred and forty six to one thousand four hundred and five, and Thai, Italian, Danish and Czech move by smaller amounts. French, Swedish and Norwegian did not move at all. A batch of French translations was written and then reverted because it could not be verified, and reverting it was the right call, but the effect is that the language second in line for this work received none of it and the release should not imply otherwise. Identical to English is a distance and not a defect count, since a format name or a unit is identical in every language on purpose; it is comparable to itself across two releases, which is the only claim made here.
+
+Two of those translation fixes are worth naming because they are the same defect from opposite sides. One key read as a country code translated into a preposition, which is not English and not meaningful in the language it was written for, and being unlike English is exactly what made it invisible to a detector that compares against English. Another was repaired by adding a full stop to an English word, which passes the same detector while leaving the reader looking at English. A guard that measures byte identity cannot see either, which is why both were found by reading the family of keys around them rather than the key that was reported.
+
+A viewpoint carrying no snapshot stopped being drawn as a broken image, an issue register stopped keeping a second copy of a decision made elsewhere, and seven demonstration projects that had never been offered a model to attach now have one. On the desktop, an upgrade can no longer wait forever on a step that usually does nothing.
+
+## [15.8.0] - 2026-08-25
+
+A workspace with no cost database used to open on an empty screen that explained nothing. The person looking at it had just installed the product and was being asked to know, unprompted, that rates come from somewhere and that somewhere is a database they have to load. That screen now opens on an invitation with two named ways in, loading a regional database of tens of thousands of priced items or building a price list of their own, and it says what happens after each so the choice is made with the consequence visible. The same invitation appears on the dashboard while no database is loaded and disappears once one is, because the question it answers stops existing at that point.
+
+The case block on the dashboard was drawn eleven columns wide, which made every case a thumbnail too small to read the title of. It now shows twenty three cases at six columns with a portrait and a legible title, and the count follows the width of the block rather than the width of the screen, so a card sitting in a third of the dashboard asks for four columns instead of six and gets tiles that still read. Three controls in its header shrink it, grow it and hide it. Hiding puts it back in Customize dashboard and the control says so before it is pressed, since once the block is gone there is nothing left on screen to offer the way back. The shrink and grow controls only appear when there is a step to go to, so the block is never offered a width the dashboard cannot draw.
+
+Cases are now ordered by the market the reader's language speaks for. A German reader meets the thirteen German cases first, a Chinese reader the ten Chinese ones. Nothing is hidden by this and that is the design rather than a limitation: every case stays on the page and the hundred and forty that belong to no single market are the product rather than a backlog, so a language that names a market moves cases to the front and never takes any away. A language that names no market the catalogue has cases for changes nothing at all, which is thirty seven of the forty two, and the order those readers get is the catalogue's own, held in a number inside each case's own file where a human can find and change it. No popularity signal was invented for this, because the product measures nothing that would honestly back one.
+
+The Latin American Spanish and Brazilian Portuguese readers are deliberately not given the Spanish and Portuguese cases. Those ten Spanish cases implement Spanish public procurement, the Spanish exchange format and Spanish site paperwork, and leading a Mexican reader with a case that names Ley 37/1992 does not merely fail to help, it names a law that does not apply where they work.
+
+A case now says which kinds of firm it was written for, as a comb of hexagons beside the modules it walks through, and each hexagon takes the reader to every case written for that kind of firm. The caption under it counts against the closed list of company types rather than a number somebody typed, so it cannot start lying when a ninth type ships.
+
+Three fixes worth naming because none of them could be seen from inside the language they were wrong in.
+
+A list of module names was joined with a Latin comma before the sentence around it was ever translated. The keys reached forty two languages and the punctuation between the items inside them did not, so a Japanese reader read an enumeration with the wrong mark and an Arabic reader with a foreign one. The gate that exists for this question scans for a formatter built without a locale, which means it can only see a call that was made; code that never calls the formatter at all leaves nothing to match. The three sites now go through one helper that asks the reader's language. The obvious way to write that helper is wrong in a way worth recording: the list type whose name suggests a list of things is defined as a list of measurements, and Chinese joins that with nothing at all, so reaching for it would have replaced a wrong separator with no separator.
+
+The Bulgarian cost database screen offered a bone database. A translation pass had read cost as the anatomical root and rate as degree, so six of the eight strings on that screen were wrong, the reader was invited to add their first degree, and the import described a regional database of construction construction costs. Those strings entered the product in the fill that covered twenty seven languages at once and have been in every release since 11.1.0, which is the argument against that kind of pass rather than against the person who ran it: a screen nobody on the team reads is a screen where a wrong word survives indefinitely, and the only thing that would have caught this is a Bulgarian speaker opening it. Every replacement word was counted out of the Bulgarian file rather than chosen, so the screen now speaks the vocabulary the rest of the product already uses.
+
+Cases on the dashboard wore different faces from the same cases on the hub. The helper that assigns them documents that it has to see the whole catalogue, because a case wears a person by where it sits among all cases, and the dashboard was handing it the twenty three it had already selected. The two surfaces agree again.
+
+### Added
+
+- Cost database empty state with two named ways to begin, and the same invitation on the dashboard while no database is loaded
+- Company type honeycomb on a case, with each cell filtering the catalogue to that kind of firm
+- Controls to shrink, grow and hide the dashboard case block, persisted and reachable again from Customize dashboard
+- `fmtList`, one helper that writes a list in the reader's language, with the list and prose forms named for what the caller means
+
+### Fixed
+
+- A hard-coded Latin comma inside three localized sentences on the case card
+- Six Bulgarian strings on the cost database screen, including the title and the call to action
+- Case portraits on the dashboard no longer disagree with the same cases on the hub
+- The comment on the country coverage probe counts the aliasing layers the resolver has now, and the ten countries a naive table read answers wrongly rather than nine
+
+## [15.7.0] - 2026-08-25
+
+The case library goes from 164 walkthroughs to 202, and the four markets it was quietest about are the ones that grew. Canada and China had no cases at all, Spain and Britain had one each, and each of the four now has ten. Canada and China were not researched for this release. Both had a complete set of case specifications written months ago, sourced and argued, that never reached the product, while Germany and the United States had the same treatment and theirs did arrive. That is the whole reason a German reader found thirteen cases on the hub and a Canadian reader found none. This is those two sets finally being built. Spain and Britain had no such groundwork and were written from the trade practice up.
+
+What these cases refuse to claim is the part worth reading. Every step was checked against what the product actually does before it promised anything, and where the product does only part of the job the case says so in plain words. The Spanish certification case names the European late payment regime and which Spanish law implements it, because there is no Spanish row in the statutory payment register and pretending otherwise would send a reader hunting for a date nothing computes. The Spanish exchange format case says out loud that the import does not rebuild the decomposition, does not keep auxiliary prices, and captures a coefficient it does not apply. The British measurement case was written claiming NRM 2 work sections and was corrected before it shipped, because the classification picker offers the NRM 1 elemental structure and nothing in it is a work section, so the original step would have walked a reader into a screen that cannot do what the words said.
+
+One of those narrowings found a defect in the product rather than in the case, and it is fixed here. A change recorded against a Canadian contract was being given a countdown to a legal deadline that no contract text supports. The registry of notice periods did not recognise the CCDC family, and an unrecognised form fell through to a generic period rather than declining to answer, so a variation with an event on the first of August was told the period was twenty eight days, the deadline the twenty ninth, the status due soon and the basis calendar days. Every one of those numbers was manufactured by a fallback. That family is now recognised and held rather than answered, following the convention the payment clock registry already uses for a country still being researched. The clock is still built and still returned, with no period, no deadline and a status of unknown, so the refusal reaches the screen instead of the row quietly disappearing, and it still reports the entitlement as at risk when no notice is on file, because declining to state the window is not the same as saying there is no window. A genuinely unrecognised form keeps the generic fallback it always had.
+
+A case now says who it is written for and where it will take you. Every case has always known which kinds of company it serves and which modules its steps visit, and the catalogue used the first only to filter and showed neither, so a reader scanning the grid could see how long a case takes and how many steps it has but not whether it was meant for them. The card now carries both, in the panel where the fuller story already lives rather than on the resting card, clipped to what fits with a count for the remainder and with the whole list available to a screen reader rather than only the visible part. The case page itself shows every company type a case names, not a clipped run, because someone who has opened a case is asking whether it is theirs and that is the moment to answer completely, and there each one is a control: pressing it filters the catalogue to that kind of firm and goes there, since the reader asking whether a case is theirs is the same reader who wants the rest of the cases written for them. On the card those same company types stay plain text, because the card is a single click target and a nested control would steal the click the whole card exists to catch. Module names are resolved through the same key the module honeycomb resolves them by rather than through the label written beside it, which matters because a surface that read the label directly would agree with the honeycomb in English and disagree with it everywhere else, and no locale check could see it since nothing would be untranslated. The three new strings ship translated in every locale that answers for a language of its own rather than carrying English with a promise to translate later.
+
+A project now finds its own country's rules. The resolver that picks a compliance rule pack matched its hint tokens as unanchored substrings of a free text region name, first match winning, and two of those tokens are two letters long, so the German pack was reached by the two letters in the middle of a word. Ciudad de Mexico got the German rules from the Spanish preposition and Ile de France from the French one. Russia, Belarus, Cyprus and Australia all got the American rules from the letters in their own names. Denver and Delaware, both American, got the German ones. The right answers were reached the same way, which is what let this sit, since a test written from the countries the list was built for would have gone green over all of it. Resolution now starts from the ISO country code the project already carries in its own column, with the free text name as a fallback, through three lookups that cannot overlap. One honest regression comes with it: a project whose region reads Baden-Wuerttemberg and whose country column is empty now gets the default instead of the German pack. It was getting the right answer by accident and the accident is gone.
+
+The working week follows the country rather than a language. The table that picks a work calendar mixed ISO country codes with superseded language prefixes from the cost reference data, in one keyspace where a two letter key could mean either. So AR meant Arabic while the data meant Argentina, and a Buenos Aires project was given the Gulf six day ten hour week. PT meant Portuguese while the data meant Portugal, and Lisbon was given Brazil's six day week. Canada reached no calendar at all despite one existing for it. A sweep of every country code the product recognises found three wrong answers, two more from label matching where United caught United Arab Emirates and answered with the United States, and one calendar nothing could reach. The three kinds of key now live in three tables that cannot overlap, so the order they are consulted in cannot decide any answer.
+
+The Gulf weekend now falls on the days the Gulf actually rests. Saudi Arabia and Qatar were being planned on a week that rests Sunday and works Friday, which is their week the other way round, so both days a project there does not work were marked as working and the one day it does work was marked as rest. Kuwait, Bahrain and Oman were not wrong but absent, and a country with no entry falls through to a Monday to Friday default, which looks exactly like a country with no special calendar. The Emirates moved to a Monday to Friday week in 2022 and now has a calendar of its own rather than sharing one named after a region that does not have a single working week. What hid all of this is that the working week reaches a client as a count of days, with the days themselves carried only as prose inside the calendar's label, and a count of five is equally correct for a country resting Friday and Saturday and one resting Saturday and Sunday. So the check added alongside compares the statutory week the product already holds against the week the scheduler plans on, and asserts that they never conflict rather than that they are equal, because they are deliberately not equal: Brazil, China and India are planned on a six day construction week against a five day statutory one, and flattening one onto the other to make a test pass would be a regression dressed as a fix. What is not allowed is a day the country works being a day the planner rests.
+
+Separately, the countries that still have no compliance rule pack of their own are now written down as a checklist rather than left as a silent gap. Twenty eight rule set standards are registered and six are reachable through a pack; the rest, including the Chinese and Spanish sets, can be selected by a project directly and do run, but no jurisdiction reaches them through the gate that runs at contract signature. Three things now have to hold before a country is struck off that list, chiefly that the rules behind it test something the jurisdiction is actually about rather than only that a code is present and correctly shaped. An absent pack reads to a user as absent, while an empty one reads as coverage and tells them they have been checked when they have not.
+
+The empty state of the pipeline step palette, the line shown when a search matched nothing, was still in English in Arabic, Bulgarian, Finnish, Hindi, Indonesian, Korean, Mongolian, Thai, Turkish and Vietnamese. It survived because the tooling built to catch exactly this could not see it. The English value is written in single quotes, since the sentence itself quotes the search term, and both coverage scanners assumed every value opens with a double quote, so they skipped the pair, lost their place and swallowed the next twenty five keys with it. The scanners now read the file character by character and the twenty seven keys that were invisible to every report are visible again. Each translation follows the quotation convention its own file already uses rather than one house style imposed across scripts.
+
+Russia and China get the statutory payment periods they were owed. Both had been carrying a recorded still looking rather than an answer. Russia gets one row, for public procurement, where the customer has seven working days from the day it signs the acceptance document, and nothing is shipped for private Russian construction because the Civil Code leaves the period to the parties and there is no number to encode. China gets two rows rather than one, because the regulation sets thirty days for a public buyer and sixty for a large enterprise, in both cases owed to a small or medium supplier. Brazil deliberately gets nothing and stays as it was, since the 2021 procurement law stopped fixing a single cap and put the period in the tender instrument instead. Where a source was thin it is left out rather than rounded up, and every new row records the limit of its own sourcing.
+
+Finally, the frontend test suite stops leaving timers running after the test that started them has ended. A pending handle outliving its test could fire against a torn down environment and report a failure with no owner, which is the kind of red that costs an afternoon and teaches nothing.
+
+## [15.6.1] - 2026-08-25
+
+A stocktake, a stock reservation or a goods receipt no longer answers with a server error. This one defect had two halves and both are closed here. A stock movement records the unit cost it was made at, and that cost is deliberately allowed to be absent, because a movement out of a balance whose average is not knowable has no cost to record and writing zero there would read as issued for nothing. The response the stock endpoints return declared the field mandatory, so a movement with no cost failed on the way out, and that is what a fresh install hits on the first stocktake of an item nobody has received yet. The unpleasant part is the order of events: the movement had already been written to the database by then, so the operator saw a failure over a stocktake that had in fact been recorded, and repeating it recorded it again. The same response now also carries the currency the cost is denominated in, which the movement has always stored and the service has always written, and which was being dropped on the way to the caller so that a number arrived with nothing saying what it was.
+
+The other half only ever appeared on a database that had been upgraded rather than freshly installed, and it is described below with the repair that reaches it. Anyone running 15.6.0 with warehouse stock should take this release, whichever of the two they have.
+
+An upgrade can now relax a column, where before it could only add one. What runs when this product starts is a repair pass rather than the migration chain, and that pass only ever added things: tables, columns, indexes, constraints. So a change whose entire content was to make a column optional never took effect on any install that upgrades this way. The old requirement survived in the database, the application went on treating the value as optional, and the first ordinary write that left it empty failed. That is the second half of the stock error above: the two cost columns were made optional releases ago and were still mandatory on every upgraded database, so reserving stock and receiving goods both failed there even though a fresh install of the same version was fine. Relaxing a column is the one change to an existing column that data already in the table can never refuse, since it only widens what the column accepts, which is why it belongs in a repair that runs unattended on a live database while tightening a column or changing its type do not. Primary keys are left alone. Against the current models on a healthy database the pass does nothing at all.
+
+An upgraded database that cannot prove where it stands is now left saying so. Releases before 15.4.0 recorded no migration revision at all, so a database from one of those arrived with no revision and was then stamped as being at the current one. That claimed a position nothing had checked, and the absent revision had been the only durable record that the database was behind. Once the stamp was written that record was gone for good, every later upgrade skipped the same work with nothing reporting it, and nothing left in the database could say which release had built it. Such a database is now left unstamped, which reads as not at head and is visible on the health endpoint, and can still be stamped by hand once its migrations have actually been run. Refusing can be undone later; stamping could not be. A fresh install is unaffected, and a database that already names its revision is unaffected.
+
+Alongside that, the check that compares an upgraded schema against the models now looks in both directions. It had been asking only whether a column the models require can hold nothing, and not the reverse, where the database still insists on a value the models have since made optional. That reverse case is exactly what a change which relaxes a column leaves behind when it never runs, so the check that should have caught the stock error was looking the other way. It also stops asking one group of databases a question they cannot answer: a database that arrived carrying a revision has to be at head, and one that arrived with none has to still have none, rather than both being required to claim head.
+
+Awarding a tender package now finishes the job in three ways it previously left half done. The award records which submission it was made against, rather than only which bidder won, so a package with more than one submission from the same bidder can still say which offer was accepted. The award notification carries the people it is meant to reach, where it had been assembled without them and so reached nobody at all, quietly. And the award settles what currency the awarded amount is in, once, taking it from the award itself, then the package, then the winning submission, instead of leaving it to be guessed further downstream.
+
+A request for a file that is not there says so. Anything the application does not recognise is answered with the application page, which is what a single page application needs for its own routes, and it was also being done for missing images, stylesheets and other assets. A browser asking for a file it could not find received a page of HTML with a success status, so a genuinely missing asset looked like a working one and failed later and less clearly. A path that looks like a file, or that sits under the assets directory, now answers not found. A route that merely happens to contain a dot is still a route.
+
+A subscriber that fails while handling an event no longer vanishes. Ten handlers wrapped their whole body in a catch that recorded the failure at a level nothing prints by default and then returned as though the work had been done, so a broken subscriber and a working one looked identical. The failure now reaches the event bus and is reported with its traceback and a count. Nothing acts on subscriber failures automatically, by design, but they are now visible rather than silent.
+
+Finally, asking this product for its version always gets a version. Where the installed package metadata could not be read, the answer had been a placeholder that looked like a real value while carrying none. It now falls back to the version the application itself declares. And the two automated runs that sign a release stop overwriting each other's work.
+
 ## [15.6.0] - 2026-08-24
 
 Generated documents can draw Chinese. Every PDF this product produces used to choose its typeface by guessing from the characters in the string, and the guess was wrong in the one case that mattered: a table cell that named no face fell back to Helvetica, which has no Chinese glyphs at all, so a name written in Chinese came out as a row of empty boxes or vanished entirely. The face is now chosen by asking the font whether it can draw the text, so a bill, an invoice, a payment application, a methodology export, a closeout cover page, a punch list and the twelve property documents all render a Chinese name the way they render a Latin one. Latin documents are byte for byte what they were, and that is checked against the previous implementation rather than against a copy of the current one. A line break inside a mixed string no longer sends the Latin half to the Chinese face and back.
@@ -2207,8 +3626,8 @@ Five reference packs ship under `packs/`:
 - `uk-jct` - UK general contractor (en-GB, London CWICR, NRM 1+2 +
   JCT contract clauses + BCIS benchmarks, GBP, Union flag blue
   `#012169`).
-- `us-rsmeans` - US general contractor (en-US, New York CWICR,
-  MasterFormat 2018 + AIA A201 2017 + RSMeans City Cost Index rule
+- `us-costdata` - US general contractor (en-US, New York CWICR,
+  MasterFormat 2018 + AIA A201 2017 + US city cost index rule
   packs, USD, Old Glory blue `#0A3161`).
 
 Install pattern:
@@ -2993,8 +4412,8 @@ the working build.
   per the XML namespace spec. Validator now accepts either form.
 - **Contact email canonicalised.** Every user-visible string and config
   default now points to `info@datadrivenconstruction.io`. The old aliases
-  (`support@`, `sales@`, `noreply@`, `notifications@`, `info@openconstructionerp.com`)
-  never had real mailboxes - they bounced silently.
+  (`support@`, `sales@`, `noreply@`, `notifications@`, `info@`) never had real
+  mailboxes - they bounced silently.
 
 ## [4.3.0] - 2026-05-22
 
@@ -3181,7 +4600,7 @@ Single head at `v3098`.
 
 ### Removed
 
-- **Unused exports:** `FloatingChatButton` (only referenced in a stale comment).
+- **Unused exports:** `FloatingChatButton`, the one exported from `frontend/src/app/layout/Sidebar.tsx` and referenced only by a stale comment in `AppLayout.tsx`. Not to be confused with `frontend/src/features/erp-chat/FloatingChatButton.tsx`, an unrelated component of the same name added three days after this release, which `AppLayout.tsx` has imported and rendered ever since. That file is present and live, and this entry has never been about it.
 - **Unused frontend dep:** `react-is` (zero direct imports; still pulled transitively by recharts / ag-grid / testing-library where actually needed).
 - **Dev scratch artefacts:** `frontend/_capture_v4_news.mjs`, `frontend/_capture_v4_v2.mjs`, `frontend/_verify_cards_layout.mjs`, `tmp/check_full.py`, `tmp/check_vi.py`. These were one-off v4.0 marketing capture / i18n-build scripts that didn't belong in the shipped tree.
 
@@ -3284,7 +4703,7 @@ Cumulative test count this release: 21 backend unit + 37 coordination_hub + 47 c
 
 ### Marketing-site infrastructure (no impact on the wheel)
 
-- All marketing-site forms (`/partners.html`, `/index.html` newsletter / popup / homepage inquiry) migrated off the dead `formsubmit.co` relay onto an in-house Hostinger SMTP path running on the demo VPS. New endpoints `/api/partners-apply`, `/api/subscribe`, `/api/inquiry` accept JSON POST, persist to JSONL on disk, and send both an admin notification and a customer ack via `info@openconstructionerp.com`.
+- All marketing-site forms (`/partners.html`, `/index.html` newsletter / popup / homepage inquiry) migrated off the dead `formsubmit.co` relay onto an in-house Hostinger SMTP path running on the demo VPS. New endpoints `/api/partners-apply`, `/api/subscribe`, `/api/inquiry` accept JSON POST, persist to JSONL on disk, and send both an admin notification and a customer ack via `info@datadrivenconstruction.io`.
 - Module cards (added in 4.0.0) moved out from above the demo-player carousel down to a dedicated section after the GIF tour-player, and reflowed into a denser 6-col layout with smaller icon chips, tighter padding, and a category-tinted hover lift.
 - Static `index.html` version fallback bumped to `v4.0.0` (was `v3.0.4`); release ticker refreshed to show v4.0.0 / v3.12.1 / v3.12.0 / v3.11.0. Dynamic GitHub Releases fetch already returned v4.0.0 - this only matters for SEO bots / slow connections.
 
@@ -4062,7 +5481,7 @@ Source: https://github.com/datadrivenconstruction/OpenConstructionERP
 
 ### Removed
 
-- LanceDB legacy code paths (Phase 5): `app/modules/costs/vector_adapter.py`, `app/core/match_service/ranker.py`, `app/core/match_service/boosts/lex.py`, `app/core/match_service/boosts/rare_token.py`, `app/modules/match_elements/matchers/lexical.py`. Sparse Qdrant + BGE-M3 supersedes them.
+- LanceDB legacy code paths (Phase 5): `app/core/match_service/ranker.py`, `app/core/match_service/boosts/lex.py`, `app/core/match_service/boosts/rare_token.py`, `app/modules/match_elements/matchers/lexical.py`. Sparse Qdrant + BGE-M3 supersedes them.
 
 ### Fixed
 
@@ -7540,7 +8959,7 @@ in one click.
 - **Correspondence** - formal communication register
 - **BIM Hub** - BIM models, elements, BOQ links, quantity maps, model diffs
 - **Reporting** - KPI snapshots, 6 report templates, report generation
-- **8 Regional Packs** - US (AIA/CSI/RSMeans), DACH (DIN 276/GAEB/VOB/HOAI), UK (NRM2/JCT/NEC4/CIS), Russia (GESN/FER/TER), Middle East (FIDIC/Hijri/VAT GCC), Asia-Pacific, India, LatAm
+- **8 Regional Packs** - US (AIA/CSI/city cost index), DACH (DIN 276/GAEB/VOB/HOAI), UK (NRM2/JCT/NEC4/CIS), Russia (GESN/FER/TER), Middle East (FIDIC/Hijri/VAT GCC), Asia-Pacific, India, LatAm
 - **3 Enterprise Packs** - approval workflows, deep EVM (ETC/EAC/VAC/TCPI), RFQ bidding pipeline
 - **CPM Engine** - forward/backward pass, float calculation, critical path, calendar-aware
 

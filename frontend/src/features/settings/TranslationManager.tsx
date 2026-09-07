@@ -345,7 +345,7 @@ export function TranslationManager() {
           <div className="relative flex-1 max-w-sm">
             <Search
               size={14}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-content-tertiary pointer-events-none"
+              className="absolute start-3 top-1/2 -translate-y-1/2 text-content-tertiary pointer-events-none"
             />
             <input
               type="search"
@@ -354,7 +354,7 @@ export function TranslationManager() {
               placeholder={t('settings.tm_search_placeholder', {
                 defaultValue: 'Search keys or values...',
               })}
-              className="h-9 w-full rounded-lg border border-border bg-surface-primary pl-8 pr-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue transition-all duration-normal"
+              className="h-9 w-full rounded-lg border border-border bg-surface-primary ps-8 pe-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue transition-all duration-normal"
               data-testid="tm-search"
             />
           </div>
@@ -395,7 +395,7 @@ export function TranslationManager() {
         {/* Translation table */}
         <div className="overflow-hidden rounded-lg border border-border-light">
           {/* Table header */}
-          <div className="grid grid-cols-[2fr_2fr_2fr_auto] gap-0 bg-surface-secondary border-b border-border-light">
+          <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,2fr)_auto] gap-0 bg-surface-secondary border-b border-border-light">
             <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-content-tertiary">
               {t('settings.tm_col_key', { defaultValue: 'Key' })}
             </div>
@@ -420,7 +420,7 @@ export function TranslationManager() {
               visibleRows.map((row) => (
                 <div
                   key={row.key}
-                  className={`grid grid-cols-[2fr_2fr_2fr_auto] gap-0 border-b border-border-light last:border-b-0 hover:bg-surface-secondary/50 transition-colors ${
+                  className={`grid grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,2fr)_auto] gap-0 border-b border-border-light last:border-b-0 hover:bg-surface-secondary/50 transition-colors ${
                     row.isCustom ? 'bg-oe-blue-subtle/30' : ''
                   }`}
                   data-testid={`tm-row-${row.key}`}

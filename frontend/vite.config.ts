@@ -1,10 +1,16 @@
-/// <reference types="vitest" />
-import { defineConfig } from 'vite';
+// defineConfig comes from vitest/config, not vite, because the `test` block
+// near the bottom of this file is part of the config object and vite's own
+// UserConfig has no such property. Line 1 used to be
+// /// <reference types="vitest" />, which is how vitest 0.x augmented vite's
+// type; it stopped doing that in 1.0 and we are on 4.1.9, so the reference had
+// been a declaration with no reader for a long time and the `test` block was
+// unchecked. Runtime was never affected - vitest reads this file either way.
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { visualizer } from 'rollup-plugin-visualizer';
 import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
-import { cpSync, existsSync, readFileSync, createReadStream, statSync } from 'fs';
+import { cpSync, existsSync, readFileSync, readdirSync, createReadStream, statSync } from 'fs';
 import type { Plugin } from 'vite';
 
 const cesiumSource = path.resolve(__dirname, 'node_modules/cesium/Build/Cesium');
@@ -28,7 +34,7 @@ function cesiumAssets(): Plugin {
           next();
           return;
         }
-        const rel = decodeURIComponent(url.slice('/cesium/'.length).split('?')[0]);
+        const rel = decodeURIComponent(url.slice('/cesium/'.length).split('?')[0] ?? '');
         const file = path.join(cesiumSource, rel);
         if (!file.startsWith(cesiumSource) || !existsSync(file) || statSync(file).isDirectory()) {
           next();
@@ -71,6 +77,87 @@ function cesiumAssets(): Plugin {
   };
 }
 
+const pdfjsRoot = path.resolve(__dirname, 'node_modules/pdfjs-dist');
+// The two directories the PDF.js worker fetches from at runtime. ``wasm``
+// holds the JBIG2 and JPEG 2000 decoders, a JavaScript fallback for each, and
+// the colour-management module; ``iccs`` holds the CMYK profile. The
+// ``quickjs-eval`` pair is skipped: it is the sandbox for JavaScript embedded
+// in a PDF, which no viewer here loads, and it is the largest file there.
+const pdfjsAssetDirs = ['wasm', 'iccs'] as const;
+
+// PDF.js 5 moved the JBIG2 and JPEG 2000 decoders out of the worker into
+// WebAssembly files it fetches on demand under the ``wasmUrl`` option, and
+// without that option the image is simply not drawn, which for a scanned
+// drawing is the whole page. src/shared/lib/pdfjs.ts passes ``wasmUrl`` and
+// ``iccUrl`` to every getDocument call; this plugin is what makes those URLs
+// answer. The files have fixed names and are addressed by directory, so they
+// cannot go through Vite's hashed asset pipeline: the build emits them under
+// ``assets/pdfjs/<version>/`` and the dev server streams the same paths out
+// of node_modules. Under ``assets/`` because that is the one directory the
+// backend mounts as files (everything else falls through to index.html), and
+// with the version in the path because that mount answers with a year-long
+// immutable cache header while the file names never change between PDF.js
+// releases: without the segment a bump would pair a new worker with a cached
+// old decoder. The runtime reads the same version from the library itself.
+function pdfjsAssets(): Plugin {
+  const pkgPath = path.join(pdfjsRoot, 'package.json');
+  const version = existsSync(pkgPath)
+    ? (JSON.parse(readFileSync(pkgPath, 'utf-8')).version as string)
+    : '';
+  const prefix = `/assets/pdfjs/${version}/`;
+  const keep = (name: string) => !name.startsWith('quickjs-eval');
+  return {
+    name: 'pdfjs-assets',
+    configureServer(server) {
+      if (!version) return;
+      server.middlewares.use((req, res, next) => {
+        const url = req.url ?? '';
+        if (!url.startsWith(prefix)) {
+          next();
+          return;
+        }
+        const rel = decodeURIComponent(url.slice(prefix.length).split('?')[0] ?? '');
+        const sub = rel.split('/')[0] ?? '';
+        const file = path.join(pdfjsRoot, rel);
+        if (
+          !(pdfjsAssetDirs as readonly string[]).includes(sub) ||
+          !keep(path.basename(file)) ||
+          !file.startsWith(pdfjsRoot) ||
+          !existsSync(file) ||
+          statSync(file).isDirectory()
+        ) {
+          next();
+          return;
+        }
+        const mime: Record<string, string> = {
+          '.wasm': 'application/wasm',
+          '.js': 'text/javascript',
+          '.icc': 'application/vnd.iccprofile',
+        };
+        const type = mime[path.extname(file).toLowerCase()];
+        if (type) res.setHeader('Content-Type', type);
+        createReadStream(file).pipe(res);
+      });
+    },
+    generateBundle() {
+      if (!version) return;
+      for (const sub of pdfjsAssetDirs) {
+        const dir = path.join(pdfjsRoot, sub);
+        if (!existsSync(dir)) continue;
+        for (const name of readdirSync(dir)) {
+          const file = path.join(dir, name);
+          if (!keep(name) || statSync(file).isDirectory()) continue;
+          this.emitFile({
+            type: 'asset',
+            fileName: `assets/pdfjs/${version}/${sub}/${name}`,
+            source: readFileSync(file),
+          });
+        }
+      }
+    },
+  };
+}
+
 // Read the version from package.json once at build time so the entire app
 // (sidebar, About page, error reports, update checker) stays in sync.
 const pkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'));
@@ -105,6 +192,7 @@ export default defineConfig({
       open: false,
     }),
     cesiumAssets(),
+    pdfjsAssets(),
     jsonLdSoftwareVersion(),
     // ── Mobile PWA — Slice 1 ────────────────────────────────────────────
     // Installable PWA with offline-app-shell + i18n bundle caching.
@@ -202,7 +290,20 @@ export default defineConfig({
         // takes the growing file out of the manifest entirely, which is
         // the fix that does not need revisiting the next time a
         // translation lands.
-        globIgnores: ['stats.html', '**/*.map', '**/i18n-*.js'],
+        //
+        // splash.html is excluded because the web build has no use for it at
+        // all. It is the desktop launcher's startup screen, loaded by the
+        // Tauri window from the tauri:// origin before this bundle exists, and
+        // nothing a browser can reach ever links to it. It only appears here
+        // because it lives in ``public/``, which Vite copies verbatim. Left in,
+        // every web visitor downloads it on first load to cache a page they
+        // can never open, and it grows every time a language is added to it.
+        //
+        // The PDF.js runtime assets (see the pdfjs-assets plugin) are left to
+        // the runtime lane too. The wasm files never matched the glob; the
+        // JavaScript fallbacks next to them would, and they are 600 KB of
+        // decoder that only a browser without WebAssembly ever asks for.
+        globIgnores: ['stats.html', 'splash.html', '**/*.map', '**/i18n-*.js', 'assets/pdfjs/**'],
         // Allow large lazy-loaded chunks (vendor-three, vendor-maplibre)
         // to be precached on first visit. Workbox's own default is 2 MiB;
         // this raises it, it does not restate it.
@@ -307,7 +408,7 @@ export default defineConfig({
     // Vite default — matches the README quickstart, default Playwright
     // config, and every "localhost:5173" link in locales/marketing. Was
     // hard-coded to 5180 historically; reverted to 5173 in the install
-    // paper-cuts sweep (docs/qa/FRESH_INSTALL_RESULTS.md Issue 4) so the
+    // paper-cuts sweep (internal QA note FRESH_INSTALL_RESULTS Issue 4) so the
     // README's documented URL actually reaches the dev server.
     port: 5173,
     strictPort: true,
@@ -350,7 +451,7 @@ export default defineConfig({
     // keys (cesium-only + everything-else) and esbuild's JS evaluator
     // silently dropped the first one, plus warned on every Vite boot with
     // ``Duplicate key "include" in object literal``. Merged into one list
-    // in the install paper-cuts sweep (docs/qa/FRESH_INSTALL_RESULTS.md
+    // in the install paper-cuts sweep (internal QA note FRESH_INSTALL_RESULTS
     // Issue 6).
     //
     // ``cesium`` ships a mix of ESM + CJS deps (mersenne-twister, urijs,
@@ -367,8 +468,8 @@ export default defineConfig({
     // "Failed to fetch dynamically imported module".
     include: [
       'cesium',
-      'pdfjs-dist',
-      'pdfjs-dist/build/pdf.worker.min.mjs',
+      'pdfjs-dist/legacy/build/pdf.mjs',
+      'pdfjs-dist/legacy/build/pdf.worker.min.mjs',
       'three',
       'ag-grid-react',
       'ag-grid-community',

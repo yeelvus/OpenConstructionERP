@@ -18,6 +18,12 @@ and accented names render rather than showing empty boxes.
 The render function takes the dict produced by
 ``ContractsService.build_aia_application`` so all arithmetic stays in the pure,
 unit-tested builders and the PDF layer only formats.
+
+Eligibility is gated on the project's country and not on the contract's
+currency: ``is_aia_eligible`` resolves US, CA or AU from the project, while the
+currency is a free ISO code the contract carries. A US project may therefore
+run a contract denominated in something other than dollars, so how many digits
+an amount keeps is asked of ``app.core.money`` rather than assumed to be two.
 """
 
 # Copyright 2024-2026 OpenEstimate Contributors
@@ -27,7 +33,7 @@ from __future__ import annotations
 
 import html
 import io
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from reportlab.lib import colors
@@ -37,11 +43,12 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from app.core.money import minor_units, money_quantum
 from app.core.pdf_fonts import (
     BODY_FONT,
     BOLD_FONT,
     pdf_style_for_text,
-    pdf_table_font_commands,
+    pdf_table_paragraph_rows,
     register_pdf_fonts,
 )
 
@@ -50,15 +57,29 @@ register_pdf_fonts()
 PLACEHOLDER = "-"
 
 
-def _money(value: Any, currency: str = "") -> str:
-    """Format a Decimal money value as ``1,234,567.89`` with optional code."""
+def _amount(value: Any, currency: str = "") -> str:
+    """Format a money value as ``1,234,567.89``, in its currency's own units.
+
+    How many digits follow the separator is a question about the currency, not
+    about the form, and :func:`app.core.money.minor_units` is the one place
+    that knows. The continuation sheet calls this directly because its columns
+    are too narrow to repeat the code on every row, and its figures still have
+    to agree with the face that does carry it. A blank or unregistered code
+    takes the registry's own two-decimal default rather than a guess made here.
+    """
     try:
         d = Decimal(str(value)) if value not in (None, "") else Decimal("0")
         if not d.is_finite():
             d = Decimal("0")
     except (InvalidOperation, ValueError, TypeError):
         d = Decimal("0")
-    body = f"{d.quantize(Decimal('0.01')):,.2f}"
+    code = (currency or "").strip().upper()
+    return f"{d.quantize(money_quantum(code), rounding=ROUND_HALF_UP):,.{minor_units(code)}f}"
+
+
+def _money(value: Any, currency: str = "") -> str:
+    """The same figure with its currency code in front, for the G702 face."""
+    body = _amount(value, currency)
     return f"{currency} {body}".strip() if currency else body
 
 
@@ -92,9 +113,9 @@ def _safe_para(text: Any, style: ParagraphStyle) -> Paragraph:
     only ever adds ASCII, so the two cannot disagree about which face is needed,
     and asking the raw string keeps the question about what a party wrote.
 
-    This reaches the schedule-of-values cells and nothing above them. The four
-    summary tables are plain strings drawn under their own ``FONTNAME``, which a
-    paragraph style cannot reach at all, so they are faced separately.
+    Every table in this document is built from Paragraphs, so this is the only
+    kind of cell here and a table command naming a font, a size, a colour or an
+    alignment would not be obeyed by any of them.
     """
     raw = "" if text is None else str(text)
     return Paragraph(html.escape(raw), pdf_style_for_text(style, raw))
@@ -123,6 +144,34 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
     cell = ParagraphStyle("AIACell", parent=body, fontSize=7, leading=9)
     cell_r = ParagraphStyle("AIACellR", parent=cell, alignment=TA_RIGHT)
     cell_l = ParagraphStyle("AIACellL", parent=cell, alignment=TA_LEFT)
+    # The continuation sheet's header row sits on a near black fill, so its
+    # cells carry the white the table's TEXTCOLOR command used to ask for and
+    # could not deliver.
+    head_l = ParagraphStyle("AIAHeadL", parent=cell_l, fontName=BOLD_FONT, textColor=colors.white)
+    head_r = ParagraphStyle("AIAHeadR", parent=cell_r, fontName=BOLD_FONT, textColor=colors.white)
+    foot_l = ParagraphStyle("AIAFootL", parent=cell_l, fontName=BOLD_FONT)
+    foot_r = ParagraphStyle("AIAFootR", parent=cell_r, fontName=BOLD_FONT)
+    # The G702 tables above. A bold label column, a right aligned money column
+    # and a bold total row were table commands until these cells became
+    # Paragraphs, which no table command can reach.
+    label = ParagraphStyle("AIALabel", parent=body, fontName=BOLD_FONT)
+    value = ParagraphStyle("AIAValue", parent=body)
+    money = ParagraphStyle("AIAMoney", parent=body, alignment=TA_RIGHT)
+    money_total = ParagraphStyle("AIAMoneyTotal", parent=money, fontName=BOLD_FONT)
+
+    def _label_columns(*columns: int):
+        """Draw the named columns as bold labels and everything else as values."""
+
+        def choose(_row_index: int, col_index: int):
+            return label if col_index in columns else None
+
+        return choose
+
+    def _summary_face(row_index: int, col_index: int):
+        """Row 7 is the payment due line, which the form prints in bold."""
+        if row_index == 7:
+            return money_total if col_index == 1 else label
+        return money if col_index == 1 else None
 
     currency = str(app.get("currency") or "")
     summary = app.get("summary", {}) or {}
@@ -139,14 +188,17 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
         ["Application No.", _txt(app.get("application_number")), "Period to", _txt(app.get("period_end"))],
         ["Application date", _txt(app.get("claim_date")), "Currency", _txt(currency or PLACEHOLDER)],
     ]
+    # Paragraph cells rather than bare strings. A bare cell is drawn through
+    # canvas.drawString, which neither wraps nor shapes: a period or a currency
+    # longer than its column was printed straight over the column beside it,
+    # and a Thai or Devanagari value was mis-arranged whatever face it was
+    # given. A Paragraph does both, and carries its own face, size and colour,
+    # which is why the font commands this table used to append are gone.
+    header_rows = pdf_table_paragraph_rows(header_rows, value, style_for=_label_columns(0, 2))
     header_tbl = Table(header_rows, colWidths=[40 * mm, 70 * mm, 40 * mm, 70 * mm])
     header_tbl.setStyle(
         TableStyle(
             [
-                ("FONTNAME", (0, 0), (-1, -1), BODY_FONT),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
-                ("FONTNAME", (0, 0), (0, -1), BOLD_FONT),
-                ("FONTNAME", (2, 0), (2, -1), BOLD_FONT),
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
                 ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -155,26 +207,6 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
             ]
         )
     )
-    # Plain string cells are drawn under the table's own FONTNAME, so the
-    # per-paragraph facing cannot reach them. This adds a command for exactly
-    # the cells whose face cannot draw them and none at all for the rest, so a
-    # Latin table keeps both its bytes and its column widths.
-    #
-    # A second setStyle rather than an edit to the first: reportlab applies
-    # commands in order and a later one wins for the cells it covers, so every
-    # command above survives. Measured rather than taken from the docs, against
-    # the certification table's bold first column, which keeps its weight.
-    #
-    # The base is the body face for the whole table even though some cells here
-    # are drawn in the bold one. pdf_table_font_commands offers header_rows for
-    # that, but these tables carry bold COLUMNS rather than bold header rows,
-    # which the parameter cannot express. Passing one base is safe because the
-    # two faces have identical coverage: compared across 0x20 to 0x2E7F, 11744
-    # codepoints, they agree on every one. So weight cannot change the
-    # escalation decision, and the only commands emitted are escalations to a
-    # CJK face that carries one weight anyway. This reasoning expires if those
-    # two faces ever diverge in coverage.
-    header_tbl.setStyle(TableStyle(pdf_table_font_commands(header_rows, base=BODY_FONT)))
     story.append(header_tbl)
     story.append(Spacer(1, 5 * mm))
 
@@ -190,24 +222,23 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
         ["8. Current payment due", _money(summary.get("current_payment_due"), currency)],
         ["9. Balance to finish including retainage", _money(summary.get("balance_to_finish"), currency)],
     ]
+    # Paragraph cells for the reason given at the header table above. The
+    # right alignment of the money column and the bold payment due row were
+    # table commands and are now paragraph styles, which is the only place a
+    # flowable cell reads them from.
+    summary_rows = pdf_table_paragraph_rows(summary_rows, value, style_for=_summary_face)
     summary_tbl = Table(summary_rows, colWidths=[150 * mm, 70 * mm])
     summary_tbl.setStyle(
         TableStyle(
             [
-                ("FONTNAME", (0, 0), (-1, -1), BODY_FONT),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
-                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
                 ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("FONTNAME", (0, 7), (-1, 7), BOLD_FONT),
                 ("BACKGROUND", (0, 7), (-1, 7), colors.whitesmoke),
                 ("TOPPADDING", (0, 0), (-1, -1), 2),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
             ]
         )
     )
-    # Faced per cell, for the reasons given at the header table above.
-    summary_tbl.setStyle(TableStyle(pdf_table_font_commands(summary_rows, base=BODY_FONT)))
     story.append(summary_tbl)
     story.append(Spacer(1, 5 * mm))
 
@@ -218,13 +249,14 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
         ["Owner certified", _txt(cert.get("owner_certified_by")), _txt(cert.get("owner_certified_at"))],
         ["Amount certified", _money(cert.get("certified_amount"), currency), ""],
     ]
+    # Paragraph cells for the reason given at the header table above. The
+    # certifier names in these rows are typed by a person, and a practice name
+    # that runs past 90mm used to be printed over the date beside it.
+    cert_rows = pdf_table_paragraph_rows(cert_rows, value, style_for=_label_columns(0))
     cert_tbl = Table(cert_rows, colWidths=[50 * mm, 90 * mm, 80 * mm])
     cert_tbl.setStyle(
         TableStyle(
             [
-                ("FONTNAME", (0, 0), (-1, -1), BODY_FONT),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
-                ("FONTNAME", (0, 0), (0, -1), BOLD_FONT),
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
                 ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
                 ("TOPPADDING", (0, 0), (-1, -1), 3),
@@ -232,8 +264,6 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
             ]
         )
     )
-    # Faced per cell, for the reasons given at the header table above.
-    cert_tbl.setStyle(TableStyle(pdf_table_font_commands(cert_rows, base=BODY_FONT)))
     story.append(cert_tbl)
     story.append(Spacer(1, 8 * mm))
 
@@ -242,16 +272,16 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
     story.append(Spacer(1, 2 * mm))
 
     head = [
-        _safe_para("A\nItem", cell_l),
-        _safe_para("B\nDescription of work", cell_l),
-        _safe_para("C\nScheduled value", cell_r),
-        _safe_para("D\nFrom previous", cell_r),
-        _safe_para("E\nThis period", cell_r),
-        _safe_para("F\nStored", cell_r),
-        _safe_para("G\nTotal completed", cell_r),
-        _safe_para("%\n(G/C)", cell_r),
-        _safe_para("H\nBalance to finish", cell_r),
-        _safe_para("I\nRetainage", cell_r),
+        _safe_para("A\nItem", head_l),
+        _safe_para("B\nDescription of work", head_l),
+        _safe_para("C\nScheduled value", head_r),
+        _safe_para("D\nFrom previous", head_r),
+        _safe_para("E\nThis period", head_r),
+        _safe_para("F\nStored", head_r),
+        _safe_para("G\nTotal completed", head_r),
+        _safe_para("%\n(G/C)", head_r),
+        _safe_para("H\nBalance to finish", head_r),
+        _safe_para("I\nRetainage", head_r),
     ]
     data: list[list[Any]] = [head]
     for ln in lines:
@@ -259,30 +289,30 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
             [
                 _safe_para(ln.get("item_number"), cell_l),
                 _safe_para(ln.get("description"), cell_l),
-                Paragraph(_money(ln.get("scheduled_value")), cell_r),
-                Paragraph(_money(ln.get("previous_value")), cell_r),
-                Paragraph(_money(ln.get("this_period_value")), cell_r),
-                Paragraph(_money(ln.get("materials_stored")), cell_r),
-                Paragraph(_money(ln.get("total_completed_stored")), cell_r),
+                Paragraph(_amount(ln.get("scheduled_value"), currency), cell_r),
+                Paragraph(_amount(ln.get("previous_value"), currency), cell_r),
+                Paragraph(_amount(ln.get("this_period_value"), currency), cell_r),
+                Paragraph(_amount(ln.get("materials_stored"), currency), cell_r),
+                Paragraph(_amount(ln.get("total_completed_stored"), currency), cell_r),
                 Paragraph(_pct(ln.get("percent_complete")), cell_r),
-                Paragraph(_money(ln.get("balance_to_finish")), cell_r),
-                Paragraph(_money(ln.get("retainage")), cell_r),
+                Paragraph(_amount(ln.get("balance_to_finish"), currency), cell_r),
+                Paragraph(_amount(ln.get("retainage"), currency), cell_r),
             ]
         )
 
     # Totals row from the summary.
     data.append(
         [
-            Paragraph("", cell_l),
-            _safe_para("Grand total", cell_l),
-            Paragraph(_money(summary.get("contract_sum_to_date")), cell_r),
-            Paragraph("", cell_r),
-            Paragraph("", cell_r),
-            Paragraph("", cell_r),
-            Paragraph(_money(summary.get("total_completed_stored")), cell_r),
-            Paragraph("", cell_r),
-            Paragraph(_money(summary.get("balance_to_finish")), cell_r),
-            Paragraph(_money(summary.get("retainage")), cell_r),
+            Paragraph("", foot_l),
+            _safe_para("Grand total", foot_l),
+            Paragraph(_amount(summary.get("contract_sum_to_date"), currency), foot_r),
+            Paragraph("", foot_r),
+            Paragraph("", foot_r),
+            Paragraph("", foot_r),
+            Paragraph(_amount(summary.get("total_completed_stored"), currency), foot_r),
+            Paragraph("", foot_r),
+            Paragraph(_amount(summary.get("balance_to_finish"), currency), foot_r),
+            Paragraph(_amount(summary.get("retainage"), currency), foot_r),
         ]
     )
 
@@ -298,16 +328,19 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
         28 * mm,
         26 * mm,
     ]
+    # Every cell here is already a Paragraph, so the shaping and font command
+    # helpers this table used to call had nothing to act on and were removed.
+    # The TEXTCOLOR and FONTNAME commands that used to sit here had nothing to
+    # act on either, which is the part that was not harmless: the header row
+    # asked for white bold text on a #1f2937 fill and got black regular,
+    # because a table command cannot reach a flowable. The white and the weight
+    # now live on head_l and head_r, and the totals row's weight on foot_l and
+    # foot_r, where a Paragraph reads them.
     g703_tbl = Table(data, colWidths=col_widths, repeatRows=1)
     g703_tbl.setStyle(
         TableStyle(
             [
-                ("FONTNAME", (0, 0), (-1, -1), BODY_FONT),
-                ("FONTSIZE", (0, 0), (-1, -1), 7),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), BOLD_FONT),
-                ("FONTNAME", (0, -1), (-1, -1), BOLD_FONT),
                 ("BACKGROUND", (0, -1), (-1, -1), colors.whitesmoke),
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
                 ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
@@ -317,8 +350,6 @@ def render_aia_application_pdf(app: dict[str, Any]) -> bytes:
             ]
         )
     )
-    # Faced per cell, for the reasons given at the header table above.
-    g703_tbl.setStyle(TableStyle(pdf_table_font_commands(data, base=BODY_FONT)))
     story.append(g703_tbl)
 
     doc.build(story)

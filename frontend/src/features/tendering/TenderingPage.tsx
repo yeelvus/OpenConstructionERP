@@ -35,6 +35,7 @@ import {
 import { Button, Card, Badge, EmptyState, RecoveryCard, DismissibleInfo, IntroRichText, SkeletonTable, Breadcrumb, ConfirmDialog, ModuleGuideButton, CollapsibleSection } from '@/shared/ui';
 import { RequiresProject } from '@/shared/auth/RequiresProject';
 import { PageHeader } from '@/shared/ui/PageHeader';
+import { TruncationNotice } from '@/shared/ui/TruncationNotice';
 import {
   WideModal,
   WideModalSection,
@@ -59,7 +60,7 @@ import {
   type Recipient,
   type DistributeResponse,
 } from './api';
-import { fmtPercent, getIntlLocale } from '@/shared/lib/formatters';
+import { fmtList, fmtPercent, getIntlLocale } from '@/shared/lib/formatters';
 import {
   listSubcontractors,
   type Subcontractor,
@@ -306,7 +307,7 @@ function SubcontractorPickerModal({
   });
 
   const rows = useMemo(() => {
-    const items = subsQ.data ?? [];
+    const items = subsQ.data?.items ?? [];
     const s = search.trim().toLowerCase();
     if (!s) return items;
     return items.filter(
@@ -391,7 +392,7 @@ function SubcontractorPickerModal({
                   </span>
                   {sub.trade_categories.length > 0 && (
                     <span className="block truncate text-xs text-content-tertiary">
-                      {sub.trade_categories.slice(0, 3).join(', ')}
+                      {fmtList(sub.trade_categories.slice(0, 3))}
                     </span>
                   )}
                 </span>
@@ -409,6 +410,11 @@ function SubcontractorPickerModal({
             ))}
           </div>
         )}
+        {/* The picker cannot page, so the only honest thing it can do about a
+            yard bigger than one page is say so. The search box filters what
+            arrived, not the register, which is exactly the state a reader
+            reads as "this firm is not set up yet". */}
+        {subsQ.data && <TruncationNotice page={subsQ.data} className="mt-2" />}
       </div>
     </WideModal>
   );
@@ -1594,9 +1600,8 @@ function PackageDetail({
                 {t('tendering.scope_partial', {
                   defaultValue:
                     'Covers part of the bill: {{sections}} ({{included}} of {{total}} positions)',
-                  sections: scope.sections
-                    .map((s) => [s.ordinal, s.description].filter(Boolean).join(' '))
-                    .join(', '),
+                  sections: fmtList(scope.sections
+                    .map((s) => [s.ordinal, s.description].filter(Boolean).join(' '))),
                   included: scope.included_position_count,
                   total: scope.boq_position_count,
                 })}
@@ -1743,7 +1748,7 @@ function PackageDetail({
                     {bid.company_name}
                   </span>
                   {bid.contact_email && (
-                    <span className="ml-2 text-xs text-content-tertiary flex items-center gap-1 inline-flex">
+                    <span className="ml-2 text-xs text-content-tertiary items-center gap-1 inline-flex">
                       <Mail size={10} />
                       {bid.contact_email}
                     </span>

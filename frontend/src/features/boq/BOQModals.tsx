@@ -50,6 +50,7 @@ import {
 import { CostCategoryTree } from './CostCategoryTree';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
 import { formatCurrency } from '@/shared/lib/money';
+import { fmtList } from '@/shared/lib/formatters';
 
 /* ── Types ───────────────────────────────────────────────────────────── */
 
@@ -227,7 +228,7 @@ export function AssemblyPickerModal({
         {/* Search */}
         <div className="px-6 py-3 border-b border-border-light shrink-0">
           <div className="relative">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-content-quaternary" />
+            <Search size={14} className="absolute start-3 top-1/2 -translate-y-1/2 text-content-quaternary" />
             <input
               type="text"
               id="boq-assembly-search"
@@ -237,7 +238,7 @@ export function AssemblyPickerModal({
               onChange={(e) => setSearch(e.target.value)}
               placeholder={t('assemblies.search_placeholder', { defaultValue: 'Search assemblies...' })}
               aria-label={t('assemblies.search_placeholder', { defaultValue: 'Search assemblies...' })}
-              className="w-full h-9 pl-9 pr-3 rounded-lg border border-border-light bg-surface-primary text-sm text-content-primary placeholder:text-content-quaternary focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-400"
+              className="w-full h-9 ps-9 pe-3 rounded-lg border border-border-light bg-surface-primary text-sm text-content-primary placeholder:text-content-quaternary focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-400"
               autoFocus
             />
           </div>
@@ -1403,7 +1404,7 @@ export function CostDatabaseSearchModal({
       if (failed.length === 0) {
         onAdded();
       } else if (succeeded > 0) {
-        const sample = failed.slice(0, 3).map((f) => f.code || f.description).join(', ');
+        const sample = fmtList(failed.slice(0, 3).map((f) => f.code || f.description));
         const more = failed.length > 3 ? ` (+${failed.length - 3})` : '';
         addToast({
           type: 'warning',
@@ -1753,7 +1754,7 @@ export function CostDatabaseSearchModal({
                 <ChevronDown size={12} />
               </button>
               <div className="relative flex-1">
-                <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-content-tertiary">
+                <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center pl-3 text-content-tertiary">
                   <Search size={16} />
                 </div>
                 <input
@@ -1766,7 +1767,7 @@ export function CostDatabaseSearchModal({
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder={t('boq.search_cost_items', { defaultValue: 'Search cost items by description...' })}
                   aria-label={t('boq.search_cost_items', { defaultValue: 'Search cost items by description...' })}
-                  className="h-10 w-full rounded-lg border border-border bg-surface-primary pl-10 pr-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue"
+                  className="h-10 w-full rounded-lg border border-border bg-surface-primary ps-10 pe-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue"
                 />
               </div>
             </div>
@@ -2191,7 +2192,7 @@ export function CostDatabaseSearchModal({
                 <button
                   type="button"
                   onClick={() => setSectionMenuOpen((v) => !v)}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-border-light bg-surface-primary hover:bg-surface-hover text-content-secondary"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-border-light bg-surface-primary hover:bg-surface-secondary text-content-secondary"
                   data-testid="cost-modal-section-picker"
                   aria-haspopup="listbox"
                   aria-expanded={sectionMenuOpen}
@@ -2230,7 +2231,7 @@ export function CostDatabaseSearchModal({
                         setSectionMenuOpen(false);
                       }}
                       className={
-                        'w-full px-3 py-2 flex items-center justify-between gap-3 text-start hover:bg-surface-hover ' +
+                        'w-full px-3 py-2 flex items-center justify-between gap-3 text-start hover:bg-surface-secondary ' +
                         (selectedParentId === null
                           ? 'bg-blue-50/40 dark:bg-blue-950/20'
                           : '')
@@ -2257,7 +2258,7 @@ export function CostDatabaseSearchModal({
                           setSectionMenuOpen(false);
                         }}
                         className={
-                          'w-full px-3 py-2 flex items-center justify-between gap-3 text-start hover:bg-surface-hover ' +
+                          'w-full px-3 py-2 flex items-center justify-between gap-3 text-start hover:bg-surface-secondary ' +
                           (selectedParentId === s.id
                             ? 'bg-blue-50/40 dark:bg-blue-950/20'
                             : '')

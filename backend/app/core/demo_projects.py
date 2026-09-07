@@ -2280,11 +2280,13 @@ PACK_DEMO_PROJECT: dict[str, str] = {
     "brazil-sinapi": "residential-saopaulo",
     "china-gbt50500": "office-shanghai",
     "doker-formwork": "rc-structure-formwork",
+    "hungary-hu": "residential-budapest",
     "india-cpwd": "govt-building-delhi",
     "mexico-mx": "mixed-use-mexico-city",
     "modular-prefab": "modular-housing",
     "renewables-epc": "solar-bess-epc",
     "retail-grocery-dach": "retail-market-heilbronn",
+    "russia-gesn": "residential-moscow",
     "saudi-vision2030": "mixed-use-riyadh",
     "south-africa": "mixed-use-johannesburg",
     "uk-jct": "commercial-london",
@@ -2317,7 +2319,22 @@ _COUNTRY_ISO2: dict[str, str] = {
     "United Kingdom": "GB",
     "United States": "US",
     "France": "FR",
+    "Hungary": "HU",
+    "Russia": "RU",
     "United Arab Emirates": "AE",
+    "Italy": "IT",
+    "Spain": "ES",
+    "Poland": "PL",
+    # Both spellings. The endonym is the country's own preferred form and the
+    # older one is what most address data still carries; a pack writing either
+    # would otherwise fall out of this map without a word. Only the older
+    # spelling is exercised today, because that is what the Istanbul pack
+    # writes, so the second row is a deliberate open door rather than something
+    # the table test covers.
+    "Turkey": "TR",
+    "Türkiye": "TR",
+    "Japan": "JP",
+    "South Korea": "KR",
 }
 
 # Who really receives a notice of commencement, per country. Named because a
@@ -2335,12 +2352,24 @@ _AUTHORITY_BY_COUNTRY: dict[str, str] = {
     "IN": "the municipal corporation",
     "MX": "the municipal works authority",
     "NL": "the gemeente",
+    "HU": "az építésügyi hatóság",
+    "RU": "орган государственного строительного надзора",
     "SA": "the municipality",
     "ZA": "the local building control officer",
     "GB": "the local authority building control",
     "US": "the building department",
     "FR": "the mairie",
     "AE": "the municipality",
+    "IT": "lo Sportello Unico per l'Edilizia",
+    "ES": "el ayuntamiento",
+    # Poland notifies the start of works to the district building inspectorate,
+    # which is a different body from the one that issued the permit.
+    "PL": "Powiatowy Inspektorat Nadzoru Budowlanego",
+    "TR": "the belediye",
+    # Confirmation and inspection in Japan may sit with a designated private
+    # body rather than the local authority, so this is the role, not an office.
+    "JP": "the designated confirmation and inspection body",
+    "KR": "the local government building department",
 }
 
 # The provision a formal notice is raised under, per country, so the register's
@@ -2361,7 +2390,16 @@ _NOTICE_CLAUSE_BY_COUNTRY: dict[str, str] = {
     "NZ": "NZS 3910, written notice",
     "CA": "CCDC 2, notice in writing",
     "NL": "UAV 2012, kennisgeving",
+    "HU": "Ptk. vállalkozási szerződés, írásbeli értesítés",
+    "RU": "ГК РФ ст. 716, письменное уведомление",
+    "PL": "Prawo budowlane art. 41 ust. 4, zawiadomienie",
 }
+# IT, ES, TR, JP and KR have packs but no row above, and that is the policy in
+# the comment rather than an oversight. Each of those markets has a standard
+# form we could name, but not one this author can point at with the confidence
+# the existing rows carry, and the register renders an empty clause cleanly.
+# A plausible-looking wrong clause is the one failure a local reader would spot
+# instantly and the one this table exists to avoid.
 
 # Friendly project archetype label per pack demo project.
 _PACK_DEMO_TYPE: dict[str, str] = {
@@ -2393,6 +2431,23 @@ _PACK_DEMO_TYPE: dict[str, str] = {
     "retail-market-heilbronn": "Retail",
     "retail-market-heidelberg": "Retail",
     "retail-market-karlsruhe": "Retail",
+    "residential-budapest": "Residential",
+    "office-debrecen": "Commercial",
+    "residential-moscow": "Residential",
+    "school-stpetersburg": "Education",
+    "residential-rome": "Residential",
+    "mixed-use-barcelona": "Mixed-use",
+    "office-amsterdam": "Commercial",
+    "residential-warsaw": "Residential",
+    "mixed-use-istanbul": "Mixed-use",
+    "office-tokyo": "Commercial",
+    "residential-seoul": "Residential",
+    # Not from the new cohort. This one has been missing since it shipped, and
+    # because the lookup defaults to "Commercial" the catalogue has been calling
+    # a residential building in Shenzhen a commercial one, quietly, for as long
+    # as it has been there. A default that is itself a valid answer is the kind
+    # a miss hides inside.
+    "residential-shenzhen": "Residential",
 }
 
 
@@ -2408,6 +2463,8 @@ _CURRENCY_SYMBOL: dict[str, str] = {
     "NZD": "NZ$",
     "CAD": "C$",
     "CNY": "¥",
+    "HUF": "Ft",
+    "RUB": "₽",
 }
 
 
@@ -2444,6 +2501,27 @@ _DEMO_COST_LEVEL: dict[str, tuple[float, float]] = {
     "ZAR": (17.00, 5.00),
     "MXN": (19.00, 3.20),
     "INR": (55.00, 8.00),
+    "HUF": (400.00, 140.00),
+    "RUB": (100.00, 35.00),
+    # Added with the Rome, Barcelona, Amsterdam, Warsaw, Istanbul, Tokyo and
+    # Seoul packs. Barcelona, Rome and Amsterdam price in euro and need no row.
+    # Read these the way the rows above read: the currency conversion times the
+    # local price level, material and labour apart, not an exchange rate.
+    #
+    # The material column tracks the currency conversion closely in all four,
+    # the way HUF and RUB already do above, because construction materials are
+    # traded and none of these four is a cheap place to buy them. The labour
+    # column is where they separate, and the ratio between the two columns is
+    # the number to sanity-check: HUF and RUB sit near 0.35, Poland is about
+    # half a German wage at 0.51, Türkiye is lower again at 0.23, and Japan and
+    # Korea invert the pattern entirely. Both are high-wage construction
+    # markets, Japan especially, where a skilled trade is paid at or above the
+    # German level, so their labour column sits alongside their material one
+    # rather than far beneath it.
+    "PLN": (4.30, 2.20),
+    "TRY": (43.00, 10.00),
+    "JPY": (165.00, 160.00),
+    "KRW": (1500.00, 1300.00),
 }
 
 # The words the assemblies and resources vocabularies use for people. Both
@@ -4598,6 +4676,29 @@ def _enrich_position_metadata(description: str, unit: str, unit_rate: float, cla
     breakdown = _resource_breakdown_rollup(meta.get("resources", []))
     if breakdown:
         meta["resource_breakdown"] = breakdown
+
+    # A Hungarian bill quotes every priced line twice over, as anyag (material)
+    # and dij (labour and plant fee), and the two together are the rate. The
+    # split is not presentation there: the summary sheets are built on it and
+    # it is what a client compares between tenderers, which is why the country
+    # pack ships a rule that reconciles the halves against the line.
+    #
+    # The two numbers are the resource rollup computed above, not a per-chapter
+    # guess: anyag is the material leaf and dij is everything else the rate is
+    # built from. ``_make_resources`` leaves sum to the unit rate exactly, so
+    # the halves reconcile by construction rather than by rounding luck.
+    #
+    # Emitted only for a line that actually carries a Hungarian item code. A
+    # Hungarian workspace holds plenty of bills imported from elsewhere, and
+    # ``HungarianMaterialFeeSplit`` reads a missing block as "not my row"
+    # rather than as a failure, which is the behaviour to preserve.
+    if breakdown and (classification or {}).get("tetelrend"):
+        material = Decimal(str(breakdown.get("material", {}).get("total", 0.0)))
+        fee = sum(
+            (Decimal(str(v.get("total", 0.0))) for k, v in breakdown.items() if k != "material"),
+            Decimal("0"),
+        )
+        meta["hu"] = {"material_unit_rate": float(material), "fee_unit_rate": float(fee)}
 
     return meta
 
@@ -11792,7 +11893,15 @@ async def install_demo_project(
         project_id=project.id,
         name=budget_boq_name,
         description=f"Budget-level estimate for {template.project_name}",
-        status="approved",
+        # "final", not "approved". The seeder writes this column directly and
+        # so is the one writer that never meets ``BOQUpdate``'s pattern, which
+        # permits draft / final / archived. "approved" was a fourth spelling
+        # reachable from nowhere in the API: the only act that approves a bill
+        # is ``POST /boqs/{id}/lock``, and it records the approver in
+        # ``approved_by`` / ``approved_at`` while setting the status to
+        # "final". Seeding a status no transition produces put demo data in a
+        # state the product could neither reach nor leave.
+        status="final",
         metadata_={"estimate_class": 2, "accuracy": "±15–20%"},
     )
     session.add(budget_boq)

@@ -37,22 +37,39 @@ fi
 # an unencoded "@" in the password, and the host is not what the operator
 # thinks it is. Better to say so than to let asyncpg report a DNS failure for
 # a host nobody typed.
+#
+# The way to ask that without getting it wrong is to take the same parse the
+# reader downstream takes, rather than to invent a second one. User info ends
+# at the FIRST "@", the host runs from there to the next "/", and a host is not
+# allowed to contain "@", so an "@" still sitting in it is the damage itself.
+#
+# This used to truncate at the first "/" and then count "@" over what was left,
+# which reads like it isolates the authority and does not, because a password
+# may contain "/" and a base64 one does about four times in ten. Given the
+# password "pa/b@ss" the truncated text was "oe:pa", the count was zero, and the
+# guard waved through the very URL it exists to catch, the one make_url reads
+# with host "ss@postgres". Isolating the host instead of counting over a guess
+# at the authority also drops the false positives that counting had: an "@" in
+# a database name or in a query string is past the first "/" and no longer in
+# the text being examined.
 if [ -n "${DATABASE_URL:-}" ]; then
-  _authority="${DATABASE_URL#*://}"
-  _authority="${_authority%%/*}"
-  if [ "$(printf '%s' "$_authority" | tr -cd '@' | wc -c)" -gt 1 ]; then
+  _host="${DATABASE_URL#*://}"
+  _host="${_host#*@}"
+  _host="${_host%%/*}"
+  case "$_host" in
+    *@*)
     if [ -n "${OE_DB_PASSWORD:-}" ]; then
       # Recoverable: the parts are here as well, and app/config.py prefers them
       # over a URL whose host is visibly wrong. Say so and carry on rather than
       # refusing to start over a URL nobody has to use. A compose file that
       # passes both is doing it on purpose, so that one file works with an
       # image published before the parts existed.
-      echo "NOTE: DATABASE_URL has more than one '@' before the database name," >&2
-      echo "which means the password contains a literal '@' and the host in it" >&2
-      echo "is not the host you typed. Using OE_DB_HOST and the other parts" >&2
-      echo "instead, where the password is encoded properly." >&2
+      echo "NOTE: the host in DATABASE_URL contains an '@', which means the" >&2
+      echo "password contains a literal one and the host is not the host you" >&2
+      echo "typed. Using OE_DB_HOST and the other parts instead, where the" >&2
+      echo "password is encoded properly." >&2
     else
-      echo "ERROR: DATABASE_URL has more than one '@' before the database name." >&2
+      echo "ERROR: the host in DATABASE_URL contains an '@'." >&2
       echo "" >&2
       echo "The password almost certainly contains a literal '@'. In a URL that" >&2
       echo "splits the user info early, so the host is read as everything after" >&2
@@ -63,8 +80,9 @@ if [ -n "${DATABASE_URL:-}" ]; then
       echo "      -e OE_DB_PASSWORD=... -e OE_DB_HOST=... (and no DATABASE_URL)" >&2
       exit 1
     fi
-  fi
-  unset _authority
+    ;;
+  esac
+  unset _host
 fi
 
 if [ "$db_from_parts" = 0 ]; then

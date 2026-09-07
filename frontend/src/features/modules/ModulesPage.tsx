@@ -47,6 +47,12 @@ import { Card, Badge, Button, Input, InfoHint, Breadcrumb, ConfirmDialog, Dismis
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { modulesGuide } from './modulesGuide';
 import { resolveModuleDisplayName } from './moduleDisplayName';
+import {
+  ALL_CATEGORIES,
+  filterModules,
+  tallyModuleCategories,
+  type ModuleSearchContext,
+} from './moduleSearch';
 import { PartnerPackApplyDialog } from './PartnerPackApplyDialog';
 import { PartnerPackDeactivateDialog } from './PartnerPackDeactivateDialog';
 import {
@@ -55,15 +61,24 @@ import {
   useRescanPacks,
   MAX_PACK_UPLOAD_BYTES,
 } from './partnerPacks';
+import type { PackType } from '@/shared/hooks/usePartnerPack';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { useTabKeyboardNav } from '@/shared/hooks/useTabKeyboardNav';
 import { apiGet, apiPost, apiDelete } from '@/shared/lib/api';
+import {
+  describeSnapshotRestore,
+  mayStillBeRunning,
+  SNAPSHOT_RESTORE_TIMEOUT_MS,
+  type SnapshotRestoreResponse,
+} from '@/features/costs/vectorIndex';
 import { useToastStore } from '@/stores/useToastStore';
 import { useModuleStore } from '@/stores/useModuleStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { getModulesByCategory } from '@/modules/_registry';
 import { translateManifestText } from '@/modules/_i18n';
-import { fmtFixed } from '@/shared/lib/formatters';
+import { fmtList, fmtFixed } from '@/shared/lib/formatters';
+import { packSummary } from '@/shared/lib/regionalPack';
+import { PackEmblem } from '@/shared/ui/PackEmblem';
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -114,8 +129,6 @@ interface PartnerPackBranding {
   has_favicon: boolean;
   powered_by_text: string;
 }
-
-type PackType = 'country' | 'industry' | 'partner' | 'showcase';
 
 interface PartnerPackManifestAPI {
   slug: string;
@@ -281,6 +294,23 @@ const MODULE_CATEGORY_META: Record<string, { labelKey: string; defaultLabel: str
   regional: { labelKey: 'modules.cat_regional', defaultLabel: 'Regional Standards' },
 };
 
+/**
+ * The wording for a backend category.
+ *
+ * The map above covers the categories the frontend registry uses; the server
+ * ships several it has never heard of (`business`, `extension`, `controls`,
+ * `enterprise` and more). Those fall back to the raw value rather than
+ * disappearing, which is also what the module card has always printed, so the
+ * chip and the card under it read the same.
+ */
+function moduleCategoryLabel(
+  category: string,
+  t: (key: string, options: { defaultValue: string }) => string,
+): string {
+  const meta = MODULE_CATEGORY_META[category];
+  return meta ? t(meta.labelKey, { defaultValue: meta.defaultLabel }) : category;
+}
+
 /* ── Preset icon mapping ───────────────────────────────────────────────── */
 
 const PRESET_ICON_MAP: Record<string, LucideIcon> = {
@@ -312,6 +342,18 @@ export function ModulesPage() {
     onChange: setActiveTab,
     orientation: 'horizontal',
   });
+
+  // Finding a module by name. The field sits above the tab bar, not inside the
+  // System Modules panel, because the reader who cannot find a module is by
+  // definition on the wrong tab - the page opens on Company Profiles and the
+  // modules are three tabs away. Typing therefore also opens the panel that
+  // holds the answer: a search that returns nothing because the match lives
+  // elsewhere is the very failure this replaces.
+  const [moduleQuery, setModuleQuery] = useState('');
+  const handleModuleQuery = (value: string): void => {
+    setModuleQuery(value);
+    if (value.trim() && activeTab !== 'system') setActiveTab('system');
+  };
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -373,6 +415,29 @@ export function ModulesPage() {
         })}
       </DismissibleInfo>
 
+      {/* Find a module — spans the page, lands you on the tab that answers. */}
+      <div className="max-w-md animate-card-in" style={{ animationDelay: '20ms' }}>
+        <Input
+          id="modules-find"
+          type="search"
+          label={t('modules.find_module', { defaultValue: 'Find a module' })}
+          placeholder={t('modules.find_module_placeholder', {
+            defaultValue: 'Find a module by name, for example Regional Pack',
+          })}
+          value={moduleQuery}
+          onChange={(e) => handleModuleQuery(e.target.value)}
+          icon={<Search size={16} />}
+        />
+        <InfoHint
+          inline
+          className="mt-1"
+          text={t('modules.find_module_hint', {
+            defaultValue:
+              'Searches every backend module by name, id and category, in the language you are reading. Results open on the System Modules tab.',
+          })}
+        />
+      </div>
+
       {/* Tab bar */}
       <div
         className="flex gap-1 rounded-lg bg-surface-secondary p-1 animate-card-in"
@@ -416,7 +481,9 @@ export function ModulesPage() {
         {activeTab === 'profiles' && <CompanyProfilesTab />}
         {activeTab === 'partner-packs' && <PartnerPacksTab />}
         {activeTab === 'data-packages' && <DataPackagesTab />}
-        {activeTab === 'system' && <SystemModulesTab />}
+        {activeTab === 'system' && (
+          <SystemModulesTab query={moduleQuery} onClearQuery={() => setModuleQuery('')} />
+        )}
       </div>
     </div>
   );
@@ -697,6 +764,17 @@ function PartnerPacksTab() {
   const activeSlug = data?.active_slug ?? null;
   const activeSource = applied.data?.applied ? applied.data.source ?? null : null;
 
+  // ``/modules?tab=packs&pack=<slug>`` — a named pack, reached from somewhere
+  // that already knows which one it means. A case page says which pack carries
+  // its market's standards, and before this the only thing it could offer was
+  // the tab: eighteen cards, the right one somewhere in them, and the reader
+  // left to match a name they had just read. This scrolls that card into view
+  // and opens its setup dialog, which is where the dry-run preview and the
+  // confirm already live - so the deep link shortens the path without skipping
+  // the step that makes applying a pack safe.
+  const [packSearchParams] = useSearchParams();
+  const focusSlug = packSearchParams.get('pack');
+
   return (
     <div className="animate-card-in" style={{ animationDelay: '60ms' }}>
       <div className="mb-4">
@@ -782,6 +860,7 @@ function PartnerPacksTab() {
               isActive={activeSlug === pack.slug}
               activeSource={activeSlug === pack.slug ? activeSource : null}
               envPinned={activeSource === 'env'}
+              focused={focusSlug === pack.slug}
             />
           ))}
         </div>
@@ -1034,6 +1113,9 @@ interface PartnerPackCardProps {
    *  Activating a different pack from the UI then silently fails, so we warn
    *  instead of opening the apply dialog. */
   envPinned?: boolean;
+  /** This is the pack named by ``?pack=<slug>``. Scroll it into view and, when
+   *  there is something to do with it, open its setup dialog. */
+  focused?: boolean;
 }
 
 function asStringArray(value: unknown): string[] {
@@ -1041,52 +1123,33 @@ function asStringArray(value: unknown): string[] {
   return value.filter((v): v is string => typeof v === 'string');
 }
 
-/* Two-letter monogram from the partner name, for the no-logo fallback. */
-function packInitials(name: string): string {
-  const words = name.trim().split(/[\s._-]+/).filter(Boolean);
-  const letters =
-    words.length >= 2
-      ? `${words[0]?.[0] ?? ''}${words[1]?.[0] ?? ''}`
-      : name.trim().slice(0, 2);
-  return letters.toUpperCase() || '?';
-}
-
-/* The pack's app-icon emblem (served per-slug from the pack package).
-   Falls back to a brand-gradient monogram built from the partner's own name,
-   so a pack with no logo still gets a distinct mark - never our building icon. */
-function PartnerPackLogo({ pack }: { pack: PartnerPackManifestAPI }) {
-  const [errored, setErrored] = useState(false);
-  const accent = pack.branding.accent_color ?? pack.branding.primary_color;
-
-  if (errored) {
-    return (
-      <div
-        className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-base font-bold tracking-tight text-white shadow-sm"
-        style={{
-          background: `linear-gradient(135deg, ${pack.branding.primary_color}, ${accent})`,
-        }}
-      >
-        {packInitials(pack.partner_name)}
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={`/api/v1/partner-pack/logo/${encodeURIComponent(pack.slug)}`}
-      alt={`${pack.partner_name} logo`}
-      className="h-12 w-12 shrink-0 rounded-xl object-contain shadow-sm"
-      loading="lazy"
-      onError={() => setErrored(true)}
-    />
-  );
-}
-
-function PartnerPackCard({ pack, index, isActive, activeSource, envPinned }: PartnerPackCardProps) {
+function PartnerPackCard({
+  pack,
+  index,
+  isActive,
+  activeSource,
+  envPinned,
+  focused = false,
+}: PartnerPackCardProps) {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const [applyOpen, setApplyOpen] = useState(false);
   const [deactivateOpen, setDeactivateOpen] = useState(false);
+  // Addressed by id rather than by a ref: `Card` spreads its extra props onto
+  // its div but does not forward a ref, and wrapping it in a ref-carrying div
+  // would make that div the grid item and hand the card a different height
+  // than its neighbours.
+  const cardId = `pack-card-${pack.slug}`;
+
+  // The deep-linked card brings itself into view, and opens its setup dialog
+  // only when opening it would mean anything: an already-active pack has
+  // nothing to apply, and an env-pinned deployment cannot be changed from the
+  // UI at all, so in both cases the scroll and the ring are the whole answer.
+  useEffect(() => {
+    if (!focused) return;
+    document.getElementById(cardId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (!isActive && !envPinned) setApplyOpen(true);
+  }, [focused, isActive, envPinned, cardId]);
 
   // Activating from the UI cannot override an env-pinned pack — the backend
   // keeps the OE_PARTNER_PACK selection. Warn and skip opening the dialog.
@@ -1107,10 +1170,6 @@ function PartnerPackCard({ pack, index, isActive, activeSource, envPinned }: Par
     setApplyOpen(true);
   }
 
-  const countryName =
-    typeof pack.metadata.country_name_en === 'string'
-      ? pack.metadata.country_name_en
-      : null;
   const supportEmail =
     typeof pack.metadata.support_email === 'string'
       ? pack.metadata.support_email
@@ -1121,6 +1180,9 @@ function PartnerPackCard({ pack, index, isActive, activeSource, envPinned }: Par
   const standards = regulatorRefs.length > 0 ? regulatorRefs : pack.validation_rule_packs;
 
   const accent = pack.branding.accent_color ?? pack.branding.primary_color;
+  // One line, not the whole paragraph: see packSummary for why the split is on
+  // the colon rather than a CSS clamp.
+  const summary = packSummary(pack.description);
 
   const packType = packTypeOf(pack);
   // Co-branding line stays a property of the ``partner`` type only.
@@ -1132,7 +1194,12 @@ function PartnerPackCard({ pack, index, isActive, activeSource, envPinned }: Par
   return (
     <Card
       hoverable
-      className="animate-card-in group relative overflow-hidden"
+      id={cardId}
+      data-pack-slug={pack.slug}
+      className={clsx(
+        'animate-card-in group relative overflow-hidden',
+        focused && 'ring-2 ring-oe-blue/40',
+      )}
       style={{ animationDelay: `${80 + index * 30}ms` }}
     >
       {/* Brand accent — left border strip distinguishes each company */}
@@ -1143,66 +1210,57 @@ function PartnerPackCard({ pack, index, isActive, activeSource, envPinned }: Par
       />
 
       <div className="pl-2">
-        {/* Logo plate — the pack's own emblem with its name and version */}
-        <div className="mb-3 flex items-center gap-3">
-          <PartnerPackLogo pack={pack} />
+        {/* Identity: the flag, the name, and the one line that says who the
+            pack is for. The name used to sit over a slug and a coloured
+            version chip, which read as three titles of similar weight before
+            the reader reached anything about the pack itself. */}
+        <div className="flex items-start gap-3.5">
+          <PackEmblem pack={pack} size={52} />
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h3 className="truncate text-[15px] font-bold leading-tight text-content-primary">
+            <div className="flex items-start gap-2">
+              <h3 className="min-w-0 flex-1 text-[15px] font-bold leading-snug text-content-primary">
                 {pack.partner_name}
               </h3>
               {isActive && (
-                <Badge variant="success" size="sm" className="shrink-0">
+                <Badge variant="success" size="sm" className="mt-0.5 shrink-0">
                   <Check size={10} className="mr-0.5" />
                   {t('modules.active', { defaultValue: 'Active' })}
                 </Badge>
               )}
             </div>
-            <div className="mt-1 flex items-center gap-1.5 text-2xs text-content-tertiary">
-              <span className="truncate font-mono">{pack.slug}</span>
-              <span className="text-border">·</span>
-              <span
-                className="shrink-0 rounded-full px-1.5 py-0.5 font-mono font-semibold"
-                style={{
-                  color: pack.branding.primary_color,
-                  backgroundColor: `${pack.branding.primary_color}14`,
-                }}
-              >
-                v{pack.pack_version}
-              </span>
-            </div>
+            {summary && (
+              <p className="mt-1 text-xs leading-relaxed text-content-secondary">{summary}</p>
+            )}
           </div>
         </div>
 
-        {/* Type / region / currency badges */}
-        <div className="mt-3 flex items-center gap-1.5 flex-wrap">
+        {/* What the pack sets, in one quiet line. This was four badges of the
+            same weight as the Active one, so a currency code drew the eye as
+            hard as whether the pack was switched on. */}
+        <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-content-tertiary">
           {(() => {
             const meta = PACK_TYPE_META[packType];
             const TypeIcon = meta.icon;
             return (
-              <Badge variant={meta.variant} size="sm">
-                <TypeIcon size={10} className="mr-0.5" />
+              <span className="inline-flex items-center gap-1 font-semibold uppercase tracking-wide" style={{ color: accent }}>
+                <TypeIcon size={11} />
                 {t(meta.labelKey, { defaultValue: meta.defaultLabel })}
-              </Badge>
+              </span>
             );
           })()}
-          {countryName && (
-            <Badge variant="blue" size="sm">
-              <Globe size={10} className="mr-0.5" />
-              {countryName}
-            </Badge>
-          )}
-          <Badge variant="neutral" size="sm">{pack.default_currency}</Badge>
+          <span className="text-border">·</span>
+          <span className="font-mono">{pack.default_currency}</span>
           {pack.default_tax_template && (
-            <Badge variant="neutral" size="sm">{pack.default_tax_template}</Badge>
+            <>
+              <span className="text-border">·</span>
+              <span className="truncate font-mono">{pack.default_tax_template}</span>
+            </>
           )}
+          <span className="text-border">·</span>
+          <span className="font-mono">v{pack.pack_version}</span>
+          <span className="text-border">·</span>
+          <span className="truncate font-mono">{pack.slug}</span>
         </div>
-
-        {pack.description && (
-          <p className="mt-2.5 text-xs text-content-secondary line-clamp-3 leading-relaxed">
-            {pack.description}
-          </p>
-        )}
 
         {/* Co-branding line - partner-type packs only */}
         {poweredBy && (
@@ -1348,7 +1406,7 @@ export function ModuleTogglesSection({
           message: t('modules.required_by', {
             defaultValue: '{{name}} is required by: {{deps}}',
             name,
-            deps: blockedBy.join(', '),
+            deps: fmtList(blockedBy),
           }),
         });
         return;
@@ -1589,18 +1647,75 @@ function DataPackagesTab() {
 
         try {
           const status = await apiGet<{ backend: string; connected: boolean; can_restore_snapshots: boolean; can_generate_locally: boolean }>('/v1/costs/vector/status/');
-          let vecRes: { restored?: boolean; indexed?: number; database?: string; duration_seconds?: number } | undefined;
+          let vecIndexed = 0;
           if (status.can_restore_snapshots) {
-            vecRes = await apiPost<{ restored?: boolean; indexed?: number; database?: string; duration_seconds?: number }>(`/v1/costs/vector/restore-snapshot/${dbId}`);
+            // The restore runs on the server's own budget - 600s to download
+            // ~1.1 GB plus 1800s to hand it to Qdrant - and the handler never
+            // checks whether the browser is still there. On the default 45s a
+            // successful restore could only ever be reported as a failure. The
+            // wrapper's own timeout toast is suppressed because the catch here
+            // reports this call in both directions.
+            let restore: SnapshotRestoreResponse | undefined;
+            try {
+              restore = await apiPost<SnapshotRestoreResponse>(
+                `/v1/costs/vector/restore-snapshot/${dbId}`,
+                undefined,
+                { timeoutMs: SNAPSHOT_RESTORE_TIMEOUT_MS, suppressTimeoutToast: true },
+              );
+            } catch (restoreErr: unknown) {
+              // We stopped listening, the server did not stop working, and no
+              // endpoint reports the per-region collection a restore writes -
+              // so there is nothing to poll and nowhere to send the user. Say
+              // that, rather than reporting an import failure that did not
+              // happen.
+              if (!mayStillBeRunning(restoreErr)) throw restoreErr;
+              addToast({
+                type: 'info',
+                title: t('costs.snapshot_restore_running_title', { defaultValue: 'Snapshot restore still running' }),
+                message: t('costs.snapshot_restore_running_msg', {
+                  defaultValue:
+                    'The server keeps downloading and restoring the snapshot after the browser stops waiting, so nothing was cancelled. A snapshot this size can take well over half an hour.',
+                }),
+              });
+              break;
+            }
+            // Read `vectors_count`: the restore endpoint returns no `indexed`
+            // field at all, so the old read defaulted to 0 and announced "the
+            // backend indexed 0 vectors" at the end of every restore that
+            // worked.
+            const outcome = describeSnapshotRestore(restore);
+            if (outcome.kind !== 'not_restored') {
+              addToast({
+                type: 'success',
+                title: t('marketplace.vector_imported', { defaultValue: 'Vector index loaded' }),
+                message:
+                  outcome.kind === 'restored'
+                    ? t('marketplace.vector_ready_count', {
+                        defaultValue: '{{count}} vectors ready for {{region}}',
+                        count: outcome.vectors,
+                        region: dbId,
+                      })
+                    : t('costs.snapshot_restored_no_count', {
+                        defaultValue:
+                          'The snapshot was restored. The vector database did not report how many vectors it holds.',
+                      }),
+              });
+              queryClient.invalidateQueries({ queryKey: ['marketplace'] });
+              queryClient.invalidateQueries({ queryKey: ['vector-status'] });
+              break;
+            }
           } else if (status.connected) {
-            vecRes = await apiPost<{ restored?: boolean; indexed?: number; database?: string; duration_seconds?: number }>(`/v1/costs/vector/load-github/${dbId}`);
+            const vecRes = await apiPost<{ restored?: boolean; indexed?: number; database?: string; duration_seconds?: number }>(`/v1/costs/vector/load-github/${dbId}`);
+            // `load-github` reports its result in `indexed`, which is a
+            // different field from the restore endpoint's `vectors_count`.
+            // The POST can return ``indexed: 0`` when the backend is reachable
+            // but could not actually build the index (no embedding model, or
+            // an empty snapshot). Reflect that truthfully instead of always
+            // claiming success.
+            vecIndexed = vecRes?.indexed ?? 0;
           } else {
             throw new Error(t('marketplace.no_vector_backend', { defaultValue: 'No vector database available. Install LanceDB (pip install lancedb) or start Qdrant (docker run -p 6333:6333 qdrant/qdrant)' }));
           }
-          // The POST can return ``indexed: 0`` when the backend is reachable but
-          // could not actually build the index (no embedding model, or an empty
-          // snapshot). Reflect that truthfully instead of always claiming success.
-          const vecIndexed = vecRes?.indexed ?? 0;
           if (vecIndexed > 0) {
             addToast({
               type: 'success',
@@ -1995,13 +2110,20 @@ function DataPackagesTab() {
 /* ── Tab 3: System Modules ───────────────────────────────────────────── */
 /* ══════════════════════════════════════════════════════════════════════════ */
 
-function SystemModulesTab() {
+interface SystemModulesTabProps {
+  /** The page-level "Find a module" text. Owned above so it survives a tab switch. */
+  query: string;
+  onClearQuery: () => void;
+}
+
+function SystemModulesTab({ query, onClearQuery }: SystemModulesTabProps) {
   const { t, i18n } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const queryClient = useQueryClient();
   const userRole = useAuthStore((s) => s.userRole);
   const isAdmin = userRole === 'admin';
   const [togglingModule, setTogglingModule] = useState<string | null>(null);
+  const [activeCategory, setActiveCategory] = useState<string>(ALL_CATEGORIES);
   const { confirm, ...confirmProps } = useConfirm();
 
   const { data: systemModules, refetch, isLoading, isError: systemError } = useQuery({
@@ -2018,6 +2140,37 @@ function SystemModulesTab() {
   // confirm dialog and in the toast alike. A name translated in one of those
   // and English in the next reads as two different modules.
   const nameOf = (mod: SystemModule): string => resolveModuleDisplayName(mod, t, i18n.language);
+
+  // The same translation the card prints is what the search reads, so the word
+  // on screen is the word that works. `categoryLabel` is passed in rather than
+  // imported by the search module because the label map lives on this page.
+  const searchContext: ModuleSearchContext = useMemo(
+    () => ({
+      t,
+      language: i18n.language,
+      categoryLabel: (category: string) => moduleCategoryLabel(category, t),
+    }),
+    [t, i18n.language],
+  );
+
+  // Chips count the whole list, not the search result, so they stay put while
+  // the reader types instead of rearranging under the cursor.
+  const categoryTallies = useMemo(
+    () => tallyModuleCategories(systemModules ?? [], MODULE_CATEGORY_ORDER),
+    [systemModules],
+  );
+
+  const visibleModules = useMemo(
+    () => filterModules(systemModules ?? [], query, activeCategory, searchContext),
+    [systemModules, query, activeCategory, searchContext],
+  );
+
+  const isFiltered = query.trim().length > 0 || activeCategory !== ALL_CATEGORIES;
+
+  function clearFilters(): void {
+    setActiveCategory(ALL_CATEGORIES);
+    onClearQuery();
+  }
 
   async function handleBackendToggle(mod: SystemModule): Promise<void> {
     // Enabling/disabling a backend module is admin-only on the server
@@ -2153,6 +2306,15 @@ function SystemModulesTab() {
         <p className="text-sm text-content-secondary">
           {enabledCount}/{systemModules.length}{' '}
           {t('marketplace.modules_enabled', { defaultValue: 'modules enabled' })}
+          {isFiltered && (
+            <span className="ml-2 text-content-tertiary">
+              {t('modules.system_match_count', {
+                defaultValue: '- {{shown}} of {{total}} shown',
+                shown: visibleModules.length,
+                total: systemModules.length,
+              })}
+            </span>
+          )}
         </p>
         <InfoHint
           inline
@@ -2171,8 +2333,62 @@ function SystemModulesTab() {
         )}
       </div>
 
+      {/* Category chips. 14 regional packs are a group a reader thinks in, and
+          the list is far too long to scan without one. */}
+      <div className="mb-4 flex flex-wrap gap-2">
+        {[{ category: ALL_CATEGORIES, count: systemModules.length }, ...categoryTallies].map(
+          ({ category, count }) => {
+            const isActive = activeCategory === category;
+            return (
+              <button
+                key={category}
+                onClick={() => setActiveCategory(category)}
+                aria-pressed={isActive}
+                className={clsx(
+                  'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-fast ease-oe',
+                  isActive
+                    ? 'bg-oe-blue text-content-inverse shadow-xs'
+                    : 'bg-surface-secondary text-content-secondary hover:bg-surface-tertiary hover:text-content-primary',
+                )}
+              >
+                <span>
+                  {category === ALL_CATEGORIES
+                    ? t('marketplace.category_all', { defaultValue: 'All' })
+                    : moduleCategoryLabel(category, t)}
+                </span>
+                <span
+                  className={clsx(
+                    'ml-0.5 text-2xs font-semibold rounded-full px-1.5',
+                    isActive ? 'bg-white/20 text-content-inverse' : 'bg-surface-primary text-content-tertiary',
+                  )}
+                >
+                  {count}
+                </span>
+              </button>
+            );
+          },
+        )}
+      </div>
+
+      {visibleModules.length === 0 ? (
+        <div className="py-16 text-center animate-card-in">
+          <Search size={40} className="mx-auto mb-3 text-content-tertiary" strokeWidth={1.5} />
+          <p className="text-sm font-medium text-content-secondary">
+            {t('modules.no_system_matches', { defaultValue: 'No system module matches' })}
+          </p>
+          <p className="mx-auto mt-1 max-w-md text-xs text-content-tertiary">
+            {t('modules.no_system_matches_hint', {
+              defaultValue:
+                'Try a shorter search or pick All above. Company profiles, packs and data packages are separate lists, on the other tabs of this page.',
+            })}
+          </p>
+          <Button variant="secondary" size="sm" onClick={clearFilters} className="mt-4">
+            {t('common.clear_filters', { defaultValue: 'Clear filters' })}
+          </Button>
+        </div>
+      ) : (
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {systemModules.map((mod, i) => (
+        {visibleModules.map((mod, i) => (
           <Card
             key={mod.name}
             className="animate-card-in"
@@ -2208,7 +2424,7 @@ function SystemModulesTab() {
                   {mod.category && mod.category !== 'core' && (
                     <>
                       <span className="text-border">|</span>
-                      <span>{mod.category}</span>
+                      <span>{moduleCategoryLabel(mod.category, t)}</span>
                     </>
                   )}
                 </div>
@@ -2217,7 +2433,7 @@ function SystemModulesTab() {
                 )}
                 {mod.depends && mod.depends.length > 0 && (
                   <span className="text-2xs text-content-quaternary">
-                    {t('modules.depends_on', { defaultValue: 'Requires: {{deps}}', deps: mod.depends.join(', ') })}
+                    {t('modules.depends_on', { defaultValue: 'Requires: {{deps}}', deps: fmtList(mod.depends) })}
                   </span>
                 )}
               </div>
@@ -2253,7 +2469,7 @@ function SystemModulesTab() {
                     <div
                       className={clsx(
                         'relative h-5 w-9 rounded-full transition-colors duration-200',
-                        mod.enabled ? 'bg-oe-blue' : 'bg-content-quaternary/40',
+                        mod.enabled ? 'bg-oe-blue' : 'bg-content-quaternary',
                       )}
                     >
                       <div
@@ -2270,6 +2486,7 @@ function SystemModulesTab() {
           </Card>
         ))}
       </div>
+      )}
 
       <ConfirmDialog {...confirmProps} />
     </div>
@@ -2350,14 +2567,14 @@ function ModuleToggleCard({
             <span className="text-2xs text-amber-600 dark:text-amber-400 truncate">
               {t('modules.required_by_short', {
                 defaultValue: 'Required by {{deps}}',
-                deps: (dependents ?? []).join(', '),
+                deps: fmtList((dependents ?? [])),
               })}
             </span>
           </div>
         )}
         {deps && deps.length > 0 && (
           <span className="text-2xs text-content-quaternary">
-            {t('modules.depends_on', { defaultValue: 'Requires: {{deps}}', deps: deps.join(', ') })}
+            {t('modules.depends_on', { defaultValue: 'Requires: {{deps}}', deps: fmtList(deps) })}
           </span>
         )}
       </div>
@@ -2376,7 +2593,7 @@ function ModuleToggleCard({
         <div
           className={clsx(
             'relative h-5 w-9 rounded-full transition-colors duration-200',
-            enabled ? 'bg-oe-blue' : 'bg-content-quaternary/40',
+            enabled ? 'bg-oe-blue' : 'bg-content-quaternary',
           )}
         >
           <div

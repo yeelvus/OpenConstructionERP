@@ -1,6 +1,6 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
-import { apiGet, apiPost, apiPatch, apiDelete } from '@/shared/lib/api';
+import { ApiError, apiGet, apiPost, apiPatch, apiDelete } from '@/shared/lib/api';
 import { toNum } from '@/shared/lib/money';
 
 /**
@@ -200,6 +200,44 @@ export function normalizeCount(count: number): number {
 }
 
 /**
+ * Whether a money text input resolves to an amount above zero.
+ *
+ * Reads the field through {@link normalizeAmount} so it judges the same string
+ * the request would carry, rather than the raw text.
+ */
+export function isPositiveAmount(value: string): boolean {
+  const n = Number(normalizeAmount(value));
+  return Number.isFinite(n) && n > 0;
+}
+
+/** What saving a rate template is gated on. */
+export interface TemplateSaveGateInput {
+  /** The template name typed into the editor. */
+  templateName: string;
+  /** The base hourly wage as typed, before normalisation. */
+  baseWage: string;
+  /** A save or an update is already in flight. */
+  pending: boolean;
+}
+
+/**
+ * Whether the editor may save a rate template (as a new one or over an open one).
+ *
+ * The base wage has to resolve to a positive amount, which mirrors the `gt=0`
+ * the server puts on `base_wage`. A blank wage normalises to `'0'` because the
+ * live build-up preview accepts zero, and that string used to reach the
+ * template endpoint unchecked and come back as a raw 422 with nothing the user
+ * could read. Zero is refused here for the reason the server refuses it: a
+ * template that builds up to 0.00 prices labour hours at nothing while every
+ * consumer reads it as a finished rate.
+ */
+export function canSaveTemplate(input: TemplateSaveGateInput): boolean {
+  if (input.pending) return false;
+  if (input.templateName.trim() === '') return false;
+  return isPositiveAmount(input.baseWage);
+}
+
+/**
  * Build the compute request from the editor state.
  *
  * On-costs with a blank label and crew lines with a blank trade are dropped
@@ -303,6 +341,40 @@ export interface CostItemPayload {
   classification?: Record<string, string>;
   components?: CostItemComponentInput[];
   tags?: string[];
+}
+
+// ── Delete refusal (the backend names what still holds a template) ──────────
+
+/** One holder of a template, as counted by the backend's 409 refusal body. */
+export interface InUseReference {
+  kind: string;
+  count: number;
+}
+
+/** The stable `detail.code` the backend sends when a template is still held. */
+export const TEMPLATE_IN_USE_CODE = 'labor_rate_template_in_use';
+
+/**
+ * Read the structured "template still in use" refusal out of a delete error.
+ *
+ * Deleting a template that a published cost item or a priced assembly still
+ * references is refused with 409 rather than cascaded, and the body carries a
+ * `detail` object with the stable {@link TEMPLATE_IN_USE_CODE} plus a
+ * `references` list of `{kind, count}`. Returning that list lets the caller
+ * name the holders in the user's language. Anything else - another status,
+ * another code, a shape that is not what we expect - yields `null`, so the
+ * caller falls back to the generic error message instead of inventing counts.
+ */
+export function readInUseRefusal(err: unknown): InUseReference[] | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  const detail = (err.body as { detail?: unknown } | undefined)?.detail;
+  if (!detail || typeof detail !== 'object') return null;
+  const { code, references } = detail as { code?: unknown; references?: unknown };
+  if (code !== TEMPLATE_IN_USE_CODE || !Array.isArray(references)) return null;
+  return references.filter(
+    (r): r is InUseReference =>
+      !!r && typeof r === 'object' && typeof (r as { kind?: unknown }).kind === 'string',
+  );
 }
 
 /** Slim shape of the created cost item we read back for the success toast. */

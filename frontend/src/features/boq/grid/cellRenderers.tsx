@@ -50,7 +50,7 @@ import { resolveRowModelId } from './resolveRowModelId';
 import { MiniGeometryPreview } from '@/shared/ui/MiniGeometryPreview';
 import { fetchBIMElementsByIds, fetchBIMElementProperties } from '@/features/bim/api';
 import type { BIMElementData } from '@/shared/ui/BIMViewer/ElementManager';
-import { fmtFixed } from '@/shared/lib/formatters';
+import { fmtList, fmtFixed } from '@/shared/lib/formatters';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
 import { localizedUnitCode } from '@/shared/lib/unitLabels';
 import type { DisplayQuantityApi } from '@/shared/hooks/useDisplayQuantity';
@@ -456,19 +456,19 @@ export function SectionFullWidthRenderer(params: ICellRendererParams) {
             title={t('boq.section_fx_missing_tooltip', {
               defaultValue:
                 'Section total may be incorrect - no FX rate for: {{codes}}. Click to set rates.',
-              codes: (data as { _fxWarnings: string[] })._fxWarnings.join(', '),
+              codes: fmtList((data as { _fxWarnings: string[] })._fxWarnings),
             })}
             aria-label={t('boq.section_fx_missing_tooltip', {
               defaultValue:
                 'Section total may be incorrect - no FX rate for: {{codes}}. Click to set rates.',
-              codes: (data as { _fxWarnings: string[] })._fxWarnings.join(', '),
+              codes: fmtList((data as { _fxWarnings: string[] })._fxWarnings),
             })}
           >
             <AlertTriangle size={11} strokeWidth={2.2} />
             <span>
               {t('boq.section_fx_missing_short', {
                 defaultValue: 'set FX: {{codes}}',
-                codes: (data as { _fxWarnings: string[] })._fxWarnings.join(', '),
+                codes: fmtList((data as { _fxWarnings: string[] })._fxWarnings),
               })}
             </span>
           </button>
@@ -3706,6 +3706,7 @@ function CurrencyOption({
 }
 
 export function EditableResourceRow({ data, ctx, slots, leftPad }: { data: Record<string, unknown>; ctx: FullGridContext; slots: ColumnSlot[]; leftPad: number }) {
+  const { t } = useTranslation();
   const resourceType = (data._resourceType as string) || 'other';
   const qty = (data._resourceQty as number) ?? 0;
   const rate = (data._resourceRate as number) ?? 0;
@@ -4168,7 +4169,7 @@ export function EditableResourceRow({ data, ctx, slots, leftPad }: { data: Recor
   const renderBimLinkSlot = (width: number) => (
     <span
       key="_bim_link"
-      className="shrink-0 inline-flex items-center justify-end self-center pl-2 pr-3"
+      className="shrink-0 inline-flex items-center justify-end self-center ps-2 pe-3"
       style={{ width: `${width}px` }}
     >
       <ResourceTypePicker
@@ -4397,7 +4398,7 @@ export function EditableResourceRow({ data, ctx, slots, leftPad }: { data: Recor
       >
         <BookmarkPlus size={10} />
       </button>
-      <button
+      <button aria-label={t('common.remove', { defaultValue: 'Remove' })}
         onClick={(e) => {
           e.stopPropagation();
           ctx.onRemoveResource?.(posId, resIdx);
@@ -4675,7 +4676,7 @@ function VariantHeaderResourceRow({
   const renderBimLinkSlot = (width: number) => (
     <span
       key="_bim_link"
-      className="shrink-0 inline-flex items-center justify-end self-center pl-2 pr-3"
+      className="shrink-0 inline-flex items-center justify-end self-center ps-2 pe-3"
       style={{ width: `${width}px` }}
     >
       <button

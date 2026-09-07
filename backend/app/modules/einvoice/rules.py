@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
 
-from app.core.money import CURRENCIES
+from app.core.money import minor_units
 from app.modules.einvoice.profiles import Profile, get_profile
 
 if TYPE_CHECKING:  # pragma: no cover - annotations only, avoids an import cycle
@@ -42,7 +42,6 @@ __all__ = [
     "DIRECT_DEBIT_CODES",
     "FATAL",
     "PAYMENT_CARD_CODES",
-    "UNDECIDED_MINOR_UNIT_CODES",
     "UNTDID_4461_CODES",
     "VAT_CATEGORY_CODES",
     "WARNING",
@@ -177,6 +176,15 @@ class RuleViolation:
 #        thing which trims it, rather than the trimming being pre-baked here.
 #   PKR  ISO 2, CLDR 2 - no disagreement at all. Only CLDR's *cashDigits* is 0,
 #        and that governs rounding banknotes at a till, not a written amount.
+#        Expect an instrument to contradict this and do not "correct" it on the
+#        strength of one: asking a running engine gives 0 for PKR wherever its
+#        bundled ICU is a CLDR release behind, because the digits for this one
+#        code changed between releases. The check that tells the two apart is
+#        CZK, TWD, DKK, SEK and NOK, which all carry a zero cash rule and all
+#        still answer 2 - so an engine answering 0 for PKR is reporting older
+#        data, not reading *cashDigits*. Nothing turns on it either way: the
+#        value layer and this table both hold 2 for PKR, and only a screen ever
+#        asks the engine.
 #
 # EN 16931 does not settle the remaining fourteen, which is why they need a
 # decision recorded rather than derived. Checked against the CEN validation
@@ -228,19 +236,24 @@ _DOCUMENT_MINOR_UNITS: dict[str, int] = {
     # the CLDR zero for them. So a forint invoice is issued without fillér and
     # a rupiah invoice without sen, in every syntax - CII, UBL and the PDF all
     # read this one function.
-    # THIS PAIR IS PENDING A DECISION AND IS NOT RATIFIED BY BEING WRITTEN HERE.
-    # The same question is open on the screen side, where two frontend resolvers
-    # disagree for these codes, and answering it in one place only would move
-    # the document and the finance register further apart rather than closer.
-    # The values below are today's behaviour, pinned so that it cannot drift
-    # while the question is outstanding. See ``UNDECIDED_MINOR_UNIT_CODES``.
+    #
+    # DECIDED, and decided as zero. This pair carried an "undecided" marker for
+    # some time on the reading that ISO says two, CLDR says zero and EN 16931
+    # breaks no tie. What settles it is not a third standard but the subunit
+    # itself: the fillér was withdrawn from circulation in 1999 and the sen is
+    # likewise long gone, so neither amount CAN be settled in the subunit ISO
+    # still lists. A count of two would not be a more precise forint, it would
+    # be two digits that no payment can ever carry.
+    #
+    # The reading that made it look open was that our resolvers disagreed. They
+    # do not. ``app.core.money`` holds zero for both, the screen resolver takes
+    # CLDR's zero through the running engine, and this table holds zero: four
+    # readers, one answer, and only ISO's own list on the other side. Marking a
+    # unanimous position as disputed made every reader of it hesitate over a
+    # question the code had already answered.
     "HUF": 0,
     "IDR": 0,
 }
-
-# The codes whose minor unit is pinned pending a decision, not settled. A test
-# asserting one of these is recording what ships, not blessing it.
-UNDECIDED_MINOR_UNIT_CODES: frozenset[str] = frozenset({"HUF", "IDR"})
 
 
 def money_decimals(currency_code: str) -> int:
@@ -258,9 +271,10 @@ def money_decimals(currency_code: str) -> int:
 
     Codes whose two registers disagree are resolved from
     :data:`_DOCUMENT_MINOR_UNITS` one by one, with the reasoning recorded
-    beside each; anything else takes its count from ``CURRENCIES``, and an
-    unknown code falls back to two. ``HUF`` and ``IDR`` are pinned pending a
-    decision rather than settled - see :data:`UNDECIDED_MINOR_UNIT_CODES`.
+    beside each; anything else takes its count from :func:`app.core.money.minor_units`,
+    and an unknown code falls back to two there. Every code in that table is
+    settled; a code added to it without a decision recorded beside it fails its
+    own gate.
 
     Args:
         currency_code: ISO 4217 code, e.g. ``"EUR"`` or ``"JPY"``.
@@ -269,10 +283,11 @@ def money_decimals(currency_code: str) -> int:
         Number of decimal places, between 0 and 2.
     """
     code = (currency_code or "").strip().upper()
-    decimals = _DOCUMENT_MINOR_UNITS.get(code)
-    if decimals is None:
-        entry = CURRENCIES.get(code)
-        decimals = int(entry.get("decimals", _EN16931_MAX_DECIMALS)) if entry else _EN16931_MAX_DECIMALS
+    # The document count is the value count, capped. Anything this table has
+    # not explicitly decided is asked of ``app.core.money``, which is the one
+    # place a currency's subdivision is recorded, so the two can never hold
+    # separate opinions about the same code.
+    decimals = _DOCUMENT_MINOR_UNITS.get(code, minor_units(code))
     return min(max(decimals, 0), _EN16931_MAX_DECIMALS)
 
 

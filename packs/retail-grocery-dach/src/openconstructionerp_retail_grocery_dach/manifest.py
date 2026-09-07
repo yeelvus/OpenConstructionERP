@@ -38,6 +38,11 @@ MANIFEST = PartnerPackManifest(
         "lv_leistungsverzeichnis_quality",
         "bki_benchmarks",
     ],
+    # The engine identifiers behind two of the documents above.
+    validation_rule_sets=[
+        "din276",
+        "gaeb",
+    ],
     default_modules=[],
     hidden_modules=[],
     demo_template_ids=[
@@ -48,12 +53,28 @@ MANIFEST = PartnerPackManifest(
     branding=PartnerBranding(
         primary_color="#2E7D32",  # neutral fresh-market green
         accent_color="#9E9E9E",  # neutral grey
-        logo_path="logo.svg",
+        # This pack ships no logo.svg. The UI draws a monogram in the two
+        # colours above; naming a file that is not here only made it 404.
+        logo_path=None,
         favicon_path=None,
         powered_by_text="OpenConstructionERP retail grocery pack (DACH)",
     ),
     onboarding_script_path=None,
     metadata={
+        # "XX" is the declared value for a pack that serves no single market,
+        # the same one modular-prefab and renewables-epc carry, and it is what
+        # "region_focus" below already says in prose: DACH is three countries.
+        #
+        # Saying it explicitly matters because the alternative is not silence.
+        # packCountryCode() in frontend/src/shared/lib/regionalPack.ts falls
+        # back to the region subtag of default_locale when metadata names no
+        # country, and this pack's locale is a bare "de" with no subtag to
+        # take, so the fallback yielded null and the pack matched no market at
+        # all. It is force-included in the community wheel and live today, and
+        # it was reaching nobody. "DE" would have been the wrong repair: it
+        # would contradict the region_focus on the next line and claim a
+        # single market this pack does not serve.
+        "country": "XX",
         "industry": "retail-grocery",
         "industry_name_en": "Discount food retail",
         "region_focus": "DACH (DE/AT/CH)",

@@ -22,10 +22,20 @@ This runs for the embedded server AND for external PostgreSQL. External
 deployments are still expected to manage their schema with Alembic
 (``alembic upgrade head``), but in practice many run the image without that
 step, so an upgrade that added a column leaves the live table missing it and
-every ORM read 500s. Because every statement here is ``ADD COLUMN`` /
-``CREATE INDEX IF NOT EXISTS`` - idempotent and non-destructive - it is safe
-to run as a belt-and-braces heal regardless of who owns the schema. The call
-site wraps it non-fatally so a DB role without DDL rights simply skips it.
+every ORM read 500s. Every statement here is idempotent and non-destructive, so
+it is safe to run as a belt-and-braces heal regardless of who owns the schema.
+The call site wraps it non-fatally so a DB role without DDL rights simply skips
+it.
+
+Almost all of that is additive: ``ADD COLUMN`` / ``CREATE INDEX IF NOT EXISTS``
+/ ``ADD CONSTRAINT``. The one alteration of an existing column is
+``DROP NOT NULL``, which is here because it is the only one that cannot fail
+against rows already in the table - it widens what the column accepts and no
+existing row can contradict it. Adding a NOT NULL or changing a type can both
+be refused by real data, so neither is attempted. Without the relaxation a
+revision that widened a column never took effect on any install that upgrades
+through this heal, and ordinary writes leaving that column empty raised
+NotNullViolation.
 
 Concurrency- and traffic-safe on shared external databases: the heal takes a
 transaction-scoped advisory lock (only one worker heals at a time), bounds each
@@ -88,18 +98,24 @@ async def postgres_auto_migrate(engine: AsyncEngine, base) -> int:
     specific indexes are skipped defensively - their SQL cannot be
     reconstructed reliably from the ``Index`` object.
 
+    Also drops a NOT NULL the database still holds on a column the models now
+    declare optional (``ALTER COLUMN ... DROP NOT NULL``), which is the one
+    alteration of an existing column that no existing row can refuse. See
+    :func:`_relax_not_null`.
+
     Args:
         engine: The async SQLAlchemy engine (must be PostgreSQL).
         base: The declarative ``Base`` whose metadata holds every model.
 
     Returns:
-        Total number of schema objects added (sequences + columns + indexes +
-        constraints).
+        Total number of schema repairs made (sequences + columns + indexes +
+        constraints added, plus columns relaxed to accept NULL).
     """
     sequences_added = 0
     columns_added = 0
     indexes_added = 0
     constraints_added = 0
+    nulls_relaxed = 0
 
     async with engine.begin() as conn:
         # Serialise the heal across processes: on a shared external database
@@ -135,12 +151,33 @@ async def postgres_auto_migrate(engine: AsyncEngine, base) -> int:
             if table.name not in existing_tables:
                 continue  # New table - create_all handles it.
 
+            # Nullability comes back with the names because the loop below needs
+            # both: a column that is absent gets added, and a column that is
+            # present may still disagree with the model about accepting NULL.
             existing_cols = await conn.run_sync(
-                lambda sync_conn, tn=table.name: {col["name"] for col in inspect(sync_conn).get_columns(tn)}
+                lambda sync_conn, tn=table.name: {
+                    col["name"]: bool(col.get("nullable")) for col in inspect(sync_conn).get_columns(tn)
+                }
             )
+            # The live primary key, not the model's. DROP NOT NULL on a PK column
+            # is rejected outright, and the two can disagree on an aged database.
+            try:
+                live_pk_cols = await conn.run_sync(
+                    lambda sync_conn, tn=table.name: set(
+                        inspect(sync_conn).get_pk_constraint(tn).get("constrained_columns") or ()
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Unreadable primary key means the guard below cannot be trusted,
+                # so relax nothing on this table rather than guessing at it.
+                logger.warning("PostgreSQL migration: could not read the primary key of %s: %s", table.name, exc)
+                live_pk_cols = set(existing_cols)
 
             for col in table.columns:
                 if col.name in existing_cols:
+                    nulls_relaxed += await _relax_not_null(
+                        conn, table, col, db_nullable=existing_cols[col.name], live_pk_cols=live_pk_cols
+                    )
                     continue
 
                 col_type = col.type.compile(engine.dialect)
@@ -185,6 +222,16 @@ async def postgres_auto_migrate(engine: AsyncEngine, base) -> int:
                 # let the app's Python-side default cover new writes (mirrors the
                 # defensive behaviour of the SQLite migrator).
                 not_null = " NOT NULL" if (not col.nullable and default) else ""
+                # Adding it nullable is the right call - the alternative fails
+                # outright on a populated table - but it leaves the database and
+                # the models disagreeing about this column for the life of the
+                # install, because no revision body ever runs to tighten it
+                # later. Until this flag existed that divergence was created in
+                # silence: the column went in, the heal counted it as a success,
+                # and nothing said the NOT NULL had been dropped on the way.
+                # Read after the statement lands, so a column that was never
+                # added is not reported as a divergence.
+                not_null_declined = not col.nullable and not default
 
                 sql = f'ALTER TABLE "{table.name}" ADD COLUMN IF NOT EXISTS "{col.name}" {col_type}{not_null}{default}'
 
@@ -203,6 +250,15 @@ async def postgres_auto_migrate(engine: AsyncEngine, base) -> int:
                         col.name,
                         col_type,
                     )
+                    if not_null_declined:
+                        logger.warning(
+                            "PostgreSQL migration: added %s.%s NULLABLE although the models declare it "
+                            "NOT NULL, because it has no default to backfill the rows already in the "
+                            "table. The database and the models disagree about this column until it is "
+                            "backfilled and tightened by hand; nothing on the boot path will do it.",
+                            table.name,
+                            col.name,
+                        )
                 except Exception as exc:  # noqa: BLE001
                     # A rejected DEFAULT must not cost the column. The
                     # constrained form above is an improvement on the plain
@@ -305,16 +361,135 @@ async def postgres_auto_migrate(engine: AsyncEngine, base) -> int:
 
             constraints_added += await _heal_constraints(conn, table, existing_names, existing_col_tuples)
 
-    if sequences_added > 0 or columns_added > 0 or indexes_added > 0 or constraints_added > 0:
+    if sequences_added > 0 or columns_added > 0 or indexes_added > 0 or constraints_added > 0 or nulls_relaxed > 0:
         logger.info(
-            "PostgreSQL auto-migration complete: %d sequences, %d columns, %d indexes, %d constraints added",
+            "PostgreSQL auto-migration complete: %d sequences, %d columns, %d indexes, %d constraints added, "
+            "%d column(s) relaxed to accept NULL",
             sequences_added,
             columns_added,
             indexes_added,
             constraints_added,
+            nulls_relaxed,
         )
 
-    return sequences_added + columns_added + indexes_added + constraints_added
+    return sequences_added + columns_added + indexes_added + constraints_added + nulls_relaxed
+
+
+async def not_null_divergences(engine: AsyncEngine, base) -> tuple[str, ...]:
+    """Columns the models declare NOT NULL that the live database accepts NULL in.
+
+    This asks the standing question - does the schema match the models *now* -
+    rather than the question the heal's own log answers, which is what this boot
+    happened to do. The two are not interchangeable. A column added nullable
+    three releases ago is exactly as divergent as one added nullable a minute
+    ago, and only the standing form sees it: the heal announces the decision on
+    the boot that makes it and is silent on every boot afterwards, so on any
+    install that upgraded before today the log says nothing at all.
+
+    Nullability is the whole of what this reports, and that is a deliberate
+    floor rather than the finished job. It is crisply answerable: a column is
+    NOT NULL or it is not, and the two sides of the comparison cannot disagree
+    for reasons of rendering. Type divergence is the other half of what the heal
+    declines, and comparing a model type against a reflected one produces
+    disagreements that are about spelling rather than about the schema, so it
+    would need its own work and its own evidence before it could be trusted to
+    degrade a health signal.
+
+    Read-only. It issues no DDL and no DML on any code path, which is what makes
+    it safe to run on every boot and against a production database.
+
+    Args:
+        engine: The async SQLAlchemy engine (must be PostgreSQL).
+        base: The declarative ``Base`` whose metadata holds every model.
+
+    Returns:
+        ``table.column`` for each divergence, sorted, so the value is stable
+        across boots and two runs can be compared directly.
+    """
+    found: list[str] = []
+
+    async with engine.connect() as conn:
+        # One catalog query rather than an inspector call per table. Asking the
+        # inspector table by table is the obvious way to write this and it cost
+        # 5.0s against 626 tables, measured, which is far too much to spend on
+        # every boot for a diagnostic. The same answer in a single round trip
+        # comes back in hundredths of a second, and it is the same answer:
+        # nullability is one column of one catalog view.
+        rows = await conn.execute(
+            text(
+                "SELECT table_name, column_name, is_nullable FROM information_schema.columns "
+                "WHERE table_schema = current_schema()"
+            )
+        )
+        live: dict[tuple[str, str], bool] = {
+            (table_name, column_name): is_nullable == "YES" for table_name, column_name, is_nullable in rows
+        }
+
+    live_tables = {table_name for table_name, _ in live}
+    for table in base.metadata.sorted_tables:
+        if table.name not in live_tables:
+            continue  # Not built yet; create_all makes it correctly.
+        for col in table.columns:
+            if col.nullable or col.primary_key:
+                continue  # The models allow NULL, or PostgreSQL forbids it anyway.
+            if live.get((table.name, col.name)) is True:
+                found.append(f"{table.name}.{col.name}")
+
+    return tuple(sorted(found))
+
+
+async def _relax_not_null(conn, table, col: Column, *, db_nullable: bool, live_pk_cols: set) -> int:
+    """Drop a NOT NULL the database still holds and the models no longer declare.
+
+    This is the one schema alteration that can never fail against the rows
+    already in the table. Adding NOT NULL needs every existing row to satisfy it,
+    and changing a type needs every existing value to cast, which is why neither
+    belongs in a heal that runs unattended on someone else's data. Dropping it
+    only ever widens what the column accepts, so no row can contradict it and no
+    reader that worked before stops working.
+
+    It is needed because the heal is what actually runs on upgrade for most
+    installs, and a revision that widens a column therefore never runs. The old
+    constraint survives, the models say the value is optional, and the first
+    write that leaves it empty raises NotNullViolation on an ordinary request.
+    Nothing reported the schema as unhealed, because until now the comparison
+    only looked for the opposite mismatch.
+
+    A primary key is skipped on both definitions, the model's and the live one.
+    A PK column is implicitly NOT NULL in PostgreSQL and the ALTER is rejected,
+    and an aged database can disagree with the models about which columns those
+    are.
+
+    Returns:
+        1 if a NOT NULL was dropped, 0 if there was nothing to do or the
+        statement was refused.
+    """
+    if db_nullable or not col.nullable:
+        return 0
+    if col.primary_key or col.name in live_pk_cols:
+        return 0
+
+    sql = f'ALTER TABLE "{table.name}" ALTER COLUMN "{col.name}" DROP NOT NULL'
+    try:
+        # SAVEPOINT per statement, as everywhere else in this heal: one refusal
+        # must not abort the transaction the remaining statements run in.
+        async with conn.begin_nested():
+            await conn.execute(text(sql))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "PostgreSQL migration: failed to relax %s.%s to accept NULL: %s",
+            table.name,
+            col.name,
+            exc,
+        )
+        return 0
+
+    logger.info(
+        "PostgreSQL migration: relaxed %s.%s to accept NULL, which the models declare optional",
+        table.name,
+        col.name,
+    )
+    return 1
 
 
 async def _heal_sequences(conn, base) -> int:
@@ -435,8 +610,20 @@ async def _heal_constraints(conn, table, existing_names: set[str], existing_col_
       log loudly, name the columns, and leave the table alone rather than raise.
     * Check and foreign-key constraints go on as ``NOT VALID``. PostgreSQL then
       enforces them for every new row without scanning the rows already there, so
-      an install with bad history keeps running and can be cleaned up later with
-      ``VALIDATE CONSTRAINT``.
+      the ``ALTER TABLE`` cannot fail on an install with bad history. The scan is
+      not skipped, only deferred: :func:`validate_pending_constraints` runs it
+      once this heal's transaction has committed and released its locks, and
+      once the boot's data repairs have had their turn at the rows.
+
+      That deferral used to be permanent, and the sentence here used to say such
+      an install "keeps running", which was true of the install and false of the
+      rows. ``NOT VALID`` exempts an existing row from the validation scan and
+      from nothing after it - PostgreSQL re-checks a CHECK constraint on every
+      UPDATE of the row, whatever column the update names - so a row that
+      violates one becomes unwritable rather than merely unverified, and the
+      install carries a patch of itself that answers 500 forever while reporting
+      ``status: healthy``. The validation pass is where that is now found and
+      said out loud.
 
     ``NOT NULL`` is deliberately not healed. It needs a backfill decision per
     column and it is the one that can destroy data.
@@ -629,3 +816,134 @@ async def _run_ddl(conn, sql: str, description: str) -> bool:
         return False
     logger.info("PostgreSQL migration: added %s", description)
     return True
+
+
+# The constraints this database carries that PostgreSQL has never verified
+# against the rows already in the table. One population, written once, because
+# two consumers read it and they must not be able to disagree: the sweep below
+# is what empties it, and ``/api/health`` counts what is left. A predicate
+# spelled out separately in each place is how a green field ends up counting a
+# different set from the one the fix drains.
+#
+# ``contype`` 'c' and 'f' are the only two kinds :func:`_heal_constraints` can
+# leave unvalidated - it adds uniques outright or not at all - and
+# ``convalidated`` is PostgreSQL's own record, so neither consumer needs to
+# introspect a model or scan a table to ask the question.
+_UNVALIDATED_CONSTRAINTS_FROM = (
+    "FROM pg_constraint c "
+    "JOIN pg_class t ON t.oid = c.conrelid "
+    "JOIN pg_namespace n ON n.oid = t.relnamespace "
+    "WHERE NOT c.convalidated AND c.contype IN ('c', 'f') "
+    "AND n.nspname = current_schema()"
+)
+
+#: How many of them there are. Imported by ``app.main`` for ``/api/health``.
+UNVALIDATED_CONSTRAINTS_SQL = f"SELECT count(*) {_UNVALIDATED_CONSTRAINTS_FROM}"
+
+#: Which ones, so the sweep can name them in DDL and in the log.
+_PENDING_CONSTRAINTS_SQL = f"SELECT c.conname, t.relname {_UNVALIDATED_CONSTRAINTS_FROM} ORDER BY t.relname, c.conname"
+
+
+async def validate_pending_constraints(engine: AsyncEngine) -> tuple[int, tuple[str, ...]]:
+    """Ask PostgreSQL to verify every CHECK and FOREIGN KEY still marked NOT VALID.
+
+    :func:`_heal_constraints` adds both kinds ``NOT VALID`` because that is the
+    only way onto a populated table that cannot fail on the rows already there.
+    Its docstring says such an install "keeps running and can be cleaned up later
+    with ``VALIDATE CONSTRAINT``". Nothing ever ran it, and "keeps running" was
+    not true of the rows in question.
+
+    ``NOT VALID`` exempts an existing row from the one-off validation scan. It
+    does not exempt it from anything afterwards. PostgreSQL re-evaluates every
+    CHECK constraint on any UPDATE of a row, whatever column the update names, so
+    a row that violates one is refused by every write to it from then on -
+    measured on ``oe_i18n_tax_config``, where ``SET tax_name = tax_name || '!'``
+    and even ``SET id = id`` come back ``CheckViolation`` on a column the
+    constraint does not mention. The screen that edits that row answers 500 for
+    the life of the install, on a deployment reporting ``status: healthy``. A
+    foreign key is narrower - its trigger fires only when the constrained columns
+    change - but a row orphaned before the key arrived can never be repointed.
+
+    So this runs the validation the heal deferred. On a database whose rows
+    conform, which is nearly all of them, the constraint becomes ordinary and the
+    question stops being asked on later boots. On one holding rows that do not,
+    PostgreSQL refuses and names the constraint, and that refusal is the only
+    place the unwritable rows are ever announced: it goes to the boot log with
+    the table, and to ``/api/health`` as ``schema_constraints_validated: false``.
+
+    Nothing is repaired here and nothing is dropped. Which rows are wrong, and
+    what they should have said instead, is a question about the deployment's data
+    that this function has nowhere to put an answer - a repair that guessed would
+    be worse than the defect. Correcting them is a declared
+    :mod:`app.core.data_repairs` repair or an operator's own UPDATE, and either
+    way the constraint gets validated and the signal clears itself.
+
+    Which is why where the caller puts this matters as much as that it calls it.
+    :mod:`app.main` runs it after the boot's data repairs, not beside the heal
+    that creates the constraints, because those repairs rewrite exactly the kind
+    of row a restored constraint refuses - the shipped Canadian tax rows carry a
+    sub-national ``combination`` and no ``subdivision_code``, and
+    ``tax_subdivision_backfill`` fills them in on the same boot. Called before
+    them, this refuses a constraint the boot is about to make valid, and the
+    install spends one start reporting a fault it does not have. Called after,
+    an operator's row is the only kind that can still be refused, which is the
+    only kind worth telling them about.
+
+    Deliberately outside :func:`postgres_auto_migrate`'s transaction. That one
+    holds a single ``engine.begin()`` across the whole schema, so every
+    ``ADD CONSTRAINT`` in it holds ACCESS EXCLUSIVE on its table until the heal
+    commits; validating in there would put a full table scan under that lock.
+    Here each constraint gets its own short transaction, taking only the SHARE
+    UPDATE EXCLUSIVE that ``VALIDATE`` itself needs and releasing it immediately,
+    so reads and writes carry on around it. Two workers racing to validate the
+    same constraint is harmless - the loser finds it validated or fails the
+    statement, and neither outcome changes the database.
+
+    ``lock_timeout`` bounds the wait for the lock, like the heal's. The scan
+    itself is not bounded: it happens once per constraint in the life of the
+    database, and abandoning it half way would leave exactly the state this
+    exists to end while making the health field say so for a reason that is not
+    the operator's.
+
+    Never raises. A boot must not fail over a diagnostic, and every install that
+    reaches this code is already running.
+
+    Args:
+        engine: The async SQLAlchemy engine (must be PostgreSQL).
+
+    Returns:
+        ``(validated, refused)`` - how many constraints were verified, and
+        ``table.constraint`` for each one PostgreSQL would not verify.
+    """
+    try:
+        async with engine.connect() as conn:
+            pending = (await conn.execute(text(_PENDING_CONSTRAINTS_SQL))).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("PostgreSQL migration: could not list unvalidated constraints: %s", exc)
+        return 0, ()
+
+    validated = 0
+    refused: list[str] = []
+    for conname, relname in pending:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                await conn.execute(text(f'ALTER TABLE "{relname}" VALIDATE CONSTRAINT "{conname}"'))
+        except Exception as exc:  # noqa: BLE001
+            refused.append(f"{relname}.{conname}")
+            logger.warning(
+                "PostgreSQL migration: constraint %s on %s could not be validated, so rows that were "
+                "already in that table when it was added do not satisfy it. Those rows are not merely "
+                "unverified: PostgreSQL re-checks a CHECK constraint on every UPDATE of a row whatever "
+                "column the update touches, so nothing can write them and whichever screen edits them "
+                "answers 500 until they are corrected. Correct them and the next start validates the "
+                "constraint. /api/health reports schema_constraints_validated=false. Cause: %s",
+                conname,
+                relname,
+                exc,
+            )
+            continue
+        validated += 1
+        logger.info("PostgreSQL migration: validated constraint %s on %s", conname, relname)
+
+    return validated, tuple(refused)

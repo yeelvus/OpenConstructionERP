@@ -190,6 +190,15 @@ def _activity_to_response(activity: object) -> ActivityResponse:
         bim_element_ids=getattr(activity, "bim_element_ids", None),
         # Per-activity work calendar (#348)
         calendar_id=getattr(activity, "calendar_id", None),
+        # Cost-loaded / progress-rigor columns. Built by hand like everything
+        # else here, so a field added to ActivityResponse alone would still
+        # come back null through every route that goes through this helper.
+        cost_planned=getattr(activity, "cost_planned", None),
+        cost_actual=getattr(activity, "cost_actual", None),
+        percent_complete_type=getattr(activity, "percent_complete_type", None) or "physical",
+        remaining_duration=getattr(activity, "remaining_duration", None),
+        budgeted_units=getattr(activity, "budgeted_units", None),
+        installed_units=getattr(activity, "installed_units", None),
     )
 
 
@@ -565,10 +574,19 @@ async def get_evm_summary(
     missing/foreign schedule, matching the platform existence-oracle-safe
     convention. ``spi`` / ``cpi`` and the EAC/ETC/VAC forecast are ``null``
     when the schedule has no cost data or a denominator is zero.
+
+    Every money field is rounded to the minor unit of the project's currency,
+    which travels back on ``currency``. ``evm_math`` is deliberately free of
+    app imports and cannot look a currency up, so the quantum is resolved here
+    and handed to it. This is the same rounding the 4D dashboard applies to the
+    same schedule: the two surfaces have to agree, and before the quantum was
+    passed they did not.
     """
     from datetime import date as _date
 
+    from app.core.money import money_quantum
     from app.modules.schedule.evm_math import EvmCostRow, compute_evm_summary
+    from app.modules.schedule.service_4d import resolve_schedule_currency
 
     await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
 
@@ -595,11 +613,13 @@ async def get_evm_summary(
         )
         for a in activities
     ]
-    summary = compute_evm_summary(rows, target)
+    currency = await resolve_schedule_currency(session, schedule_id)
+    summary = compute_evm_summary(rows, target, quantum=money_quantum(currency))
     data = summary.to_json()
     return EvmSummaryResponse(
         schedule_id=schedule_id,
         as_of_date=target.isoformat(),
+        currency=currency,
         planned_value=Decimal(str(data["planned_value"])),
         earned_value=Decimal(str(data["earned_value"])),
         actual_cost=Decimal(str(data["actual_cost"])),
@@ -1595,7 +1615,7 @@ async def delete_progress_update(
 
 
 def _parse_xer_tables(content: str) -> dict[str, list[dict[str, str]]]:
-    """Parse Primavera P6 XER tab-delimited format into table dictionaries.
+    """Parse the XER tab-delimited exchange format into table dictionaries.
 
     XER format uses:
       %T <TABLE_NAME>     - start of a table
@@ -1646,25 +1666,35 @@ async def import_xer(
     session: SessionDep = None,
     service: ScheduleService = Depends(_get_service),
 ) -> ImportResult:
-    """Import a Primavera P6 XER file into a schedule.
+    """Import an XER schedule export into a schedule.
 
     Parses TASK, TASKPRED, and CALENDAR tables from the XER format and creates
     activities and relationships in the target schedule.
     """
     from app.modules.schedule.models import Activity, ScheduleRelationship
+    from app.modules.schedule.xer_encoding import decode_xer
 
     # Verify schedule exists
     await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
 
-    # Read and decode file
+    # Read and decode file. A P6 export carries no declaration of its code
+    # page, and the pair this used to be, utf-8 then latin-1, could not fail:
+    # latin-1 accepts every byte, so an Arabic, Russian, Greek or Hebrew
+    # export imported silently with every name turned to mojibake.
     raw = await file.read()
-    try:
-        content = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        content = raw.decode("latin-1")
+    content, code_page = decode_xer(raw)
 
     tables = _parse_xer_tables(content)
     warnings: list[str] = []
+    if code_page not in ("utf-8", "utf-8-sig"):
+        # Said out loud rather than logged. The person importing is the only
+        # one who knows which machine exported the file, and a guess that
+        # reads Arabic out of an English programme is worth their attention
+        # while they can still re-export it.
+        warnings.append(
+            f"File carries no encoding declaration; read as {code_page}. "
+            "Check the activity names if this is not the code page of the machine that exported it."
+        )
 
     # ── Parse TASK table ──────────────────────────────────────────────────
     tasks = tables.get("TASK", [])
@@ -1888,13 +1918,16 @@ async def import_msp_xml(
     await _verify_schedule_owner(service, session, schedule_id, _user_id, payload)
 
     raw = await file.read()
-    try:
-        content = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        content = raw.decode("latin-1")
 
     try:
-        root = safe_ET.fromstring(content)
+        # Parsed from bytes on purpose. MSPDI, unlike XER, states its own
+        # encoding in the XML declaration, and ElementTree honours that only
+        # when it is handed bytes; a str has already been decoded and the
+        # declaration can no longer be acted on, so it is silently ignored.
+        # This used to decode utf-8 then latin-1 first, which cannot fail and
+        # therefore turned a windows-1256 file into mojibake that parsed
+        # perfectly well.
+        root = safe_ET.fromstring(raw)
     except DefusedXmlException as e:
         # Hostile payload (XXE / billion-laughs / external DTD): defusedxml
         # raises EntitiesForbidden/DTDForbidden/ExternalReferenceForbidden,

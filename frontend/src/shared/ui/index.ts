@@ -12,6 +12,9 @@ export { BetaBanner } from './BetaBanner';
 export type { BetaBannerProps } from './BetaBanner';
 
 export { PartnerLogoBadge } from './PartnerLogoBadge';
+export { ActivePackChip } from './ActivePackChip';
+export { PackEmblem, packMonogram } from './PackEmblem';
+export type { PackEmblemPack } from './PackEmblem';
 
 export { Input } from './Input';
 export type { InputProps } from './Input';

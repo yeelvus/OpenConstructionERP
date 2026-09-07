@@ -99,7 +99,7 @@ export function StageRail({
                 isCurrent
                   ? 'bg-oe-blue/10 ring-1 ring-oe-blue/30'
                   : reachable
-                    ? 'hover:bg-surface-muted'
+                    ? 'hover:bg-surface-secondary'
                     : 'opacity-50 cursor-not-allowed',
               )}
               aria-current={isCurrent ? 'step' : undefined}
@@ -111,7 +111,7 @@ export function StageRail({
                     ? 'bg-oe-blue text-white'
                     : isDone
                       ? 'bg-emerald-500 text-white'
-                      : 'bg-surface-muted text-content-secondary',
+                      : 'bg-surface-secondary text-content-secondary',
                 )}
               >
                 {isDone ? <Check className="h-4 w-4" /> : <Icon className="h-4 w-4" />}

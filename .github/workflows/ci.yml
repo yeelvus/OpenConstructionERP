@@ -6,6 +6,37 @@ on:
   pull_request:
   workflow_call:
 
+# We commit straight to main at a high rate, so nearly every run is a main push
+# and, with nothing superseding them, twenty jobs per commit pile up behind each
+# other. A run against a commit forty-nine behind the tip is worth less than a
+# run against the tip, and paying for both gets neither in time. This trades
+# per-commit signal for queue depth: a superseded run is cancelled, so a commit
+# in the middle of a burst may never be tested on its own. If you need a verdict
+# for one specific commit, re-run this workflow against it rather than reading
+# across a neighbour's result.
+#
+# The group is a literal prefix, not ${{ github.workflow }}, and deliberately so.
+# This file declares workflow_call, and in a called workflow that expression
+# resolves out of the CALLER's context, so adding a caller later would silently
+# rename the group. Nothing calls ci.yml today, but a tag is the one context in
+# which such a call would plausibly appear, and tags trigger PyPI, Release and
+# Desktop. A literal prefix cannot drift that way, and it matches the four
+# concurrency blocks already in this directory.
+#
+# Tags are safe here twice over: the push filter above is branches-only, so a tag
+# push never starts this workflow at all, and refs/tags/* would in any case form
+# its own group, separate from refs/heads/main.
+concurrency:
+  group: ci-${{ github.ref }}
+  # Not an unconditional true. This workflow fires on every push to main and
+  # we push straight to main without PRs, so cancelling in progress means each
+  # push kills the run from the push before it and main produces no verdict at
+  # all. Measured 2026-08-29: 28 of the last 30 ci.yml runs on main were
+  # cancelled, 19 of the last 20 consecutively. What that costs is not a wrong
+  # answer, it is NO answer. A cancelled run has no conclusion, nothing goes
+  # red, and the silence is indistinguishable from health.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   version-sync:
     name: Version Sync Check
@@ -15,7 +46,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -35,7 +66,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -49,6 +80,11 @@ jobs:
         run: python scripts/check_no_brand_tokens.py
 
       - name: Verify no proprietary classification content leaked in
+        # A job stops at its first failing step, so without this condition the
+        # check below was skipped exactly when the brand check above it was red,
+        # which is the run where you most want to know. The brand check is
+        # doubled into repo-hygiene.yml; this one is single-pointed here.
+        if: ${{ !cancelled() }}
         # Division numbers are interoperability facts and stay; the
         # official division titles are the licensor's expression and
         # must never ship. The script pairs codes with hashed official
@@ -110,7 +146,7 @@ jobs:
           filter: blob:none
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -126,15 +162,29 @@ jobs:
           touch ../frontend/dist/.gitkeep
 
       - name: Install dependencies
+        # Identified so the steps below can ask whether the environment
+        # actually came up. They run after a red step, so their own result
+        # stays visible, but not after a failed install: pytest missing
+        # from PATH reports a screenful of failures that all name the
+        # wrong cause.
+        id: install
         run: pip install -e ".[dev]"
 
       - name: Lint with ruff
+        # Same guard as every step below it. ruff arrives through the dev extra,
+        # so a failed install does not make this step lint badly - it makes it
+        # report that ruff is not on PATH, which is the wrong cause named
+        # loudly. This was the one step above that was missing the guard the
+        # install comment describes.
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: ruff check .
 
       - name: Check formatting with ruff
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: ruff format --check .
 
       - name: Run unit tests with pytest
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         # Point the suite at the postgres:16 service. conftest sees DATABASE_URL
         # is already set and uses it instead of booting an embedded cluster.
         # Only this shard's slice of tests/unit runs here: pytest-split
@@ -146,6 +196,14 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://oe:oe@localhost:5432/openconstructionerp_test
           DATABASE_SYNC_URL: postgresql+psycopg2://oe:oe@localhost:5432/openconstructionerp_test
+          # We do not carry the GAEB schema in the repository, so the tests
+          # that validate our exporter against it skip unless a copy is
+          # available. This is the one place they should not skip: without
+          # it the only thing checking our GAEB output is a schema we wrote
+          # ourselves. The fetch is opt-in everywhere else, and a test that
+          # cannot reach the publisher skips rather than fails, so a bad day
+          # at gaeb.de cannot turn the lane red.
+          OCE_GAEB_FETCH_XSD: "1"
         run: >-
           pytest tests/unit -q -ra --durations=25
           --timeout=300 --timeout-method=signal
@@ -157,7 +215,17 @@ jobs:
     # passed. Keeps a single "Backend CI" check for branch protection and
     # at-a-glance status while the work is fanned across the shard matrix above.
     needs: [backend]
-    if: always()
+    # Not always(). always() runs this job when the run was CANCELLED too, and
+    # the step below reads needs.backend.result, which is then "cancelled"
+    # rather than "success", so the gate exits 1 and the one check branch
+    # protection watches goes red for a run nobody let finish. Measured rather
+    # than reasoned: of the cancelled runs that reached this gate, 33047173405
+    # had all six shards conclude cancelled with not one of them failed, and
+    # "Backend CI" still reported failure. Skipping is the honest answer there,
+    # because a cancelled run earned no verdict either way. Leaving always() and
+    # teaching the script to pass on "cancelled" would be worse still: it would
+    # report the backend green when nothing ran.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Require all backend shards to pass
@@ -216,7 +284,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -340,7 +408,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Scan frontend/src and marketing-site
+      - name: Scan frontend/src
         # Zero-width and bidi-isolate Unicode characters embedded in i18n
         # defaultValue strings crashed React reconciliation on /contracts when a
         # browser translation extension mutated the DOM (task #135 / R6). The fix
@@ -353,6 +421,15 @@ jobs:
         # character class here: this job and frontend/package.json each used to
         # carry their own copy, the copies drifted, and the script's --self-check
         # now fails the build if either grows one again.
+        #
+        # The name says frontend/src alone on purpose. marketing-site cannot
+        # be scanned from here at all: the file list comes from git ls-files
+        # with --exclude-standard, that path is ignored in its entirety, and
+        # CI never checks it out either. The root contributes zero files and
+        # the job exits 0 whichever way it goes. A step name promising a path
+        # the run always declines to scan is worse than no name at all,
+        # because the name is what a reader trusts when deciding whether
+        # something is covered.
         run: python3 scripts/check_zero_width.py
 
   frontend:
@@ -375,10 +452,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up Node.js 20
-        uses: actions/setup-node@v4
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -412,7 +489,182 @@ jobs:
         run: npm run build
 
       - name: Run tests
+        # Two steps rather than one because of the Build step above. The
+        # tests under frontend/tests/pwa read the build output, and they now
+        # FAIL on a missing artifact instead of skipping themselves, so they
+        # can only run on a runner that built. macOS deliberately does not,
+        # so it names the exclusion here. Written as an exclusion in the
+        # workflow rather than as a skip inside the test on purpose: a skip
+        # reports green having read nothing, and a green that means "I did
+        # not look" is the failure this pair of steps exists to remove.
+        if: matrix.os != 'macos-latest'
         run: npm run test
+
+      - name: Run tests (no build output on this runner)
+        # Red before this change, run 33282669278: every test passed - 678
+        # files, 7818 tests, zero failures - and the step still exited 1,
+        # because one vitest fork died. The job log names the cause on line
+        # 3661, "FATAL ERROR: Reached heap limit Allocation failed - JavaScript
+        # heap out of memory", with the last GC at 2063 MB, and vitest surfaced
+        # it as an unhandled "Worker exited unexpectedly" rather than as a test
+        # result. A step that is red while nothing failed is the worst kind of
+        # red: it was standing across three runs, and for two of them it was
+        # carrying real failures at the same time.
+        #
+        # 2063 MB is not a limit anyone here chose. It is V8's default
+        # old-space, which scales with machine memory: about 4 GB on the 16 GB
+        # x64 runners and about 2 GB on this 7 GB arm64 one. So leaving
+        # NODE_OPTIONS unset is not one setting shared by three runners, it is a
+        # different ceiling on each, and that is the whole reason ubuntu and
+        # windows run this identical command green. Both factors of the peak
+        # were left to the machine: the fork count follows the core count and
+        # the heap follows the RAM.
+        #
+        # Pin both, so the worst case is arithmetic instead of discovered: at
+        # most 2 workers times 3072 MB is 6 GB, inside the 7 GB this runner has.
+        # 3072 and not 4096 for that reason exactly - two forks at 4096 is 8 GB
+        # and would put the ceiling back above the machine - and it still hands
+        # the fork that died half again as much as the 2063 MB it died at.
+        # Honest gap: the runner's core count is not printed in the job log, so
+        # whether maxWorkers=2 lowers the fork count or merely fixes it where it
+        # already sat is untested. What it does either way is bound the product.
+        #
+        # Do not answer a future failure here by deleting the step. macOS skips
+        # Type check and Build deliberately, for reasons on those steps, but it
+        # still runs lint and the unit tests to keep the OS-specific path, CRLF
+        # and runtime signal. That signal is why this step exists at all.
+        if: matrix.os == 'macos-latest'
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
+        run: npm run test -- --exclude "tests/pwa/**" --maxWorkers=2
+
+      - name: Verify every Playwright project still selects tests
+        # A project whose grep matches no spec is the one kind of dead test
+        # lane Playwright reports nothing about: it contributes no failures and
+        # the summary reads as a pass. This lists the suite without launching
+        # anything, so it needs no browsers and takes about a second.
+        # OE_E2E_VERIFY_CONFIG_ONLY drops the companion check that each
+        # project's browser is on disk, which is true of a machine rather than
+        # of the config and would fail everything on a runner that installs no
+        # browsers. That half belongs to whoever is about to run the tests, and
+        # runs by default for them.
+        #
+        # Placed last on purpose, and it earned the position. It sat between
+        # Lint and Type check, and at the time it was failing for a real reason:
+        # every configured project selected zero tests. That is fixed - remeasured
+        # 2026-08-30, this step exits 0 and the default config selects twelve
+        # specs - and the sentence is in the past tense now because a present
+        # tense claim in a comment that nobody rechecks goes on describing a
+        # state that ended. The ordering argument below does not depend on it
+        # being red today. Because a failing step
+        # aborts the job, Type check, Build and the unit tests were all reported
+        # as skipped on all three runners, which meant `npm run build` - the one
+        # gate the frontend actually answers to - had not executed in CI at all
+        # while this was red. A secondary check that masks the primary one costs
+        # more than it catches. Nothing is weakened by moving it: the step still
+        # runs on every push and still fails the job on the same defect. It just
+        # no longer decides whether the compiler gets to speak. Order the steps
+        # so that the most load-bearing gate reports first and the cheapest
+        # advisory reports last, because a red that hides four other verdicts
+        # tells you less than the four verdicts would have.
+        # `!cancelled()` rather than `always()`: this has to report even when an
+        # earlier step failed, which is the entire point of moving it, but it
+        # should not keep running after somebody cancels the run or after a
+        # superseding push. That is also the form the rest of this file already
+        # uses, on twenty-one other steps.
+        if: ${{ !cancelled() }}
+        env:
+          OE_E2E_VERIFY_CONFIG_ONLY: "1"
+        run: npm run test:e2e:verify-projects
+
+      - name: Verify every Playwright config selects committed specs
+        # The step above is the same question asked of ONE config. `playwright
+        # test --list` with no --config reads playwright.config.ts and nothing
+        # else, so fifteen of the sixteen configs in this directory have never
+        # been asked whether they select anything. It also asks the disk, and
+        # the disk is not what CI checks out.
+        #
+        # This asks all sixteen, and asks the repository. The population comes
+        # from `git ls-files`, so a spec that exists locally and is ignored by
+        # git counts as absent - which is the state of every fresh clone and of
+        # this runner. That is not hypothetical: playwright.assets-audit.config.ts
+        # selects two specs that sit under .gitignore line 70, so it selects two
+        # here and zero in CI, and a run of it is a green empty summary.
+        #
+        # It also asks each config the same question from three synthetic
+        # checkout roots. That is the class of defect fixed in c497946ce, where
+        # testIgnore '**/runner/**' meant tests/e2e/runner/ to the author and
+        # every file in the checkout to a GitHub Linux or macOS runner, whose
+        # working directory is under /home/runner or /Users/runner. It was green
+        # on Windows, fatal elsewhere, and could not be found by reading the
+        # config. A config that answers differently under two roots is red here.
+        #
+        # No browsers, no server, no run: it loads the configs with playwright's
+        # own loader and filters with playwright's own createFileMatcher, so the
+        # rule it applies is playwright's rather than an imitation, and it
+        # checks that claim on every run by recomputing each project's selection
+        # through playwright itself and requiring the two to agree.
+        #
+        # Runs on all three OSes deliberately. It normalises paths, and a path
+        # bug in a path checker is worth catching on the OS that has the other
+        # separator.
+        if: ${{ !cancelled() }}
+        run: node ../scripts/check_playwright_config_selection.mjs
+
+      - name: Verify every committed spec is selected by some Playwright config
+        # The step above asks whether every CONFIG selects a spec. This asks the
+        # inverse, whether every SPEC is selected by a config. They are not the
+        # same question and they do not have the same answer: the first is green
+        # and the second finds five specs that no configuration runs. Reading the
+        # first as an answer to the second is a mistake shaped like a
+        # confirmation, which is why it is a second step and not a second
+        # assertion inside the first.
+        #
+        # It asserts only what the repository already states about itself.
+        # playwright.config.ts ignores 'tests/e2e/*.spec.ts' on the written
+        # grounds that those specs "are invoked via their dedicated configs at
+        # the repo root". The gate resolves that pattern against the commit and
+        # requires the claim to hold for every file it really covers, so the
+        # denominator grows on its own when a spec is added next to them. A hand
+        # written exclusion list would have been a denominator somebody has to
+        # remember, and we rejected one of those in a neighbouring task for that
+        # reason. Every other unselected spec is printed as a census with names
+        # and does not affect the exit code, because "no config names this file"
+        # is not by itself a defect.
+        #
+        # Population comes from `git ls-tree` at an explicitly resolved commit,
+        # printed next to the verdict. Not the disk, and not `ls-files`: a count
+        # taken off a working copy is a correct number about a tree nobody else
+        # has.
+        if: ${{ !cancelled() }}
+        run: node ../scripts/check_e2e_spec_coverage.mjs
+
+      - name: Prove the case coverage ratchet can fail
+        # A gate only ever seen passing is indistinguishable from one that
+        # cannot fail. This builds playbooks and locales in memory, loses a
+        # key, ships a case without strings, and fails if the check stays
+        # quiet on any of it.
+        if: ${{ !cancelled() }}
+        run: node scripts/check-case-coverage.mjs --selftest
+
+      - name: Check no case answers fewer translated keys than the manifest records
+        # A case playbook names its strings by key and carries the English
+        # inline, so a key no locale answers renders English in that locale
+        # and nothing else reports it: the orphan gate reads literal t()
+        # calls and here the key is a variable off a data row, and the drift
+        # check (run by caseTranslationDrift.test.ts in the step above) skips
+        # a key that was never translated because it cannot have gone stale.
+        # This counts what every offered locale still does not answer, per
+        # playbook, against a committed floor that --update can only lower.
+        # Measured on 2026-09-06 over 220 playbooks, 7037 keys and 40 locales,
+        # so it pins the debt where it stands rather than clearing it.
+        #
+        # Last in the job and under !cancelled() on purpose: a missing
+        # translation must not skip the build and the tests, and a failed
+        # build must not hide a missing translation. On all three OSes for
+        # the reason the two steps above give: it reads the tree by path.
+        if: ${{ !cancelled() }}
+        run: node scripts/check-case-coverage.mjs
 
   backend-cross-os:
     name: Backend CI (${{ matrix.os }}, embedded PG, shard ${{ matrix.shard }}/3)
@@ -455,7 +707,7 @@ jobs:
           filter: blob:none
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip

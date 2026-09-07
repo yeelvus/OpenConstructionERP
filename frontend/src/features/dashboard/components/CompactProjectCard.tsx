@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Card } from '@/shared/ui';
 import { fmtCompact, fmtNumber, getIntlLocale } from '@/shared/lib/formatters';
+import { getDateFnsLocale } from '@/shared/lib/dateFnsLocale';
 
 export interface CompactProjectCardProps {
   id: string;
@@ -40,10 +41,30 @@ const regionColorMap: Record<string, string> = {
   DEFAULT: 'bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-300',
 };
 
+// One of three places that turn a stored classification standard into a name
+// for a reader. All three held the same three entries while the picker on
+// CreateProjectPage could write eighteen, so every project on a standard
+// outside the legacy trio showed its raw identifier on the card. The fallback
+// below keeps that from being blank, which is why nobody noticed.
 const standardLabels: Record<string, string> = {
   din276: 'DIN 276',
   nrm: 'NRM',
   masterformat: 'MasterFormat',
+  uniformat: 'UniFormat',
+  uniclass: 'Uniclass',
+  omniclass: 'OmniClass',
+  gb50500: 'GB/T',
+  tetelrend: 'Tételrend',
+  gesn: 'GESN / FER',
+  bc3: 'BC3',
+  untec: 'UNTEC',
+  voci: 'VOCI',
+  onorm: 'ÖNORM',
+  gaeb: 'GAEB',
+  sinapi: 'SINAPI',
+  sekisan: 'Sekisan',
+  kbim: 'KBIM',
+  birimfiyat: 'Birim Fiyat',
 };
 
 function getRegionAvatarClass(region?: string): string {
@@ -87,7 +108,12 @@ export function CompactProjectCard({
   const modifiedDate = modifiedSource ? parseISO(modifiedSource) : null;
   const relativeModified =
     modifiedDate && isValidDate(modifiedDate)
-      ? formatDistanceToNowStrict(modifiedDate, { addSuffix: true })
+      ? formatDistanceToNowStrict(modifiedDate, {
+          addSuffix: true,
+          // Without `locale` date-fns answers in en-US, so this line stayed
+          // "3 hours ago" next to an absolute date that was already localised.
+          locale: getDateFnsLocale(),
+        })
       : null;
   const absoluteModified =
     modifiedDate && isValidDate(modifiedDate)

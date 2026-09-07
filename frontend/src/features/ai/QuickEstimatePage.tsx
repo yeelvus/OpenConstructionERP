@@ -54,6 +54,7 @@ import { aiApi, type QuickEstimateRequest, type EstimateJobResponse, type Estima
 import { apiGet, apiPost } from '@/shared/lib/api';
 import { hasLlmKey } from '@/features/ai-estimator/useAiReadiness';
 import {
+  fmtList,
   formatFileSize,
   formatNumber,
   getFileExtension,
@@ -1159,6 +1160,7 @@ function FilePreview({
   onRemove: () => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   const ext = getFileExtension(file.name);
   const isImage = ['jpg', 'jpeg', 'png', 'tiff', 'webp', 'gif'].includes(ext);
 
@@ -1200,7 +1202,7 @@ function FilePreview({
         </p>
       </div>
       {!disabled && (
-        <button
+        <button aria-label={t('common.remove', { defaultValue: 'Remove' })}
           onClick={(e) => {
             e.stopPropagation();
             onRemove();
@@ -3301,7 +3303,7 @@ export function QuickEstimatePage() {
                             : t('ai.converters_none', { defaultValue: 'No converters installed - install below to enable CAD/BIM import' })}
                         </p>
                         <p className="text-xs text-content-tertiary mt-0.5">
-                          {(convertersData.converters ?? []).filter((c: ConverterFull) => c.installed).map((c: ConverterFull) => c.name).join(', ') || t('ai.converters_hint', { defaultValue: 'Scroll down to install DDC converters for RVT, IFC, DWG, DGN' })}
+                          {fmtList((convertersData.converters ?? []).filter((c: ConverterFull) => c.installed).map((c: ConverterFull) => c.name)) || t('ai.converters_hint', { defaultValue: 'Scroll down to install DDC converters for RVT, IFC, DWG, DGN' })}
                         </p>
                       </div>
                     </div>
@@ -3372,7 +3374,7 @@ export function QuickEstimatePage() {
                             <XCircle size={13} className="shrink-0 text-content-quaternary" />
                           )}
                           <span className="font-medium truncate">{c.name}</span>
-                          <span className="ml-auto text-[10px] opacity-60">{c.extensions.join(', ')}</span>
+                          <span className="ml-auto text-[10px] opacity-60">{fmtList(c.extensions)}</span>
                         </div>
                       ))}
                     </div>
@@ -3662,14 +3664,14 @@ export function QuickEstimatePage() {
           <div className="flex flex-wrap gap-4 text-xs text-content-secondary bg-surface-secondary/50 rounded-lg px-4 py-2.5">
             <div>
               <span className="font-medium text-content-primary">Group by: </span>
-              {(selectedGroupBy || []).join(', ') || 'none'}
+              {fmtList((selectedGroupBy || [])) || 'none'}
             </div>
             <div>
               <span className="font-medium text-content-primary">Sum: </span>
-              {(selectedSumCols || []).map(col => {
+              {fmtList((selectedSumCols || []).map(col => {
                 const unit = cadColumnsData.unit_labels?.[col];
                 return unit ? `${col} (${unit})` : col;
-              }).join(', ') || 'none'}
+              })) || 'none'}
             </div>
           </div>
 
@@ -4000,7 +4002,7 @@ export function QuickEstimatePage() {
                                       <X size={12} />
                                     </button>
                                   </td>
-                                  <td className="px-4 py-1.5 text-sm text-content-secondary pl-10">
+                                  <td className="px-4 py-1.5 text-sm text-content-secondary ps-10">
                                     <span className="text-border mr-1.5">|--</span>
                                     {cleanValue(groupByCols[0]!, g.key_parts[groupByCols[0]!] || '')}
                                   </td>
@@ -4176,7 +4178,7 @@ export function QuickEstimatePage() {
                   )}
                 </div>
               </div>
-              <button
+              <button aria-label={t('common.close', { defaultValue: 'Close' })}
                 onClick={() => setElementDetailGroup(null)}
                 className="p-1.5 rounded-md text-content-tertiary hover:text-content-primary hover:bg-surface-secondary transition-colors"
               >

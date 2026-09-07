@@ -4,9 +4,16 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# Shape of a validation rule-set identifier as the engine registers it: a
+# lower-case name, digits and underscores allowed after the first letter.
+# Project-scoped sets (``ids_custom:{project_id}``) exist in the registry but
+# are never something a pack can name, so the colon form is not accepted here.
+_RULE_SET_NAME = re.compile(r"[a-z][a-z0-9_]*")
 
 # The four pack "types" under the Packs umbrella. A pack is one of:
 #   country   - a country/region preset (locale, currency, cost regions, rules)
@@ -16,6 +23,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # The old "Partner Packs" feature is now just the ``partner`` type; ``country``
 # and ``industry`` already shipped as partner packs and keep working unchanged.
 PackType = Literal["country", "industry", "partner", "showcase"]
+
+#: The value a pack puts in ``metadata["country"]`` to say it spans regions
+#: rather than to name one. It reads like a country code and means the opposite
+#: of one, so both readers below go through this name rather than the literal.
+_CROSS_REGION_MARKER = "XX"
 
 
 class PartnerBranding(BaseModel):
@@ -33,9 +45,16 @@ class PartnerBranding(BaseModel):
         default=None,
         description="Path inside the pack package to a favicon. Streamed via /api/v1/partner-pack/favicon.",
     )
-    logo_path: str = Field(
-        default="logo.svg",
-        description="Path inside the pack package to the partner logo. Streamed via /api/v1/partner-pack/logo.",
+    logo_path: str | None = Field(
+        default=None,
+        description=(
+            "Path inside the pack package to the partner logo. Streamed via "
+            "/api/v1/partner-pack/logo. None means the pack ships no logo and "
+            "the UI draws its monogram instead. This defaulted to 'logo.svg', "
+            "which made 'no logo' impossible to express: a pack that omitted "
+            "the field declared the same path as one that wrote it out, so a "
+            "pack without the file could not stop promising it."
+        ),
     )
     powered_by_text: str | None = Field(
         default=None,
@@ -121,7 +140,18 @@ class PartnerPackManifest(BaseModel):
     )
     default_tax_template: str | None = Field(
         default=None,
-        description="Tax template slug to set as default (e.g. 'ca_gst_pst').",
+        description=(
+            "Documentation only: a label for the tax regime the pack's market "
+            "applies, e.g. 'ca_gst_pst'. Nothing resolves it. There is no "
+            "registry of tax-template slugs anywhere in the platform, so the "
+            "string travels to the pack preview panel and stops there, and "
+            "applying the pack says as much in its warnings. It used to be "
+            "described as a slug 'to set as default', which reads as a setting "
+            "that will be applied and is why this note is long. The rate that "
+            "actually reaches money is the tax line in the market's markup "
+            "stack (app.modules.boq.markup_templates), overridable per project; "
+            "changing this field changes no number anywhere."
+        ),
     )
     default_methodology: str | None = Field(
         default=None,
@@ -142,9 +172,27 @@ class PartnerPackManifest(BaseModel):
     validation_rule_packs: list[str] = Field(
         default_factory=list,
         description=(
-            "Built-in validation rule-pack slugs to enable by default. "
-            "Packs cannot ship new rule classes (Shape A); they only switch "
-            "on rules that already exist in the core."
+            "Ids of the reference documents the pack ships under "
+            "``rule_packs/*.json``, one per file stem. These are "
+            "documentation: the engine never executes them, and naming one "
+            "here switches nothing on. To switch rules on, use "
+            "``validation_rule_sets``."
+        ),
+    )
+    validation_rule_sets: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Validation rule-set identifiers the engine registers, e.g. "
+            "['din276', 'gaeb']. These are the names that make rules run: a "
+            "project created while the pack is active inherits them into its "
+            "``validation_rule_sets``, so the rules execute on its bills of "
+            "quantities. Packs cannot ship new rule classes (Shape A); they "
+            "only switch on rules that already exist in the core or in a "
+            "module. Every entry is checked against the live registry when "
+            "the pack is applied, and an unknown one is refused there rather "
+            "than here: this object is built at import time, before any rule "
+            "has been registered, so a check at construction would read an "
+            "empty registry and wave everything through."
         ),
     )
 
@@ -189,6 +237,40 @@ class PartnerPackManifest(BaseModel):
     # Free-form metadata for partners who want to surface extra data
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @property
+    def market_country_code(self) -> str | None:
+        """The single market this pack is for, as ISO 3166-1 alpha-2, or ``None``.
+
+        A country pack is an unambiguous statement of market, and several parts
+        of the product need that statement rather than the pack's name: the
+        markup region a bill is seeded with, the working calendar, the
+        compliance-pack resolver and the measurement system all read a
+        project's ``country_code`` and all answer "no opinion" when it is
+        unset. A project created while a country pack is active used to inherit
+        the pack's methodology and nothing else, so the cascade was national
+        while every one of those still said nothing was known.
+
+        ``None`` is returned for three different situations, and they are the
+        same answer on purpose because none of them names a market:
+
+        * the manifest carries no ``metadata["country"]`` at all, which is what
+          a partner pack and an industry pack look like;
+        * it carries ``"XX"``, the cross-region marker the sector packs use,
+          which means explicitly that the pack is not for one country;
+        * it carries something that is not a clean alpha-2. That is left alone
+          rather than normalised or guessed at, because a pack that cannot
+          state its market plainly is exactly the case where filling a country
+          in on the user's behalf would be wrong.
+
+        Returns:
+            An upper-case alpha-2 code, or ``None`` when the pack names no
+            single market.
+        """
+        code = str((self.metadata or {}).get("country", "")).strip().upper()
+        if len(code) != 2 or not code.isalpha() or code == _CROSS_REGION_MARKER:
+            return None
+        return code
+
     # ------------------------------------------------------------------
     # Pack type resolution
     # ------------------------------------------------------------------
@@ -215,13 +297,51 @@ class PartnerPackManifest(BaseModel):
         industry = str(meta.get("industry", "")).strip()
         has_country_name = any(k == "country" or k.startswith("country_name") for k in meta)
 
-        if industry or country == "XX":
+        if industry or country == _CROSS_REGION_MARKER:
             return "industry"
-        if (country and country != "XX") or has_country_name:
+        if (country and country != _CROSS_REGION_MARKER) or has_country_name:
             return "country"
         if self.branding.powered_by_text:
             return "partner"
         return "partner"
+
+    @field_validator("validation_rule_sets")
+    @classmethod
+    def _check_rule_set_shape(cls, value: list[str]) -> list[str]:
+        """Reject anything that is not shaped like a registered set name.
+
+        This is deliberately a check on the string and not on the registry.
+        Pack manifests are module-level constants built at import time, long
+        before ``register_builtin_rules`` runs, so asking the registry here
+        would read an empty set and either refuse every pack or - because the
+        reader returns an empty set on failure - accept every name in it. The
+        registry check belongs at apply time and lives in
+        :mod:`app.core.partner_pack.apply`.
+
+        Args:
+            value: The declared rule-set identifiers.
+
+        Returns:
+            The same list, unchanged.
+
+        Raises:
+            ValueError: If an entry is not a lower-case identifier, or repeats.
+        """
+        seen: set[str] = set()
+        for name in value:
+            if not _RULE_SET_NAME.fullmatch(name):
+                raise ValueError(
+                    f"validation_rule_sets entry {name!r} is not a rule-set identifier. "
+                    "Rule sets are lower-case names like 'din276' or 'boq_quality', so a "
+                    "file name such as 'din_276.json' is refused here and belongs in "
+                    "validation_rule_packs instead. Only the shape is checked at this "
+                    "point: a well-formed name the engine does not register - 'din_276' "
+                    "for one - passes here and is refused when the pack is applied."
+                )
+            if name in seen:
+                raise ValueError(f"validation_rule_sets repeats {name!r}")
+            seen.add(name)
+        return value
 
     @model_validator(mode="after")
     def _resolve_pack_type(self) -> PartnerPackManifest:
@@ -249,6 +369,39 @@ class PartnerPackManifest(BaseModel):
             return self.branding.powered_by_text
         return f"Powered by OpenConstructionERP · In partnership with {self.partner_name}"
 
+    def _carries(self, relpath: str | None) -> bool:
+        """Whether the pack actually ships the file it names at ``relpath``.
+
+        Asks the same reader the streaming endpoints ask, rather than a second
+        resolver of its own: ``read_pack_file`` resolves pip-installed packs,
+        source-checkout packs and dropped packs in the data directory, and a
+        parallel implementation here would answer differently from the endpoint
+        the moment those three branches drift.
+
+        This looks redundant for the packs in this repository, and is not.
+        backend/tests/unit/test_community_packs_ship.py makes declared and
+        carried the same thing for the fifteen packs the wheel force-includes,
+        so for those the check can only ever say True. It exists for the packs
+        that gate structurally cannot reach: a pack dropped into the data
+        directory at runtime, and a third-party pack installed from PyPI by
+        somebody else. Those are exactly the ones whose manifests nobody here
+        reviewed, and the answer for them is a real question. Deleting this as
+        dead code re-opens the hole for every pack we do not author.
+
+        The import is deferred because ``discovery`` imports this module.
+
+        Args:
+            relpath: Declared path inside the pack package, or None.
+
+        Returns:
+            True when the pack names a file and that file can be read.
+        """
+        if not relpath:
+            return False
+        from app.core.partner_pack.discovery import read_pack_file
+
+        return read_pack_file(self.slug, relpath) is not None
+
     def to_public_dict(self) -> dict[str, Any]:
         """Serialise for the /api/v1/partner-pack/current endpoint.
 
@@ -270,16 +423,24 @@ class PartnerPackManifest(BaseModel):
             "default_tax_template": self.default_tax_template,
             "default_methodology": self.default_methodology,
             "validation_rule_packs": self.validation_rule_packs,
+            "validation_rule_sets": self.validation_rule_sets,
             "demo_template_ids": self.demo_template_ids,
             "default_modules": self.default_modules,
             "hidden_modules": self.hidden_modules,
             "branding": {
                 "primary_color": self.branding.primary_color,
                 "accent_color": self.branding.accent_color,
-                "has_logo": True,  # always streamed even if pack omits - fallback handled
-                "has_favicon": self.branding.favicon_path is not None,
+                # All three answer "does the pack carry this", not "does the
+                # manifest mention it". has_logo was hardcoded True and the
+                # other two read a path field for non-None, so a pack that
+                # named a file it did not ship was advertised as having it.
+                # The frontend fallbacks are good and kept the screen intact,
+                # which is why this went unnoticed; they were covering for an
+                # answer that was simply wrong.
+                "has_logo": self._carries(self.branding.logo_path),
+                "has_favicon": self._carries(self.branding.favicon_path),
                 "powered_by_text": self.effective_powered_by,
             },
-            "has_onboarding_script": self.onboarding_script_path is not None,
+            "has_onboarding_script": self._carries(self.onboarding_script_path),
             "metadata": self.metadata,
         }

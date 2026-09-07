@@ -181,7 +181,7 @@ function FxRateModal({
           </h3>
           <button
             onClick={onCancel}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:text-content-primary hover:bg-surface-hover transition-colors"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:text-content-primary hover:bg-surface-secondary transition-colors"
             aria-label={t('common.close', { defaultValue: 'Close' })}
           >
             <X size={18} />
@@ -1259,7 +1259,7 @@ export function ProjectSettingsPage() {
                 </tr>
               ) : (
                 fxRates.map((row) => (
-                  <tr key={row.code} className="hover:bg-surface-hover/40">
+                  <tr key={row.code} className="hover:bg-surface-secondary/40">
                     <td className="px-4 py-2.5 font-medium text-content-primary tabular-nums">
                       {row.code}
                     </td>
@@ -1278,7 +1278,7 @@ export function ProjectSettingsPage() {
                         <button
                           type="button"
                           onClick={() => setFxModal({ open: true, initial: row })}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-content-tertiary hover:text-content-primary hover:bg-surface-hover transition-colors"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-content-tertiary hover:text-content-primary hover:bg-surface-secondary transition-colors"
                           aria-label={t('common.edit', { defaultValue: 'Edit' })}
                         >
                           <Pencil size={13} />
@@ -1647,7 +1647,7 @@ export function ProjectSettingsPage() {
               {customUnits.map((unit) => (
                 <span
                   key={unit}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-border-light bg-surface-secondary/40 pl-3 pr-1 py-1 text-sm text-content-primary"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border-light bg-surface-secondary/40 ps-3 pe-1 py-1 text-sm text-content-primary"
                 >
                   <Ruler size={12} className="text-content-tertiary" />
                   <span className="tabular-nums">{unit}</span>

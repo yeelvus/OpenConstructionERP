@@ -39,6 +39,16 @@ MANIFEST = PartnerPackManifest(
     ],
     default_currency="ZAR",
     default_tax_template="za_vat_15",
+    # Absent until now, so the pack shipped the SANS and ASAQS measurement
+    # rules and the CIDB grading and then priced with a method belonging to no
+    # country. The template existed the whole time and nothing named it.
+    #
+    # The South African template is still the neutral international method
+    # carrying ZAR and 15 percent VAT, by its own description, rather than the
+    # ASAQS convention the rest of this pack is about. It is the right pointer
+    # to hold today and becomes the national method without an edit here once
+    # the markup table states the ZA stack.
+    default_methodology="south_africa",
     validation_rule_packs=[
         "sans_1200_measurement",
         "asaqs_measurement",
@@ -46,17 +56,17 @@ MANIFEST = PartnerPackManifest(
         "pppfa_preferential_procurement",
         "ipdm_procurement_gates",
     ],
-    default_modules=[],   # empty = show all
+    default_modules=[],  # empty = show all
     hidden_modules=[],
     # No bundled SA demo project yet: an empty list keeps the default
     # flagship plus country-fill behaviour rather than seeding a fabricated one.
     demo_template_ids=[],
     branding=PartnerBranding(
-        primary_color="#007749",   # South African flag green
-        accent_color="#FFB81C",    # South African gold
+        primary_color="#007749",  # South African flag green
+        accent_color="#FFB81C",  # South African gold
         logo_path="logo.svg",
         favicon_path=None,
-        powered_by_text=None,      # use default co-branding string
+        powered_by_text=None,  # use default co-branding string
     ),
     onboarding_script_path="onboarding.yaml",
     metadata={

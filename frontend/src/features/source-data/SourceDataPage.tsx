@@ -1091,12 +1091,12 @@ export function SourceDataPage() {
           {/* Filters */}
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative flex-1 min-w-[200px] max-w-sm">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-content-tertiary" />
+              <Search size={14} className="absolute start-3 top-1/2 -translate-y-1/2 text-content-tertiary" />
               <input
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={t('source_data.search_placeholder', { defaultValue: 'Search documents...' })}
-                className="h-9 w-full rounded-lg border border-border bg-surface-primary pl-8 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
+                className="h-9 w-full rounded-lg border border-border bg-surface-primary ps-8 pe-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
               />
             </div>
             <select

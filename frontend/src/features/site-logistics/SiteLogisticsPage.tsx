@@ -79,6 +79,7 @@ import {
   type UpdateLaydownZonePayload,
 } from './api';
 import { getIntlLocale } from '@/shared/lib/formatters';
+import { normalizeRole } from '@/shared/lib/roles';
 
 /* ── Constants & helpers ───────────────────────────────────────────────── */
 
@@ -222,21 +223,6 @@ function escHtml(value: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-}
-
-function normalizeRole(role: string | null | undefined): string {
-  const r = (role ?? 'viewer').trim().toLowerCase();
-  const aliases: Record<string, string> = {
-    estimator: 'editor',
-    quantity_surveyor: 'editor',
-    qs: 'editor',
-    user: 'editor',
-    superuser: 'admin',
-    owner: 'admin',
-    readonly: 'viewer',
-    guest: 'viewer',
-  };
-  return aliases[r] ?? r;
 }
 
 /* ── Book / edit delivery modal ────────────────────────────────────────── */
@@ -2356,7 +2342,7 @@ function GateTimeline({
                     {hours.map((h) => (
                       <div
                         key={h}
-                        className="absolute left-0 right-0 flex justify-end pr-1.5 -translate-y-1/2 text-2xs tabular-nums text-content-tertiary"
+                        className="absolute start-0 end-0 flex justify-end pr-1.5 -translate-y-1/2 text-2xs tabular-nums text-content-tertiary"
                         style={{ top: ((h - range.start) / 60) * HOUR_PX }}
                       >
                         {fmtHourLabel(h)}
@@ -2416,7 +2402,7 @@ function GateTimeline({
                         {closedBands.map((b, i) => (
                           <div
                             key={`band-${i}`}
-                            className="absolute left-0 right-0 bg-surface-secondary/50"
+                            className="absolute start-0 end-0 bg-surface-secondary/50"
                             style={{ top: b.top, height: Math.max(0, b.height) }}
                           />
                         ))}
@@ -2424,7 +2410,7 @@ function GateTimeline({
                         {hours.map((h) => (
                           <div
                             key={h}
-                            className="absolute left-0 right-0 border-t border-border-light/60"
+                            className="absolute start-0 end-0 border-t border-border-light/60"
                             style={{ top: ((h - range.start) / 60) * HOUR_PX }}
                           />
                         ))}

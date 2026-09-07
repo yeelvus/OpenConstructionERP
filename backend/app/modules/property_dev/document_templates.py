@@ -39,7 +39,9 @@ Design notes
 
 * **Money formatting**: ``Decimal`` values are formatted with
   thousands-separators per the locale's BCP-47 root (``de`` → ``1.234,56``,
-  ``en`` → ``1,234.56``, ``ru`` → ``1 234,56``, ``fr`` → ``1 234,56``).
+  ``en`` → ``1,234.56``, ``ru`` → ``1 234,56``, ``fr`` → ``1 234,56``). How
+  many decimal places follow the separator is a question about the currency,
+  not about the locale, and is answered by ``app.core.money``.
 
 The generators have no DB / I/O - they take SQLAlchemy ORM instances
 (or anything duck-compatible) plus a few primitives, and return bytes.
@@ -50,9 +52,10 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
@@ -76,6 +79,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from app.core.money import minor_units, money_quantum
 from app.core.pdf_fonts import (
     BODY_FONT,
     BOLD_FONT,
@@ -236,8 +240,80 @@ SUPPORTED_REGULATORS: tuple[str, ...] = (
     "NONE",
 )
 
-#: Page margins (all sides). 25 mm matches the spec.
+logger = logging.getLogger(__name__)
+
+#: Page margins (all sides). 25 mm matches the spec, and is the default the
+#: workspace setting falls back to - see :func:`_page_margin_pt`.
 PAGE_MARGIN_MM: float = 25.0
+
+
+def _appearance() -> dict[str, object]:
+    """The workspace document appearance, or an empty dict, never raising.
+
+    Guarded and lazily imported for the same reason
+    :mod:`app.core.pdf_branding` guards its own read: a document a buyer is
+    waiting for must not be lost because a settings file could not be parsed.
+    The underlying read is cached by file mtime, so calling this per page (the
+    page handler does) costs a ``stat``.
+    """
+    try:
+        from app.core.pdf_appearance import read_appearance
+
+        data = read_appearance()
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 - degrade to the spec defaults, never break a PDF
+        logger.debug("Could not read document appearance; using the spec defaults", exc_info=True)
+        return {}
+
+
+def _page_margin_pt() -> float:
+    """The configured page margin in points, defaulting to the 25 mm spec."""
+    value = _appearance().get("margin_mm")
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value) * mm
+    return PAGE_MARGIN_MM * mm
+
+
+def _page_size_pt() -> tuple[float, float]:
+    """The configured page size in points, defaulting to A4."""
+    try:
+        from app.core.pdf_appearance import resolve_page_size
+
+        return resolve_page_size(_appearance())
+    except Exception:  # noqa: BLE001 - A4 is the documented default
+        logger.debug("Could not resolve page size; using A4", exc_info=True)
+        return (float(A4[0]), float(A4[1]))
+
+
+def _doc_page_size(target: Any) -> tuple[float, float]:
+    """The page size of a live doc or canvas, falling back to the configured one.
+
+    reportlab spells it ``pagesize`` on a ``BaseDocTemplate`` and ``_pagesize``
+    on a ``Canvas``; both are read here so the header, the watermark and the
+    page number all measure the same page.
+    """
+    for attr in ("pagesize", "_pagesize"):
+        size = getattr(target, attr, None)
+        if isinstance(size, tuple | list) and len(size) == 2:
+            try:
+                return (float(size[0]), float(size[1]))
+            except (TypeError, ValueError):
+                break
+    return _page_size_pt()
+
+
+def _base_font_size() -> float:
+    """The configured body size in points, defaulting to the 10 pt spec.
+
+    Every other size in :func:`_styles` is derived from this one by the ratio
+    it already had, so raising the body size scales the document instead of
+    leaving the headings and the small print where they were.
+    """
+    value = _appearance().get("base_font_size")
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value)
+    return 10.0
+
 
 #: Default validity for an NOC, in days.
 DEFAULT_NOC_VALIDITY_DAYS: int = 30
@@ -382,29 +458,57 @@ def _t(locale: str, dotted_key: str, fallback: str = "") -> str:
 # ── Money / number formatting ───────────────────────────────────────────
 
 
-def _format_money(amount: Decimal | int | float | None, locale: str) -> str:
-    """Locale-aware thousands-separated string. Falls back to en-US grouping."""
+def _format_money(amount: Decimal | int | float | None, locale: str, currency_code: str | None) -> str:
+    """Locale-aware thousands-separated string in the currency's own units.
+
+    The two arguments answer two different questions and neither can answer
+    the other's. ``locale`` picks the separators, because that is a habit of
+    whoever reads the document. ``currency_code`` decides how many digits
+    follow the decimal separator, because that is a property of the money:
+    a forint printed with the fillér that left circulation in 1999 reads as
+    an amount no payment can settle, and a Kuwaiti dinar printed without its
+    third digit has quietly lost a fils that one can.
+
+    The count comes from :func:`app.core.money.minor_units`, the single table
+    in the platform that records a currency's subdivision. This renderer used
+    to quantise to a ``Decimal("0.01")`` literal instead, which is the shape
+    of the bug: a literal cannot know its currency. A blank or unregistered
+    code takes that function's own two-decimal default rather than a guess
+    made here.
+
+    Args:
+        amount: value to render. ``None`` gives an empty string.
+        locale: BCP-47 root; only the separators are taken from it.
+        currency_code: ISO 4217 code the amount is denominated in. May be
+            blank when the record carries no currency.
+
+    Returns:
+        The grouped amount on its own. Callers append the currency code.
+    """
     if amount is None:
         return ""
     try:
         d = Decimal(str(amount))
     except (ValueError, TypeError):
         return ""
-    # Quantize to 2 decimal places without introducing scientific notation.
-    q = d.quantize(Decimal("0.01"))
+    # Quantize to the currency's own minor unit without introducing
+    # scientific notation. ROUND_HALF_UP is what every other money path in
+    # the platform rounds with, so a printed figure agrees with the stored one.
+    decimals = minor_units(currency_code)
+    q = d.quantize(money_quantum(currency_code), rounding=ROUND_HALF_UP)
     sign = "-" if q < 0 else ""
     abs_q = -q if q < 0 else q
     int_part, _, frac_part = format(abs_q, "f").partition(".")
     # Group by 3 from the right.
     rev = int_part[::-1]
     chunks = [rev[i : i + 3] for i in range(0, len(rev), 3)]
-    grouped_rev = "".join(chunks)
     thou_sep, dec_sep = _separators_for_locale(locale)
     grouped = thou_sep.join([c[::-1] for c in chunks][::-1])  # readable order
-    # NB: the join above already does grouping; ``grouped_rev`` was a sketch
-    # we don't need. Keep the final value.
-    _ = grouped_rev
-    return f"{sign}{grouped}{dec_sep}{frac_part or '00'}"
+    if decimals == 0:
+        # No subunit, so no separator either - a trailing "," on a forint
+        # would read as a truncated number rather than a whole one.
+        return f"{sign}{grouped}"
+    return f"{sign}{grouped}{dec_sep}{frac_part}"
 
 
 def _separators_for_locale(locale: str) -> tuple[str, str]:
@@ -435,7 +539,16 @@ def _format_date(value: str | date | datetime | None, _locale: str) -> str:
 
 
 def _styles(locale: str) -> dict[str, ParagraphStyle]:
-    """Build the ParagraphStyle family for the given locale."""
+    """Build the ParagraphStyle family for the given locale.
+
+    Every point size below is the spec size multiplied by ``_scale``, the ratio
+    between the workspace's configured body size and the 10 pt this document
+    was designed at. Scaling the whole family rather than only the body keeps
+    the hierarchy intact: a workspace that asks for larger print gets larger
+    headings and larger small print too, instead of a title that no longer
+    stands out from the paragraph under it.
+    """
+    _scale = _base_font_size() / 10.0
     rtl = locale in RTL_LOCALES
     base = getSampleStyleSheet()
     word_wrap = "RTL" if rtl else None
@@ -445,8 +558,8 @@ def _styles(locale: str) -> dict[str, ParagraphStyle]:
         "OE_Title",
         parent=base["Title"],
         fontName=BOLD_FONT,
-        fontSize=20,
-        leading=24,
+        fontSize=20 * _scale,
+        leading=24 * _scale,
         alignment=TA_CENTER,
         wordWrap=word_wrap,
         spaceAfter=6,
@@ -455,8 +568,8 @@ def _styles(locale: str) -> dict[str, ParagraphStyle]:
         "OE_Subtitle",
         parent=base["Heading2"],
         fontName=BODY_FONT,
-        fontSize=12,
-        leading=16,
+        fontSize=12 * _scale,
+        leading=16 * _scale,
         alignment=TA_CENTER,
         wordWrap=word_wrap,
         textColor=colors.HexColor("#4b5563"),
@@ -465,8 +578,8 @@ def _styles(locale: str) -> dict[str, ParagraphStyle]:
         "OE_Heading",
         parent=base["Heading3"],
         fontName=BOLD_FONT,
-        fontSize=12,
-        leading=15,
+        fontSize=12 * _scale,
+        leading=15 * _scale,
         alignment=align_body,
         wordWrap=word_wrap,
         spaceBefore=10,
@@ -477,8 +590,8 @@ def _styles(locale: str) -> dict[str, ParagraphStyle]:
         "OE_Body",
         parent=base["Normal"],
         fontName=BODY_FONT,
-        fontSize=10,
-        leading=14,
+        fontSize=10 * _scale,
+        leading=14 * _scale,
         alignment=align_body,
         wordWrap=word_wrap,
         spaceAfter=4,
@@ -486,8 +599,8 @@ def _styles(locale: str) -> dict[str, ParagraphStyle]:
     small = ParagraphStyle(
         "OE_Small",
         parent=body,
-        fontSize=8.5,
-        leading=11,
+        fontSize=8.5 * _scale,
+        leading=11 * _scale,
         textColor=colors.HexColor("#4b5563"),
     )
     label = ParagraphStyle(
@@ -496,18 +609,29 @@ def _styles(locale: str) -> dict[str, ParagraphStyle]:
         fontName=BOLD_FONT,
         textColor=colors.HexColor("#374151"),
     )
+    # The header row of every table drawn with _grid_table_style. That style
+    # fills the row #1f2937 and asks for white text, but a TableStyle TEXTCOLOR
+    # cannot reach a cell holding a Paragraph, so the row took the label colour
+    # instead and the headings of the parties table, the instalments table and
+    # the move-in checklist were drawn #374151 on #1f2937.
+    grid_header = ParagraphStyle(
+        "OE_GridHeader",
+        parent=body,
+        fontName=BOLD_FONT,
+        textColor=colors.white,
+    )
     clause = ParagraphStyle(
         "OE_Clause",
         parent=body,
-        fontSize=9.5,
-        leading=13,
+        fontSize=9.5 * _scale,
+        leading=13 * _scale,
         spaceAfter=6,
     )
     clause_heading = ParagraphStyle(
         "OE_ClauseHeading",
         parent=heading,
-        fontSize=10.5,
-        leading=13,
+        fontSize=10.5 * _scale,
+        leading=13 * _scale,
         spaceBefore=6,
         spaceAfter=2,
     )
@@ -518,6 +642,7 @@ def _styles(locale: str) -> dict[str, ParagraphStyle]:
         "body": body,
         "small": small,
         "label": label,
+        "grid_header": grid_header,
         "clause": clause,
         "clause_heading": clause_heading,
     }
@@ -600,39 +725,34 @@ def _build_page_handler(ctx: _PageContext):
     def _draw(canvas: Canvas, doc: BaseDocTemplate) -> None:
         canvas.saveState()
 
-        # Header - developer + unit code top-right.
+        # Header - developer + unit code top-right. Geometry is read off the
+        # live doc rather than from the module constants, so a workspace that
+        # picked Letter or a wider margin gets a header that lines up with its
+        # own body instead of one drawn at A4 coordinates.
+        page_w, page_h = _doc_page_size(doc)
+        left = float(getattr(doc, "leftMargin", PAGE_MARGIN_MM * mm))
+        right_edge = page_w - float(getattr(doc, "rightMargin", PAGE_MARGIN_MM * mm))
+        header_y = page_h - (left - 4 * mm)
         developer = (ctx.developer_name or "OpenConstructionERP")[:80]
         canvas.setFont(pdf_font_for_text(developer, bold=True), 14)
         canvas.setFillColor(colors.HexColor("#111827"))
-        canvas.drawString(
-            PAGE_MARGIN_MM * mm,
-            A4[1] - (PAGE_MARGIN_MM * mm - 4 * mm),
-            developer,
-        )
+        canvas.drawString(left, header_y, developer)
 
         if ctx.unit_code:
             canvas.setFont(pdf_font_for_text(ctx.unit_code), 10)
             canvas.setFillColor(colors.HexColor("#374151"))
-            canvas.drawRightString(
-                A4[0] - PAGE_MARGIN_MM * mm,
-                A4[1] - (PAGE_MARGIN_MM * mm - 4 * mm),
-                ctx.unit_code,
-            )
+            canvas.drawRightString(right_edge, header_y, ctx.unit_code)
 
         # Thin separator line under header.
         canvas.setStrokeColor(colors.HexColor("#d1d5db"))
         canvas.setLineWidth(0.4)
-        canvas.line(
-            PAGE_MARGIN_MM * mm,
-            A4[1] - PAGE_MARGIN_MM * mm + 1 * mm,
-            A4[0] - PAGE_MARGIN_MM * mm,
-            A4[1] - PAGE_MARGIN_MM * mm + 1 * mm,
-        )
+        rule_y = page_h - left + 1 * mm
+        canvas.line(left, rule_y, right_edge, rule_y)
 
         # Watermark - drawn behind content.
         if ctx.watermark:
             canvas.saveState()
-            canvas.translate(A4[0] / 2, A4[1] / 2)
+            canvas.translate(page_w / 2, page_h / 2)
             canvas.rotate(45)
             canvas.setFillColor(colors.Color(0.78, 0.27, 0.27, alpha=0.18))
             text = _t(ctx.locale, "common.watermark_draft", "DRAFT")
@@ -651,18 +771,11 @@ def _build_page_handler(ctx: _PageContext):
         # Faced separately: an uploaded locale override can translate the
         # footer labels while the document reference stays ASCII, so the two
         # strings do not always want the same face.
+        footer_y = left - 10 * mm
         canvas.setFont(pdf_font_for_text(ref_str), 8)
-        canvas.drawString(
-            PAGE_MARGIN_MM * mm,
-            PAGE_MARGIN_MM * mm - 10 * mm,
-            ref_str,
-        )
+        canvas.drawString(left, footer_y, ref_str)
         canvas.setFont(pdf_font_for_text(gen_str), 8)
-        canvas.drawCentredString(
-            A4[0] / 2,
-            PAGE_MARGIN_MM * mm - 10 * mm,
-            gen_str,
-        )
+        canvas.drawCentredString(page_w / 2, footer_y, gen_str)
         # Right-side page label - final "X of Y" is injected on second pass.
         # We draw a placeholder that NumberedCanvas will overwrite.
         canvas.restoreState()
@@ -691,16 +804,19 @@ class _NumberedCanvas(Canvas):
         super().save()
 
     def _draw_page_number(self, n_pages: int) -> None:
+        if not _appearance().get("show_page_numbers", True):
+            # The workspace files these inside a bundle that paginates itself.
+            # Suppressed here as well as in the shared footer, so the setting
+            # does not leave one of the two numbers behind.
+            return
         self.saveState()
         self.setFillColor(colors.HexColor("#6b7280"))
         template = _t(self._locale, "common.page_of", "Page {page} of {total}")
         label = template.replace("{page}", str(self._pageNumber)).replace("{total}", str(n_pages))
         self.setFont(pdf_font_for_text(label), 8)
-        self.drawRightString(
-            A4[0] - PAGE_MARGIN_MM * mm,
-            PAGE_MARGIN_MM * mm - 10 * mm,
-            label,
-        )
+        page_w, _ = _doc_page_size(self)
+        margin = _page_margin_pt()
+        self.drawRightString(page_w - margin, margin - 10 * mm, label)
         self.restoreState()
 
 
@@ -790,14 +906,18 @@ def _build_doc(
     author: str,
     subject: str,
     keywords: list[str],
-) -> BaseDocTemplate:
+) -> tuple[BaseDocTemplate, Frame]:
+    margin = _page_margin_pt()
     doc = BaseDocTemplate(
         buf,
-        pagesize=A4,
-        leftMargin=PAGE_MARGIN_MM * mm,
-        rightMargin=PAGE_MARGIN_MM * mm,
-        topMargin=PAGE_MARGIN_MM * mm + 5 * mm,
-        bottomMargin=PAGE_MARGIN_MM * mm + 10 * mm,
+        pagesize=_page_size_pt(),
+        leftMargin=margin,
+        rightMargin=margin,
+        # The extra top and bottom room is the band the page handler draws the
+        # header and footer into, so it is added to whatever margin was chosen
+        # rather than being folded into a fixed number.
+        topMargin=margin + 5 * mm,
+        bottomMargin=margin + 10 * mm,
         title=title,
         author=author,
         subject=subject,
@@ -860,11 +980,12 @@ def _kv_table_style() -> TableStyle:
 def _grid_table_style() -> TableStyle:
     return TableStyle(
         [
+            # Fills, rules and padding only. Every cell in these tables is a
+            # Paragraph and carries its own face, size, colour and alignment,
+            # so a TEXTCOLOR, FONTNAME, FONTSIZE or ALIGN command here would
+            # describe a row that nothing draws. The header's white is on
+            # styles["grid_header"] instead.
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), BOLD_FONT),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("ALIGN", (0, 0), (-1, 0), "LEFT"),
             ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d1d5db")),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f9fafb"), colors.white]),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -959,7 +1080,7 @@ def render_reservation_receipt_pdf(
         ],
         [
             _p(_t(locale, "reservation_receipt.headings.amount_paid", "Amount Paid"), styles["label"]),
-            _p(f"{_format_money(deposit, locale)} {ccy}".strip(), styles["body"]),
+            _p(f"{_format_money(deposit, locale, ccy)} {ccy}".strip(), styles["body"]),
         ],
         [
             _p(_t(locale, "reservation_receipt.headings.cooling_off", "Cooling-off Period"), styles["label"]),
@@ -1130,10 +1251,10 @@ def render_sales_contract_pdf(
 
     party_rows: list[list[Any]] = [
         [
-            _p(_t(locale, "sales_contract.party_columns.name", "Name"), styles["label"]),
-            _p(_t(locale, "sales_contract.party_columns.role", "Role"), styles["label"]),
-            _p(_t(locale, "sales_contract.party_columns.ownership_pct", "Ownership %"), styles["label"]),
-            _p(_t(locale, "sales_contract.party_columns.email", "Email"), styles["label"]),
+            _p(_t(locale, "sales_contract.party_columns.name", "Name"), styles["grid_header"]),
+            _p(_t(locale, "sales_contract.party_columns.role", "Role"), styles["grid_header"]),
+            _p(_t(locale, "sales_contract.party_columns.ownership_pct", "Ownership %"), styles["grid_header"]),
+            _p(_t(locale, "sales_contract.party_columns.email", "Email"), styles["grid_header"]),
         ]
     ]
     total_pct = Decimal("0")
@@ -1218,7 +1339,7 @@ def render_sales_contract_pdf(
     story.append(
         _p(
             f"<b>{html.escape(_t(locale, 'sales_contract.price_label', 'Total Purchase Price'))}</b>: "
-            f"{_format_money(total_value, locale)} {html.escape(ccy)}".strip(),
+            f"{_format_money(total_value, locale, ccy)} {html.escape(ccy)}".strip(),
             styles["body"],
             markup=True,
         )
@@ -1234,7 +1355,7 @@ def render_sales_contract_pdf(
                     [
                         _p(key.replace("_", " ").title(), styles["body"]),
                         _p(
-                            f"{_format_money(breakdown.get(key) or 0, locale)} {ccy}".strip(),
+                            f"{_format_money(breakdown.get(key) or 0, locale, ccy)} {ccy}".strip(),
                             styles["body"],
                         ),
                     ]
@@ -1254,11 +1375,11 @@ def render_sales_contract_pdf(
         )
         inst_rows: list[list[Any]] = [
             [
-                _p(_t(locale, "sales_contract.instalment_columns.sequence", "#"), styles["label"]),
-                _p(_t(locale, "sales_contract.instalment_columns.milestone", "Milestone"), styles["label"]),
-                _p(_t(locale, "sales_contract.instalment_columns.due_date", "Due Date"), styles["label"]),
-                _p(_t(locale, "sales_contract.instalment_columns.amount", "Amount"), styles["label"]),
-                _p(_t(locale, "sales_contract.instalment_columns.currency", "Currency"), styles["label"]),
+                _p(_t(locale, "sales_contract.instalment_columns.sequence", "#"), styles["grid_header"]),
+                _p(_t(locale, "sales_contract.instalment_columns.milestone", "Milestone"), styles["grid_header"]),
+                _p(_t(locale, "sales_contract.instalment_columns.due_date", "Due Date"), styles["grid_header"]),
+                _p(_t(locale, "sales_contract.instalment_columns.amount", "Amount"), styles["grid_header"]),
+                _p(_t(locale, "sales_contract.instalment_columns.currency", "Currency"), styles["grid_header"]),
             ]
         ]
         sched_ccy = _attr(payment_schedule, "currency", "") or ccy
@@ -1268,7 +1389,7 @@ def render_sales_contract_pdf(
                     _p(str(_attr(inst, "sequence", "")), styles["body"]),
                     _p(str(_attr(inst, "milestone_label", "") or _attr(inst, "milestone_event", "")), styles["body"]),
                     _p(_format_date(_attr(inst, "due_date", None), locale), styles["body"]),
-                    _p(_format_money(_attr(inst, "amount", Decimal("0")), locale), styles["body"]),
+                    _p(_format_money(_attr(inst, "amount", Decimal("0")), locale, sched_ccy), styles["body"]),
                     _p(str(sched_ccy), styles["body"]),
                 ]
             )
@@ -1416,7 +1537,7 @@ def render_payment_receipt_pdf(
         [
             _p(_t(locale, "payment_receipt.headings.amount_paid", "Amount Paid"), styles["label"]),
             _p(
-                f"{_format_money(amount_paid, locale)} {ccy}".strip(),
+                f"{_format_money(amount_paid, locale, ccy)} {ccy}".strip(),
                 styles["body"],
             ),
         ],
@@ -1438,7 +1559,7 @@ def render_payment_receipt_pdf(
         [
             _p(_t(locale, "payment_receipt.headings.outstanding", "Outstanding Balance"), styles["label"]),
             _p(
-                f"{_format_money(outstanding, locale)} {ccy}".strip(),
+                f"{_format_money(outstanding, locale, ccy)} {ccy}".strip(),
                 styles["body"],
             ),
         ],
@@ -1860,14 +1981,14 @@ def render_tenant_lease_agreement_pdf(
         [
             _p(_t(locale, "tenant_lease_agreement.headings.monthly_rent", "Monthly Rent"), styles["label"]),
             _p(
-                f"{_format_money(monthly_rent, locale)} {ccy}".strip(),
+                f"{_format_money(monthly_rent, locale, ccy)} {ccy}".strip(),
                 styles["body"],
             ),
         ],
         [
             _p(_t(locale, "tenant_lease_agreement.headings.security_deposit", "Security Deposit"), styles["label"]),
             _p(
-                f"{_format_money(security_deposit, locale)} {ccy}".strip(),
+                f"{_format_money(security_deposit, locale, ccy)} {ccy}".strip(),
                 styles["body"],
             ),
         ],
@@ -1988,9 +2109,9 @@ def render_move_in_checklist_pdf(
             story.append(_p(str(room_name), styles["heading"]))
             room_rows: list[list[Any]] = [
                 [
-                    _p(_t(locale, "move_in_checklist.columns.item", "Item"), styles["label"]),
-                    _p(_t(locale, "move_in_checklist.columns.condition", "Condition"), styles["label"]),
-                    _p(_t(locale, "move_in_checklist.columns.notes", "Notes"), styles["label"]),
+                    _p(_t(locale, "move_in_checklist.columns.item", "Item"), styles["grid_header"]),
+                    _p(_t(locale, "move_in_checklist.columns.condition", "Condition"), styles["grid_header"]),
+                    _p(_t(locale, "move_in_checklist.columns.notes", "Notes"), styles["grid_header"]),
                 ]
             ]
             for it in items:
@@ -2292,7 +2413,7 @@ def render_escrow_release_authorization_pdf(
                 styles["label"],
             ),
             _p(
-                f"{_format_money(amount, locale)} {ccy}".strip(),
+                f"{_format_money(amount, locale, ccy)} {ccy}".strip(),
                 styles["body"],
             ),
         ],
@@ -2394,7 +2515,7 @@ def render_refund_authorization_pdf(
         [
             _p(_t(locale, "refund_authorization.headings.amount", "Refund Amount"), styles["label"]),
             _p(
-                f"{_format_money(refund_amount, locale)} {ccy}".strip(),
+                f"{_format_money(refund_amount, locale, ccy)} {ccy}".strip(),
                 styles["body"],
             ),
         ],

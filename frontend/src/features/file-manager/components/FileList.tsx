@@ -12,6 +12,8 @@ import { SnippetHighlight } from '@/features/file-search/SnippetHighlight';
 import { CDEBadge } from './CDEBadge';
 import { favoriteKey, type FileRow, type FileKind, type FileFilters } from '../types';
 import { fmtFixed } from '@/shared/lib/formatters';
+import { TagPill } from '@/features/file-tags/TagPill';
+import { useTagsByFile } from '@/features/file-tags/hooks';
 
 const KIND_ICON: Record<FileKind, typeof FileText> = {
   document: FileText,
@@ -65,6 +67,43 @@ function versionLabel(raw: unknown): string {
         : NaN;
   if (!Number.isFinite(n) || n < 1) return '—';
   return `V${String(Math.trunc(n)).padStart(2, '0')}`;
+}
+
+/**
+ * The tags assigned to one file, shown under its name.
+ *
+ * Placed on its own line and indented to the filename rather than trailing it,
+ * matching the snippet directly above: the name column truncates, and anything
+ * sharing that line competes with the name for the width that truncation is
+ * already giving away. Four fit here where three fit on a grid tile, because a
+ * table row is wider than a card.
+ *
+ * One request per visible row, same as the grid. See `FileGridTagsRow` for why
+ * the bulk lookup is a follow-up rather than part of this change.
+ */
+function FileListTagsCell({
+  projectId,
+  kind,
+  fileId,
+}: {
+  projectId: string;
+  kind: FileKind;
+  fileId: string;
+}) {
+  const { data: tags } = useTagsByFile(projectId, kind, fileId);
+  if (!tags || tags.length === 0) return null;
+  return (
+    <div className="mt-0.5 ms-6 flex flex-wrap gap-0.5">
+      {tags.slice(0, 4).map((tag) => (
+        <TagPill key={tag.id} tag={tag} size="sm" />
+      ))}
+      {tags.length > 4 && (
+        <span className="text-[9px] text-content-tertiary tabular-nums self-center">
+          +{tags.length - 4}
+        </span>
+      )}
+    </div>
+  );
 }
 
 
@@ -288,7 +327,7 @@ export function FileList({
                       {typeof row.extra?.drawing_number === 'string' && row.extra.drawing_number && (
                         <span
                           className="font-mono text-[11px] text-content-tertiary shrink-0"
-                          title="Drawing number"
+                          title={t('files.drawing_number', { defaultValue: 'Drawing number' })}
                         >
                           {row.extra.drawing_number}
                         </span>
@@ -299,7 +338,7 @@ export function FileList({
                       {typeof row.extra?.revision_code === 'string' && row.extra.revision_code && (
                         <span
                           className="inline-flex items-center rounded-md border border-border-light px-1.5 py-0.5 text-[10px] font-medium text-content-secondary shrink-0"
-                          title="Revision"
+                          title={t('files.revision', { defaultValue: 'Revision' })}
                         >
                           Rev {row.extra.revision_code}
                         </span>
@@ -311,6 +350,7 @@ export function FileList({
                         <SnippetHighlight text={row.extra.snippet} query={searchQuery ?? ''} />
                       </p>
                     )}
+                    <FileListTagsCell projectId={row.project_id} kind={row.kind} fileId={row.id} />
                   </td>
                   <td className="px-3 py-2 text-content-secondary text-xs">
                     {t(`files.category.${row.kind}`, { defaultValue: row.kind })}

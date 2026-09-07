@@ -111,6 +111,23 @@ class VendorRatingPayload(BaseModel):
     comment: str | None = Field(default=None, max_length=1000)
 
 
+class VendorListResponse(BaseModel):
+    """One page of vendors plus the size of the matching set.
+
+    ``total`` counts the rows the query matched, not the length of ``items``.
+    ``status`` and ``country_code`` are applied before the count is taken, so a
+    zero here means this question found nothing rather than the supplier base
+    holding nothing.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    items: list[VendorResponse]
+    total: int
+    offset: int
+    limit: int
+
+
 # ── Item categories & catalog items ──────────────────────────────────────────
 
 
@@ -152,6 +169,34 @@ class CatalogItemCreate(BaseModel):
     commodity_scheme: str = Field(default="unspsc", max_length=16)
 
 
+class CatalogItemUpdate(BaseModel):
+    """Patch a catalog item.
+
+    ``sku`` is absent on purpose, for the same reason ``VendorUpdate`` leaves
+    ``code`` out: it is the item's unique business key, and price lists,
+    requisition lines and order lines all quote it. Correcting a typo in a
+    name or a unit is one operation; rekeying an item every other record
+    points at is a different one, and it is not this route.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=4000)
+    category_id: UUID | None = None
+    unit_of_measure: str | None = Field(default=None, min_length=1, max_length=20)
+    manufacturer: str | None = Field(default=None, max_length=255)
+    mpn: str | None = Field(default=None, max_length=100)
+    spec: dict[str, Any] | None = None
+    hazard_class: str | None = Field(default=None, max_length=50)
+    shelf_life_days: int | None = Field(default=None, ge=0)
+    reorder_point: Decimal | None = Field(default=None, ge=0)
+    gtin: str | None = Field(default=None, max_length=20)
+    commodity_code: str | None = Field(default=None, max_length=32)
+    commodity_scheme: str | None = Field(default=None, max_length=16)
+    active: bool | None = None
+
+
 class CatalogItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -171,6 +216,28 @@ class CatalogItemResponse(BaseModel):
     commodity_code: str | None = None
     commodity_scheme: str = "unspsc"
     active: bool
+
+
+class CatalogItemListResponse(BaseModel):
+    """One page of catalog items plus the size of the matching set.
+
+    ``total`` counts the rows the query matched, not the length of ``items``.
+    ``category_id`` and ``search`` are both applied in SQL before the count is
+    taken, so a zero here means this question found nothing rather than the
+    catalog holding nothing.
+
+    A supplier catalog is the largest register in this module by row count - a
+    price book runs to tens of thousands of lines - and the page asked for
+    exactly the route's ceiling of 200, so it could hand back a full page of a
+    catalog many times that size with nothing to say so.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    items: list[CatalogItemResponse]
+    total: int
+    offset: int
+    limit: int
 
 
 # ── Price list & entries ─────────────────────────────────────────────────────
@@ -483,6 +550,34 @@ class WarehouseCreate(BaseModel):
     manager_user_id: str | None = Field(default=None, max_length=36)
 
 
+class WarehouseUpdate(BaseModel):
+    """Patch a warehouse.
+
+    Two columns are deliberately out of reach here.
+
+    ``code`` is the unique business key, as ``code`` is on a vendor and
+    ``sku`` is on a catalog item.
+
+    ``project_id`` decides who is allowed to read this warehouse's balances
+    and costs, so moving it is an access change rather than a correction; it
+    would have to be authorised against the project the warehouse is leaving
+    as well as the one it is joining, which is a different route from this
+    one.
+
+    ``status`` is absent for a third reason, and it is worth writing down:
+    nothing in the module reads it. It is written once as ``"active"`` on
+    create and no query, service branch or screen ever looks at it again, so
+    a field that let a user change it would look like closing a warehouse
+    while changing nothing at all.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    address: str | None = Field(default=None, max_length=1000)
+    manager_user_id: str | None = Field(default=None, max_length=36)
+
+
 class WarehouseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -550,7 +645,15 @@ class StockMovementResponse(BaseModel):
     catalog_item_id: UUID
     movement_type: str
     quantity: Decimal
-    unit_cost: Decimal
+    # None means the unit cost is not knowable, never that it is zero: a
+    # movement out of a balance with no single-currency average has nothing to
+    # record, and zero would read as "issued for nothing". The column is
+    # nullable for that reason, so the field has to be too - declaring it
+    # required turned an ordinary movement into a 500 after the row had
+    # already been written. ``currency`` is the ISO code this amount is
+    # denominated in; without it the number reaches the caller meaning nothing.
+    unit_cost: Decimal | None = None
+    currency: str | None = None
     reference_type: str | None = None
     reference_id: str | None = None
     batch_lot: str | None = None
@@ -624,6 +727,7 @@ class TolerianceProfileCreate(BaseModel):
 
 
 class TolerianceProfileUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=64)
     description: str | None = Field(default=None, max_length=1000)
     price_tolerance_pct: Decimal | None = Field(default=None, ge=0, le=100)
     price_tolerance_abs: Decimal | None = Field(default=None, ge=0)

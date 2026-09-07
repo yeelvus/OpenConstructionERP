@@ -174,7 +174,7 @@ const KPICard = memo(function KPICard({
   return (
     <div className="relative flex-1 min-w-[200px] overflow-hidden rounded-xl border border-border-light bg-surface-elevated/90 shadow-xs transition-shadow duration-normal ease-oe hover:shadow-sm">
       {/* Top accent bar */}
-      <div className={`absolute top-0 left-0 right-0 h-1 ${accentColor === 'green' ? 'bg-green-500' : accentColor === 'amber' ? 'bg-amber-500' : accentColor === 'rose' ? 'bg-rose-500' : 'bg-oe-blue'}`} />
+      <div className={`absolute top-0 start-0 end-0 h-1 ${accentColor === 'green' ? 'bg-green-500' : accentColor === 'amber' ? 'bg-amber-500' : accentColor === 'rose' ? 'bg-rose-500' : 'bg-oe-blue'}`} />
       <div className="p-5 pt-4">
         <div className="flex items-center justify-between mb-3">
           <span className="text-xs font-medium uppercase tracking-wider text-content-tertiary">
@@ -1627,7 +1627,7 @@ function SnapshotsList({ projectId, currency }: { projectId: string; currency: s
                             <Check size={12} />
                           )}
                         </button>
-                        <button
+                        <button aria-label={t('common.cancel', { defaultValue: 'Cancel' })}
                           onClick={() => setEditingNotes(null)}
                           className="flex h-6 w-6 items-center justify-center rounded text-semantic-error hover:bg-semantic-error-bg"
                         >

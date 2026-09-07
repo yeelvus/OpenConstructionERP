@@ -46,7 +46,7 @@ import { getErrorMessage } from '@/shared/lib/api';
 import { IATE_ALLOWED_PREFIXES, isIateUrlAllowed } from './api';
 import { useTranslationStatus, useTriggerDownload } from './queries';
 import type { DictionaryEntry, InFlightTask, LookupKind } from './types';
-import { fmtFixed } from '@/shared/lib/formatters';
+import { fmtList, fmtFixed } from '@/shared/lib/formatters';
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
 
@@ -351,7 +351,7 @@ const DictionariesTable = memo(function DictionariesTable({
             {entries.map(({ kind, entry }) => (
               <tr
                 key={`${kind}-${entry.pair}`}
-                className="hover:bg-surface-hover/40"
+                className="hover:bg-surface-secondary/40"
                 data-testid={`translation-dict-row-${kind}-${entry.pair}`}
               >
                 <td className="px-4 py-2.5">
@@ -772,7 +772,7 @@ function IateDownloadForm({
           {t('translation.iate.allowlist_hint', {
             defaultValue:
               'Allowed prefixes (mirrors backend SSRF guard): {{prefixes}}',
-            prefixes: IATE_ALLOWED_PREFIXES.join(', '),
+            prefixes: fmtList(IATE_ALLOWED_PREFIXES),
           })}
         </p>
       </form>

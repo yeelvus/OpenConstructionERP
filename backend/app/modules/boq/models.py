@@ -47,6 +47,33 @@ class BOQ(Base):
     approved_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     base_date: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
+    # ── Issue #435: the variation request this bill was raised for ───────
+    # NULL is the whole existing world: a bill of the project at large, the
+    # only kind that existed before this column, and the only kind the
+    # project's bill register lists or the "which bill does this land in"
+    # resolver will consider. A value means the bill prices exactly one
+    # variation request's scope and belongs to that request rather than to
+    # the project's estimate.
+    #
+    # The link is deliberately stored HERE and not as a ``boq_id`` on the
+    # variation request. A column on the owning record cannot be filtered
+    # out of ``SELECT ... FROM oe_boq_boq WHERE project_id = ?`` without a
+    # subquery from ``oe_boq`` into the owning module, which inverts the
+    # dependency ``app/core/boq_target.py`` exists to avoid. That shape is
+    # not hypothetical: ``DesignOption.boq_id`` is exactly it, and design
+    # option bills consequently land, unannounced, in every project-wide
+    # money aggregate in the tree.
+    #
+    # A plain GUID rather than a ForeignKey, the same convention as
+    # ``MoCEntry.variation_request_id`` and ``Position.contract_id``: the
+    # BOQ module must keep working when the variations module is not
+    # installed, so it may not carry a DB-level dependency on its tables.
+    #
+    # NOT unique. A revision of a variation bill is still that request's
+    # bill (see ``BOQService.duplicate_boq``), and the revision chain hangs
+    # off ``parent_estimate_id`` exactly as it does for a project bill.
+    variation_request_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True, index=True)
+
     metadata_: Mapped[dict] = mapped_column(  # type: ignore[assignment]
         "metadata",
         JSON,
@@ -122,6 +149,31 @@ class Position(Base):
     )
     source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
     confidence: Mapped[str | None] = mapped_column(String(10), nullable=True)
+
+    # ── Issue #453: the judgement in a line, beside the arithmetic ────────
+    # ``confidence`` says how sure the estimator is. It cannot say how WRONG
+    # the line could be, and that is the number an offer is tested against:
+    # a margin that survives the declared risk is ``target - z * sigma``
+    # weighted by amount. ``risk_dispersion`` is that sigma, as a fraction of
+    # the line's own amount, so it stays comparable across lines of very
+    # different size and can be averaged with ``amount`` as the weight. Values
+    # above 1 are allowed and mean what they say: a line can be more uncertain
+    # than it is big.
+    #
+    # ``price_basis`` says what the price STANDS ON, which is not what
+    # ``source`` says. Source records how the row was entered, defaults to
+    # ``manual`` and is written literally by every ordinary create path, so on
+    # a typed or workbook-imported bill it is ``manual`` on nearly every row -
+    # money grouped by it looks like a price-evidence report and is a
+    # provenance report with one bar. A hand-typed row can have an invoice
+    # behind it and a catalogue row can rest on a guess.
+    #
+    # Both are NULL until somebody judges the line, and NULL is not zero and
+    # not ``judgement``. A default on either would put an unearned number on
+    # every row that already exists, which is the failure the columns exist to
+    # prevent. String for the same reason the money columns above are strings.
+    risk_dispersion: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    price_basis: Mapped[str | None] = mapped_column(String(30), nullable=True)
     cad_element_ids: Mapped[list] = mapped_column(  # type: ignore[assignment]
         JSON,
         nullable=False,
@@ -179,6 +231,27 @@ class Position(Base):
     # Additive nullable link to the cost line this position rolls up into.
     # Written by the spine generator; NULL on positions not yet wired.
     cost_line_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True, index=True)
+
+    # ── Issue #457: the production norm this line was priced from ────────
+    # Written at the storage boundary from ``metadata["norm_id"]`` /
+    # ``metadata["work_key"]``, which the apply-an-assembly path already sets
+    # when the assembly was itself built from a norm. The identity is COPIED
+    # rather than resolved through the assembly, because the assembly can be
+    # edited or deleted after a bill was priced from it and provenance that has
+    # to be resolved through a mutable row is not provenance. For the same
+    # reason there is no foreign key to the norm table: the norm library is
+    # editable and deletable, and a key would either block that or null the
+    # provenance out on cascade.
+    #
+    # ``norm_work_key`` rides along rather than being looked up, because it is
+    # the human handle and it has to survive the deletion of the row it names.
+    #
+    # Both NULL until something prices the line from a norm, and NULL is the
+    # only honest way to say "not priced from a norm": most of a real bill is
+    # typed or imported and never was. The metadata keys stay written too, so a
+    # reader from before these columns keeps working.
+    norm_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True, index=True)
+    norm_work_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     metadata_: Mapped[dict] = mapped_column(  # type: ignore[assignment]
         "metadata",

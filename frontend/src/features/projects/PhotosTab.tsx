@@ -235,7 +235,7 @@ export function PhotosTab({ projectId }: PhotosTabProps): React.ReactElement {
         <div className="relative flex-1 min-w-[200px]">
           <Search
             size={14}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-content-tertiary pointer-events-none"
+            className="absolute start-3 top-1/2 -translate-y-1/2 text-content-tertiary pointer-events-none"
           />
           <input
             type="text"
@@ -244,7 +244,7 @@ export function PhotosTab({ projectId }: PhotosTabProps): React.ReactElement {
             placeholder={t('projects.photos.search_placeholder', {
               defaultValue: 'Search filename…',
             })}
-            className="w-full h-9 pl-8 pr-3 text-sm rounded-lg bg-surface-secondary/60 border border-border-light text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
+            className="w-full h-9 ps-8 pe-3 text-sm rounded-lg bg-surface-secondary/60 border border-border-light text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
             data-testid="photos-tab-search"
             aria-label={t('projects.photos.search_aria', {
               defaultValue: 'Search photos by filename',

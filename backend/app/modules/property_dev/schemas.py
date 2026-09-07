@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from uuid import UUID
@@ -1144,12 +1144,25 @@ class SalesKanbanBuyerCard(BaseModel):
 
 
 class SalesKanbanColumn(BaseModel):
-    """One column on the kanban (one status)."""
+    """One column on the kanban (one status).
+
+    ``total_value`` is money in the base currency named by
+    ``SalesKanbanResponse.currency``, not a raw sum of the cards: buyer
+    values in another currency are FX-converted first, and a currency
+    with no rate is left OUT of ``total_value`` and reported under
+    ``unconverted_by_currency``. ``total_by_currency`` carries every
+    amount in the units it was agreed in, so nothing is lost.
+    """
 
     status: str
     buyers: list[SalesKanbanBuyerCard] = Field(default_factory=list)
     count: int = 0
     total_value: Decimal = Decimal("0")
+    # True when this column blends more than one distinct currency; the
+    # UI should read the breakdown rather than showing one headline.
+    mixed_currency: bool = False
+    total_by_currency: dict[str, str] = Field(default_factory=dict)
+    unconverted_by_currency: dict[str, str] = Field(default_factory=dict)
 
     # R8: money fields as plain-decimal strings.
     @field_serializer("total_value", when_used="json")
@@ -1162,6 +1175,12 @@ class SalesKanbanResponse(BaseModel):
     """Kanban response - one column per buyer-status."""
 
     development_id: UUID
+    # The currency every column's ``total_value`` is expressed in. Empty
+    # when neither the development nor its project names one and the
+    # buyers disagree - in that case no column total can be labelled and
+    # every amount arrives through the per-currency maps instead.
+    currency: str = ""
+    mixed_currency: bool = False
     columns: list[SalesKanbanColumn] = Field(default_factory=list)
 
 
@@ -1197,10 +1216,20 @@ class DevelopmentPnLResponse(BaseModel):
 
     Reads from CRM/finance via the cross-module events; service-layer
     aggregates contract revenue + actual costs + deposit retention.
+
+    Every money scalar is expressed in ``currency`` - the development's
+    base currency, falling back to the parent project's and then to the
+    single currency the buyers agree on. Buyers in another currency are
+    FX-converted through the project's rate table; a currency with no
+    rate is EXCLUDED from the scalar and named in the matching
+    ``*_unconverted_by_currency`` map. The ``*_by_currency`` maps carry
+    every amount in the units it was agreed in.
     """
 
     development_id: UUID
     currency: str = ""
+    # True when the buyers hold more than one distinct currency, whether
+    # or not the amounts could be converted.
     mixed_currency: bool = False
     revenue_contracted: Decimal = Decimal("0")
     revenue_completed: Decimal = Decimal("0")
@@ -1211,6 +1240,19 @@ class DevelopmentPnLResponse(BaseModel):
     avg_sale_price: Decimal = Decimal("0")
     open_warranty_count: int = 0
     open_snag_count: int = 0
+
+    # Per-currency truth behind the scalars above (plain-decimal strings,
+    # each quantised to its own currency's minor units). The
+    # ``*_unconverted_*`` maps hold exactly what the paired scalar had to
+    # leave out for want of an FX rate.
+    revenue_contracted_by_currency: dict[str, str] = Field(default_factory=dict)
+    revenue_contracted_unconverted_by_currency: dict[str, str] = Field(default_factory=dict)
+    revenue_completed_by_currency: dict[str, str] = Field(default_factory=dict)
+    revenue_completed_unconverted_by_currency: dict[str, str] = Field(default_factory=dict)
+    deposits_held_by_currency: dict[str, str] = Field(default_factory=dict)
+    deposits_held_unconverted_by_currency: dict[str, str] = Field(default_factory=dict)
+    deposits_forfeited_by_currency: dict[str, str] = Field(default_factory=dict)
+    deposits_forfeited_unconverted_by_currency: dict[str, str] = Field(default_factory=dict)
 
     # R8: money fields as plain-decimal strings.
     @field_serializer(
@@ -2567,17 +2609,46 @@ class ContractTaxQuote(BaseModel):
     properties rather than fields and so do not cross the wire, which is
     deliberate: they are derivable from ``source``, and shipping both would
     invite clients to branch on the copy that cannot be extended.
+
+    ``vat_rate_effective_from`` is the date the rate table dates the applied
+    rate from, and ``null`` says it dates it from nothing. Nearly every class
+    tracks its changes now, so the null is rare: a contract signed in 1900 and
+    quoted at the Indian commercial GST rate gets today's 12 % with nothing in
+    the table ever having said that 12 % applied in 1900. The null is how a
+    client learns that the number it holds was never promised for its own date,
+    and it is the one field here that a client should read before reusing a
+    quote for a historical contract.
+
+    A jurisdiction with no VAT rate at all also serialises ``null``, so telling
+    that apart from an undated class means reading ``vat_provenance.source``
+    beside it. That join is deliberate and documented rather than hidden: a
+    date field cannot describe a rate that does not exist.
+
+    ``stamp_duty_effective_from`` is the same statement, one axis over, for
+    ``stamp_duty``: the date the band table it was priced from has been in
+    force since, or ``null`` when that table has never been dated at all.
+    Today that is every jurisdiction served here - unlike VAT, no stamp-duty
+    table has a dated history yet - so a contract signed in 1990 and a
+    contract signed today get the same GB SDLT bands with nothing in the
+    table ever having said which of them those bands were meant for. There
+    is no ``stamp_duty_provenance`` beside it: every stamp-duty path here
+    either answers on its own terms or answers a design zero (a jurisdiction
+    that genuinely levies none), so the declared/fallback/unavailable
+    question ``vat_provenance`` exists to answer does not arise for this
+    figure the way it does for VAT.
     """
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
     jurisdiction: str
     vat_provenance: Provenance
+    vat_rate_effective_from: date | None = None
     region_subcode: str | None = None
     currency: str = ""
     net: Decimal = Decimal("0")
     vat: Decimal = Decimal("0")
     stamp_duty: Decimal = Decimal("0")
+    stamp_duty_effective_from: date | None = None
     transfer_fee: Decimal = Decimal("0")
     registration_fee: Decimal = Decimal("0")
     absd: Decimal = Decimal("0")

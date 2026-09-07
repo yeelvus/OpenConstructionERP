@@ -16,12 +16,54 @@ Greek - i.e. every locale this product ships *except* the complex scripts
 proper bidi/shaping. For the covered scripts the fix is complete: glyphs
 render, not boxes.
 
-Chinese is handled separately and without bundling anything, because reportlab
-ships CID font *metrics* for the Adobe Asian font packs and can reference them
-by name. ``pdf_font_for_text`` returns the CID face for text that needs it and
-the DejaVu face for everything else, so a Chinese document does not change the
-face a German one prints in. The other complex scripts remain a documented
-follow-up.
+Chinese and Korean are handled separately and without bundling anything,
+because reportlab ships CID font *metrics* for the Adobe Asian font packs and
+can reference them by name. ``pdf_font_for_text`` returns the CID face for text
+that needs it and the DejaVu face for everything else, so a Chinese document
+does not change the face a German one prints in.
+
+The two CID rungs overlap and their order is load bearing. Han encodes in
+EUC-KR, so the Korean rung would answer for Chinese text if it were asked
+first; measured against the shipped Chinese locale, 73 of 385 strings would
+change face, including most of the commonest words in the UI. Chinese is asked
+first, and :func:`_face_ladder` says so where the order is set.
+
+Thai and Devanagari are bundled as embedded Noto faces. Neither has a CID pack,
+so unlike Korean they could not be added for free: each needs a real face in the
+repository, 73 KB and 276 KB, under the SIL Open Font License 1.1.
+
+Those two scripts also need more than a face. A face alone fixes the boxes and
+leaves the text wrong, which is the worse of the two failures because it looks
+like output. Thai stacks a tone mark above an upper vowel, and the mark that
+belongs above the vowel is a different glyph from the one that belongs above the
+consonant; without shaping the font draws the consonant-height glyph and the two
+marks collide. Devanagari stores the i-matra after its consonant and draws it
+before, so without shaping the vowel appears on the wrong side of the letter.
+Both are fixed by ``uharfbuzz``, which reportlab uses when it is installed, and
+:func:`pdf_shaping_for_text` says which strings need it.
+
+Shaping reaches the page through Paragraph, not through ``canvas.drawString``.
+reportlab routes ``drawString(shaping=True)`` through ``bidiShapedText``, which
+has two definitions, and the one selected when ``rlbidi`` is absent discards the
+argument and returns the string unshaped. It does not warn. So a caller drawing
+complex script straight onto the canvas gets silence and a wrong page; use
+:func:`pdf_style_for_text` and a Paragraph, which calls the shaper directly and
+is unaffected.
+
+A bare string in a table is that caller without looking like one. reportlab
+draws a cell that is not a flowable through ``canvas.drawString``, so the
+warning above covers every such cell, and the generator that built the row
+never typed the word canvas. ``TableStyle`` does carry a ``SHAPING`` op and
+cells do honour ``cellstyle.shaping``, which makes this harder to catch rather
+than easier: reaching for the obvious control routes into the same no-op and
+reports nothing. Measured on the page, a Thai tone mark in a bare cell draws
+the consonant-height glyph where the shaper calls for the raised one, and a
+Devanagari i-matra draws after its consonant instead of before.
+
+The condition to watch, which is more useful than the decision it would change:
+``rlbidi`` is not priced in while the canvas route carries only table cells. If
+a generator ever routes body text through the canvas directly, that route stops
+being avoidable and ``rlbidi`` is worth pricing then.
 
 **The CID face is referenced, not embedded.** A PDF using it carries the text
 and the metrics but not the outlines, so it renders wherever the reader can
@@ -89,8 +131,9 @@ rather than crashing).
 
 from __future__ import annotations
 
+import html
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -289,6 +332,67 @@ def register_cjk_font() -> bool:
         return _cjk_registered
 
 
+# -- Korean -------------------------------------------------------------------
+
+#: The Adobe CID face for Korean. Like the Chinese one it is referenced by name
+#: from metrics reportlab already ships, so this rung costs no bytes in the
+#: repository and adds no dependency. Gothic rather than MyeongJo because the
+#: body face is a sans and a document should not change class halfway down.
+KOREAN_FONT = "HYGothic-Medium"
+
+_korean_lock = Lock()
+_korean_registered: bool | None = None
+
+
+def register_korean_font() -> bool:
+    """Register the Korean CID face with reportlab. Idempotent.
+
+    The same shape as :func:`register_cjk_font` and for the same reasons: lazy,
+    because a process that never prints Korean should not pay for it, and never
+    process-wide, because :data:`BODY_FONT` is bound at import by generators and
+    reassigning it for one document would re-face every later one in the worker.
+
+    Returns ``True`` when the face is usable, ``False`` when this reportlab
+    build cannot provide it. Never raises.
+    """
+    global _korean_registered
+    if _korean_registered is not None:
+        return _korean_registered
+
+    with _korean_lock:
+        if _korean_registered is not None:
+            return _korean_registered
+        try:
+            from reportlab.lib.fonts import addMapping
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+
+            pdfmetrics.registerFont(UnicodeCIDFont(KOREAN_FONT))
+            # One weight, mapped the way the Chinese pack is: a bold heading
+            # comes back in the same face rather than a synthesised or Latin
+            # bold, because either of those would render the run as boxes.
+            pdfmetrics.registerFontFamily(
+                KOREAN_FONT,
+                normal=KOREAN_FONT,
+                bold=KOREAN_FONT,
+                italic=KOREAN_FONT,
+                boldItalic=KOREAN_FONT,
+            )
+            for bold_flag in (0, 1):
+                for italic_flag in (0, 1):
+                    addMapping(KOREAN_FONT, bold_flag, italic_flag, KOREAN_FONT)
+            _korean_registered = True
+            logger.debug("PDF fonts: registered CID face %s (referenced, not embedded)", KOREAN_FONT)
+        except Exception as exc:  # noqa: BLE001 - degrade, never break PDF output
+            _korean_registered = False
+            logger.warning(
+                "PDF fonts: could not register the CID face %s (%s); Korean text will not render",
+                KOREAN_FONT,
+                exc,
+            )
+        return _korean_registered
+
+
 # -- Coverage: ask the font, do not assume from a range -----------------------
 
 #: Answers to "can this face draw this character", keyed by face name and
@@ -346,6 +450,29 @@ def _cid_pack_covers(char: str) -> bool:
     return _encodable(char, "gbk") or _encodable(char, "cp1252")
 
 
+def _korean_pack_covers(char: str) -> bool:
+    """Whether the Adobe Korean pack carries ``char``.
+
+    The Chinese predicate's problem restated for a different pack, and answered
+    the same way: reportlab holds no CMap for the Adobe packs, so the question
+    goes to the repertoire via the encoding that defines it. EUC-KR is that
+    encoding. Python's codec implements the UHC superset, so it reaches all
+    11172 modern Hangul syllables rather than the 2350 of the original standard;
+    ``cp949`` was measured against it over the whole block and answers
+    identically, so neither is more correct and swapping them buys nothing.
+
+    Windows Latin is unioned in for the reason it is unioned into the Chinese
+    one: the pack carries proportional roman, and without it a mixed string
+    would fail this rung and lose its Hangul in order to keep its ASCII.
+
+    **This predicate overlaps the Chinese one and must stay below it.** Han
+    encodes in EUC-KR, so asked in isolation this returns ``True`` for Chinese
+    text. What keeps that from re-facing Chinese documents is ladder order in
+    :func:`_face_ladder`, not anything here, and the ordering has a test.
+    """
+    return _encodable(char, "euc_kr") or _encodable(char, "cp1252")
+
+
 def _single_byte_encoding_covers(font: Any, char: str) -> bool:
     """Whether a Type-1 built-in's encoding can address ``char``, per its own vector."""
     codec = _ENCODING_CODECS.get(getattr(font, "encName", "") or "")
@@ -393,6 +520,8 @@ def font_can_draw(font_name: str, char: str) -> bool:
 
     if font_name == CJK_FONT:
         answer = _cid_pack_covers(char)
+    elif font_name == KOREAN_FONT:
+        answer = _korean_pack_covers(char)
     else:
         try:
             from reportlab.pdfbase import pdfmetrics
@@ -416,6 +545,113 @@ def font_can_draw_all(font_name: str, text: str | None) -> bool:
     return all(font_can_draw(font_name, ch) for ch in text or "")
 
 
+# -- Thai and Devanagari ------------------------------------------------------
+
+#: The bundled Noto faces, embedded rather than referenced. Unlike the Chinese
+#: and Korean packs these are real outlines in the repository, because neither
+#: script has a CID pack for reportlab to reference.
+THAI_FONT = "NotoSansThai"
+DEVANAGARI_FONT = "NotoSansDevanagari"
+
+#: Face name -> the file under ``fonts/`` that provides it.
+#:
+#: These are the faces as their authors published them, and they must stay that
+#: way. Subsetting at embed time is ordinary use and reportlab already does it,
+#: so the PDF carries only the glyphs a document needs and nothing here makes
+#: the output bigger. Subsetting the file *in the repository* is a different
+#: act: it produces a modified face, and the OFL binds "in part or in whole", so
+#: the cut-down file would still have to travel with its licence and copyright.
+#: The practical reason is plainer. A face cut to the glyphs some sample needed
+#: silently fails to draw anything outside that set, and the failure looks
+#: exactly like the box-glyph bug these faces were added to fix. Leave them
+#: whole.
+#: They live in a subdirectory of their own, with their licence texts beside
+#: them, and that is load bearing rather than tidy. The guard that checks every
+#: shipped font has resolvable licence text picks between several licences in
+#: one directory by longest shared filename prefix, and ``LICENSE_DEJAVU``
+#: shares no prefix with ``DejaVuSans``. It resolved only because it was the
+#: sole candidate in that directory. Dropping two more licence files beside it
+#: made all three score nothing and left every font in the folder unattributable,
+#: DejaVu included. One directory per vendor keeps each family's licence the
+#: unambiguous answer for its own fonts and leaves DejaVu exactly as it was.
+_BUNDLED_COMPLEX: dict[str, str] = {
+    THAI_FONT: "noto/NotoSansThai-Regular.ttf",
+    DEVANAGARI_FONT: "noto/NotoSansDevanagari-Regular.ttf",
+}
+
+#: Faces whose scripts are wrong without shaping rather than merely unkerned.
+#: Read by :func:`pdf_shaping_for_text` and by :func:`pdf_style_for_text`.
+_SHAPED_FACES = frozenset(_BUNDLED_COMPLEX)
+
+_complex_lock = Lock()
+_complex_registered: dict[str, bool] = {}
+
+
+def register_complex_font(face: str) -> bool:
+    """Register one bundled complex-script face with reportlab. Idempotent.
+
+    Lazy and per face, for the same reason :func:`register_cjk_font` is: a
+    process that never prints Thai should not pay for parsing a Thai font, and
+    neither face may ever become the process-wide body face.
+
+    Returns ``True`` when the face is usable, ``False`` when its file is missing
+    or unreadable. Never raises: a missing face costs those scripts their glyphs
+    and leaves every other document untouched.
+    """
+    known = _complex_registered.get(face)
+    if known is not None:
+        return known
+
+    with _complex_lock:
+        known = _complex_registered.get(face)
+        if known is not None:
+            return known
+        try:
+            from reportlab.lib.fonts import addMapping
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+
+            path = _FONT_DIR / _BUNDLED_COMPLEX[face]
+            if not path.is_file():
+                raise FileNotFoundError(f"bundled face missing: {path}")
+            pdfmetrics.registerFont(TTFont(face, str(path)))
+            # One weight is bundled, so bold markup resolves to the same face.
+            # Mapping bold onto a Latin bold would print the run as boxes, which
+            # is the trade the Chinese pack makes here too.
+            pdfmetrics.registerFontFamily(face, normal=face, bold=face, italic=face, boldItalic=face)
+            for bold_flag in (0, 1):
+                for italic_flag in (0, 1):
+                    addMapping(face, bold_flag, italic_flag, face)
+            _complex_registered[face] = True
+            logger.debug("PDF fonts: registered bundled face %s", face)
+        except Exception as exc:  # noqa: BLE001 - degrade, never break PDF output
+            _complex_registered[face] = False
+            logger.warning(
+                "PDF fonts: could not register the bundled face %s (%s); that script will not render",
+                face,
+                exc,
+            )
+        return _complex_registered[face]
+
+
+def font_needs_shaping(face: str) -> bool:
+    """Whether ``face`` draws its script wrongly unless the shaper runs.
+
+    Answers ``False`` when ``uharfbuzz`` is not installed, because then nothing
+    can shape and saying otherwise would have callers ask for something they
+    cannot get. It is a statement about what this process can actually do, not
+    about what the script deserves.
+    """
+    if face not in _SHAPED_FACES:
+        return False
+    try:
+        from reportlab.pdfbase import pdfmetrics
+
+        return bool(pdfmetrics.getFont(face).shapable)
+    except Exception:  # noqa: BLE001 - an unregistered or unshapable face simply does not shape
+        return False
+
+
 def _face_ladder(base: str | None, *, bold: bool) -> tuple[list[str], str]:
     """The faces to try in order, and the one to settle for if none of them fits.
 
@@ -430,6 +666,17 @@ def _face_ladder(base: str | None, *, bold: bool) -> tuple[list[str], str]:
     document contains. So a string nothing can fully draw still renders as much
     of itself as this product is able to render, instead of being pinned to the
     narrowest face on the ladder because of one character at the end of it.
+
+    That rule has a sharp edge worth knowing, because it keeps the string whole
+    at the cost of the script. Neither bundled Noto face carries the superscript
+    digits or the micro sign, so a single ``m2`` written with a superscript two
+    beside a Thai description drops the whole string to the Unicode face and the
+    Thai renders as boxes, while the same text with a plain digit renders
+    correctly. Devanagari behaves the same way. Degree, en dash, euro and the
+    multiplication sign are present in both faces and are unaffected, and CJK is
+    unaffected because the CID face covers those symbols itself. Fixing it means
+    choosing a face per run rather than per string, which is a larger change
+    than this function.
     """
     want_bold = bold or (base or "") in _BOLD_FACES
     widest = pdf_font(BOLD_FONT if want_bold else BODY_FONT, bold=want_bold)
@@ -440,6 +687,25 @@ def _face_ladder(base: str | None, *, bold: bool) -> tuple[list[str], str]:
         rungs.append(widest)
     if register_cjk_font():
         rungs.append(CJK_FONT)
+    # Korean sits below Chinese and the order is load bearing rather than
+    # stylistic. Han encodes in EUC-KR, so the Korean predicate answers True for
+    # Chinese text; put this rung first and every Chinese document silently
+    # changes face, renders plausibly, and is wrong. Chinese is asked first, so
+    # no string that reaches the Chinese pack today can reach this one.
+    if register_korean_font():
+        rungs.append(KOREAN_FONT)
+    # Thai and Devanagari go last, and unlike the Korean rung the reason is not
+    # that they overlap with anything above them. They do not: neither script
+    # shares a codepoint with Han or Hangul. The hazard is the opposite one.
+    # Both faces carry a full Latin alphabet as well as their own script, so
+    # each is a face that can draw "Total" or "2026" perfectly well, and a rung
+    # that answers True for plain Latin would capture Latin strings if anything
+    # above it ever stopped answering first. Nothing reaches here that an
+    # earlier rung can draw, so the position is what keeps a German invoice out
+    # of a Thai face.
+    for face in _BUNDLED_COMPLEX:
+        if register_complex_font(face):
+            rungs.append(face)
     return rungs, widest
 
 
@@ -495,6 +761,28 @@ def pdf_font_for_text(text: str | None, *, bold: bool = False, base: str | None 
     return widest
 
 
+def pdf_shaping_for_text(text: str | None, *, bold: bool = False, base: str | None = None) -> bool:
+    """Whether ``text`` needs the shaper, given the face it will be drawn in.
+
+    Takes the same arguments as :func:`pdf_font_for_text` and answers about the
+    face that function would pick, so the two cannot disagree about one string.
+
+    Useful to a caller drawing onto a canvas, and a bare table cell is such a
+    caller without looking like one, because reportlab draws a cell that is not
+    a flowable through canvas.drawString. Any such caller should read the
+    warning that comes with it. ``canvas.drawString(..., shaping=True)``
+    does nothing unless ``rlbidi`` is installed: reportlab defines its shaping
+    entry point twice and the definition it uses without that package drops the
+    argument and returns the text unchanged, with no warning and no error. The
+    supported route for Thai and Devanagari is :func:`pdf_style_for_text` and a
+    Paragraph, which reaches the shaper by a different path that does work.
+    Anything drawn with ``drawString`` will have its glyphs and lack their
+    arrangement, which for these two scripts means a page that is wrong rather
+    than one that is plain.
+    """
+    return font_needs_shaping(pdf_font_for_text(text, bold=bold, base=base))
+
+
 def pdf_style_for_text(style: Any, text: str | None, *, base: str | None = None) -> Any:
     """Return ``style``, or a clone of it faced for a script its own face cannot draw.
 
@@ -520,9 +808,20 @@ def pdf_style_for_text(style: Any, text: str | None, *, base: str | None = None)
     """
     start = base or getattr(style, "fontName", None) or BODY_FONT
     face = pdf_font_for_text(text, base=start)
+    shaping = font_needs_shaping(face)
     if face == start:
-        return style
-    return style.clone(f"{getattr(style, 'name', 'Style')}-{face}", fontName=face)
+        # The style already names the right face. It still needs shaping turned
+        # on if that face is a complex-script one, and it is cloned rather than
+        # written to for the reason in the docstring above: this object outlives
+        # the document. A style that already has shaping on is returned by
+        # identity, so the common Latin path copies nothing.
+        if not shaping or getattr(style, "shaping", 0):
+            return style
+        return style.clone(f"{getattr(style, 'name', 'Style')}-shaped", shaping=1)
+    name = f"{getattr(style, 'name', 'Style')}-{face}"
+    if shaping:
+        return style.clone(name, fontName=face, shaping=1)
+    return style.clone(name, fontName=face)
 
 
 def pdf_table_font_commands(
@@ -556,6 +855,16 @@ def pdf_table_font_commands(
     draws itself with its own style and a ``FONTNAME`` command would not reach
     it anyway. Give those the treatment from :func:`pdf_style_for_text`.
 
+    **These commands choose a face. They do not shape.** A bare cell is drawn
+    through ``canvas.drawString``, where reportlab drops its shaping argument
+    unless ``rlbidi`` is installed, so a cell holding Thai or Devanagari gets
+    the right characters in the wrong arrangement: a page that is wrong rather
+    than one that is plain. Nothing in the call signature hints at that, which
+    is why it is repeated here instead of left in the module docstring. Text
+    that needs shaping belongs in a ``Paragraph`` with
+    :func:`pdf_style_for_text`. Korean, Chinese and Latin need no shaping, so
+    for those a ``FONTNAME`` command on its own is the whole answer.
+
     Bold cells resolve to the same single-weight CJK face, so a Chinese heading
     is legible and simply not heavier. That is the same trade
     :func:`register_cjk_font` documents.
@@ -584,6 +893,494 @@ def pdf_table_font_commands(
     return commands
 
 
+# The shaper is asked at one size because its answer does not depend on size.
+# Measured across 6, 7, 8, 9, 10, 12, 18 and 36 point on both bundled faces: one
+# distinct result each. The generators draw these tables at 7, 8 and 9 point, so
+# a size-dependent shaper would force this helper to know every table's
+# ``FONTSIZE``, which is a far larger change than shaping once per string. There
+# is a test named for this, so the assumption fails loudly rather than rotting.
+_SHAPING_SIZE = 12
+
+
+def _shape_cell(text: str, face: str) -> str:
+    """``text`` shaped for ``face``, or ``text`` unchanged if the shaper cannot.
+
+    ``shapeStr`` goes straight to reportlab and reads the face out of its own
+    registry, so the face has to be registered before it is called. The build
+    path registers lazily through :func:`pdf_font_for_text`, but a caller that
+    shapes before anything has resolved that face gets a ``KeyError`` out of
+    ``pdfmetrics.getTypeFace`` that reads like a broken install. So this asks
+    for the registration itself instead of depending on the order it is called
+    in. Registration is idempotent, so asking costs nothing.
+
+    A failure returns the original text, which is the very behaviour this
+    function exists to improve on rather than a safe default, and that is why it
+    is logged at warning level: a document that prints is worth more than a
+    document that raises, but nobody should have to guess why the marks are
+    still wrong.
+    """
+    register_complex_font(face)
+    try:
+        from reportlab.pdfbase.ttfonts import shapeStr
+
+        # Returned with reportlab's own type still on it rather than flattened
+        # to a plain str. That type is what makes shaping safe to apply twice;
+        # see the note on the marker helper below.
+        return shapeStr(text, face, _SHAPING_SIZE)
+    except Exception as exc:  # noqa: BLE001 - see the docstring, printing beats raising
+        logger.warning("PDF fonts: could not shape a table cell in %s (%s); it prints unshaped", face, exc)
+        return text
+
+
+def _shaped_text_marker() -> Any:
+    """The type reportlab tags already-shaped text with, for use with ``isinstance``.
+
+    Shaping is not idempotent and fails destructively, which is why this exists.
+    Shaping a Thai stack once substitutes the tone mark for its raised form at
+    U+E000; shaping that result again turns it into U+FFFF, which no face can
+    draw, so the cell prints as boxes. Nothing raises and nothing is logged. A
+    caller who applies this helper twice, or a generator that gains a second
+    call in a later edit, would get a worse page than the one this module set
+    out to fix.
+
+    ``ShapedStr`` subclasses ``str``, so text carrying it behaves as a string
+    everywhere, and a cell holding one draws byte for byte what the plain string
+    draws. Measured, not assumed.
+
+    Returns the empty tuple on a reportlab with no such type, which makes every
+    ``isinstance`` check against it False and leaves the previous behaviour.
+    """
+    try:
+        from reportlab.pdfbase.ttfonts import ShapedStr
+    except Exception:  # noqa: BLE001 - an older reportlab simply has no marker to read
+        return ()
+    return ShapedStr
+
+
+def pdf_table_shaped_rows(
+    rows: Sequence[Sequence[Any]],
+    *,
+    base: str | None = None,
+    header_rows: int = 0,
+    header_base: str | None = None,
+) -> list[list[Any]]:
+    """``rows`` with every bare cell that needs shaping already shaped.
+
+    :func:`pdf_table_font_commands` gives a cell the right face and cannot give
+    it the right shape, because a bare cell is drawn through
+    ``canvas.drawString``, where reportlab discards its shaping argument unless
+    ``rlbidi`` is installed. Thai and Devanagari in a plain cell therefore come
+    out as the right characters in the wrong arrangement. Shaping the text
+    before it reaches the table sidesteps that: the cell then holds the glyphs
+    the shaper chose, and the draw call has nothing left to do. This needs no
+    new dependency, because the shaper is :mod:`uharfbuzz`, which already ships.
+
+    Call this before building the ``Table``, and give it the same ``base``,
+    ``header_rows`` and ``header_base`` you give :func:`pdf_table_font_commands`.
+    Both resolve the face the same way, so the same arguments are what keep them
+    agreeing about which face each cell is in.
+
+    Only cells whose face reports :func:`font_needs_shaping` are touched, and
+    that is what keeps this away from the common case: Latin, Korean, Chinese
+    and Arabic all answer ``False`` and come back untouched. The narrowness is
+    the point rather than an optimisation. Handing Latin to the shaper applies
+    its ligatures, so ``five`` becomes one glyph and the column width moves with
+    it; a version of this that shaped every cell would quietly rewrite English
+    documents while looking like it only touched Thai.
+
+    Cells holding a flowable are left alone, because a ``Paragraph`` shapes
+    itself through :func:`pdf_style_for_text` and never had this problem.
+
+    Applying this twice is safe, and it needs to be, because shaping is not
+    idempotent and fails destructively: shaping an already shaped Thai stack
+    turns the substituted mark into U+FFFF, which no face draws, silently. Text
+    this function has shaped carries reportlab's ``ShapedStr`` type and is
+    skipped on any later pass, so a generator that gains a second call does not
+    quietly start printing boxes.
+
+    Args:
+        rows: The table's data, row-major, as it would be handed to ``Table``.
+        base: The face the table draws its body cells in today.
+        header_rows: How many leading rows are drawn in a different face.
+        header_base: The face those rows are drawn in.
+
+    Returns:
+        A new row structure, always, so the type a caller gets back does not
+        depend on what happened to be in the table. Only the shaped cells are
+        replaced: every other cell is the same object that was passed in, which
+        is the guarantee that matters, because it is the cells rather than the
+        lists around them that carry a document's text.
+    """
+    body_base = base or BODY_FONT
+    head_base = header_base or BOLD_FONT
+    already_shaped = _shaped_text_marker()
+    shaped_rows = [list(row) for row in rows]
+    for row_index, row in enumerate(shaped_rows):
+        start = head_base if row_index < header_rows else body_base
+        for col_index, cell in enumerate(row):
+            if not isinstance(cell, str) or isinstance(cell, already_shaped):
+                continue
+            # This order is deliberate. ``font_needs_shaping`` answers from the
+            # registered font object, and ``pdf_font_for_text`` is what causes a
+            # bundled face to be registered at all, so asking the other way
+            # round reports False for a face that does need shaping.
+            face = pdf_font_for_text(cell, base=start)
+            if not font_needs_shaping(face):
+                continue
+            shaped_rows[row_index][col_index] = _shape_cell(cell, face)
+    return shaped_rows
+
+
+_TABLE_CELL_PADDING = 12.0
+
+#: A column narrower than this is on the page and still not readable: at the
+#: eight point these tables draw at it leaves room for about seven characters
+#: once the cell padding is taken off. It is a threshold for reporting, not a
+#: constraint to enforce. Widening one column here means narrowing another, and
+#: the caller has no more paper to give.
+_MIN_LEGIBLE_COLUMN = 48.0
+
+
+def _row_style(style: Any, header_style: Any | None, row_index: int, header_rows: int) -> Any:
+    """The style a row's cells are measured and drawn with."""
+    if header_style is not None and row_index < header_rows:
+        return header_style
+    return style
+
+
+def pdf_table_available_width(doc: Any) -> float:
+    """The width a table can actually occupy inside ``doc``'s frame.
+
+    ``doc.width`` is the space between the margins, and that is not the space a
+    flowable is given. ``SimpleDocTemplate`` lays its story out in a ``Frame``,
+    and a Frame pads by six points on each side, so a table built to
+    ``doc.width`` begins six points inside the left margin and ends six points
+    past the right one. That is on the paper and off the frame, and at six
+    points it reads as a rounding error when it is in fact a whole cell padding.
+    A centred table hides it entirely by overflowing both sides equally and
+    landing back on the margins, which is why this was worth a named function
+    rather than a subtraction at each call site.
+
+    The padding is read from a Frame rather than written down here, so it stays
+    reportlab's number. If a future version renames the attribute this falls back
+    to the documented default instead of failing in the middle of a report.
+
+    Args:
+        doc: A reportlab ``SimpleDocTemplate`` (anything with ``width``).
+
+    Returns:
+        The usable width in points.
+    """
+    from reportlab.platypus import Frame
+
+    frame = Frame(0.0, 0.0, float(doc.width), 1.0)
+    return float(doc.width) - getattr(frame, "_leftPadding", 6.0) - getattr(frame, "_rightPadding", 6.0)
+
+
+def _natural_column_widths(
+    rows: Sequence[Sequence[Any]],
+    style: Any,
+    *,
+    header_style: Any | None = None,
+    header_rows: int = 0,
+    padding: float = _TABLE_CELL_PADDING,
+) -> list[float]:
+    """The width each column would take if nothing had to fit.
+
+    Measuring is the expensive part of laying a table out - one
+    ``stringWidth`` per cell - so it is done once and the arithmetic that
+    follows works on the answer.
+
+    Args:
+        rows: The table's cells, as they will be handed to ``Table``.
+        style: The paragraph style body cells are drawn with.
+        header_style: The style for the first ``header_rows`` rows.
+        header_rows: How many leading rows use ``header_style``.
+        padding: Horizontal cell padding, both sides together, in points.
+
+    Returns:
+        One natural width per column, empty when there are no columns.
+    """
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    columns = max((len(row) for row in rows), default=0)
+    if not columns:
+        return []
+    natural = [0.0] * columns
+    for row_index, row in enumerate(rows):
+        row_style = _row_style(style, header_style, row_index, header_rows)
+        for col_index, cell in enumerate(row):
+            if not isinstance(cell, str):
+                continue
+            faced = pdf_style_for_text(row_style, cell)
+            width = stringWidth(cell, faced.fontName, faced.fontSize) + padding
+            natural[col_index] = max(natural[col_index], width)
+    return natural
+
+
+def _fit_to_width(natural: Sequence[float], available: float) -> list[float]:
+    """Squeeze natural widths into ``available``, taking it from the wide.
+
+    Every column narrower than an equal share keeps its natural width, and
+    what remains is divided among the rest, repeatedly, until the division
+    holds. A label column stays legible and the prose column beside it
+    absorbs the loss.
+
+    Args:
+        natural: One natural width per column.
+        available: The frame width to fit into.
+
+    Returns:
+        One width per column, summing to at most ``available``.
+    """
+    if sum(natural) <= available:
+        return list(natural)
+    fitted = list(natural)
+    unsettled = list(range(len(natural)))
+    room = available
+    while unsettled:
+        share = room / len(unsettled)
+        settled = {index for index in unsettled if natural[index] <= share}
+        if not settled:
+            for index in unsettled:
+                fitted[index] = share
+            break
+        for index in settled:
+            fitted[index] = natural[index]
+            room -= natural[index]
+        unsettled = [index for index in unsettled if index not in settled]
+    return fitted
+
+
+def pdf_table_legible_columns(
+    rows: Sequence[Sequence[Any]],
+    available: float,
+    style: Any,
+    *,
+    header_style: Any | None = None,
+    header_rows: int = 0,
+    padding: float = _TABLE_CELL_PADDING,
+) -> int:
+    """How many leading columns this table can print and still be read.
+
+    :func:`pdf_table_column_widths` divides the frame between whatever
+    columns it is given, and past a point there is nothing left to divide.
+    Measured on a landscape A4 frame at the size a dashboard export draws
+    at: thirty columns are narrow but drawn, forty make the header row
+    taller than the frame and reportlab refuses the table, and eighty
+    leave each column narrower than its own padding, at which point
+    reportlab is handed a negative content width and raises. The caller
+    that hits this is not a stress test - a KPI grouped by a free-text
+    field becomes one column per group.
+
+    So the count comes back here and the caller decides what to do with
+    the columns beyond it, which has to be something a reader can see:
+    dropping them quietly would be a worse defect than the crash.
+
+    The answer is the widest leading run of columns that
+    :func:`pdf_table_column_widths` would not squeeze below the legibility
+    floor - not ``available`` divided by that floor. The difference
+    matters: twenty short columns fit the frame at their own widths with
+    room to spare, and a flat division would throw four of them away to
+    fix a problem they do not have. Dropping a column only ever frees
+    room, so the property is monotone in the count and the answer is found
+    by halving rather than by trying every prefix.
+
+    At least one column always comes back, even where the frame cannot
+    hold one legibly, because a squeezed column beats a blank page.
+
+    Args:
+        rows: The table's cells, as they will be handed to ``Table``.
+        available: The frame width to fit into, normally ``doc.width``.
+        style: The paragraph style body cells are drawn with.
+        header_style: The style for the first ``header_rows`` rows.
+        header_rows: How many leading rows use ``header_style``.
+        padding: Horizontal cell padding, both sides together, in points.
+
+    Returns:
+        How many of the leading columns to keep. ``0`` only when there are
+        no columns at all.
+    """
+    natural = _natural_column_widths(
+        rows,
+        style,
+        header_style=header_style,
+        header_rows=header_rows,
+        padding=padding,
+    )
+    if not natural:
+        return 0
+
+    def legible(count: int) -> bool:
+        head = natural[:count]
+        fitted = _fit_to_width(head, available)
+        return all(w >= n or w >= _MIN_LEGIBLE_COLUMN for w, n in zip(fitted, head, strict=True))
+
+    if legible(len(natural)):
+        return len(natural)
+    low, high, best = 1, len(natural), 1
+    while low <= high:
+        middle = (low + high) // 2
+        if legible(middle):
+            best = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
+def pdf_table_column_widths(
+    rows: Sequence[Sequence[Any]],
+    available: float,
+    style: Any,
+    *,
+    header_style: Any | None = None,
+    header_rows: int = 0,
+    padding: float = _TABLE_CELL_PADDING,
+    report: str = "table",
+) -> list[float]:
+    """Column widths that fit ``available``, leaving narrow columns alone.
+
+    A table built without ``colWidths`` is sized by reportlab, and neither of
+    the two answers it gives is the one a report wants. With bare string cells
+    it sizes each column to its longest string and lets the table grow, so a
+    wide export is drawn past the edge of the sheet; nothing raises, nothing is
+    logged, and the file still extracts every column, which is exactly why that
+    goes unnoticed. With flowable cells it does the opposite and spreads the
+    columns across the whole frame, so a two column export that fits
+    comfortably today would be stretched out to the margins. Passing widths is
+    what avoids both.
+
+    When the natural widths fit, they come back unchanged and the table is laid
+    out as it is now. When they do not, the overflow is taken from the wide
+    columns only: every column narrower than an equal share keeps its natural
+    width, and what remains is divided among the rest, repeatedly, until the
+    division holds. A label column stays legible and the prose column beside it
+    absorbs the loss, which is not what a flat proportional scaling does to a
+    table holding one long value.
+
+    Complex scripts are measured before shaping, so a Thai or Devanagari column
+    can come out slightly narrow and wrap once more than it needed to. The text
+    is inside the frame either way, which is what this function promises.
+
+    Args:
+        rows: The table's cells, as they will be handed to ``Table``.
+        available: The frame width to fit into, normally ``doc.width``.
+        style: The paragraph style body cells are drawn with.
+        header_style: The style for the first ``header_rows`` rows.
+        header_rows: How many leading rows use ``header_style``.
+        padding: Horizontal cell padding, both sides together, in points.
+        report: Named in the log line when columns have to be compressed.
+
+    Returns:
+        One width per column, summing to at most ``available``.
+    """
+    natural = _natural_column_widths(
+        rows,
+        style,
+        header_style=header_style,
+        header_rows=header_rows,
+        padding=padding,
+    )
+    if not natural:
+        return []
+    fitted = _fit_to_width(natural, available)
+    squeezed = [w for w, n in zip(fitted, natural, strict=True) if w < n and w < _MIN_LEGIBLE_COLUMN]
+    if squeezed:
+        logger.warning(
+            "%s: %d of %d columns were compressed below %.0fpt to fit the page, narrowest %.0fpt. "
+            "The data is on the page, but those columns are hard to read",
+            report,
+            len(squeezed),
+            len(natural),
+            _MIN_LEGIBLE_COLUMN,
+            min(squeezed),
+        )
+    return fitted
+
+
+def pdf_table_paragraph_rows(
+    rows: Sequence[Sequence[Any]],
+    style: Any,
+    *,
+    header_style: Any | None = None,
+    header_rows: int = 0,
+    style_for: Callable[[int, int], Any | None] | None = None,
+) -> list[list[Any]]:
+    """Wrap bare string cells in Paragraphs, escaped and faced cell by cell.
+
+    A bare cell cannot wrap. reportlab draws it with ``canvas.drawString`` at
+    the column's left edge and lets it run on, so a value longer than its
+    column is printed over the column beside it, and a table wider than its
+    frame is printed off the paper. A Paragraph wraps, and it is also the path
+    that shapes, so the same text a bare cell mis-arranges comes out correct
+    here.
+
+    Because a Paragraph shapes its own text, cells have to arrive raw. Handing
+    the output of :func:`pdf_table_shaped_rows` to this function would shape a
+    second time, and shaping twice is destructive rather than idempotent: a
+    Thai stack that became a private use codepoint on the first pass becomes
+    U+FFFF on the second, which no face draws and nothing downstream can
+    recover. That is refused loudly here, because it is invisible on the page
+    it produces.
+
+    Cell text is escaped, since a Paragraph parses its argument as markup where
+    a bare cell took it literally, and these cells carry whatever a query
+    returned. Newlines become line breaks: a bare cell drew them as line
+    breaks, and a Paragraph would otherwise collapse them into spaces.
+
+    A ``TableStyle`` cannot reach these cells once they are Paragraphs.
+    FONTNAME, FONTSIZE, TEXTCOLOR and ALIGN are read from the paragraph's own
+    style, so a table that named a bold label column, a right aligned money
+    column or a white header through table commands keeps saying so and stops
+    being obeyed. Those commands become dead the moment a cell is wrapped, and
+    dead quietly: the text is still on the page, in the wrong weight, the wrong
+    alignment, or in black on a dark fill. ``style_for`` is where that intent
+    moves to, and a table converted to this path should have its inert commands
+    deleted rather than left behind to describe a layout that is no longer
+    happening.
+
+    Args:
+        rows: The table's cells. Cells that are not strings are left alone.
+        style: The paragraph style for body cells.
+        header_style: The style for the first ``header_rows`` rows.
+        header_rows: How many leading rows use ``header_style``.
+        style_for: Called with ``(row_index, column_index)`` for every string
+            cell. Return a style to draw that cell with, or ``None`` to keep
+            the row's style. This is how per column and per row appearance
+            survives the move off table commands.
+
+    Returns:
+        A fresh list of rows, with string cells replaced by Paragraphs.
+
+    Raises:
+        ValueError: If a cell has already been shaped.
+    """
+    from reportlab.platypus import Paragraph
+
+    already_shaped = _shaped_text_marker()
+    wrapped = [list(row) for row in rows]
+    for row_index, row in enumerate(wrapped):
+        row_style = _row_style(style, header_style, row_index, header_rows)
+        for col_index, cell in enumerate(row):
+            if not isinstance(cell, str):
+                continue
+            if isinstance(cell, already_shaped):
+                raise ValueError(
+                    "table cell has already been shaped, and a Paragraph shapes its own text. "
+                    "Shaping twice destroys the codepoints, so pass raw cells here and drop the "
+                    "pdf_table_shaped_rows call for this table."
+                )
+            cell_style = row_style
+            if style_for is not None:
+                chosen = style_for(row_index, col_index)
+                if chosen is not None:
+                    cell_style = chosen
+            markup = html.escape(cell).replace(chr(10), "<br/>")
+            wrapped[row_index][col_index] = Paragraph(markup, pdf_style_for_text(cell_style, cell))
+    return wrapped
+
+
 # Register eagerly, at import time. Generators capture the face names with
 # ``from app.core.pdf_fonts import BODY_FONT, BOLD_FONT``, which snapshots the
 # string values at the moment of import. If registration only ran later (inside
@@ -600,13 +1397,23 @@ __all__ = [
     "BODY_FONT",
     "BOLD_FONT",
     "CJK_FONT",
+    "DEVANAGARI_FONT",
+    "THAI_FONT",
     "font_can_draw",
     "font_can_draw_all",
+    "font_needs_shaping",
     "has_cjk",
     "pdf_font",
     "pdf_font_for_text",
+    "pdf_shaping_for_text",
     "pdf_style_for_text",
+    "pdf_table_available_width",
+    "pdf_table_column_widths",
     "pdf_table_font_commands",
+    "pdf_table_legible_columns",
+    "pdf_table_paragraph_rows",
+    "pdf_table_shaped_rows",
     "register_cjk_font",
+    "register_complex_font",
     "register_pdf_fonts",
 ]

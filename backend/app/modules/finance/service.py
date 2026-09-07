@@ -8,14 +8,17 @@ Stateless service layer.
 import hashlib
 import logging
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import event_bus
+from app.core.money import money_quantum
 from app.modules.finance import gaap
 from app.modules.finance.models import (
     EVMSnapshot,
@@ -212,6 +215,86 @@ def _compute_invoice_total(subtotal: str, tax: str) -> str:
     return str(s + t)
 
 
+# The widest gap allowed between an invoice's own figures.
+#
+# Two cents, the same figure ``invoice_capture_logic.AMOUNT_TOLERANCE`` holds a
+# scanned document to, and deliberately so: a supplier invoice that passed the
+# capture review must not then be refused when it is booked. It covers rounding
+# and nothing else. Beyond it the numbers are telling two different stories
+# about the same document, and every receiver checks the arithmetic
+# (EN 16931 BR-CO-15), so a total that does not add up is not a preference
+# somebody expressed, it is a document that will be rejected downstream.
+INVOICE_AMOUNT_TOLERANCE = Decimal("0.02")
+
+
+def _line_sum_tolerance(line_count: int) -> Decimal:
+    """How far a set of line amounts may sit from the subtotal they make up.
+
+    A cent per line, because every line is rounded on its own and the error
+    accumulates, with the invoice-level tolerance as the floor for a document
+    of one or two lines.
+    """
+    return max(INVOICE_AMOUNT_TOLERANCE, Decimal("0.01") * line_count)
+
+
+def _refuse_inconsistent_amounts(
+    *,
+    subtotal: str,
+    tax: str,
+    total: str | None,
+    line_amounts: list[str] | None,
+) -> None:
+    """Refuse an invoice whose own figures disagree.
+
+    Issue #466. A total is a claim about the document, not a free-standing
+    number: it has to be the subtotal plus the tax, and the lines have to add
+    up to the subtotal they are lines of. This used to be enforced by quietly
+    overwriting whatever total the caller sent with ``subtotal + tax``, which
+    is why a client that had been posting a truncated total for weeks looked
+    healthy from the database side - the wrong figure never landed, and nothing
+    said it had arrived. Overwriting a number somebody typed is how a defect
+    like that stays invisible, so a disagreement is refused and named instead.
+
+    Args:
+        subtotal: the net figure being stored.
+        tax: the tax figure being stored.
+        total: the gross the caller asserts, or ``None`` to let it be derived.
+        line_amounts: the amounts of the line items being stored, or ``None``
+            when the caller is not touching the lines.
+
+    Raises:
+        HTTPException: 400, naming both figures, when they disagree by more
+            than the tolerance.
+    """
+    net = _parse_decimal(subtotal, "amount_subtotal")
+    vat = _parse_decimal(tax, "tax_amount")
+
+    if total is not None:
+        gross = _parse_decimal(total, "amount_total")
+        if abs(gross - (net + vat)) > INVOICE_AMOUNT_TOLERANCE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"amount_total ({gross}) must equal amount_subtotal + tax_amount "
+                    f"({net} + {vat} = {net + vat}). Leave amount_total out to have it computed."
+                ),
+            )
+
+    if line_amounts:
+        booked = sum(
+            (_parse_decimal(amount, "line_items.amount") for amount in line_amounts),
+            Decimal("0"),
+        )
+        if abs(booked - net) > _line_sum_tolerance(len(line_amounts)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"The line items add up to {booked}, which is not the amount_subtotal "
+                    f"of {net}. Invoice lines are net amounts and have to make up the subtotal."
+                ),
+            )
+
+
 # ── Gap E: retainage withholding maths ───────────────────────────────────────
 
 
@@ -287,6 +370,70 @@ def _line_item_from(invoice_id: uuid.UUID, item_data: InvoiceLineItemCreate, idx
     )
 
 
+async def resolve_position_cost_lines(
+    session: AsyncSession,
+    items: Sequence[InvoiceLineItemCreate],
+) -> None:
+    """Turn a named bill position into the cost line the money posts against.
+
+    Issue #454. A supplier invoice arrives against work, and the person entering
+    it knows which bill item the work was for; they do not know, and should not
+    have to look up, the cost line that item rolls into. This resolves the one
+    to the other in a single query and writes the result onto ``cost_line_id``,
+    so the row still carries exactly one link and the rollup still has exactly
+    one way to find it.
+
+    Two refusals rather than two silent outcomes:
+
+    * a position that is not on the cost spine, because a line that quietly
+      posted nowhere is precisely the failure this field exists to remove, and
+      the fix is one call to the spine generator rather than a guess here;
+    * a position and a cost line that disagree, because that is two answers to
+      one question and picking either one is picking somebody's mistake.
+
+    Lines that name no position are left exactly as they are, which is every
+    line written before this existed.
+    """
+    wanted = {item.boq_position_id for item in items if getattr(item, "boq_position_id", None) is not None}
+    if not wanted:
+        return
+
+    from app.modules.boq.models import Position
+
+    rows = (await session.execute(select(Position.id, Position.cost_line_id).where(Position.id.in_(wanted)))).all()
+    resolved = {row[0]: row[1] for row in rows}
+
+    for item in items:
+        position_id = getattr(item, "boq_position_id", None)
+        if position_id is None:
+            continue
+        if position_id not in resolved:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"No bill position {position_id} exists, so this line cannot be attributed to it.",
+            )
+        cost_line_id = resolved[position_id]
+        if cost_line_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Bill position {position_id} is not on the cost spine, so an actual posted "
+                    "against it would roll up nowhere. Generate the spine for the project first "
+                    "(POST /api/v1/costmodel/projects/{project_id}/spine/generate-from-boq/) and "
+                    "send this line again."
+                ),
+            )
+        if item.cost_line_id is not None and item.cost_line_id != cost_line_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"This line names bill position {position_id}, which belongs to cost line "
+                    f"{cost_line_id}, and cost line {item.cost_line_id} as well. Send one of them."
+                ),
+            )
+        item.cost_line_id = cost_line_id
+
+
 class FinanceService:
     """Business logic for finance operations."""
 
@@ -306,10 +453,25 @@ class FinanceService:
         self,
         data: InvoiceCreate,
         user_id: str | None = None,
+        *,
+        enforce_line_sum: bool = True,
     ) -> Invoice:
         """Create a new invoice with optional line items.
 
-        Automatically computes amount_total = amount_subtotal + tax_amount.
+        ``amount_total`` is computed as ``amount_subtotal + tax_amount`` when
+        the caller leaves it out. When the caller does send one it is kept, and
+        checked: a total that does not add up is refused rather than silently
+        replaced (issue #466, see :func:`_refuse_inconsistent_amounts`).
+
+        Args:
+            data: the invoice to create.
+            user_id: who is creating it, recorded as ``created_by``.
+            enforce_line_sum: whether the line items have to add up to the
+                subtotal. The one caller that turns this off is invoice
+                capture, whose lines are a best-effort reading of a scanned
+                document while the net comes from the document's own header,
+                and whose amounts are already checked by
+                ``invoice_capture_logic.validate_amounts`` before booking.
         """
         # Validate initial status
         if data.status not in _VALID_INVOICE_STATUSES:
@@ -346,8 +508,23 @@ class FinanceService:
         else:
             invoice_number = await self.invoices.next_invoice_number(data.project_id, data.invoice_direction)
 
-        # Server-side total computation: always override amount_total
-        computed_total = _compute_invoice_total(data.amount_subtotal, data.tax_amount)
+        # A total the caller asserted is kept and checked; one it left out is
+        # derived. Silently replacing an asserted total is what hid #466: the
+        # client had been posting a figure truncated at its own thousands
+        # separator, and because the server rebuilt the number on every write,
+        # the database looked right and nothing anywhere reported the client.
+        asserted_total = data.amount_total if "amount_total" in data.model_fields_set else None
+        _refuse_inconsistent_amounts(
+            subtotal=data.amount_subtotal,
+            tax=data.tax_amount,
+            total=asserted_total,
+            line_amounts=[item.amount for item in data.line_items] if enforce_line_sum else None,
+        )
+        computed_total = (
+            asserted_total
+            if asserted_total is not None
+            else _compute_invoice_total(data.amount_subtotal, data.tax_amount)
+        )
 
         invoice = Invoice(
             project_id=data.project_id,
@@ -371,6 +548,7 @@ class FinanceService:
         invoice = await self.invoices.create(invoice)
 
         # Create line items
+        await resolve_position_cost_lines(self.session, data.line_items)
         for idx, item_data in enumerate(data.line_items):
             await self.line_items.create(_line_item_from(invoice.id, item_data, idx))
 
@@ -455,14 +633,28 @@ class FinanceService:
                     ),
                 )
 
-        # Recompute total if subtotal or tax changed
-        new_subtotal = fields.get("amount_subtotal", invoice.amount_subtotal)
-        new_tax = fields.get("tax_amount", invoice.tax_amount)
-        if "amount_subtotal" in fields or "tax_amount" in fields:
-            fields["amount_total"] = _compute_invoice_total(
-                new_subtotal or invoice.amount_subtotal,
-                new_tax or invoice.tax_amount,
+        # The figures this write leaves the invoice with, whether they come
+        # from the patch or from the row it lands on.
+        new_subtotal = str(fields.get("amount_subtotal") or invoice.amount_subtotal)
+        new_tax = str(fields.get("tax_amount") or invoice.tax_amount)
+        asserted_total = fields.get("amount_total")
+        # Lines are only weighed when this patch replaces them. A patch that
+        # touches an unrelated field must not be refused because of lines it is
+        # not writing, and a claim-born invoice keeps its own breakdown.
+        patch_line_amounts = (
+            [str(getattr(item, "amount", "0")) for item in data.line_items] if data.line_items else None
+        )
+        if asserted_total is not None or patch_line_amounts:
+            _refuse_inconsistent_amounts(
+                subtotal=new_subtotal,
+                tax=new_tax,
+                total=asserted_total if asserted_total is None else str(asserted_total),
+                line_amounts=patch_line_amounts,
             )
+        # Recompute total only when nothing was asserted: an amount change that
+        # comes without a total still has to leave the invoice adding up.
+        if asserted_total is None and ("amount_subtotal" in fields or "tax_amount" in fields):
+            fields["amount_total"] = _compute_invoice_total(new_subtotal, new_tax)
 
         if fields:
             await self.invoices.update(invoice_id, **fields)
@@ -489,6 +681,7 @@ class FinanceService:
             prior_total = _sum(prior_items)
             new_total = _sum(data.line_items)
 
+            await resolve_position_cost_lines(self.session, data.line_items)
             await self.line_items.delete_by_invoice(invoice_id)
             for idx, item_data in enumerate(data.line_items):
                 await self.line_items.create(_line_item_from(invoice_id, item_data, idx))
@@ -1664,6 +1857,17 @@ class FinanceService:
         ac = _parse_decimal(data.ac, "ac")
 
         zero = Decimal("0")
+        # The project's base currency. Read unconditionally, not just on the
+        # derive-from-budget path below, because the forecast block is rounded
+        # to it and a snapshot row is persisted: a quantum that ignores its
+        # currency writes a Kuwaiti dinar into the table with its third digit
+        # already gone, and no reader downstream can put it back.
+        from app.modules.projects.repository import ProjectRepository
+
+        project = await ProjectRepository(self.session).get_by_id(data.project_id)
+        base_ccy = (getattr(project, "currency", "") or "").strip().upper() if project else ""
+        money_q = money_quantum(base_ccy)
+
         # Only derive baselines for a truly empty snapshot (all four zero).
         # A legitimately-supplied single 0 (e.g. ev=0 on an early project)
         # must be respected, not overwritten with a derived value.
@@ -1674,10 +1878,6 @@ class FinanceService:
             # Budget totals come back per-currency; convert each into the
             # project base currency (Project.fx_rates) before deriving EVM
             # baselines so a multi-currency project doesn't blend currencies.
-            from app.modules.projects.repository import ProjectRepository
-
-            project = await ProjectRepository(self.session).get_by_id(data.project_id)
-            base_ccy = (getattr(project, "currency", "") or "").strip().upper() if project else ""
             fx_map = _project_fx_map(project)
 
             def _budget_base(amounts: dict[str, float]) -> Decimal:
@@ -1719,20 +1919,24 @@ class FinanceService:
 
         # ── Forecast metrics ────────────────────────────────────────────
         # EAC: CPI-based forecast. Falls back to AC + remaining BAC when CPI==0.
+        # The quantum is the project currency's own subdivision, never a
+        # literal: these three amounts are written to the row, so rounding
+        # them to two places regardless of currency does not change how a
+        # number looks, it changes what is stored.
         if cpi != 0:
             eac = ac + (bac - ev) / cpi
         else:
             eac = ac + (bac - ev)
-        eac = eac.quantize(Decimal("0.01"))
+        eac = eac.quantize(money_q)
 
-        vac = (bac - eac).quantize(Decimal("0.01"))
+        vac = (bac - eac).quantize(money_q)
         # ETC ("estimate to complete") = forecast spend remaining. When a
         # project is already over-forecast (ac > eac), ``eac - ac`` would
         # report a negative remaining cost which is semantically wrong -
         # the answer is "nothing more should be spent" (i.e. 0), not a
         # negative budget recovery. Clamp at zero so the FE KPI card
         # doesn't render a misleading negative figure.
-        etc = max(eac - ac, Decimal("0")).quantize(Decimal("0.01"))
+        etc = max(eac - ac, Decimal("0")).quantize(money_q)
 
         # TCPI: performance needed on remaining work to stay within BAC.
         # Clamp when over budget (bac - ac <= 0): the index is undefined

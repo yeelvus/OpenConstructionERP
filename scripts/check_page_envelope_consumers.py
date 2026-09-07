@@ -188,6 +188,57 @@ MIGRATED_ENDPOINTS: dict[str, str] = {
     # against the URL and names the row type where it is asked for.
     "/v1/contracts/contracts/": "contracts register",
     "/v1/contracts/progress-claims/": "progress claims",
+    # Wave 8, the registers a site reads daily. Ten routes across six modules,
+    # ranked by how fast the table behind each one fills against whether a
+    # screen actually reads it, and every one of them had a repository that
+    # already counted the matching set while the route wrote `items, _ = ...`.
+    #
+    # The subcontractor directory is the widest-read of them: five callers in
+    # five features, and two of those were asking for `limit: 500` against a
+    # route capped at `le=200`, so FastAPI answered 422 and the picker on the
+    # contracts page and in the timesheet editor was empty rather than short.
+    # Both now ask for the ceiling. Its wrapper also had to stop writing the
+    # `${q ? `?${q}` : ''}` suffix to be visible here at all - see the rfi and
+    # equipment notes above for the mechanism.
+    "/v1/subcontractors/subcontractors/": "subcontractor directory",
+    # Both supplier registers are read by one page that asks for exactly the
+    # route's ceiling of 200 at three call sites, which is the shape the qms
+    # note above describes: a full page is the one answer that means "there is
+    # more" rather than "that is all". Their api layer interpolated a `qs()`
+    # helper that carries its own `?`, so `url_shape` never saw the route; a
+    # sibling `query()` helper returning the same string without the leading
+    # `?` puts the literal back where this scan can read it.
+    "/v1/supplier-catalogs/catalog-items": "supplier catalog items",
+    "/v1/supplier-catalogs/vendors": "vendor register",
+    # Rows are workers times days, so this fills faster than anything else in
+    # the wave. Its api layer built every path from a module-level BASE, which
+    # is the idiom the wave-2 note names as invisible here; the list call now
+    # writes its route out in full while the rest of the file keeps BASE.
+    "/v1/field-time/timesheets/": "field timesheets",
+    # Four readers across three features and not one of them sends a limit, so
+    # all four took the default page of fifty and presented it as the register.
+    # One of those readers, the HSE picker, already decoded the envelope
+    # correctly as `Row[] | { items: Row[] }` - an inline union that is right
+    # about the shape and that BARE_ARRAY_HINT convicts anyway, because the
+    # `[]` inside the type argument matches. It names `Page<Row>` now, which is
+    # the only spelling this scan reads as migrated.
+    "/v1/safety/incidents/": "safety incident register",
+    "/v1/service/tickets/": "service tickets",
+    "/v1/service/work-orders/": "service work orders",
+    # One reader, the machine drawer, which sends no limit either.
+    "/v1/equipment/maintenance-work-orders/": "equipment maintenance orders",
+    "/v1/tasks/": "task register",
+    "/v1/tasks/my-tasks/": "my tasks",
+    #
+    # Deliberately absent, and this is the wave's one departure from its own
+    # ranking: `/v1/equipment/fuel-logs/`. It is enveloped in the router
+    # because a refuel is logged every time a machine is filled and the table
+    # outgrows its page within a season, but nothing in the application reads
+    # it - no wrapper, no page, no picker. An entry here would report "0 call
+    # sites, 0 migrated" and pass without reading anything, which is the
+    # decorative entry the notes above ban three times. Add it the day a caller
+    # appears. `/v1/variations/site-measurements/` sits in the same position
+    # for the same reason.
 }
 
 # Left bare on purpose in wave 4: `/v1/documents/photos/recent/`. It is a
@@ -348,11 +399,7 @@ QUERY_KEY_RE = r"queryKey:\s*\[\s*['\"`]{key}['\"`]"
 READ_CALLS: tuple[str, ...] = ("apiGet", "useGracefulQuery")
 WRITE_CALLS: tuple[str, ...] = ("apiPost", "apiPatch", "apiPut", "apiDelete")
 # Longest first, so a name that is a prefix of another cannot shadow it.
-CALL_RE = re.compile(
-    "|".join(
-        re.escape(n) for n in sorted((*READ_CALLS, *WRITE_CALLS), key=len, reverse=True)
-    )
-)
+CALL_RE = re.compile("|".join(re.escape(n) for n in sorted((*READ_CALLS, *WRITE_CALLS), key=len, reverse=True)))
 
 # A call is migrated when it names the envelope type. A call that still
 # names a bare array of the row type is not, and neither is one hedging
@@ -368,9 +415,7 @@ CALL_RE = re.compile(
 # and `.items` belonging to some neighbouring line inside the window is enough
 # to acquit a caller that reads a bare array.
 ENVELOPE_HINT = re.compile(r"Page<|\.items\b|items:\s")
-BARE_ARRAY_HINT = re.compile(
-    r"(?:" + "|".join(re.escape(n) for n in READ_CALLS) + r")<[^>]*\[\]"
-)
+BARE_ARRAY_HINT = re.compile(r"(?:" + "|".join(re.escape(n) for n in READ_CALLS) + r")<[^>]*\[\]")
 
 
 def url_shape(url: str) -> str:
@@ -450,14 +495,10 @@ def scan_query_keys(root: Path) -> dict[str, tuple[list[Path], list[Path]]]:
     wrapper caller was exactly the consumer tsc caught unmigrated while this
     scan reported the key clean.
     """
-    out: dict[str, tuple[list[Path], list[Path]]] = {
-        k: ([], []) for k in SHARED_QUERY_KEYS
-    }
+    out: dict[str, tuple[list[Path], list[Path]]] = {k: ([], []) for k in SHARED_QUERY_KEYS}
     if not SHARED_QUERY_KEYS:
         return out
-    patterns = {
-        k: re.compile(QUERY_KEY_RE.format(key=re.escape(k))) for k in SHARED_QUERY_KEYS
-    }
+    patterns = {k: re.compile(QUERY_KEY_RE.format(key=re.escape(k))) for k in SHARED_QUERY_KEYS}
 
     for path in root.rglob("*.ts*"):
         if "node_modules" in path.parts:
@@ -515,24 +556,16 @@ def report(root: Path) -> int:
         if endpoint not in MIGRATED_ENDPOINTS:
             continue
         reads, bad = by_key[key]
-        print(
-            f"queryKey ['{key}']: {len(reads)} reading call sites, {len(reads) - len(bad)} migrated"
-        )
+        print(f"queryKey ['{key}']: {len(reads)} reading call sites, {len(reads) - len(bad)} migrated")
         for p in sorted(set(bad)):
             print(f"  UNMIGRATED  {p.relative_to(REPO)}")
             failed = True
 
     if failed:
         print()
-        print(
-            "FAIL: an endpoint returns the envelope but some callers still read a bare array."
-        )
-        print(
-            "      Migrate every consumer in this commit. A shared React Query key means"
-        )
-        print(
-            "      a partial migration breaks at runtime and the build cannot see it."
-        )
+        print("FAIL: an endpoint returns the envelope but some callers still read a bare array.")
+        print("      Migrate every consumer in this commit. A shared React Query key means")
+        print("      a partial migration breaks at runtime and the build cannot see it.")
         return 1
     print("\nOK: every migrated endpoint has every consumer migrated.")
     return 0
@@ -548,31 +581,22 @@ def self_test() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         fake = Path(tmp)
         (fake / "Good.tsx").write_text(
-            "const page = await apiGet<Page<Row>>(`/v1/schedule/schedules/?project_id=${id}`);\n"
-            "return page.items;\n",
+            "const page = await apiGet<Page<Row>>(`/v1/schedule/schedules/?project_id=${id}`);\nreturn page.items;\n",
             encoding="utf-8",
         )
         consumers, unmigrated = scan(fake)
-        if (
-            len(consumers["/v1/schedule/schedules/"]) != 1
-            or unmigrated["/v1/schedule/schedules/"]
-        ):
+        if len(consumers["/v1/schedule/schedules/"]) != 1 or unmigrated["/v1/schedule/schedules/"]:
             print("SELF-TEST FAIL: a correctly migrated consumer was not accepted.")
             return 1
 
         (fake / "Bad.tsx").write_text(
-            "const rows = await apiGet<ScheduleRow[]>(`/v1/schedule/schedules/?project_id=${id}`);\n"
-            "return rows;\n",
+            "const rows = await apiGet<ScheduleRow[]>(`/v1/schedule/schedules/?project_id=${id}`);\nreturn rows;\n",
             encoding="utf-8",
         )
         consumers, unmigrated = scan(fake)
         if len(unmigrated["/v1/schedule/schedules/"]) != 1:
-            print(
-                "SELF-TEST FAIL: the guard accepted a consumer still reading a bare array."
-            )
-            print(
-                "                It cannot refuse, so a green run from it means nothing."
-            )
+            print("SELF-TEST FAIL: the guard accepted a consumer still reading a bare array.")
+            print("                It cannot refuse, so a green run from it means nothing.")
             return 1
 
         # The narrowings have to be proven too, or a later tightening could
@@ -597,14 +621,10 @@ def self_test() -> int:
         )
         consumers, unmigrated = scan(fake)
         if unmigrated["/v1/schedule/schedules/{}/activities/"]:
-            print(
-                "SELF-TEST FAIL: a POST/DELETE on the route was counted as a truncated read."
-            )
+            print("SELF-TEST FAIL: a POST/DELETE on the route was counted as a truncated read.")
             return 1
         if len(consumers["/v1/schedule/schedules/"]) != 1:
-            print(
-                "SELF-TEST FAIL: a doc comment quoting the route was counted as a consumer."
-            )
+            print("SELF-TEST FAIL: a doc comment quoting the route was counted as a consumer.")
             return 1
 
         # A migrated call standing next to a bare read of some OTHER route.
@@ -624,12 +644,8 @@ def self_test() -> int:
         )
         consumers, unmigrated = scan(fake)
         if unmigrated["/v1/schedule/schedules/"]:
-            print(
-                "SELF-TEST FAIL: a migrated call was convicted of its neighbour's bare array."
-            )
-            print(
-                "                Nothing in the file can clear that, so the guard blocks a"
-            )
+            print("SELF-TEST FAIL: a migrated call was convicted of its neighbour's bare array.")
+            print("                Nothing in the file can clear that, so the guard blocks a")
             print("                correct migration instead of an incorrect one.")
             return 1
 
@@ -645,9 +661,7 @@ def self_test() -> int:
         )
         consumers, unmigrated = scan(fake)
         if len(unmigrated["/v1/schedule/schedules/"]) != 1:
-            print(
-                "SELF-TEST FAIL: the guard accepted a caller hedging between array and envelope."
-            )
+            print("SELF-TEST FAIL: the guard accepted a caller hedging between array and envelope.")
             print("                That caller still throws `total` away.")
             return 1
         (fake / "Hedge.tsx").unlink()
@@ -678,24 +692,16 @@ def self_test() -> int:
         )
         consumers, unmigrated = scan(fake)
         if len(consumers["/v1/schedule/schedules/{}/activities/"]) != 1:
-            print(
-                "SELF-TEST FAIL: a read through a named wrapper was not counted at all."
-            )
-            print(
-                "                Such callers are invisible rather than green, so the"
-            )
+            print("SELF-TEST FAIL: a read through a named wrapper was not counted at all.")
+            print("                Such callers are invisible rather than green, so the")
             print("                per-endpoint totals understate what was inspected.")
             return 1
         if unmigrated["/v1/schedule/schedules/{}/activities/"]:
-            print(
-                "SELF-TEST FAIL: a wrapper call naming the envelope type was refused."
-            )
+            print("SELF-TEST FAIL: a wrapper call naming the envelope type was refused.")
             return 1
         if len(unmigrated["/v1/schedule/schedules/"]) != 1:
             print("SELF-TEST FAIL: a wrapper call reading a bare array was accepted.")
-            print(
-                "                It unwraps `.items` on the next line, so the envelope"
-            )
+            print("                It unwraps `.items` on the next line, so the envelope")
             print("                hint acquits it and only the bare hint can refuse.")
             return 1
         (fake / "Wrapper.tsx").unlink()
@@ -718,10 +724,7 @@ def self_test() -> int:
                 encoding="utf-8",
             )
             (fake / "Stale.tsx").write_text(
-                "useQuery({\n"
-                "  queryKey: ['widgets'],\n"
-                "  queryFn: () => apiGet<Widget[]>('/v1/widgets/'),\n"
-                "});\n",
+                "useQuery({\n  queryKey: ['widgets'],\n  queryFn: () => apiGet<Widget[]>('/v1/widgets/'),\n});\n",
                 encoding="utf-8",
             )
             # Naming a key to invalidate it never reads the value, so it can
@@ -732,20 +735,12 @@ def self_test() -> int:
             )
             reads, bad = scan_query_keys(fake)["widgets"]
             if len(reads) != 2:
-                print(
-                    f"SELF-TEST FAIL: expected 2 reading call sites on the key, saw {len(reads)}."
-                )
-                print(
-                    "                An invalidateQueries call was probably miscounted as a read."
-                )
+                print(f"SELF-TEST FAIL: expected 2 reading call sites on the key, saw {len(reads)}.")
+                print("                An invalidateQueries call was probably miscounted as a read.")
                 return 1
             if [p.name for p in bad] != ["Stale.tsx"]:
-                print(
-                    "SELF-TEST FAIL: the cache-key check did not single out the unmigrated reader."
-                )
-                print(
-                    "                It cannot refuse, so it cannot guard the runtime failure."
-                )
+                print("SELF-TEST FAIL: the cache-key check did not single out the unmigrated reader.")
+                print("                It cannot refuse, so it cannot guard the runtime failure.")
                 return 1
         finally:
             SHARED_QUERY_KEYS = saved
@@ -758,9 +753,7 @@ def self_test() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument(
-        "--self-test", action="store_true", help="prove the guard can fail, then exit"
-    )
+    ap.add_argument("--self-test", action="store_true", help="prove the guard can fail, then exit")
     args = ap.parse_args()
     if args.self_test:
         return self_test()
@@ -769,9 +762,7 @@ def main() -> int:
     # seeing anything at all, and a guard that cannot refuse reports the same
     # clean run as a tree with nothing wrong in it. Costs one temp directory.
     if self_test() != 0:
-        print(
-            "FAIL: the guard could not prove it still refuses, so its verdict means nothing."
-        )
+        print("FAIL: the guard could not prove it still refuses, so its verdict means nothing.")
         return 2
     print()
     return report(FRONTEND)

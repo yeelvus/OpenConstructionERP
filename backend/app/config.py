@@ -49,6 +49,33 @@ _JWT_KNOWN_WEAK_SECRETS = frozenset(
     }
 )
 
+
+def jwt_secret_is_known_weak(secret: str) -> bool:
+    """Whether ``secret`` is a published or boilerplate value.
+
+    The single source of truth for the denylist. Callers outside this module
+    MUST use this rather than re-listing the strings: a second copy of a
+    security constant is invisible while it agrees and silent when it stops.
+    ``scripts/check_secret_denylist_single_source.py`` enforces that.
+    """
+    return (secret or "") in _JWT_KNOWN_WEAK_SECRETS
+
+
+def jwt_secret_is_too_short(secret: str) -> bool:
+    """Whether ``secret`` carries too little key material for HS256.
+
+    Measured in characters AND in UTF-8 bytes, and short by either measure is
+    short. The two rules disagree only on non-ASCII secrets, where the byte
+    count is the larger and therefore the weaker test: 20 Cyrillic characters
+    are 40 bytes, so a byte-only rule would admit a 20-character secret. RFC
+    7518 section 3.2 is about key material, which argues for bytes, but a
+    short string is low-entropy whatever it encodes to, so we keep both and
+    take the stricter answer.
+    """
+    text = secret or ""
+    return len(text) < _JWT_SECRET_MIN_LENGTH or len(text.encode("utf-8")) < _JWT_SECRET_MIN_LENGTH
+
+
 # Track whether we've already logged the dev-default warning so a unit
 # test that instantiates Settings() repeatedly (or an app that hot-reloads
 # the config) doesn't spam the log. Reset by the test suite via the
@@ -288,6 +315,39 @@ class Settings(BaseSettings):
     # pool_pre_ping in ``app.database``. Ignored on SQLite. Env:
     # ``OE_DATABASE_POOL_RECYCLE`` / ``DATABASE_POOL_RECYCLE``.
     database_pool_recycle: int = 1800
+    # PostgreSQL only: seconds a session may sit "idle in transaction" before
+    # the server terminates it. This is the only bound that removes an
+    # ABANDONED transaction. A timeout on the far side (``lock_timeout``) makes
+    # the victims of one give up faster, but the culprit keeps its locks and
+    # waits for the next victim; ``statement_timeout`` does not cover a lock
+    # wait at all. It never touches a session that is running a statement - a
+    # long query is ``active``, not idle - so slow migrations and long imports
+    # are unaffected; only a transaction whose owner stopped talking is. The
+    # default is well above any legitimate gap between two statements of one
+    # request and far below "forever". Applied as an asyncpg startup parameter
+    # on every connection the engine factory builds - see ``app.database``.
+    # Background job dispatch builds its own engine and carries its own, much
+    # larger budget: see ``database_jobs_idle_in_transaction_timeout``. Set to 0
+    # to disable and leave whatever the server or database default is. Env:
+    # ``OE_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT`` /
+    # ``DATABASE_IDLE_IN_TRANSACTION_TIMEOUT``.
+    database_idle_in_transaction_timeout: int = 300
+    # The same bound for background job dispatch, which needs a far bigger one.
+    # A job handler legitimately holds a transaction open while doing work that
+    # is not database work - parsing a large file, running a clash pass, calling
+    # an external service - and the server counts every second of that as "idle
+    # in transaction", because from its side the client has simply stopped
+    # talking. The request-side budget above would be an unmeasured deadline on
+    # that work rather than a fuse.
+    #
+    # 3600 is NOT a measured number. It is an order of magnitude picked so that a
+    # legitimate handler is not cut while a wedged worker does not sit on its
+    # locks for a day. We have no measurement of how long real background
+    # handlers actually spend idle inside a transaction; when we have one, this
+    # number should be revisited against it. Set to 0 to disable. Env:
+    # ``OE_DATABASE_JOBS_IDLE_IN_TRANSACTION_TIMEOUT`` /
+    # ``DATABASE_JOBS_IDLE_IN_TRANSACTION_TIMEOUT``.
+    database_jobs_idle_in_transaction_timeout: int = 3600
     max_batch_size: int = 1000
     # Slow-query threshold (milliseconds). Statements exceeding this elapsed
     # wall time are logged at WARNING level via SQLAlchemy ``before_cursor_execute``
@@ -755,8 +815,8 @@ class Settings(BaseSettings):
         or ``openssl rand -hex 32``.
         """
         secret = self.jwt_secret or ""
-        is_weak_default = secret in _JWT_KNOWN_WEAK_SECRETS
-        is_too_short = len(secret) < _JWT_SECRET_MIN_LENGTH
+        is_weak_default = jwt_secret_is_known_weak(secret)
+        is_too_short = jwt_secret_is_too_short(secret)
 
         if self.app_env != "development":
             if is_weak_default:
@@ -888,12 +948,31 @@ def _ensure_persistent_jwt_secret() -> None:
     """Auto-provision a strong, persistent JWT secret in non-dev deployments.
 
     Runs once, from :func:`get_settings`, before ``Settings`` reads the
-    environment. It is a no-op in development (the bundled dev default is
-    acceptable there and the app boots without ceremony) and whenever the
-    operator already supplied a real secret. Otherwise, in staging/production
-    it loads a previously persisted secret from the data dir - or generates one
-    and persists it (``chmod 600``) - and exports it as ``JWT_SECRET`` so the
-    app, and the strict production validator, see a strong value.
+    environment. It is a no-op for a source checkout running in development
+    (the bundled dev default is acceptable there and the app boots without
+    ceremony) and whenever the operator already supplied a real secret.
+    Otherwise it loads a previously persisted secret from the data dir - or
+    generates one and persists it (``chmod 600``) - and exports it as
+    ``JWT_SECRET`` so the app, and the strict production validator, see a
+    strong value.
+
+    A desktop build counts as "otherwise" even though it calls itself
+    development, and that clause is the whole reason this note exists. The
+    frozen sidecar is started by the CLI, which sets ``APP_ENV=development``
+    with no branch for a frozen build, so this function used to return on its
+    first line and leave ``JWT_SECRET`` as the literal the CLI had just put
+    there. That literal is in ``_JWT_KNOWN_WEAK_SECRETS`` above, for the reason
+    written there: anyone who can read the public repository can forge admin
+    tokens against a deployment that kept it. Every installed copy of the
+    desktop app was such a deployment, and they all shared the one key.
+
+    The environment stays as it is. Turning the frozen build into
+    ``production`` would fix this too, and would also disable the passwordless
+    demo sign-in and flip the takeoff privacy badge from "never leaves your
+    computer" to "processed on your server" - which on a desktop is the less
+    true of the two. So the fix is the secret alone, and ``desktop_mode()`` is
+    the predicate because it answers for both signals a shipped build carries,
+    ``sys.frozen`` and ``OE_DESKTOP``.
 
     This lets the published container boot with zero configuration while still
     signing tokens with a secret that is NOT the public repo default, and keeps
@@ -902,7 +981,7 @@ def _ensure_persistent_jwt_secret() -> None:
     data dir) it degrades to a per-process secret and logs a loud warning
     rather than refusing to start.
     """
-    if not _non_development_env():
+    if not _non_development_env() and not desktop_mode():
         return
     if _operator_supplied_jwt_secret() is not None:
         # The operator owns the secret - let Settings validate it as-is so a

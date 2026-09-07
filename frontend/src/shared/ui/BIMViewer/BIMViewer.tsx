@@ -104,8 +104,22 @@ import { useToastStore } from '@/stores/useToastStore';
 import { copyToClipboard } from '@/shared/lib/browser';
 import { useDisplayQuantity } from '@/shared/hooks/useDisplayQuantity';
 import { useIsTouch } from '@/shared/hooks/useIsTouch';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtList, getIntlLocale } from '@/shared/lib/formatters';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
+
+/**
+ * One entry of the selection summary, rendered in the reader's language.
+ *
+ * Called at render rather than when the selection changes, because anything
+ * formatted at selection time keeps the language it was formatted in until the
+ * next selection. The list separator used to be a language behind for exactly
+ * that reason. The category name is still English on every branch of
+ * prettifyCategoryName, so this localises the count and the separator around a
+ * label that has not been translated yet.
+ */
+function selectionPartLabel(part: { count: number; category: string }): string {
+  return `${part.count.toLocaleString(getNumberLocale())} ${prettifyCategoryName(part.category)}`;
+}
 
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
@@ -1086,8 +1100,13 @@ export function BIMViewer({
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
   /** Number of currently selected elements -- drives the selection toolbar. */
   const [selectionCount, setSelectionCount] = useState(0);
-  /** Summary of selected elements for the toolbar label. */
-  const [selectionSummary, setSelectionSummary] = useState('');
+  /** Selected element counts for the toolbar label, one entry per
+   *  category. Held as data rather than as finished text: anything
+   *  formatted here is formatted in whatever language was active at
+   *  selection time and stays that way until the next selection, which
+   *  is how the list separator used to end up a language behind. Both
+   *  the count and the category name are rendered below instead. */
+  const [selectionParts, setSelectionParts] = useState<Array<{ count: number; category: string }>>([]);
   /** Whether the viewer is in isolation mode (double-click). */
   const [isIsolated, setIsIsolated] = useState(false);
   /** W6.6 Stream B — track the live SceneManager in React state so the
@@ -1295,10 +1314,10 @@ export function BIMViewer({
           const parts = [...counts.entries()]
             .sort((a, b) => b[1] - a[1])
             .slice(0, 3)
-            .map(([cat, n]) => `${n} ${prettifyCategoryName(cat)}`);
-          setSelectionSummary(parts.join(', '));
+            .map(([cat, n]) => ({ count: n, category: cat }));
+          setSelectionParts(parts);
         } else {
-          setSelectionSummary('');
+          setSelectionParts([]);
         }
         // Update properties panel — show first selected element
         if (ids.length > 0) {
@@ -4425,9 +4444,9 @@ export function BIMViewer({
                   count: selectionCount,
                 })}
           </span>
-          {selectionSummary && (
+          {selectionParts.length > 0 && (
             <span className="text-[10px] text-content-tertiary truncate max-w-[200px]">
-              ({selectionSummary})
+              ({fmtList(selectionParts.map(selectionPartLabel))})
             </span>
           )}
           <div className="w-px h-4 bg-border-light" />

@@ -51,6 +51,12 @@ MANIFEST = PartnerPackManifest(
     ],
     default_currency="SAR",
     default_tax_template="sa_vat_15",
+    # The GCC preliminaries-and-general cascade the catalogue builds for Saudi
+    # Arabia from the GULF regional markup stack. Left empty until now, which
+    # put every project created under this pack on the flat international
+    # method while the pack advertised the Saudi Building Code and the Aramco
+    # stack around it.
+    default_methodology="saudi_arabia",
     validation_rule_packs=[
         # Saudi Building Code 2018 — split per-Part for selective enablement.
         "sbc_201_energy",
@@ -74,14 +80,14 @@ MANIFEST = PartnerPackManifest(
         # Vision 2030 cross-cutting KPIs.
         "vision_2030_kpis",
     ],
-    default_modules=[],   # empty = show all modules in sidebar
+    default_modules=[],  # empty = show all modules in sidebar
     hidden_modules=[],
     branding=PartnerBranding(
-        primary_color="#006C35",   # Saudi flag green (Pantone 354 C)
-        accent_color="#FFFFFF",    # white
+        primary_color="#006C35",  # Saudi flag green (Pantone 354 C)
+        accent_color="#FFFFFF",  # white
         logo_path="logo.svg",
         favicon_path=None,
-        powered_by_text=None,      # use default co-branding string
+        powered_by_text=None,  # use default co-branding string
     ),
     onboarding_script_path="onboarding.yaml",
     metadata={
@@ -114,9 +120,18 @@ MANIFEST = PartnerPackManifest(
             "MoMRAH municipal projects",
         ],
         "supported_regions": [
-            "Riyadh", "Jeddah", "Makkah", "Madinah",
-            "Dammam", "Khobar", "Eastern Province",
-            "NEOM / Tabuk", "Abha / Asir", "Hail", "Qassim", "Jazan",
+            "Riyadh",
+            "Jeddah",
+            "Makkah",
+            "Madinah",
+            "Dammam",
+            "Khobar",
+            "Eastern Province",
+            "NEOM / Tabuk",
+            "Abha / Asir",
+            "Hail",
+            "Qassim",
+            "Jazan",
         ],
         "cwicr_seed_gap": (
             "Only cwicr-eng-riyadh is currently seeded in the v3 catalogue. "

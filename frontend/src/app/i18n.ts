@@ -68,15 +68,11 @@ export const SUPPORTED_LANGUAGES = [
   // apostrophe, and a straight quote there is a misspelling rather than a
   // typographic preference.
   //
-  // Uzbek is deliberately not offered yet. Measured on 2026-08-18, 16249 of
-  // the 34369 keys uz.ts shares with en.ts were still byte identical to the
-  // English, so about half the interface would reach a reader in English
-  // through silent fallback. Because the script is Latin, a glance cannot
-  // tell a translation from an untranslated string here, so that figure is a
-  // literal comparison rather than an inspection. The locale file stays on
-  // disk and the batch work continues; uncomment this line when it is done,
-  // and keep the U+02BB modifier letters when you do.
-  // { code: 'uz', name: 'Oʻzbekcha', english: 'Uzbek', flag: '🇺🇿', country: 'uz' },
+  // The *.insights.* and cases.* bands that had been left in English since
+  // 9ac55ac74 (2026-08-17) were closed on 2026-09-01, along with the rest of
+  // uz.ts that was still byte-identical to en.ts outside those bands. Offered
+  // below.
+  { code: 'uz', name: 'Oʻzbekcha', english: 'Uzbek', flag: '🇺🇿', country: 'uz' },
 ];
 
 export function getLanguageByCode(code: string): (typeof SUPPORTED_LANGUAGES)[number] {
@@ -96,16 +92,79 @@ export function getLanguageByCode(code: string): (typeof SUPPORTED_LANGUAGES)[nu
  * language that has no strings.
  */
 export function normalizePackLocale(locale: string | null | undefined): string {
-  if (!locale) return 'en';
-  const trimmed = locale.trim();
-  // Match how i18next writes a two-part code, so 'en-us' and 'EN-us' both find
-  // the 'en-US' we ship rather than falling through to the base language.
-  const parts = trimmed.split('-');
-  const regional =
-    parts.length === 2 ? `${parts[0]!.toLowerCase()}-${parts[1]!.toUpperCase()}` : trimmed;
-  if (SUPPORTED_LANGUAGES.some((l) => l.code === regional)) return regional;
+  return matchSupportedLanguage(locale) ?? 'en';
+}
+
+/**
+ * The language code we ship that best answers a BCP-47 tag, or ``null`` when
+ * we ship nothing for it.
+ *
+ * Region first, then the base language, spelled the way i18next spells a
+ * two-part code so that 'pt-br' and 'PT-BR' both find the 'pt-BR' bundle we
+ * actually registered. A three-part tag such as zh-Hans-CN finds no
+ * 'zh-HANS' and falls to 'zh', which is the right answer for it.
+ *
+ * One function because there is one rule, and it is asked in three places:
+ * a pack manifest's default_locale, the browser's language at first run, and
+ * the language card the onboarding wizard pre-selects. Those were three
+ * copies, two of which stripped the region unconditionally, which is how a
+ * Brazilian first run opened in European Portuguese with pt-BR.ts sitting
+ * unused a few lines away.
+ */
+export function matchSupportedLanguage(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const parts = raw.trim().split('-');
+  if (parts.length >= 2 && parts[1]) {
+    const regional = `${parts[0]!.toLowerCase()}-${parts[1]!.toUpperCase()}`;
+    if (SUPPORTED_LANGUAGES.some((l) => l.code === regional)) return regional;
+  }
   const base = parts[0]!.toLowerCase();
-  return SUPPORTED_LANGUAGES.some((l) => l.code === base) ? base : 'en';
+  return SUPPORTED_LANGUAGES.some((l) => l.code === base) ? base : null;
+}
+
+/**
+ * The country this browser is most likely sitting in, lower-case ISO 3166-1
+ * alpha-2, or ``null`` when nothing says.
+ *
+ * Two sources, and both are needed. The region subtag of
+ * ``navigator.language`` is the better one wherever it exists, and it is the
+ * ONLY one that can reach Australia, New Zealand or South Africa, because no
+ * language we offer names those countries -- ``en`` names Great Britain. But
+ * a German, French, Polish or Russian browser commonly sends a bare ``de``,
+ * ``fr``, ``pl`` or ``ru`` with no region at all, so a region-only reading
+ * returns nothing for most of Europe, which is where most of our cases are.
+ * Falling back to the country named by the resolved language covers those,
+ * and every one of the SUPPORTED_LANGUAGES entries carries that field.
+ *
+ * ``en`` maps to ``gb``, so a browser sending a bare ``en`` is read as United
+ * Kingdom rather than United States. That is chosen, not overlooked:
+ * ``en-US`` is its own entry with its own country, so a reader who wants
+ * American English has a browser that already says so, and guessing the
+ * larger market from silence would be guessing.
+ *
+ * This is a hint used to OFFER something, never a gate. Nothing may become
+ * unreachable because the guess was wrong, and a wrong guess must always be
+ * one click away from the right answer.
+ *
+ * @param uiLanguage Language to read the fallback country from. Defaults to
+ *   the live ``i18n.language``; pass it explicitly when the caller already
+ *   knows which language it is rendering in, or when a test needs the
+ *   fallback half to be deterministic.
+ */
+export function detectCountry(uiLanguage?: string): string | null {
+  const raw = typeof navigator !== 'undefined' ? navigator.language || '' : '';
+  // Scan past the language subtag rather than reading parts[1], so a script
+  // subtag does not hide the region: zh-Hans-CN has to answer 'cn'. A UN M49
+  // region such as es-419 is deliberately not matched here and falls through
+  // to the language's own country.
+  for (const part of raw.trim().split('-').slice(1)) {
+    if (/^[A-Za-z]{2}$/.test(part)) return part.toLowerCase();
+  }
+  const code = uiLanguage || i18n.language || 'en';
+  const entry =
+    SUPPORTED_LANGUAGES.find((l) => l.code === code) ??
+    SUPPORTED_LANGUAGES.find((l) => l.code === code.split('-')[0]);
+  return entry?.country ?? null;
 }
 
 // Re-export useTranslation for convenience
@@ -124,19 +183,21 @@ const moduleTranslations: Record<string, Record<string, Record<string, string>>>
 const loadedLocales = new Set<string>(['en']);
 
 /**
- * Load a per-locale resource chunk and merge it into i18next.
+ * Load and register exactly one locale chunk. Never throws.
  *
  * Vite turns the dynamic ``import(`./locales/${code}.ts`)`` literal into
  * one chunk per matching file under ``src/app/locales/``, so a French
  * user only downloads ``fr.ts`` (~50 KB gzip) instead of the previous
  * ~1.28 MB monolithic ``i18n-data`` chunk.
  *
- * Idempotent. Safe to call repeatedly. Failures are logged and treated
- * as non-fatal — i18next's ``fallbackLng: 'en'`` keeps the UI usable.
+ * Idempotent. Returns whether this call actually put a new bundle in the
+ * store, which is what tells the caller a re-render is worth emitting.
+ * Failures are logged and treated as non-fatal — i18next's fallback chain
+ * keeps the UI usable.
  */
-export async function loadLocaleResource(code: string): Promise<void> {
-  if (loadedLocales.has(code)) return;
-  if (!SUPPORTED_LANGUAGES.some((l) => l.code === code)) return;
+async function loadLocaleChunk(code: string): Promise<boolean> {
+  if (loadedLocales.has(code)) return false;
+  if (!SUPPORTED_LANGUAGES.some((l) => l.code === code)) return false;
   try {
     const mod = await import(`./locales/${code}.ts`);
     const resource = (mod.default ?? mod) as { translation: Record<string, string> };
@@ -148,19 +209,72 @@ export async function loadLocaleResource(code: string): Promise<void> {
     // translations for any locale loaded after init).
     i18n.addResourceBundle(code, 'translation', resource.translation, false, true);
     loadedLocales.add(code);
-    // Force every ``useTranslation`` subscriber to re-render with the
-    // freshly merged bundle. ``addResourceBundle`` already emits
-    // ``store#added``, but components mounted outside Suspense (Header,
-    // Sidebar) sometimes miss that event when StrictMode re-mounts them
-    // mid-flight. Explicitly re-emitting ``languageChanged`` is the
-    // signal react-i18next listens to unconditionally — every
-    // useTranslation hook re-resolves its t() and re-renders.
-    if (i18n.language === code) {
-      i18n.emit('languageChanged', code);
-    }
+    return true;
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn(`i18n: failed to load locale "${code}", falling back to English`, err);
+    return false;
+  }
+}
+
+/**
+ * Load a locale into i18next, together with the base language it falls back to.
+ *
+ * A regional variant carries only what its region words differently and leans on
+ * its base language for the rest — that is the whole point of ``fallbackLng``
+ * above. But ``fallbackLng`` only names a bundle; it does not fetch one. This
+ * function used to import ``code`` and nothing else, so for the four variants
+ * whose base is itself lazy the chain was configured and inert: an es-MX reader's
+ * lookup walked es-MX, then an ``es`` bucket that was never loaded, then landed on
+ * English. The ~2700 ``cases.*`` keys that ``es.ts`` has and ``es-MX.ts`` does not
+ * rendered in English with a complete Spanish translation sitting in a chunk
+ * nobody asked for. Same for es-CL, es-CO and pt-BR.
+ *
+ * ``en-US`` is why this went unnoticed: its base is ``en``, which ships in the main
+ * bundle and is in ``loadedLocales`` from the start, so the one variant with a test
+ * was also the one variant that worked.
+ *
+ * The base is derived from the code rather than special-cased per locale, so the
+ * next regional variant added to ``SUPPORTED_LANGUAGES`` is chained by existing
+ * code instead of by somebody remembering to copy a branch.
+ *
+ * Direction matters and is load-bearing: the two bundles go into *separate*
+ * per-language buckets, and i18next consults ``es-MX`` before ``es``. So every key
+ * the variant defines keeps winning, and only the keys it omits come from the base.
+ * It is a fallback, never a replacement — the variants exist because Mexican,
+ * Chilean, Colombian and Brazilian practice name things differently from Spain and
+ * Portugal (costo not coste, cimbra not encofrado), and overwriting that deliberate
+ * wording with the base language would be a regression that nothing on screen would
+ * reveal.
+ *
+ * Both imports are awaited together rather than fired off, because
+ * ``initialLocaleReady`` below is what ``main.tsx`` waits on before mounting. That
+ * wait is not unbounded: ``main.tsx`` races it against ``LOCALE_MOUNT_CAP_MS``
+ * (2000 ms) and mounts on whichever lands first. So awaiting the base narrows the
+ * window rather than closing it — if the base chunk is still in flight when the
+ * cap fires, the first frame does show English for exactly the keys this change is
+ * meant to fix, and the explicit ``languageChanged`` emit below repaints it once
+ * the chunk lands. A flash, not a stuck page. Firing the base off unawaited would
+ * make that flash the ordinary case rather than the loaded-network one, which is
+ * the whole reason for the ``Promise.all``. Each chunk keeps its own error
+ * handling, so a failed base fetch costs the reader nothing they had before —
+ * they still get the variant's own strings.
+ */
+export async function loadLocaleResource(code: string): Promise<void> {
+  const base = code.includes('-') ? code.split('-')[0]! : null;
+  const [variantAdded, baseAdded] = await Promise.all([
+    loadLocaleChunk(code),
+    base ? loadLocaleChunk(base) : Promise.resolve(false),
+  ]);
+  // Force every ``useTranslation`` subscriber to re-render with the
+  // freshly merged bundle. ``addResourceBundle`` already emits
+  // ``store#added``, but components mounted outside Suspense (Header,
+  // Sidebar) sometimes miss that event when StrictMode re-mounts them
+  // mid-flight. Explicitly re-emitting ``languageChanged`` is the
+  // signal react-i18next listens to unconditionally — every
+  // useTranslation hook re-resolves its t() and re-renders.
+  if ((variantAdded || baseAdded) && i18n.language === code) {
+    i18n.emit('languageChanged', code);
   }
 }
 
@@ -217,7 +331,7 @@ export function applyModuleTranslations(
  * SSR-safe: every ``window`` / ``localStorage`` / ``navigator`` access is
  * guarded so the function returns ``'en'`` when called outside a browser.
  */
-function resolveInitialLanguage(): string {
+export function resolveInitialLanguage(): string {
   const supported = SUPPORTED_LANGUAGES.map((l) => l.code);
   const isValid = (code: string | null | undefined): code is string =>
     !!code && supported.includes(code);
@@ -247,9 +361,15 @@ function resolveInitialLanguage(): string {
     // localStorage unavailable — fall through.
   }
 
-  // 3. Browser locale (strip region: "de-CH" → "de").
-  const browserLang = (navigator.language || 'en').split('-')[0];
-  if (isValid(browserLang)) return browserLang;
+  // 3. Browser locale. Asks for the full code BEFORE stripping the region,
+  //    because for five of the languages we ship the region is the whole
+  //    point: pt-BR and pt are different files and plain "pt" is European
+  //    Portuguese. Stripping first meant every Brazilian first run opened in
+  //    Portugal's Portuguese and every Mexican one in Spain's Spanish, with
+  //    the regional file sitting right there unused. "de-CH" still resolves
+  //    to "de", because we ship no de-CH.
+  const browserMatch = matchSupportedLanguage(navigator.language);
+  if (browserMatch) return browserMatch;
 
   // 4. Final fallback.
   return 'en';
@@ -265,7 +385,7 @@ i18n
     // a boot window where ``t()`` echoes raw keys. With sync init the store
     // is ready the moment this module finishes evaluating, which the
     // ``initialLocaleReady`` mount gate below relies on.
-    initImmediate: false,
+    initAsync: false,
     // Only English is bundled synchronously — every other locale is
     // lazy-loaded by ``loadLocaleResource`` below. ``fallbackLng: 'en'``
     // means missing keys (e.g. while the locale chunk is still in

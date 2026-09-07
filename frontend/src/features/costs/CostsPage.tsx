@@ -40,7 +40,7 @@ import { Button, Card, Badge, EmptyState, SkeletonTable, CountryFlag, CountryFla
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { ApiError, apiGet, apiPost, apiPatch, apiDelete, triggerDownload, extractErrorMessageFromBody } from '@/shared/lib/api';
-import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
+import { fmtList, fmtPercent, fmtFixed } from '@/shared/lib/formatters';
 import { formatCurrency, type FormatCurrencyOptions } from '@/shared/lib/money';
 import { copyToClipboard } from '@/shared/lib/browser';
 import { useToastStore } from '@/stores/useToastStore';
@@ -53,6 +53,7 @@ import { buildBoqPositionDraft, massEffectiveUnitRate, type FullCostItem } from 
 import { componentDisplayNumbers } from './costComponentDisplay';
 import { fetchUsageCounts, fetchCostCatalogs } from './api';
 import { CatalogsSection } from './CatalogsSection';
+import { CostDatabaseInvite } from './CostDatabaseInvite';
 import { CustomCategoryList } from './CustomCategoryList';
 import { costsGuide } from './costsGuide';
 import { UsageBadge } from './UsageBadge';
@@ -376,26 +377,18 @@ function RegionTabBar({
   }
 
   if (regions.length === 0 && totalItemCount === 0) {
-    // Use the shared EmptyState component so the copy + CTA are consistent
-    // with the other module empty states (favourites, recent, no-results).
-    // The CTA routes to the regional-database importer.
+    // Nothing is wrong here - the user simply has nothing loaded yet, so this
+    // reads as an invitation rather than as "No database loaded". It is the
+    // same wording the dashboard shows, in the one-line band density, because
+    // this slot sits in the tab bar above the catalogs list.
     return (
       <div
         className="mb-6"
         data-testid="costs-no-database-empty-state"
       >
-        <EmptyState
-          icon={<Database size={28} strokeWidth={1.5} />}
-          title={t('costs.no_database_loaded', { defaultValue: 'No database loaded' })}
-          description={t('costs.import_first_hint', {
-            defaultValue: 'Import a regional cost database to start searching 55,000+ items.',
-          })}
-          action={{
-            label: t('costs.import_regional_database', {
-              defaultValue: 'Import a regional database',
-            }),
-            onClick: () => navigate('/costs/import'),
-          }}
+        <CostDatabaseInvite
+          variant="compact"
+          onImport={() => navigate('/costs/import')}
         />
       </div>
     );
@@ -412,7 +405,7 @@ function RegionTabBar({
         <button
           onClick={() => scroll('left')}
           aria-label={t('common.scroll_left', { defaultValue: 'Scroll left' })}
-          className="absolute left-0 top-0 bottom-0 z-10 flex items-center pl-0.5 pr-3 bg-gradient-to-r from-surface-primary via-surface-primary/90 to-transparent"
+          className="absolute start-0 top-0 bottom-0 z-10 flex items-center ps-0.5 pe-3 bg-gradient-to-r from-surface-primary via-surface-primary/90 to-transparent"
         >
           <ChevronLeft size={16} className="text-content-tertiary" />
         </button>
@@ -423,7 +416,7 @@ function RegionTabBar({
         <button
           onClick={() => scroll('right')}
           aria-label={t('common.scroll_right', { defaultValue: 'Scroll right' })}
-          className="absolute right-0 top-0 bottom-0 z-10 flex items-center pr-0.5 pl-3 bg-gradient-to-l from-surface-primary via-surface-primary/90 to-transparent"
+          className="absolute end-0 top-0 bottom-0 z-10 flex items-center pe-0.5 ps-3 bg-gradient-to-l from-surface-primary via-surface-primary/90 to-transparent"
         >
           <ChevronRight size={16} className="text-content-tertiary" />
         </button>
@@ -553,96 +546,6 @@ function buildSearchUrl(
   // pay the full-payload cost only once per drill-in.
   params.set('lite', '1');
   return `/v1/costs/?${params.toString()}`;
-}
-
-/* ── Empty state: no cost database yet ─────────────────────────────────── */
-
-/** Shown on /costs when the user has neither a loaded regional/CWICR base nor
- *  a single own catalog. Offers the two ways to get started, each wired to an
- *  EXISTING flow: import a ready-made base (→ the /costs/import page) or create
- *  your own (→ the page's Add Item form). Copy is deliberately plain so a site
- *  engineer or estimator understands both paths in under a minute. */
-function CostDatabaseEmptyState({
-  onImport,
-  onCreateOwn,
-  t,
-}: {
-  /** Open the existing regional / file importer (routes to /costs/import). */
-  onImport: () => void;
-  /** Open the existing "Add Custom Cost Item" form to start an own price list. */
-  onCreateOwn: () => void;
-  t: ReturnType<typeof import('react-i18next').useTranslation>['t'];
-}) {
-  return (
-    <Card padding="none" className="mx-auto max-w-3xl animate-fade-in" data-testid="costs-empty-state">
-      <div className="flex flex-col items-center px-4 pt-8 pb-2 text-center">
-        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-md bg-surface-secondary text-content-tertiary shadow-[inset_0_2px_4px_rgba(0,0,0,0.06),inset_0_-1px_0_rgba(255,255,255,0.6)]">
-          <Database size={28} strokeWidth={1.5} />
-        </div>
-        <h2 className="text-lg font-semibold text-content-primary">
-          {t('costs.empty_state.title', { defaultValue: 'Start your cost database' })}
-        </h2>
-        <p className="mt-1.5 max-w-md text-sm text-content-secondary">
-          {t('costs.empty_state.subtitle', {
-            defaultValue:
-              'A cost database holds the unit rates you price work with. Pick how you want to begin - you can do both, and add more any time.',
-          })}
-        </p>
-      </div>
-
-      <div className="grid gap-4 p-4 sm:grid-cols-2 sm:p-6">
-        {/* Path A - import a ready-made base */}
-        <div className="flex flex-col rounded-xl border border-border-light bg-surface-secondary/30 p-5">
-          <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-oe-blue-subtle text-oe-blue-text">
-            <Download size={18} />
-          </div>
-          <h3 className="text-sm font-semibold text-content-primary">
-            {t('costs.empty_state.import_title', { defaultValue: 'Import a ready-made base' })}
-          </h3>
-          <p className="mt-1 flex-1 text-xs leading-relaxed text-content-secondary">
-            {t('costs.empty_state.import_desc', {
-              defaultValue:
-                'Load a regional construction cost database with tens of thousands of priced items for materials, labour and equipment. Search it and pull rates straight into your estimates.',
-            })}
-          </p>
-          <Button
-            variant="primary"
-            size="sm"
-            icon={<Download size={14} />}
-            onClick={onImport}
-            className="mt-4 self-start"
-          >
-            {t('costs.empty_state.import_cta', { defaultValue: 'Import a database' })}
-          </Button>
-        </div>
-
-        {/* Path B - create your own */}
-        <div className="flex flex-col rounded-xl border border-border-light bg-surface-secondary/30 p-5">
-          <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-oe-blue-subtle text-oe-blue-text">
-            <Plus size={18} />
-          </div>
-          <h3 className="text-sm font-semibold text-content-primary">
-            {t('costs.empty_state.create_title', { defaultValue: 'Create your own' })}
-          </h3>
-          <p className="mt-1 flex-1 text-xs leading-relaxed text-content-secondary">
-            {t('costs.empty_state.create_desc', {
-              defaultValue:
-                'Build your own price list from scratch. Add each rate - code, description, unit and price - and reuse it across every project. Best when you already know your own prices.',
-            })}
-          </p>
-          <Button
-            variant="secondary"
-            size="sm"
-            icon={<Plus size={14} />}
-            onClick={onCreateOwn}
-            className="mt-4 self-start"
-          >
-            {t('costs.empty_state.create_cta', { defaultValue: 'Add your first rate' })}
-          </Button>
-        </div>
-      </div>
-    </Card>
-  );
 }
 
 /* ── Component ─────────────────────────────────────────────────────────── */
@@ -1326,10 +1229,9 @@ export function CostsPage() {
       )}
 
       {hasNoCostData ? (
-        <CostDatabaseEmptyState
+        <CostDatabaseInvite
           onImport={() => navigate('/costs/import')}
           onCreateOwn={() => setShowCreateItem(true)}
-          t={t}
         />
       ) : (
       <>
@@ -1450,7 +1352,7 @@ export function CostsPage() {
           {/* Search input + AI toggle */}
           <div className="relative flex-1 flex gap-2" data-guide="costs-search">
             <div className="relative flex-1">
-              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-content-tertiary">
+              <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center ps-3 text-content-tertiary">
                 <Search size={16} />
               </div>
               <input
@@ -1465,7 +1367,7 @@ export function CostsPage() {
                       : t('costs.search_placeholder', 'Search by description or code...')
                 }
                 aria-label={t('costs.search_placeholder', { defaultValue: 'Search cost items' })}
-                className={`h-10 w-full rounded-lg border bg-surface-primary pl-10 ${query ? 'pr-8' : 'pr-3'} text-sm text-content-primary placeholder:text-content-tertiary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:border-transparent hover:border-content-tertiary ${
+                className={`h-10 w-full rounded-lg border bg-surface-primary ps-10 ${query ? 'pe-8' : 'pe-3'} text-sm text-content-primary placeholder:text-content-tertiary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:border-transparent hover:border-content-tertiary ${
                   semanticSearch ? 'border-purple-400 focus:ring-purple-400/30' : 'border-border focus:ring-oe-blue'
                 }`}
               />
@@ -1473,7 +1375,7 @@ export function CostsPage() {
                 <button
                   onClick={() => { setQuery(''); setDebouncedQuery(''); setOffset(0); }}
                   aria-label={t('common.clear_search', { defaultValue: 'Clear search' })}
-                  className="absolute inset-y-0 right-0 flex items-center pr-3 text-content-tertiary hover:text-content-primary"
+                  className="absolute inset-y-0 end-0 flex items-center pe-3 text-content-tertiary hover:text-content-primary"
                 >
                   <X size={14} />
                 </button>
@@ -1520,7 +1422,7 @@ export function CostsPage() {
             <select
               value={unit}
               onChange={(e) => handleUnitChange(e.target.value)}
-              className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-32"
+              className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-9 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-32"
             >
               <option value="">{t('costs.all_units', 'All units')}</option>
               {unitOptions.map((u) => (
@@ -1529,7 +1431,7 @@ export function CostsPage() {
                 </option>
               ))}
             </select>
-            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+            <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-2.5 text-content-tertiary">
               <ChevronDown size={14} />
             </div>
           </div>
@@ -1539,7 +1441,7 @@ export function CostsPage() {
             <select
               value={source}
               onChange={(e) => handleSourceChange(e.target.value)}
-              className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-36"
+              className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-9 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-36"
             >
               <option value="">{t('costs.all_sources', 'All sources')}</option>
               {SOURCES.filter(Boolean).map((s) => (
@@ -1548,7 +1450,7 @@ export function CostsPage() {
                 </option>
               ))}
             </select>
-            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+            <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-2.5 text-content-tertiary">
               <ChevronDown size={14} />
             </div>
           </div>
@@ -1559,7 +1461,7 @@ export function CostsPage() {
               <select
                 value={category}
                 onChange={(e) => handleCategoryChange(e.target.value)}
-                className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-48"
+                className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-9 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-48"
               >
                 <option value="">
                   {t('costs.all_categories', 'All categories')}
@@ -1570,7 +1472,7 @@ export function CostsPage() {
                   </option>
                 ))}
               </select>
-              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+              <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-2.5 text-content-tertiary">
                 <ChevronDown size={14} />
               </div>
             </div>
@@ -1850,7 +1752,7 @@ export function CostsPage() {
             >
               {t('common.copy', { defaultValue: 'Copy' })}
             </Button>
-            <button
+            <button aria-label={t('common.clear_selection', { defaultValue: 'Clear selection' })}
               onClick={() => setSelectedIds(new Set())}
               className="flex h-7 w-7 items-center justify-center rounded-lg text-content-tertiary hover:text-content-primary hover:bg-surface-secondary transition-colors"
             >
@@ -2297,14 +2199,14 @@ function AddToBOQModal({
                   ? t('costs_catalogs.fx_mismatch_one', {
                       defaultValue:
                         'Item currency {{itemCurrency}}, project currency {{projectCurrency}}. The rate is copied as-is without conversion.',
-                      itemCurrency: mismatchedCurrencies.join(', '),
+                      itemCurrency: fmtList(mismatchedCurrencies),
                       projectCurrency,
                     })
                   : t('costs_catalogs.fx_mismatch_many', {
                       defaultValue:
                         '{{count}} of the selected items are priced in {{itemCurrencies}}, while the project currency is {{projectCurrency}}. Rates are copied as-is without conversion.',
                       count: mismatchedCount,
-                      itemCurrencies: mismatchedCurrencies.join(', '),
+                      itemCurrencies: fmtList(mismatchedCurrencies),
                       projectCurrency,
                     })}
               </span>
@@ -2423,7 +2325,7 @@ function CreateAssemblyFromCostsModal({
           defaultValue:
             'Assemblies must be single-currency. The selected cost items span {{count}} currencies ({{list}}). Select items that share one currency.',
           count: distinctCurrencies.length,
-          list: distinctCurrencies.join(', '),
+          list: fmtList(distinctCurrencies),
         }),
       });
       return;
@@ -2556,7 +2458,7 @@ function CreateAssemblyFromCostsModal({
                   defaultValue:
                     'Assemblies must be single-currency. The selected items span {{count}} currencies ({{list}}) - pick items that share one currency to continue.',
                   count: distinctCurrencies.length,
-                  list: distinctCurrencies.join(', '),
+                  list: fmtList(distinctCurrencies),
                 })}
               </div>
             ) : (
@@ -2670,9 +2572,9 @@ function MassPricingFields({
               value={massPerUnit}
               onChange={(e) => onChange({ massPerUnit: e.target.value })}
               placeholder={t('costs.mass_per_unit_placeholder', { defaultValue: 'e.g. 44.7' })}
-              className="h-9 w-full rounded-lg border border-border bg-surface-primary pl-3 pr-14 text-sm text-right focus:outline-none focus:ring-2 focus:ring-oe-blue disabled:opacity-60 disabled:cursor-not-allowed"
+              className="h-9 w-full rounded-lg border border-border bg-surface-primary ps-3 pe-14 text-sm text-end focus:outline-none focus:ring-2 focus:ring-oe-blue disabled:opacity-60 disabled:cursor-not-allowed"
             />
-            <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-2xs text-content-tertiary">
+            <span className="pointer-events-none absolute inset-y-0 end-2 flex items-center text-2xs text-content-tertiary">
               {t('costs.mass_per_unit_suffix', { defaultValue: 'kg/{{unit}}', unit })}
             </span>
           </div>

@@ -1692,8 +1692,33 @@ async def safety_trir_kpi(
     allowed_project_ids: set[uuid.UUID] | None = None,
     **_: Any,
 ) -> KPIComputation:
+    """Recordable incidents x 200000 / hours worked, or no data.
+
+    The denominator has no fallback on purpose. It used to default to
+    ``Decimal("200000")``, the same constant as the OSHA normaliser in the
+    numerator, so whenever exposure hours were absent the "rate" came out
+    numerically equal to the recordable count and was still labelled and
+    charted as a rate. That is the expensive kind of wrong: not a refusal a
+    reader notices, but a plausible number a safety manager acts on.
+
+    Nothing in the platform writes ``man_hours_total`` today, so the absent
+    case is the normal one rather than an edge. Where exposure hours should
+    come from is a product decision that has not been taken, and guessing
+    one here would hide the question. Until it is taken this KPI reports no
+    data, which the controls tile renders as an em dash and "no data".
+
+    Both halves are held by
+    ``tests/unit/test_bi_dashboards.py::test_safety_trir_reports_no_data_when_exposure_hours_are_missing``
+    and its control
+    ``::test_safety_trir_computes_the_rate_when_exposure_hours_are_recorded``.
+    The control is the load-bearing one: without it a formula that refused
+    unconditionally would pass the first test and be just as broken.
+    """
     incidents = 0
-    hours_worked = Decimal("200000")  # Industry-standard normaliser fallback
+    # ``None``, not a number. This is what makes the no-data return below
+    # reachable at all; the previous initialiser meant ``hours_worked > 0``
+    # could never be false.
+    hours_worked: Decimal | None = None
     try:
         # The model is ``SafetyIncident`` (there is no ``Incident`` alias);
         # importing the wrong name silently zeroed this KPI. Mirror the
@@ -1747,7 +1772,26 @@ async def safety_trir_kpi(
     except Exception:
         logger.exception("safety_trir: probe failed")
 
-    trir = Decimal(incidents) * Decimal("200000") / hours_worked if hours_worked > 0 else Decimal("0")
+    if hours_worked is None or hours_worked <= 0:
+        # Decline rather than divide. ``source_record_count=0`` is this
+        # module's no-data signal, and it is load-bearing in three places:
+        # the value is not written to KPIValue (service.py), it is left out
+        # of benchmark medians (:func:`_benchmark`), and the controls tile
+        # renders "no data" instead of a figure. The incidents are reported
+        # in the breakdown so the count is not lost with the rate.
+        return KPIComputation(
+            value=Decimal("0"),
+            unit="ratio",
+            source_record_count=0,
+            breakdown={
+                "reason": "no_exposure_hours",
+                "recordable_incidents": incidents,
+            },
+        )
+
+    # 200000 here is the OSHA normaliser (100 full-time workers x 2000 h),
+    # not the removed denominator default that happened to share its value.
+    trir = Decimal(incidents) * Decimal("200000") / hours_worked
     return KPIComputation(
         value=trir,
         unit="ratio",
@@ -2312,9 +2356,20 @@ async def incident_count_kpi(
 ) -> KPIComputation:
     """Raw incident count, optionally windowed by ``incident_date``.
 
-    Uses the real ``SafetyIncident`` model (the ``safety_trir`` formula
-    imports a non-existent ``Incident`` alias and so silently counts zero;
-    this KPI is the working count surface).
+    Uses the real ``SafetyIncident`` model, and so does ``safety_trir``.
+    Both read real rows today, and that claim is held by
+    ``tests/unit/test_bi_dashboards.py::test_safety_trir_computes_the_rate_when_exposure_hours_are_recorded``
+    rather than by this sentence, so it cannot quietly stop being true.
+
+    The history is kept because the note that used to stand here is what
+    went wrong. It said in the present tense that ``safety_trir`` imports a
+    non-existent ``Incident`` and counts zero. That held until
+    ``d1e556037`` (v8.8.3) aliased ``SafetyIncident as Incident`` at both
+    call sites, and then the note stayed behind. Read afterwards as a
+    measurement rather than as history, it put two phantom always-zero KPIs
+    on a defect register. A comment asserting a defect needs the same
+    expiry discipline as the fix, and the cheapest form of that discipline
+    is to name the test that fails when the claim stops holding.
     """
     count = 0
     try:
@@ -3830,6 +3885,76 @@ async def benchmark(
     }
 
 
+async def _compute_from_spec(
+    code: str,
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID | None = None,
+    period_start: _date | None = None,
+    period_end: _date | None = None,
+    allowed_project_ids: set[uuid.UUID] | None = None,
+    boq_id: uuid.UUID | None = None,
+) -> KPIComputation:
+    """Resolve a code with no Python formula against the custom KPI table.
+
+    Returns a zero computation when the code is genuinely unknown, when
+    its spec's source module is not installed, or when the query fails -
+    the same graceful degradation every built-in formula promises.
+    """
+    from app.modules.bi_dashboards import kpi_spec as _spec
+
+    try:
+        loaded = await _spec.load_custom_spec(session, code)
+    except Exception:
+        logger.exception("compute: custom KPI lookup failed for code=%s", code)
+        return KPIComputation()
+    if loaded is None:
+        # A widget pointing at a KPI code nothing registers renders a
+        # permanent zero. That is a misconfiguration, not a data reading,
+        # so it must be visible above DEBUG.
+        logger.warning(
+            "compute: unknown KPI code=%s - the widget will render 0 until the code is registered",
+            code,
+        )
+        return KPIComputation()
+    spec, unit, scope = loaded.spec, loaded.unit, loaded.scope
+    if scope == _spec.SCOPE_ESTIMATE and boq_id is None:
+        # The definition says its value is a value of one estimate, and no
+        # estimate was named. The project-wide figure is reachable and is the
+        # wrong answer: it is exactly what declaring this scope was meant to
+        # stop being read. Degrade the way an unknown code degrades, and say
+        # so above DEBUG, because the visible symptom is a tile showing 0 and
+        # nothing else in the system is going to explain it.
+        logger.warning(
+            "compute: KPI %s is scoped to one estimate and none was given - the widget renders 0 until it names one",
+            code,
+        )
+        return KPIComputation(unit=unit)
+    try:
+        result = await _spec.evaluate_spec(
+            spec,
+            session,
+            project_id=project_id,
+            period_start=period_start,
+            period_end=period_end,
+            allowed_project_ids=allowed_project_ids,
+            boq_id=boq_id,
+        )
+    except ImportError:
+        # The entity's source module is not installed. Designed condition,
+        # stays unlogged - same rule the built-in formulas follow.
+        return KPIComputation(unit=unit)
+    except Exception:
+        logger.exception("compute: custom KPI %s spec evaluation failed", code)
+        return KPIComputation(unit=unit)
+    return KPIComputation(
+        value=result.value,
+        unit=unit,
+        source_record_count=result.source_record_count,
+        breakdown=result.breakdown,
+    )
+
+
 async def compute(
     code: str,
     session: AsyncSession,
@@ -3839,6 +3964,7 @@ async def compute(
     period_end: _date | None = None,
     filters: dict[str, Any] | None = None,
     allowed_project_ids: set[uuid.UUID] | None = None,
+    boq_id: uuid.UUID | None = None,
 ) -> KPIComputation:
     """Invoke a registered KPI safely.
 
@@ -3846,19 +3972,48 @@ async def compute(
     or when the formula raises - never bubble up to API callers, this
     module is purely consumer code.
 
+    A code with no Python formula falls through to
+    :func:`_compute_from_spec`, which answers it from the declarative
+    whitelisted spec on its ``KPIDefinition`` row. Registered formulas win
+    on a name clash, which is why a custom definition is refused at
+    creation if its code is already registered - otherwise the user's spec
+    would be stored and silently never consulted.
+
     ``allowed_project_ids`` is forwarded to every formula so a portfolio
     call (``project_id is None``) only aggregates over the caller's
     accessible projects (IDOR defence). ``None`` means no restriction
     (admin / single-project, which is already access-checked). Formulas
     that have no portfolio fan-out ignore it via their ``**_`` catch-all.
+
+    ``boq_id`` narrows to one estimate and reaches the declarative specs
+    only. A registered Python formula takes no such argument, and there are
+    35 of them: rather than pass it along to be swallowed by a ``**_`` and
+    have the caller receive the project figure labelled as one estimate's,
+    the combination is refused before it can produce a number. The refusal
+    is a zero here because this function never raises at its callers; the
+    service layer refuses the same combination loudly, which is where a
+    person who asked for it finds out.
     """
     fn = KPI_FORMULAS.get(code)
     if fn is None:
-        # A widget pointing at a KPI code nothing registers renders a
-        # permanent zero. That is a misconfiguration, not a data reading,
-        # so it must be visible above DEBUG.
+        # Not a Python formula. It may still be a custom KPI whose
+        # definition row carries a declarative spec. Every surface in this
+        # module - kpi_card widgets, chart headlines, alerts, reports,
+        # drill-down, widget export - reaches its value through this one
+        # function, so resolving the spec here is what makes a custom KPI
+        # work everywhere a built-in one does.
+        return await _compute_from_spec(
+            code,
+            session,
+            project_id=project_id,
+            period_start=period_start,
+            period_end=period_end,
+            allowed_project_ids=allowed_project_ids,
+            boq_id=boq_id,
+        )
+    if boq_id is not None:
         logger.warning(
-            "compute: unknown KPI code=%s - the widget will render 0 until the code is registered",
+            "compute: KPI %s is a built-in formula and cannot be narrowed to one estimate",
             code,
         )
         return KPIComputation()

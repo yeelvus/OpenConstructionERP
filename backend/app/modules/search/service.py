@@ -29,6 +29,7 @@ when available.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -185,6 +186,25 @@ async def _accessible_project_ids(
     return set(rows)
 
 
+def _requirement_label(req: Any) -> str:
+    """Name a requirement by the entity and attribute it constrains.
+
+    That pair is how a requirement reads on its own page, but both halves may
+    be empty while the row is still findable by its constraint value or its
+    notes, and ``f"{entity}.{attribute}"`` then leaves a lone dot standing in
+    for a title. The remaining searched columns take over in that case, so the
+    hit is always named by something the reader could have typed to find it.
+
+    Args:
+        req: A requirement row.
+
+    Returns:
+        A display label, empty only when the row answers none of its columns.
+    """
+    pair = ".".join(part for part in ((req.entity or "").strip(), (req.attribute or "").strip()) if part)
+    return (pair or (req.constraint_value or "").strip() or (req.notes or "").strip())[:160]
+
+
 def _hit_from_row(
     *,
     row_id: object,
@@ -198,9 +218,13 @@ def _hit_from_row(
 ) -> VectorHit:
     """Build a :class:`VectorHit` from an ORM row's display fields.
 
-    The score is irrelevant for the fused output (RRF is rank-based),
-    but we set a small positive value so any downstream consumer that
-    sorts by raw score before fusion still gets a sensible order.
+    ``rank_score`` is left at zero here because the per-collection
+    branches below have no relevance signal to offer - Postgres reports
+    only that the ILIKE matched, never how well. The score is filled in
+    afterwards by :func:`_sql_search_collection`, which sees the query
+    text alongside the assembled hit and can measure the match. Leaving
+    it at zero and never filling it in is what shipped every hit to the
+    frontend at 0%.
     """
     return VectorHit(
         id=str(row_id),
@@ -214,7 +238,129 @@ def _hit_from_row(
     )
 
 
+# Every hit handed back by the SQL track matched the ILIKE, so none of
+# them is a non-match. This is the floor the lexical scale starts from,
+# so the weakest surviving hit still reads as a match rather than as a
+# zero the reader would take for "irrelevant".
+_LEXICAL_FLOOR = 0.2
+
+
+def _lexical_score(query: str, hit: VectorHit) -> float:
+    """Score how well *hit* matches *query*, on a 0.0-1.0 scale.
+
+    The SQL track has no relevance signal of its own: an ILIKE answers
+    "matched" or "did not match", and the ``ORDER BY created_at DESC``
+    in each branch below is recency. Fusing that order alone would give
+    the caller a number that encodes only which row is newest, which is
+    an arbitrary order wearing a relevance score.
+
+    Three signals, in descending weight:
+
+    * where the phrase landed - a hit on the title outranks one buried
+      in the body text,
+    * how many of the query's terms appear at all - a two-word query
+      fully covered outranks one that matched on a single word,
+    * how much of the matched field the phrase accounts for - a short
+      title matched end to end outranks the same phrase inside a long
+      paragraph.
+
+    The result is floored at :data:`_LEXICAL_FLOOR` because the caller
+    only ever passes hits the ILIKE already accepted.
+
+    Args:
+        query: The raw user query, as typed.
+        hit: A hit assembled by :func:`_hit_from_row`.
+
+    Returns:
+        A relevance score in ``[_LEXICAL_FLOOR, 1.0]``.
+    """
+    needle = query.strip().lower()
+    if not needle:
+        return 0.0
+
+    title = (hit.title or "").lower()
+    body = (hit.text or "").lower()
+
+    if title == needle:
+        phrase = 1.0
+    elif title.startswith(needle):
+        phrase = 0.85
+    elif needle in title:
+        phrase = 0.7
+    elif needle in body:
+        phrase = 0.45
+    else:
+        # The ILIKE matched a column that is neither the display title
+        # nor the snippet - a BOQ ordinal or a risk code, say. Still a
+        # real match, just not one we can locate in the visible text.
+        phrase = 0.0
+
+    terms = [term for term in re.split(r"\W+", needle) if term]
+    haystack = f"{title} {body}"
+    term_ratio = sum(1 for term in terms if term in haystack) / len(terms) if terms else 0.0
+
+    if needle in title:
+        matched_field = title
+    elif needle in body:
+        matched_field = body
+    else:
+        # Nothing to measure coverage against - the phrase is in neither
+        # visible field, so it contributes nothing rather than a ratio
+        # taken over text it never appeared in.
+        matched_field = ""
+    coverage = min(len(needle) / len(matched_field), 1.0) if matched_field else 0.0
+
+    quality = 0.6 * phrase + 0.25 * term_ratio + 0.15 * coverage
+    return round(_LEXICAL_FLOOR + (1.0 - _LEXICAL_FLOOR) * quality, 6)
+
+
 async def _sql_search_collection(
+    session: AsyncSession,
+    collection: str,
+    query: str,
+    *,
+    project_id: str | None = None,
+    tenant_id: str | None = None,
+    allowed_project_ids: set[uuid.UUID] | None = None,
+    limit: int = 10,
+) -> list[VectorHit]:
+    """ILIKE substring search against *collection*, ranked by match quality.
+
+    Thin wrapper over :func:`_sql_search_collection_raw`: it takes the
+    rows Postgres matched and puts them in relevance order, because the
+    raw query can only order by recency. Each hit is scored by
+    :func:`_lexical_score` and the list is sorted on that score, stably,
+    so hits of equal match quality keep the newest-first order the SQL
+    branch gave them.
+
+    Args:
+        session: Live async session; one is shared across all collections.
+        collection: Canonical collection name (``oe_*``).
+        query: The raw user query, as typed.
+        project_id: Pin to a single, already-authorised project.
+        tenant_id: Reserved; most tables carry no tenant column yet.
+        allowed_project_ids: Cross-project access fence. ``None`` means
+            unrestricted, an empty set means nothing is readable.
+        limit: Maximum rows to take from the backing table.
+
+    Returns:
+        Hits in descending relevance order, each carrying a non-zero score.
+    """
+    hits = await _sql_search_collection_raw(
+        session,
+        collection,
+        query,
+        project_id=project_id,
+        tenant_id=tenant_id,
+        allowed_project_ids=allowed_project_ids,
+        limit=limit,
+    )
+    for hit in hits:
+        hit.score = _lexical_score(query, hit)
+    return sorted(hits, key=lambda hit: hit.score, reverse=True)
+
+
+async def _sql_search_collection_raw(
     session: AsyncSession,
     collection: str,
     query: str,
@@ -226,16 +372,19 @@ async def _sql_search_collection(
 ) -> list[VectorHit]:
     """ILIKE substring search against the table backing *collection*.
 
-    Returns a ranked list of :class:`VectorHit` objects with the same
-    shape as the vector path, so the fusion layer doesn't need to know
-    which track produced each hit. Empty list if the collection has
-    no SQL fallback wired (validation, chat, bim_elements - those are
-    inherently vector-only or live outside core ORM tables).
+    Recall only - call :func:`_sql_search_collection` instead, which
+    wraps this and puts the rows in relevance order. Returns a list of
+    :class:`VectorHit` objects with the same shape as the vector path,
+    so the fusion layer doesn't need to know which track produced each
+    hit. Empty list if the collection has no SQL fallback wired
+    (validation, chat, bim_elements - those are inherently vector-only
+    or live outside core ORM tables).
 
     The match is a single OR'd ILIKE across the canonical text columns
-    of each table. The ranking inside the SQL layer is "definition
-    order" - first match wins - because SQL has no semantic similarity
-    to lean on. Fusion via RRF mixes this rank with the vector rank.
+    of each table, ordered newest-first because SQL has no semantic
+    similarity to lean on. That order is recency, not relevance, which
+    is why the wrapper re-ranks; it survives here as the tie-break
+    between hits the wrapper scores equally.
 
     Access scoping: when ``project_id`` is given the query is pinned to
     that single project (the router already ran ``verify_project_access``).
@@ -287,12 +436,15 @@ async def _sql_search_collection(
         return [
             _hit_from_row(
                 row_id=pos.id,
-                title=(pos.description or "")[:160],
+                # The ordinal is searched, so it has to be able to name the
+                # hit: an undescribed position found by its number carried no
+                # title and no snippet, and reached the reader as a bare id.
+                title=(pos.description or pos.ordinal or "")[:160],
                 snippet=(pos.description or "")[:220],
                 collection=collection,
                 project_id=str(boq.project_id) if boq.project_id else "",
                 payload={
-                    "title": (pos.description or "")[:160],
+                    "title": (pos.description or pos.ordinal or "")[:160],
                     "ordinal": pos.ordinal or "",
                     "unit": pos.unit or "",
                     "boq_id": str(pos.boq_id) if pos.boq_id else "",
@@ -353,12 +505,14 @@ async def _sql_search_collection(
         return [
             _hit_from_row(
                 row_id=r.id,
-                title=(r.title or "")[:160],
+                # A risk is searched by its code as well, and a register entry
+                # can hold a code before anyone has written its title.
+                title=(r.title or r.code or "")[:160],
                 snippet=(r.description or r.title or "")[:220],
                 collection=collection,
                 project_id=str(r.project_id) if r.project_id else "",
                 payload={
-                    "title": (r.title or "")[:160],
+                    "title": (r.title or r.code or "")[:160],
                     "code": r.code or "",
                     "status": r.status or "",
                     "category": r.category or "",
@@ -420,12 +574,12 @@ async def _sql_search_collection(
         return [
             _hit_from_row(
                 row_id=req.id,
-                title=f"{req.entity}.{req.attribute}"[:160],
+                title=_requirement_label(req),
                 snippet=f"{req.constraint_type} {req.constraint_value}"[:220],
                 collection=collection,
                 project_id=str(rset.project_id) if rset.project_id else "",
                 payload={
-                    "title": f"{req.entity}.{req.attribute}"[:160],
+                    "title": _requirement_label(req),
                     "constraint": (f"{req.constraint_type} {req.constraint_value}")[:160],
                     "status": req.status or "",
                     "priority": req.priority or "",
@@ -489,12 +643,14 @@ async def _sql_search_collection(
         return [
             _hit_from_row(
                 row_id=s.id,
-                title=(s.title or s.submittal_number or "")[:160],
+                # The spec section is searched and is often the only thing a
+                # submittal carries while it is still being raised.
+                title=(s.title or s.submittal_number or s.spec_section or "")[:160],
                 snippet=(f"{s.submittal_number} - {s.title}" if s.submittal_number else (s.title or ""))[:220],
                 collection=collection,
                 project_id=str(s.project_id) if s.project_id else "",
                 payload={
-                    "title": (s.title or s.submittal_number or "")[:160],
+                    "title": (s.title or s.submittal_number or s.spec_section or "")[:160],
                     "submittal_number": s.submittal_number or "",
                     "status": s.status or "",
                     "submittal_type": getattr(s, "submittal_type", "") or "",
@@ -557,11 +713,13 @@ async def _sql_search_collection(
         return [
             _hit_from_row(
                 row_id=item.id,
-                title=(item.description or "")[:160],
+                # The code is searched, and a rate can be filed under a code
+                # before anyone writes the description that names it.
+                title=(item.description or item.code or "")[:160],
                 snippet=f"{item.code} - {item.description}"[:220],
                 collection=collection,
                 payload={
-                    "title": (item.description or "")[:160],
+                    "title": (item.description or item.code or "")[:160],
                     "code": item.code or "",
                     "unit": item.unit or "",
                     "rate": str(item.rate) if item.rate else "",

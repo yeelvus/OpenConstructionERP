@@ -14,6 +14,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.i18n_foundation.models import Country, TaxConfiguration, WorkCalendar
+from app.modules.i18n_foundation.subdivisions import normalize_subdivision
+from app.modules.i18n_foundation.tax_rules import validate_tax_row
 
 logger = logging.getLogger(__name__)
 
@@ -75,53 +77,111 @@ async def _seed_work_calendars(session: AsyncSession) -> int:
         logger.info("oe_i18n_work_calendar already has %d rows, skipping seed.", count)
         return 0
 
-    data = _load_json("work_calendars.json")
-    objects = [
-        WorkCalendar(
-            country_code=row["country_code"],
-            name=row["name"],
-            name_translations=row.get("name_translations"),
-            year=row["year"],
-            work_hours_per_day=row.get("work_hours_per_day", "8"),
-            work_days=row["work_days"],
-            exceptions=row.get("exceptions", []),
-            metadata_={},
-        )
-        for row in data
-    ]
+    data = load_work_calendar_seed_rows()
+    objects = [work_calendar_from_seed_row(row) for row in data]
     session.add_all(objects)
     await session.flush()
     logger.info("Seeded %d work calendars.", len(objects))
     return len(objects)
 
 
+def load_work_calendar_seed_rows() -> list[dict]:
+    """Every work calendar this release ships, straight out of the seed file.
+
+    Public for the reason :func:`load_tax_seed_rows` is public. The boot-path
+    reconciler in
+    :mod:`app.modules.i18n_foundation.work_calendar_seed_reconcile` hands these
+    rows to an install that was seeded before they were added, and it reads
+    them from here rather than carrying a copy.
+
+    A copy would be worse here than it is for a tax rate. A stale working week
+    is five plausible numbers, and this table has already shipped one week
+    written under the wrong weekday convention, which no reader can see by
+    looking at it. Two copies of that are two chances to fix only one.
+    """
+    return _load_json("work_calendars.json")
+
+
+def work_calendar_from_seed_row(row: dict) -> WorkCalendar:
+    """Build one ORM row from one work-calendar seed line.
+
+    The seeder and the reconciler both come through here, so a calendar
+    delivered to an old install is field for field the calendar a new install
+    would have been seeded with, including the defaults filled in for keys the
+    file leaves out.
+    """
+    return WorkCalendar(
+        country_code=row["country_code"],
+        name=row["name"],
+        name_translations=row.get("name_translations"),
+        year=row["year"],
+        work_hours_per_day=row.get("work_hours_per_day", "8"),
+        work_days=row["work_days"],
+        exceptions=row.get("exceptions", []),
+        metadata_={},
+    )
+
+
+def load_tax_seed_rows() -> list[dict]:
+    """Every tax rate this release ships, straight out of the seed file.
+
+    Public because the seeder is not the only reader any more. The boot-path
+    reconciler in :mod:`app.modules.i18n_foundation.tax_seed_reconcile` hands
+    the same rows to an install that was seeded before they were added, and it
+    has to read them from here rather than carry a copy: a second copy is a
+    second thing to update, and the one that gets forgotten is the one nobody
+    notices, because a stale copy of a tax rate still looks like a tax rate.
+    """
+    return _load_json("tax_configurations.json")
+
+
+def tax_configuration_from_seed_row(row: dict) -> TaxConfiguration:
+    """Build one ORM row from one seed-file line, through the write rules.
+
+    Shared by the seeder and the reconciler for the same reason
+    :func:`load_tax_seed_rows` is: a row that arrives on an upgraded install
+    has to be indistinguishable from the one a fresh install gets, field for
+    field, or the two cohorts start answering differently.
+
+    ``validate_tax_row`` runs here because this is a write path into
+    ``oe_i18n_tax_config`` that never passes through the API schema. It is what
+    stops a mislabelled row reaching the one place it would be permanent and
+    would ship to every new installation.
+    """
+    subdivision = normalize_subdivision(row.get("subdivision_code"))
+    validate_tax_row(row["country_code"], row["combination"], subdivision, rate_pct=row["rate_pct"])
+    return TaxConfiguration(
+        country_code=row["country_code"],
+        tax_name=row["tax_name"],
+        tax_name_translations=row.get("tax_name_translations"),
+        tax_code=row.get("tax_code"),
+        rate_pct=row["rate_pct"],
+        tax_type=row["tax_type"],
+        combination=row["combination"],
+        subdivision_code=subdivision,
+        effective_from=row.get("effective_from"),
+        effective_to=row.get("effective_to"),
+        is_default=row.get("is_default", False),
+        metadata_={},
+    )
+
+
 async def _seed_tax_configurations(session: AsyncSession) -> int:
     """Seed tax configuration records from tax_configurations.json.
 
     Returns the number of records inserted (0 if table was already populated).
+
+    That early return is the whole reason
+    :mod:`app.modules.i18n_foundation.tax_seed_reconcile` exists. A rate added
+    to the seed file in a later release never reaches a database that was
+    seeded before it, and this function is where that stops.
     """
     count = await _count_rows(session, TaxConfiguration)
     if count > 0:
         logger.info("oe_i18n_tax_config already has %d rows, skipping seed.", count)
         return 0
 
-    data = _load_json("tax_configurations.json")
-    objects = [
-        TaxConfiguration(
-            country_code=row["country_code"],
-            tax_name=row["tax_name"],
-            tax_name_translations=row.get("tax_name_translations"),
-            tax_code=row.get("tax_code"),
-            rate_pct=row["rate_pct"],
-            tax_type=row["tax_type"],
-            combination=row["combination"],
-            effective_from=row.get("effective_from"),
-            effective_to=row.get("effective_to"),
-            is_default=row.get("is_default", False),
-            metadata_={},
-        )
-        for row in data
-    ]
+    objects = [tax_configuration_from_seed_row(row) for row in load_tax_seed_rows()]
     session.add_all(objects)
     await session.flush()
     logger.info("Seeded %d tax configurations.", len(objects))
@@ -133,6 +193,18 @@ async def seed_i18n_data(session: AsyncSession) -> dict[str, int]:
 
     Idempotent -- checks count before inserting. Only inserts if tables are empty.
     Returns counts of seeded records per entity.
+
+    Does NOT repair an already-seeded table, and does not fill one either. Both
+    live in the boot-path repair registry instead, because that is where a
+    write to existing customer data gets a ledger, a health signal and a gate:
+    :mod:`app.modules.i18n_foundation.tax_subdivision_repair` for the rows that
+    are here but incomplete, and
+    :mod:`app.modules.i18n_foundation.tax_seed_reconcile` for the rows a later
+    release added to the file and this install therefore never received.
+
+    Countries and work calendars carry the same early return and have no
+    reconciler. See ``tax_seed_reconcile`` for why that was left rather than
+    generalised.
     """
     countries = await _seed_countries(session)
     calendars = await _seed_work_calendars(session)

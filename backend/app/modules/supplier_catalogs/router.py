@@ -17,7 +17,9 @@ from app.core.validation.messages import translate
 from app.dependencies import CurrentUserId, RequirePermission, SessionDep
 from app.modules.supplier_catalogs.schemas import (
     CatalogItemCreate,
+    CatalogItemListResponse,
     CatalogItemResponse,
+    CatalogItemUpdate,
     CommodityCodeResponse,
     GoodsReceiptCreate,
     GRResponse,
@@ -48,11 +50,13 @@ from app.modules.supplier_catalogs.schemas import (
     VendorCreate,
     VendorInvoiceCreate,
     VendorInvoiceResponse,
+    VendorListResponse,
     VendorRatingPayload,
     VendorResponse,
     VendorUpdate,
     WarehouseCreate,
     WarehouseResponse,
+    WarehouseUpdate,
 )
 from app.modules.supplier_catalogs.service import SupplierCatalogsService
 
@@ -83,7 +87,7 @@ async def create_vendor(
 
 @router.get(
     "/vendors",
-    response_model=list[VendorResponse],
+    response_model=VendorListResponse,
     dependencies=[Depends(RequirePermission("supplier_catalogs.vendor.read"))],
 )
 async def list_vendors(
@@ -93,14 +97,20 @@ async def list_vendors(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     service: SupplierCatalogsService = Depends(_svc),
-) -> list[VendorResponse]:
-    items, _total = await service.vendors.list(
+) -> VendorListResponse:
+    """List one page of vendors, optionally by status or country."""
+    items, total = await service.vendors.list(
         status=status,
         country_code=country_code,
         offset=offset,
         limit=limit,
     )
-    return [VendorResponse.model_validate(v) for v in items]
+    return VendorListResponse(
+        items=[VendorResponse.model_validate(v) for v in items],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get(
@@ -137,6 +147,26 @@ async def update_vendor(
 ) -> VendorResponse:
     vendor = await service.update_vendor(vendor_id, data)
     return VendorResponse.model_validate(vendor)
+
+
+@router.delete(
+    "/vendors/{vendor_id}",
+    status_code=204,
+    dependencies=[Depends(RequirePermission("supplier_catalogs.vendor.admin"))],
+)
+async def delete_vendor(
+    vendor_id: uuid.UUID,
+    user_id: CurrentUserId,
+    service: SupplierCatalogsService = Depends(_svc),
+) -> None:
+    """Delete a vendor nothing references.
+
+    Refuses with 409 and a structured reason when price lists, purchase
+    orders, invoices or KYC documents point at it; the reason names the
+    suspend and blacklist lifecycle, which is what a traded-with vendor
+    actually wants.
+    """
+    await service.delete_vendor(vendor_id, user_id=user_id)
 
 
 @router.patch(
@@ -180,7 +210,12 @@ async def rate_vendor(
     user_id: CurrentUserId,
     service: SupplierCatalogsService = Depends(_svc),
 ) -> VendorResponse:
-    vendor = await service.rate_vendor(vendor_id, payload.rating, user_id=user_id)
+    vendor = await service.rate_vendor(
+        vendor_id,
+        payload.rating,
+        user_id=user_id,
+        comment=payload.comment,
+    )
     return VendorResponse.model_validate(vendor)
 
 
@@ -219,7 +254,7 @@ async def create_catalog_item(
 
 @router.get(
     "/catalog-items",
-    response_model=list[CatalogItemResponse],
+    response_model=CatalogItemListResponse,
     dependencies=[Depends(RequirePermission("supplier_catalogs.catalog.read"))],
 )
 async def list_catalog_items(
@@ -229,14 +264,54 @@ async def list_catalog_items(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     service: SupplierCatalogsService = Depends(_svc),
-) -> list[CatalogItemResponse]:
-    items, _total = await service.items.list(
+) -> CatalogItemListResponse:
+    """List one page of catalog items, optionally within a category or search."""
+    items, total = await service.items.list(
         category_id=category_id,
         search=search,
         offset=offset,
         limit=limit,
     )
-    return [CatalogItemResponse.model_validate(it) for it in items]
+    return CatalogItemListResponse(
+        items=[CatalogItemResponse.model_validate(it) for it in items],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
+
+
+@router.patch(
+    "/catalog-items/{item_id}",
+    response_model=CatalogItemResponse,
+    dependencies=[Depends(RequirePermission("supplier_catalogs.catalog.write"))],
+)
+async def update_catalog_item(
+    item_id: uuid.UUID,
+    data: CatalogItemUpdate,
+    user_id: CurrentUserId,
+    service: SupplierCatalogsService = Depends(_svc),
+) -> CatalogItemResponse:
+    """Correct a catalog item's own fields. ``sku`` is not one of them."""
+    item = await service.update_catalog_item(item_id, data)
+    return CatalogItemResponse.model_validate(item)
+
+
+@router.delete(
+    "/catalog-items/{item_id}",
+    status_code=204,
+    dependencies=[Depends(RequirePermission("supplier_catalogs.catalog.write"))],
+)
+async def delete_catalog_item(
+    item_id: uuid.UUID,
+    user_id: CurrentUserId,
+    service: SupplierCatalogsService = Depends(_svc),
+) -> None:
+    """Delete a catalog item nothing quotes.
+
+    Refuses with 409 and a structured reason when requisition lines, order
+    lines, vendor prices or stock on hand point at it.
+    """
+    await service.delete_catalog_item(item_id, user_id=user_id)
 
 
 @router.get(
@@ -553,6 +628,40 @@ async def list_warehouses(
     return [WarehouseResponse.model_validate(w) for w in rows]
 
 
+@router.patch(
+    "/warehouses/{warehouse_id}",
+    response_model=WarehouseResponse,
+    dependencies=[Depends(RequirePermission("supplier_catalogs.warehouse.write"))],
+)
+async def update_warehouse(
+    warehouse_id: uuid.UUID,
+    data: WarehouseUpdate,
+    user_id: CurrentUserId,
+    service: SupplierCatalogsService = Depends(_svc),
+) -> WarehouseResponse:
+    """Correct a warehouse's own fields. ``code`` and ``project_id`` are not among them."""
+    wh = await service.update_warehouse(warehouse_id, data, user_id=user_id)
+    return WarehouseResponse.model_validate(wh)
+
+
+@router.delete(
+    "/warehouses/{warehouse_id}",
+    status_code=204,
+    dependencies=[Depends(RequirePermission("supplier_catalogs.warehouse.manage"))],
+)
+async def delete_warehouse(
+    warehouse_id: uuid.UUID,
+    user_id: CurrentUserId,
+    service: SupplierCatalogsService = Depends(_svc),
+) -> None:
+    """Delete an empty warehouse.
+
+    Refuses with 409 and a structured reason when stock is still on hand or
+    goods were received into it.
+    """
+    await service.delete_warehouse(warehouse_id, user_id=user_id)
+
+
 @router.get(
     "/warehouses/{warehouse_id}/balances",
     response_model=list[StockBalanceResponse],
@@ -703,6 +812,25 @@ async def update_tolerance_profile(
 ) -> TolerianceProfileResponse:
     profile = await service.update_tolerance_profile(profile_id, data)
     return TolerianceProfileResponse.model_validate(profile)
+
+
+@router.delete(
+    "/tolerance-profiles/{profile_id}",
+    status_code=204,
+    dependencies=[
+        Depends(RequirePermission("supplier_catalogs.vendor.admin")),
+    ],
+)
+async def delete_tolerance_profile(
+    profile_id: uuid.UUID,
+    user_id: CurrentUserId,
+    service: SupplierCatalogsService = Depends(_svc),
+) -> None:
+    """Delete a tolerance profile no vendor is matched against.
+
+    Refuses with 409 when vendors name it, or when it is the tenant default.
+    """
+    await service.delete_tolerance_profile(profile_id)
 
 
 # ── KYC documents ───────────────────────────────────────────────────────────

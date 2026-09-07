@@ -16,6 +16,7 @@ import { PageHeader } from '@/shared/ui/PageHeader';
 import { DismissibleInfo, IntroRichText } from '@/shared/ui/DismissibleInfo';
 import { useWidgetSettingsStore } from '@/stores/useWidgetSettingsStore';
 import { fmtNumber, getIntlLocale, fmtFixed } from '@/shared/lib/formatters';
+import { getDateFnsLocale } from '@/shared/lib/dateFnsLocale';
 import { projectsApi, type Project } from './api';
 import { apiGet, apiPatch, apiPost, apiDelete } from '@/shared/lib/api';
 import { useToastStore } from '@/stores/useToastStore';
@@ -1112,7 +1113,7 @@ export function ProjectsPage() {
       {/* Demo-data notice: admins see how to clear the seeded showcase
           projects right where those cards live. */}
       {demoCount > 0 && me?.role === 'admin' && (
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-lg border border-border-default bg-surface-elevated px-4 py-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-lg border border-border bg-surface-elevated px-4 py-3">
           <p className="text-sm text-content-secondary min-w-0">
             {t('projects.demo_banner', {
               defaultValue:
@@ -1317,7 +1318,7 @@ export function ProjectsPage() {
           <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
             {/* Search */}
             <div className="relative flex-1">
-              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-content-tertiary">
+              <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center pl-3 text-content-tertiary">
                 <Search size={16} />
               </div>
               <input
@@ -1328,7 +1329,7 @@ export function ProjectsPage() {
                   defaultValue: 'Search projects...',
                 })}
                 aria-label={t('projects.search_placeholder', { defaultValue: 'Search projects...' })}
-                className="h-10 w-full rounded-lg border border-border bg-surface-primary pl-10 pr-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
+                className="h-10 w-full rounded-lg border border-border bg-surface-primary ps-10 pe-3 text-sm text-content-primary placeholder:text-content-tertiary focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
               />
             </div>
 
@@ -1341,7 +1342,7 @@ export function ProjectsPage() {
                 aria-label={t('a11y.projects.status_filter', {
                   defaultValue: 'Filter projects by status',
                 })}
-                className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-40"
+                className="h-10 appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-40"
               >
                 {availableStatuses.map((s) => (
                   <option key={s} value={s}>
@@ -1357,7 +1358,7 @@ export function ProjectsPage() {
                   </option>
                 ))}
               </select>
-              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+              <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-2.5 text-content-tertiary">
                 <ChevronDown size={14} />
               </div>
             </div>
@@ -1370,7 +1371,7 @@ export function ProjectsPage() {
                 aria-label={t('a11y.projects.region_filter', {
                   defaultValue: 'Filter projects by region',
                 })}
-                className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-40"
+                className="h-10 appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-9 text-sm text-content-primary focus:outline-none focus:ring-2 focus:ring-oe-blue sm:w-40"
               >
                 {availableRegions.map((r) => (
                   <option key={r} value={r}>
@@ -1380,7 +1381,7 @@ export function ProjectsPage() {
                   </option>
                 ))}
               </select>
-              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+              <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-2.5 text-content-tertiary">
                 <ChevronDown size={14} />
               </div>
             </div>
@@ -2539,10 +2540,28 @@ function ProjectCard({
     },
   });
 
+  // The third mirror of the backend's classification registry. It has to name
+  // every standard the picker on CreateProjectPage can write, or the project
+  // list prints a raw identifier where the card next to it prints a name.
   const standardLabels: Record<string, string> = {
     din276: 'DIN 276',
     nrm: 'NRM',
     masterformat: 'MasterFormat',
+    uniformat: 'UniFormat',
+    uniclass: 'Uniclass',
+    omniclass: 'OmniClass',
+    gb50500: 'GB/T',
+    tetelrend: 'Tételrend',
+    gesn: 'GESN / FER',
+    bc3: 'BC3',
+    untec: 'UNTEC',
+    voci: 'VOCI',
+    onorm: 'ÖNORM',
+    gaeb: 'GAEB',
+    sinapi: 'SINAPI',
+    sekisan: 'Sekisan',
+    kbim: 'KBIM',
+    birimfiyat: 'Birim Fiyat',
   };
 
   // Currency symbol icon — falls back to neutral DollarSign for unknown codes
@@ -2563,7 +2582,12 @@ function ProjectCard({
   const modifiedDate = modifiedSource ? parseISO(modifiedSource) : null;
   const relativeModified =
     modifiedDate && isValidDate(modifiedDate)
-      ? formatDistanceToNowStrict(modifiedDate, { addSuffix: true })
+      ? formatDistanceToNowStrict(modifiedDate, {
+          addSuffix: true,
+          // Without `locale` date-fns answers in en-US, so this line stayed
+          // "3 hours ago" next to an absolute date that was already localised.
+          locale: getDateFnsLocale(),
+        })
       : null;
   const absoluteModified = modifiedDate && isValidDate(modifiedDate)
     ? modifiedDate.toLocaleDateString(getIntlLocale())
@@ -2589,6 +2613,13 @@ function ProjectCard({
   return (
     <Card
       hoverable
+      // The only stable hook on a project card. Everything a test could reach
+      // for before this was incidental: the title is the one <h3> on the page
+      // today and the first neighbouring component to add one silently moves
+      // the click somewhere else, with the spec staying syntactically valid.
+      // Deliberately not project-card-<id>, because a prefix match on that
+      // would also catch project-card-view-on-map on the button inside.
+      data-testid="project-card"
       padding="none"
       className="group cursor-pointer relative animate-card-in overflow-hidden rounded-xl bg-gradient-to-b from-surface-elevated to-surface-primary hover:shadow-xl hover:border-oe-blue/40 focus-within:ring-2 focus-within:ring-oe-blue/30 motion-safe:transition-all"
       style={style}

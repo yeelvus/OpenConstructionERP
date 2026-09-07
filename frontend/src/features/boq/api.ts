@@ -44,6 +44,23 @@ export interface Position {
   classification: Record<string, string>;
   source: string;
   confidence: number | null;
+  /**
+   * Issue #453 - the estimating standard deviation for this line, as a
+   * fraction of its own amount. `confidence` says how sure the estimator is;
+   * this says how wrong the line could be, which is the number an offer is
+   * tested against. Null means nobody has judged it, which is not zero: a
+   * zero here is a claim of certainty.
+   */
+  risk_dispersion?: number | null;
+  /**
+   * Issue #453 - what the price stands on, not how the row was entered.
+   * `source` answers the second question, defaults to `manual` and is written
+   * literally by every ordinary create path, so grouping money by it looks
+   * like a price-evidence report and is a provenance report with one bar.
+   * One of invoice, quotation, price_list, contract_rate, norm, historic,
+   * judgement. Null means nobody has said, which is not `judgement`.
+   */
+  price_basis?: string | null;
   sort_order: number;
   validation_status: string;
   /** BIM element IDs linked to this position (cross-highlight source). */
@@ -317,6 +334,79 @@ export interface CreatePositionData {
   after_position_id?: string | null;
 }
 
+/**
+ * One take-off line: a signed, repeatable partial quantity with its arithmetic
+ * left visible.
+ *
+ * `formula` is what makes a measurement sheet a document rather than a number.
+ * REB 23.003 and OENORM A 2063 both exist because a checker has to be able to
+ * see how a quantity was arrived at, so the expression and the dimensions that
+ * fed it are stored beside the result instead of being collapsed into it.
+ *
+ * The panel writes `L`, `B` and `H` into `variables` and a product of exactly
+ * the ones the user filled in into `formula`, so a line measured by length
+ * alone reads `L` rather than `L * 1 * 1`. The server evaluates the expression
+ * itself, case-insensitively, and accepts anything its safe evaluator accepts,
+ * which is why a sheet written through the API with a formula of its own reads
+ * back here unchanged.
+ */
+export interface MeasurementLineInput {
+  description?: string;
+  formula: string;
+  variables?: Record<string, string | number>;
+  /** How many times this line repeats. The "units" column. */
+  factor?: string | number;
+  /** '+' adds, '-' deducts. Deductions are how openings and voids are measured. */
+  sign?: '+' | '-';
+  ref?: string;
+  unit?: string;
+}
+
+/** One line as the server hands it back, with its own quantity worked out. */
+export interface MeasurementLineResult extends MeasurementLineInput {
+  variables: Record<string, string>;
+  factor: string;
+  sign: '+' | '-';
+  unit: string;
+  /** The signed contribution of this line, already rounded by the preset. */
+  quantity: string;
+  /** Non-empty when this line's formula could not be evaluated. */
+  error: string;
+}
+
+/**
+ * A whole sheet: the lines, their total, and how that total compares with the
+ * quantity the position currently carries.
+ *
+ * Quantities arrive as strings because the server works in decimals and a
+ * round trip through a JavaScript number is exactly where a measured 0.1 + 0.2
+ * stops being 0.3. They are formatted for display and parsed only when one is
+ * about to be written back as the position's quantity.
+ */
+export interface MeasurementSheet {
+  item_ref: string;
+  description: string;
+  unit: string;
+  lines: MeasurementLineResult[];
+  total_quantity: string;
+  line_count: number;
+  has_errors: boolean;
+  /** Only on a read: false when the position has no saved sheet yet. */
+  stored?: boolean;
+  /**
+   * Only on a compute: how the measured total compares with the quantity the
+   * position carries right now. `matches` is true when they agree within
+   * `tolerance`, which the server sets and does not take from the caller.
+   */
+  reconciliation?: {
+    measured_quantity: string;
+    target_quantity: string;
+    difference: string;
+    tolerance: string;
+    matches: boolean;
+  };
+}
+
 export interface UpdatePositionData {
   ordinal?: string;
   description?: string;
@@ -480,6 +570,38 @@ export function normalizePositions(positions: Position[]): Position[] {
  */
 export function isSection(pos: Pick<Position, 'unit'>): boolean {
   return !pos.unit || pos.unit.trim() === '' || pos.unit.trim().toLowerCase() === 'section';
+}
+
+/** A position nobody has typed into yet: no description and no quantity.
+ *
+ * "Add Position" creates the row on the server straight away and opens its
+ * description cell, so a bill legitimately holds rows carrying nothing yet.
+ * They are not lines of the bill: the server leaves them out of its position
+ * counts and out of every export it renders, and the client-side Excel / PDF
+ * exports apply this same rule so a file downloaded from the browser matches
+ * one downloaded from the API.
+ *
+ * A section header carries no quantity by definition, so it is never empty in
+ * this sense — without that guard every header would be dropped and the
+ * exports would lose their structure.
+ */
+export function isEmptyPosition(
+  pos: Pick<Position, 'unit' | 'description' | 'quantity'>,
+): boolean {
+  if (isSection(pos)) return false;
+  const described = (pos.description ?? '').trim() !== '';
+  // A quantity that will not parse counts as no quantity, matching what the
+  // server's `_str_to_float` does with the same value — the two exports must
+  // not disagree about which rows a bill has.
+  const qty = Number(pos.quantity ?? 0);
+  return !described && (!Number.isFinite(qty) || qty === 0);
+}
+
+/** Narrow a position list to the rows an export may emit. Keeps section headers. */
+export function exportablePositions<T extends Pick<Position, 'unit' | 'description' | 'quantity'>>(
+  positions: T[],
+): T[] {
+  return positions.filter((p) => !isEmptyPosition(p));
 }
 
 /**
@@ -915,11 +1037,56 @@ export interface CostBreakdownResponse {
 /* ── Price Analysis types (per-position unit-rate build-up) ───────── */
 
 /**
- * Presentation presets the backend knows (`price_breakdown/presets.py`).
- * Only these two are offered in the UI: the international default and the
- * German EFB sheets a public client asks for with the tender.
+ * The name of a presentation preset, as the backend spells it.
+ *
+ * This used to be the union `'international' | 'efb'`, a hand-kept copy of a
+ * table that lives in `price_breakdown/presets.py`. The backend has six
+ * presets and has had them for as long as this file has existed: the two named
+ * here plus the UK detailed rate, the US bid breakdown, the Hungarian anyag/dij
+ * split and a generic cost-plus sheet. Naming two of the six did not make the
+ * other four unsupported, it made them unreachable, which is worse because
+ * nothing anywhere said so. The list now comes from
+ * `getPriceAnalysisPresets`, so a preset added on the server is offered here
+ * without an edit.
  */
-export type PriceAnalysisPreset = 'international' | 'efb';
+export type PriceAnalysisPreset = string;
+
+/** One resource kind as a preset words and orders it. */
+export interface PriceAnalysisPresetKind {
+  kind: string;
+  label: string;
+  i18n_key: string;
+}
+
+/**
+ * A preset as the backend describes itself (`Preset.to_dict`).
+ *
+ * `kinds` is in the preset's own display order, and the order carries meaning
+ * rather than being a rendering detail: the Hungarian sheet opens with
+ * material rather than labour, because that is the column order a Hungarian
+ * client reads a tender against. Render the categories in this order rather
+ * than in the order `kind_totals` happens to arrive in.
+ *
+ * `label` and each kind's `label` are English defaults to pass as
+ * `defaultValue` beside the matching `i18n_key`. One limit is worth knowing:
+ * the kind keys (`price_breakdown.kind.material`) are preset-independent while
+ * these labels are not, so where a locale translates the generic key, the
+ * translation wins and the preset's own market wording is not shown. That is
+ * the backend's contract today and not something this file decides.
+ */
+export interface PriceAnalysisPresetInfo {
+  name: PriceAnalysisPreset;
+  label: string;
+  label_i18n_key: string;
+  region: string;
+  kinds: PriceAnalysisPresetKind[];
+  line_i18n_keys: Record<string, string>;
+}
+
+/** The preset table, as the presets endpoint answers with it. */
+export interface PriceAnalysisPresetsResponse {
+  presets: PriceAnalysisPresetInfo[];
+}
 
 /**
  * One resource line of the build-up, costed per ONE unit of the position.
@@ -994,6 +1161,15 @@ export interface PriceAnalysisResponse {
   profit_amount: string;
   unit_rate: string;
   position_total: string;
+  /**
+   * The preset this sheet was rendered in.
+   *
+   * Present on every response, and the only way to learn the answer when the
+   * request deliberately did not name a preset: apart from the `efb` block,
+   * nothing in this payload differs between presets, so a reader could not
+   * otherwise tell a Hungarian sheet from an international one.
+   */
+  preset: PriceAnalysisPresetInfo;
   efb?: PriceAnalysisEfb;
 }
 
@@ -1538,6 +1714,36 @@ export const boqApi = {
     apiPatch<Position>(`/v1/boq/positions/${posId}`, data),
 
   /**
+   * Work out a quantity from take-off lines without saving anything.
+   *
+   * The server evaluates each formula, totals the signed contributions and
+   * says how the total compares with the quantity the position holds today.
+   * Nothing is written: saving is a normal position PATCH carrying the new
+   * `quantity` and the lines under `metadata.measurement`, which is why there
+   * is no save endpoint to call here.
+   *
+   * `strict: false` is deliberate and is what makes this usable while typing.
+   * In strict mode one bad formula raises and the whole sheet returns nothing;
+   * non-strict keeps the bad line with its own error and a quantity of zero,
+   * so a typo in row four does not blank rows one to three.
+   *
+   * The preset is left to the server, which resolves it from the project's
+   * country: REB 23.003 in Germany, OENORM A 2063 in Austria, the neutral one
+   * everywhere else. Passing one from here would mean this panel deciding
+   * which market's rules a sheet is written under, which is the project's
+   * property and not the panel's.
+   */
+  computeMeasurement: (posId: string, body: { lines: MeasurementLineInput[]; unit?: string }) =>
+    apiPost<MeasurementSheet>(`/v1/boq/positions/${posId}/measurement/compute/`, {
+      ...body,
+      strict: false,
+    }),
+
+  /** Read the sheet saved on a position. `stored` is false when there is none. */
+  getMeasurement: (posId: string) =>
+    apiGet<MeasurementSheet>(`/v1/boq/positions/${posId}/measurement/`),
+
+  /**
    * v3.12.0 Stream A — bulk update positions.
    * Sends one PATCH covering every selected position id; the server
    * applies the same direct-set / rate-factor / quantity-factor mutation
@@ -1711,26 +1917,42 @@ export const boqApi = {
   getCostBreakdown: (boqId: string) =>
     apiGet<CostBreakdownResponse>(`/v1/boq/boqs/${boqId}/cost-breakdown/`),
 
-  /* Price Analysis: how ONE position's unit rate is built up. */
-  getPriceAnalysis: (positionId: string, preset: PriceAnalysisPreset = 'international') =>
+  /* The presentation presets the backend can render a price analysis in. */
+  getPriceAnalysisPresets: () =>
+    apiGet<PriceAnalysisPresetsResponse>('/v1/boq/price-analysis/presets/'),
+
+  /* Price Analysis: how ONE position's unit rate is built up.
+   *
+   * Passing no preset is a request, not an omission: it asks the server to
+   * read the project's own country and answer in that market's shape. Sending
+   * `preset=international` by default is what this did before, and it meant a
+   * Hungarian estimator got the international single-rate sheet on a project
+   * the platform already knew was Hungarian. The response says which preset
+   * was applied either way. */
+  getPriceAnalysis: (positionId: string, preset?: PriceAnalysisPreset | null) =>
     apiGet<PriceAnalysisResponse>(
       `/v1/boq/positions/${encodeURIComponent(positionId)}/price-analysis/` +
-        `?preset=${encodeURIComponent(preset)}`,
+        (preset ? `?preset=${encodeURIComponent(preset)}` : ''),
     ),
 
   /* The same analysis as a Markdown document, which is how a German bidder
    * hands the Preisblatt over. The preset travels with it: `render_markdown`
    * takes its headings from the preset, so downloading the EFB sheet while
-   * looking at the international view would hand over the wrong wording. */
+   * looking at the international view would hand over the wrong wording.
+   *
+   * Pass the preset the reader is actually looking at, including the one the
+   * server chose for them; omitting it here would have the server resolve the
+   * market a second time, which agrees today and is one edit away from not. */
   downloadPriceAnalysisMarkdown: (
     positionId: string,
-    preset: PriceAnalysisPreset = 'international',
+    preset?: PriceAnalysisPreset | null,
     positionRef?: string,
   ) => {
     const safe = (positionRef || 'position').replace(/[/\s]/g, '_');
     return downloadWithAuth(
       `${API_BASE}/v1/boq/positions/${encodeURIComponent(positionId)}/price-analysis/` +
-        `?format=markdown&preset=${encodeURIComponent(preset)}`,
+        `?format=markdown` +
+        (preset ? `&preset=${encodeURIComponent(preset)}` : ''),
       `price_analysis_${safe}.md`,
     );
   },

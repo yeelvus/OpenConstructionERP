@@ -84,6 +84,7 @@ import {
   type TeamsValidationFinding,
 } from './api';
 import { RosterTab } from './RosterTab';
+import { fmtList } from '@/shared/lib/formatters';
 
 type TabId = 'people' | 'teams' | 'restricted' | 'matrix';
 
@@ -349,7 +350,7 @@ function TeamForm({
           >
             {TEAM_KINDS.map((k) => (
               <option key={k} value={k}>
-                {t(`teams.kind.${k}`, k.charAt(0).toUpperCase() + k.slice(1))}
+                {t(`teams.kind.${k}`, { defaultValue: k.charAt(0).toUpperCase() + k.slice(1) })}
               </option>
             ))}
           </select>
@@ -490,7 +491,7 @@ function MemberPanel({ team, projectId }: { team: Team; projectId: string }) {
               >
                 {ALL_TEAM_ROLES.map((r) => (
                   <option key={r} value={r}>
-                    {t(`teams.role.${r}`, r.replace(/_/g, ' '))}
+                    {t(`teams.role.${r}`, { defaultValue: r.replace(/_/g, ' ') })}
                   </option>
                 ))}
               </select>
@@ -527,7 +528,7 @@ function MemberPanel({ team, projectId }: { team: Team; projectId: string }) {
             >
               {ALL_TEAM_ROLES.map((r) => (
                 <option key={r} value={r}>
-                  {t(`teams.role.${r}`, r.replace(/_/g, ' '))}
+                  {t(`teams.role.${r}`, { defaultValue: r.replace(/_/g, ' ') })}
                 </option>
               ))}
             </select>
@@ -672,7 +673,7 @@ function TeamsTab({ projectId }: { projectId: string }) {
                     {team.name}
                   </button>
                   <Badge variant="neutral" size="sm">
-                    {t(`teams.kind.${team.kind}`, team.kind)}
+                    {t(`teams.kind.${team.kind}`, { defaultValue: team.kind })}
                   </Badge>
                   {team.is_default ? (
                     <Badge variant="blue" size="sm">
@@ -767,7 +768,7 @@ function RestrictedTab({ projectId }: { projectId: string }) {
 
   const typeLabel = useMemo(() => {
     const byKey = new Map(entityTypes.map((e) => [e.key, e]));
-    return (key: string) => t(`teams.entityType.${key}`, byKey.get(key)?.label ?? key);
+    return (key: string) => t(`teams.entityType.${key}`, { defaultValue: byKey.get(key)?.label ?? key });
   }, [entityTypes, t]);
 
   const saveMutation = useMutation({
@@ -847,7 +848,7 @@ function RestrictedTab({ projectId }: { projectId: string }) {
               </Button>
             </div>
             <p className="mt-1.5 text-xs text-content-secondary">
-              {t('teams.visible_to', 'Visible to')}: {row.team_names.join(', ')}
+              {t('teams.visible_to', 'Visible to')}: {fmtList(row.team_names)}
             </p>
             <p
               className={clsx(
@@ -992,7 +993,7 @@ function MatrixTab({ projectId }: { projectId: string }) {
                   ) : null}
                 </td>
                 <td className="py-2 pr-3 text-xs text-content-secondary">
-                  {m.team_names.join(', ')}
+                  {fmtList(m.team_names)}
                 </td>
                 <td className="py-2 pr-3 text-content-primary">{m.visible_restricted_count}</td>
                 <td

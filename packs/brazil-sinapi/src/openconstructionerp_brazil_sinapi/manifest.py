@@ -50,9 +50,18 @@ MANIFEST = PartnerPackManifest(
         "NBR 9050 accessibility, NBR 5419 lightning protection, Lei 14.133/2021 "
         "public procurement, RPS/NFS-e PDF generation, municipal ISS taxation."
     ),
-    default_locale="pt",
+    # Brazilian Portuguese, not European Portuguese. The frontend ships both
+    # as separate bundles and "pt" is Portugal's, so declaring the base code
+    # moved every user who applied this pack from pt-BR.ts to pt.ts and
+    # renamed their own dialect out from under them.
+    default_locale="pt-BR",
     additional_locales={
-        "pt": "locales/pt-BR.json",
+        # The key is the code ``GET /api/v1/partner-pack/locale/{code}`` answers
+        # to, and the frontend asks for the code that normalises to the UI
+        # language now on screen. Under "pt" it asked for pt-BR and got a 404,
+        # so the file below - which has always been Brazilian - went unread the
+        # moment default_locale started resolving to pt-BR.
+        "pt-BR": "locales/pt-BR.json",
     },
     cwicr_regions=[
         # Only one Brazilian CWICR region is published in the marketplace
@@ -62,6 +71,14 @@ MANIFEST = PartnerPackManifest(
     ],
     default_currency="BRL",
     default_tax_template="br_iss_municipal",
+    # The Brazilian cascade the catalogue already builds from the BR regional
+    # markup stack: BDI, and the federal and municipal levies underneath it.
+    # This field was empty, which is not the same as absent. An empty field
+    # leaves a project created under this pack on the flat international
+    # default, so the pack shipped the SINAPI cost base and the NBR rules and
+    # then priced the bill with a method that is not Brazilian. The template
+    # was there the whole time; nothing was naming it.
+    default_methodology="brazil",
     validation_rule_packs=[
         "sinapi_cost_db",
         "nbr_12721",
@@ -72,15 +89,21 @@ MANIFEST = PartnerPackManifest(
         "lei_14133_2021",
         "rps_pdf_generation",
     ],
-    default_modules=[],   # empty = show all
+    # The engine identifiers behind the SINAPI and NBR documents above.
+    # All three NBR documents resolve to the one "nbr" rule set.
+    validation_rule_sets=[
+        "sinapi",
+        "nbr",
+    ],
+    default_modules=[],  # empty = show all
     hidden_modules=[],
     demo_template_ids=["residential-saopaulo"],
     branding=PartnerBranding(
-        primary_color="#009C3B",   # Brazil green (flag)
-        accent_color="#FFDF00",    # Brazil yellow (flag)
+        primary_color="#009C3B",  # Brazil green (flag)
+        accent_color="#FFDF00",  # Brazil yellow (flag)
         logo_path="logo.svg",
         favicon_path=None,
-        powered_by_text=None,      # use default co-branding string
+        powered_by_text=None,  # use default co-branding string
     ),
     onboarding_script_path="onboarding.yaml",
     metadata={

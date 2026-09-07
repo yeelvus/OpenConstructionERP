@@ -5,8 +5,11 @@
 Defines create, update, and response schemas for BOQs, positions, markups,
 structured (sectioned) BOQ responses, templates, and activity log entries.
 
-Numeric values (quantity, unit_rate, total) are exposed as floats in the API
-but stored as strings in SQLite-compatible models.
+Numeric values (quantity, unit_rate, total) are stored as strings in
+SQLite-compatible models and are exposed on ``PositionResponse`` as plain
+decimal strings, not floats - see the BUG-B-011 note on that schema for why.
+Schemas that carry a measurement with no money beside it may still type it as
+a float; each schema states which it uses.
 """
 
 from datetime import datetime
@@ -23,6 +26,47 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+#: What a price stands on, as a closed vocabulary - issue #453.
+#:
+#: Ordered from the strongest evidence to the weakest, and that order is the
+#: point of the list rather than a tidiness: the question these values exist to
+#: answer is what share of the money on an offer is backed by something outside
+#: the organisation, and a reader who has to remember which half of an
+#: unordered list is external cannot answer it at a glance.
+#:
+#: * ``invoice``       a paid invoice for the same scope
+#: * ``quotation``     a supplier or subcontractor quotation for this job
+#: * ``price_list``    a published list or catalogue price
+#: * ``contract_rate`` a rate fixed by the contract or imposed by the client
+#: * ``norm``          a published norm or cost index
+#: * ``historic``      the organisation's own cost history
+#: * ``judgement``     professional judgement, with nothing external behind it
+#:
+#: The first five are external and the last two are internal. That split is
+#: NOT encoded here, on purpose: it is what a KPI filter says, and a
+#: deployment whose auditor treats its own history as evidence is entitled to
+#: draw the line elsewhere without editing the platform.
+PRICE_BASIS_VALUES: tuple[str, ...] = (
+    "invoice",
+    "quotation",
+    "price_list",
+    "contract_rate",
+    "norm",
+    "historic",
+    "judgement",
+)
+
+PRICE_BASIS_PATTERN: str = f"^({'|'.join(PRICE_BASIS_VALUES)})$"
+
+PRICE_BASIS_DESCRIPTION: str = (
+    "What the price on this line stands on. This is NOT ``source``, which "
+    "records how the row was entered: a hand-typed row can have an invoice "
+    "behind it and a catalogue row can rest on a guess. One of: "
+    + ", ".join(PRICE_BASIS_VALUES)
+    + ". Unset means nobody has said, which is not the same as ``judgement``."
+)
+
 
 # Probe-A scenario 11: hard cap on ``quantity * unit_rate``. A 1e10 × 1e10
 # input would compute to 1e20, which is far beyond any plausible
@@ -149,7 +193,18 @@ class BOQUpdate(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=5000)
-    status: str | None = Field(default=None, pattern=r"^(draft|final|archived)$")
+    #: The whole state set a bill of quantities has. ``draft`` is where every
+    #: bill starts, ``final`` is what approving one produces, and ``archived``
+    #: retires it. There is no separate "approved" state: approval and
+    #: finalisation are one act here - ``POST /boqs/{id}/lock`` records the
+    #: approver in ``approved_by`` / ``approved_at`` and sets the status to
+    #: ``final`` - and ``POST /boqs/{id}/unlock`` returns it to ``draft``.
+    status: str | None = Field(
+        default=None,
+        pattern=r"^(draft|final|archived)$",
+        description="Lifecycle state: draft (editable), final (approved), archived (retired).",
+        examples=["final"],
+    )
     metadata: dict[str, Any] | None = None
     estimate_type: str | None = Field(default=None, max_length=50)
     base_date: str | None = Field(default=None, max_length=20)
@@ -186,6 +241,10 @@ class BOQResponse(BaseModel):
     parent_estimate_id: UUID | None = None
     approved_by: str | None = None
     approved_at: str | None = None
+    #: Issue #435 - set when this bill prices one variation request's scope
+    #: instead of the project at large. NULL on every bill that existed
+    #: before the column, and on every bill created through ``POST /boqs/``.
+    variation_request_id: UUID | None = None
 
     # BUG-MATH04: defence-in-depth strip of any residual HTML on output.
     # Input validators only block the *dangerous* subset; legacy rows
@@ -296,6 +355,24 @@ class PositionCreate(BaseModel):
         ge=0.0,
         le=1.0,
         description="AI confidence score (0.0-1.0). Only for AI-sourced positions",
+    )
+    risk_dispersion: float | None = Field(
+        default=None,
+        ge=0.0,
+        description=(
+            "Estimating standard deviation for this line, as a fraction of its "
+            "own amount. Answers how wrong the line could be, which is a "
+            "different question from confidence and the one an offer is tested "
+            "against. No upper bound: a line can be more uncertain than it is "
+            "big. Unset means unjudged, which is not the same as zero."
+        ),
+        examples=[0.15],
+    )
+    price_basis: str | None = Field(
+        default=None,
+        pattern=PRICE_BASIS_PATTERN,
+        description=PRICE_BASIS_DESCRIPTION,
+        examples=["quotation"],
     )
     cad_element_ids: list[str] = Field(default_factory=list, description="Linked CAD element IDs from canonical format")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary metadata")
@@ -425,9 +502,11 @@ class PositionUpdate(BaseModel):
     classification: dict[str, Any] | None = None
     source: str | None = Field(
         default=None,
-        pattern=r"^(manual|cad_import|ai_takeoff|gaeb_import|excel_import|takeoff|smart_import|smart_import_ai|cad_import_ai|cost_database|assembly|cwicr|enriched|ai_match|formwork)$",
+        pattern=r"^(manual|cad_import|ai_takeoff|gaeb_import|excel_import|takeoff|smart_import|smart_import_ai|cad_import_ai|cost_database|assembly|cwicr|enriched|ai_match|formwork|ai_estimate|ai_estimate_cwicr|ai_precise_estimate|ai_plan_read|ai_copilot_auto|ai_copilot_accepted)$",
     )
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    risk_dispersion: float | None = Field(default=None, ge=0.0)
+    price_basis: str | None = Field(default=None, pattern=PRICE_BASIS_PATTERN)
     cad_element_ids: list[str] | None = None
     validation_status: str | None = Field(
         default=None,
@@ -778,6 +857,8 @@ class PositionResponse(BaseModel):
     classification: dict[str, Any]
     source: str
     confidence: float | None
+    risk_dispersion: float | None = None
+    price_basis: str | None = None
     cad_element_ids: list[str]
     # Issue #347: the BIM model that owns the elements in ``cad_element_ids``.
     # Threaded to the BOQ grid so the "pick quantity from BIM" picker and mini
@@ -805,6 +886,16 @@ class PositionResponse(BaseModel):
     # Only populated for masters: how many OTHER positions reuse this code
     # (linked instances) project-wide. None for instances / standalone.
     linked_instance_count: int | None = None
+
+    # ── Issue #457: the production norm this line was priced from ────────
+    # Read-only, and deliberately not on PositionCreate / PositionUpdate. The
+    # value is written at the storage boundary from the metadata the apply-an-
+    # assembly path already sets, so it records what actually priced the line.
+    # A client that could set it could claim a norm predicted a price it never
+    # saw, which is worse than no provenance at all. NULL on the great majority
+    # of a real bill, which is typed or imported and priced from no norm.
+    norm_id: UUID | None = None
+    norm_work_key: str | None = None
 
     # BUG-MATH04: response-side HTML strip. Position descriptions are the
     # most-rendered free-text field in the product (BOQ grid, exports,
@@ -1056,10 +1147,17 @@ class BOQWithSections(BOQResponse):
     ``positions`` - ungrouped positions that have no parent (and are not sections).
     ``direct_cost`` - sum of all position totals (items only, not sections).
     ``markups`` - ordered list of markup lines with computed amounts.
-    ``net_total`` - direct_cost + sum of markup amounts.
-    ``tax_rate`` - VAT / sales-tax fraction applied to net_total (None = no tax).
-    ``tax_amount`` - net_total * tax_rate, ROUND_HALF_UP to 2 dp (0 when no tax).
-    ``grand_total`` - net_total + tax_amount.
+    ``net_total`` - direct_cost + sum of ALL active markup amounts, tax included,
+    because a consumption tax is stored as a markup row of category ``tax``.
+    ``grand_total`` - the same figure again; the service assigns net_total to it.
+    ``tax_rate`` / ``tax_amount`` - never populated by the service, so they hold
+    their defaults of ``None`` and ``0``. Kept for wire compatibility only.
+
+    This block used to read "net_total + tax_amount", describing a bill whose
+    net excluded tax. Nothing has ever computed that. The PDF writer implemented
+    the sentence instead of the value, added a rate on top of a total that
+    already carried it, and printed a gross the application never quotes. Read
+    the tax off the ``category == "tax"`` markup rows, which is where it lives.
 
     v3 §10 - money emitted as Decimal-as-string.
     """

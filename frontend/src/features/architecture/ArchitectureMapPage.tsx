@@ -1453,14 +1453,14 @@ export function ArchitectureMapPage() {
 
         {/* Search */}
         <div className="relative">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: NODE_TEXT_DIM }} />
+          <Search size={14} className="absolute start-2.5 top-1/2 -translate-y-1/2" style={{ color: NODE_TEXT_DIM }} />
           <input
             ref={searchRef}
             type="text"
             placeholder={t('architecture.search', { defaultValue: 'Search nodes...' })}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-8 pr-8 py-1.5 rounded-md text-xs outline-none"
+            className="ps-8 pe-8 py-1.5 rounded-md text-xs outline-none"
             style={{
               background: '#f8fafc',
               border: '1px solid #334155',
@@ -1469,12 +1469,12 @@ export function ArchitectureMapPage() {
             }}
           />
           {searchQuery && (
-            <button
+            <button aria-label={t('common.clear_search', { defaultValue: 'Clear search' })}
               onClick={() => {
                 setSearchQuery('');
                 searchRef.current?.focus();
               }}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-white/10 transition-colors"
+              className="absolute end-2 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-white/10 transition-colors"
               style={{ color: NODE_TEXT_DIM }}
             >
               <X size={12} />

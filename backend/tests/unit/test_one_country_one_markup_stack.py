@@ -54,6 +54,7 @@ from app.modules.boq.markup_templates import (
     NON_SINGLE_TAX_REGIONS,
     REGION_BY_COUNTRY,
     region_lines_for_country,
+    resolve_region_lines,
 )
 from app.modules.boq.models import BOQMarkup
 from app.modules.boq.service import _calculate_markup_amounts
@@ -189,6 +190,34 @@ def test_every_mapped_country_is_a_country_the_catalogue_ships() -> None:
     )
 
 
+def test_every_stack_is_reachable_from_some_country() -> None:
+    """The other direction, which is the one that went wrong.
+
+    The test above walks ``REGION_BY_COUNTRY`` and checks every mapping has a
+    stack behind it. Nothing walked the stacks, so a stack no country mapped to
+    was invisible: fourteen regions were defined, thirteen were reachable, and
+    the Russian one was written out in full, cited to МДС 81-35.2004, and never
+    served to anybody. ``region_lines_for_country("RU")`` answered ``None`` and
+    a Russian project was quietly given the neutral international method.
+
+    An unreachable stack is worse than a missing one. A missing stack makes the
+    catalogue say it has no convention for that market, which is true and which
+    somebody eventually acts on. An unreachable stack makes the source say the
+    convention is shipped while the product ships the neutral method, and the
+    only place the two disagree is a mapping nobody reads.
+
+    ``DEFAULT`` is exempt because it is the fall-through by definition and no
+    country may map to it; see :func:`region_lines_for_country`.
+    """
+    reachable = set(REGION_BY_COUNTRY.values())
+    orphaned = set(DEFAULT_MARKUP_TEMPLATES) - reachable - {"DEFAULT"}
+    assert not orphaned, (
+        f"regional stacks no country reaches: {sorted(orphaned)}. "
+        f"Either map a country to each in REGION_BY_COUNTRY or delete the stack; "
+        f"leaving it here reads as coverage the product does not have."
+    )
+
+
 @pytest.mark.parametrize("country", sorted(REGION_BY_COUNTRY))
 def test_the_derived_stack_matches_the_regional_table_line_for_line(country: str) -> None:
     """Same lines, same order, same rates, same bases. No tolerance here."""
@@ -318,3 +347,62 @@ def test_a_single_tax_step_is_exactly_a_single_tax_line(country: str) -> None:
         assert swapped is steps, (
             f"{country}: {region} has no single tax line, so a project rate must leave the stack alone"
         )
+
+
+@pytest.mark.parametrize("region", sorted(DEFAULT_MARKUP_TEMPLATES))
+def test_a_project_rate_reaches_the_bill_only_where_one_rate_can_describe_it(region: str) -> None:
+    """The bill side of the rule the test above pins on the methodology side.
+
+    Both engines resolve their lines through :func:`resolve_region_lines`, and
+    a per-project VAT rate arrives there from ``apply_default_markups``. Until
+    the guard moved into that function the exception lived one level up, in
+    :func:`region_lines_for_country`, which the methodology catalogue calls and
+    the bill does not. So the catalogue honoured it and the bill did not.
+
+    This is written over every region rather than over the listed ones, because
+    it has to fail in both directions. Drop the guard and a multi-levy region
+    takes the rate on every levy. Widen it and the forty-odd single-tax regions
+    stop taking a rate they must take, which is the whole reason the override
+    exists.
+    """
+    tax_lines = [ln for ln in DEFAULT_MARKUP_TEMPLATES[region] if ln.get("category") == "tax"]
+    before = {str(ln["name"]): str(ln["percentage"]) for ln in tax_lines}
+    resolved = resolve_region_lines(region, vat_rate="18")
+    after = {str(ln["name"]): str(ln["percentage"]) for ln in resolved if ln.get("category") == "tax"}
+    overridden = {str(ln["name"]) for ln in resolved if ln.get("category") == "tax" and ln["vat_override"]}
+
+    assert set(after) == set(before), f"{region}: resolving changed which tax lines exist"
+
+    if region in NON_SINGLE_TAX_REGIONS:
+        assert after == before, (
+            f"{region} is declared as a market a single rate cannot describe, and a project rate rewrote "
+            f"{sorted(name for name in after if after[name] != before[name])} anyway"
+        )
+        assert not overridden, f"{region}: no line was rewritten, so none may be flagged as overridden"
+    else:
+        assert all(value == "18" for value in after.values()), (
+            f"{region} carries one tax line and a project rate must land on it, but it reads {after}"
+        )
+        assert overridden == set(before), f"{region}: a rewritten line was not flagged, or a flag was not earned"
+
+
+def test_the_brazilian_bill_does_not_charge_the_rate_twice() -> None:
+    """Named for the case, because the case is what makes the guard worth having.
+
+    Brazil is the only region carrying two tax lines: PIS + COFINS at 3.65 and
+    ISS at 3, one federal and one municipal. A single number applied to both
+    took the tax on a Brazilian bill from 6.65 percent to twice that number.
+
+    Eighteen is not an arbitrary number here. Our own shipped tax seed still
+    flags ICMS_SP at 18 as Brazil's default, so eighteen is precisely what a
+    user reading this product would type into a project, and the bill it used
+    to produce charged thirty-six.
+    """
+    lines = resolve_region_lines("BR", vat_rate="18")
+    tax = {str(ln["name"]): Decimal(str(ln["percentage"])) for ln in lines if ln.get("category") == "tax"}
+
+    assert len(tax) == 2, f"Brazil should carry two levies, got {sorted(tax)}"
+    assert sum(tax.values()) == Decimal("6.65"), f"the Brazilian bill carries {sum(tax.values())} percent of tax"
+    assert all(rate != Decimal("18") for rate in tax.values()), (
+        f"a project rate stood in for a statutory Brazilian levy: {tax}"
+    )

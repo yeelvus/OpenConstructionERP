@@ -139,6 +139,38 @@ _US_BID = Preset(
     ),
 )
 
+# Hungarian anyag/dij sheet. A Hungarian bill quotes every priced line twice,
+# once as material (anyag) and once as fee (dij), and totals the two separately
+# per sub-chapter, per chapter and on the cover, because the client compares
+# tenderers on both columns rather than on the sum alone. Six resource kinds
+# therefore land in two columns, not six: material is the anyag column and
+# everything else - labour, plant, hired equipment, sublet work and the rest -
+# is the dij column. The labels say which column each kind falls in, so the
+# grouping is readable from the sheet instead of being knowledge the reader has
+# to bring.
+#
+# This is the one preset that does not open with labour. The others follow the
+# order an estimator builds a rate in; this one follows the order the Hungarian
+# workbook prints, which is anyag first. Reordering it to match the rest would
+# make the sheet disagree with the column order the client reads it against.
+#
+# Wording follows packs/hungary-hu rule pack ``hu_anyag_dij_bontas``, which
+# derives it from Hungarian workbooks in production use rather than from a
+# translation of these English headings.
+_HU_ANYAG_DIJ = Preset(
+    name="hu_anyag_dij",
+    label="Anyag és díj bontás (material and fee split)",
+    region="HU",
+    kind_labels=(
+        (ResourceKind.MATERIAL, "Anyag"),
+        (ResourceKind.LABOUR, "Díj - munkadíj"),
+        (ResourceKind.MACHINERY, "Díj - gépköltség"),
+        (ResourceKind.EQUIPMENT, "Díj - eszközköltség"),
+        (ResourceKind.SUBCONTRACT, "Díj - alvállalkozói teljesítés"),
+        (ResourceKind.OTHER, "Díj - egyéb költség"),
+    ),
+)
+
 # Generic cost-plus sheet: neutral, market-agnostic wording for a build-up
 # where a fee is added to measured cost. Useful as a plain fallback heading set.
 _COST_PLUS = Preset(
@@ -155,11 +187,63 @@ _COST_PLUS = Preset(
     ),
 )
 
-PRESETS: dict[str, Preset] = {p.name: p for p in (_INTERNATIONAL, _EFB, _NRM, _US_BID, _COST_PLUS)}
+PRESETS: dict[str, Preset] = {p.name: p for p in (_INTERNATIONAL, _EFB, _NRM, _US_BID, _HU_ANYAG_DIJ, _COST_PLUS)}
 
 
 def get_preset(name: str | None) -> Preset:
     return PRESETS.get((name or "").strip().lower(), _INTERNATIONAL)
+
+
+#: Country codes whose bill convention this product has always tagged with a
+#: name that is not the ISO code. "UK" is the everyday abbreviation for a
+#: country whose code is "GB", and the markup table spells it the same way.
+#:
+#: Austria and Switzerland are deliberately absent. They share a language with
+#: the German preset and not a form: EFB 221/222/223 are the German federal
+#: procurement sheets, and an Austrian or Swiss bill is not laid out that way.
+#: Handing them the German preset because the words look familiar is exactly
+#: the substitution the neutral preset exists to avoid.
+_PRESET_REGION_ALIASES: dict[str, str] = {"GB": "UK"}
+
+#: ``region`` -> preset name, built from the presets themselves so a preset
+#: added with a region is reachable without a second list to keep in step.
+#:
+#: "international" is skipped rather than indexed. Two presets declare it, the
+#: neutral one and cost-plus, so it identifies no single answer; and it is the
+#: fallback below, which is what an unrecognised market should get anyway.
+_PRESET_BY_REGION: dict[str, str] = {
+    preset.region.upper(): name
+    for name, preset in PRESETS.items()
+    if preset.region and preset.region.lower() != "international"
+}
+
+
+def preset_for_country(country_code: str | None) -> str:
+    """Name of the preset a project in this country should be read with.
+
+    A price analysis is a document an estimator hands to somebody who expects
+    it in their own market's shape. A Hungarian bill quotes every line twice,
+    as anyag and dij, and reading it as a single unit rate is not a translation
+    of a Hungarian bill but a different document. The preset that does this has
+    shipped since the Hungarian pack landed, and nothing chose it: the endpoint
+    defaulted to the international preset by name, so a Hungarian estimator got
+    the international shape unless they knew the preset's own slug.
+
+    ``Preset.region`` has carried the answer the whole time and had no reader.
+
+    Args:
+        country_code: ISO 3166-1 alpha-2, case-insensitive, or ``None``.
+
+    Returns:
+        A key of :data:`PRESETS`. ``"international"`` for a market with no
+        preset of its own, and for no market at all, which are the same answer
+        here: the neutral preset is the one that assumes nothing.
+    """
+    code = (country_code or "").strip().upper()
+    if not code:
+        return _INTERNATIONAL.name
+    region = _PRESET_REGION_ALIASES.get(code, code)
+    return _PRESET_BY_REGION.get(region, _INTERNATIONAL.name)
 
 
 def _q(value: Decimal, quant: Decimal = _2P) -> str:

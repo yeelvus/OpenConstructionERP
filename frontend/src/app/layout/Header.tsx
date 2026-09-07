@@ -1,6 +1,6 @@
 // DDC-CWICR-OE: DataDrivenConstruction · OpenConstructionERP
 // Copyright (c) 2026 Artem Boiko / DataDrivenConstruction
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -11,7 +11,7 @@ import { useAuthStore } from '@/stores/useAuthStore';
 import { useUploadQueueStore } from '@/stores/useUploadQueueStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useThemeStore } from '@/stores/useThemeStore';
-import { CountryFlag, ModuleInfoButton, PartnerLogoBadge } from '@/shared/ui';
+import { ActivePackChip, CountryFlag, ModuleInfoButton, PartnerLogoBadge } from '@/shared/ui';
 import { usePartnerPack } from '@/shared/hooks/usePartnerPack';
 import { NotificationBell } from '@/shared/ui/NotificationBell';
 import { HeaderNewsButton } from '@/shared/ui/HeaderNewsButton';
@@ -123,6 +123,7 @@ export const TITLE_I18N_MAP: Record<string, string> = {
   'Bulk Operations': 'nav.property_dev_bulk_operations',
   'Pricing Engine': 'nav.property_dev_pricing_engine',
   'Inventory Map': 'nav.property_dev_inventory_map',
+  'Compliance dashboard': 'propdev.compliance.title',
   'Compliance Rule Builder': 'nav.compliance_rule_builder',
   'Accommodation': 'nav.accommodation',
   'Accommodation Calendar': 'nav.accommodation',
@@ -229,6 +230,7 @@ export const TITLE_I18N_MAP: Record<string, string> = {
   'Claims Evidence': 'nav.claims_evidence',
   'Progress Claim': 'contracts.claim',
   'Withholding Tax': 'nav.tax_withholding',
+  'Tax Rates': 'nav.tax_rates',
   'Authority Submissions': 'authority_submission.title',
   'Review Authority': 'review_authority.title',
   'Interface Register': 'interface_management.title',
@@ -325,7 +327,15 @@ export function Header({ title, onMenuClick }: HeaderProps) {
   // form whether or not a pack is active, so the top bar looks the same for
   // every operator. The chip sits in a flex-1 column that yields space, so it
   // never has to push the action buttons into icon-only mode to fit.
-  const packActive = usePartnerPack().data?.active === true;
+  // The co-brand strip is a partner's mark, so it belongs to a partner pack and
+  // to nothing else. Measured against the packs this deployment ships: fourteen
+  // country, four industry, zero partner - so on a stock install the header now
+  // carries the pack readout and no co-brand, which is the intent rather than a
+  // regression. The readout itself is `ActivePackChip` and is deliberately not
+  // this component; see the note there on why a dismissible badge cannot be the
+  // answer to "which pack am I on".
+  const packData = usePartnerPack().data;
+  const showCoBrand = packData?.active === true && packData.manifest?.type === 'partner';
   const location = useLocation();
   const translatedTitle = title
     ? t(resolvePageTitleKey(title) ?? title, { defaultValue: title })
@@ -344,7 +354,7 @@ export function Header({ title, onMenuClick }: HeaderProps) {
   return (
     <header
       className={clsx(
-        'sticky z-30 relative',
+        'sticky z-30',
         'flex h-header items-center justify-between gap-3 px-4 sm:px-6 lg:px-8',
         'bg-surface-primary/80 backdrop-blur-xl',
       )}
@@ -355,7 +365,7 @@ export function Header({ title, onMenuClick }: HeaderProps) {
     >
       {/* Soft hairline at the bottom — replaces a hard 1px border for
           a calmer modern-SaaS-style separation from the page below. */}
-      <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
+      <div className="absolute bottom-0 start-0 end-0 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
 
       {/* ── Zone 1 (Workspace): mobile menu + project breadcrumb + title ── */}
       <div className="flex items-center gap-3 min-w-0 shrink">
@@ -430,11 +440,10 @@ export function Header({ title, onMenuClick }: HeaderProps) {
           the zones, and the chip's own name truncation keeps it from
           overflowing. Below lg the co-brand still shows in the dashboard
           banner. */}
-      {packActive && (
-        <div className="hidden lg:flex flex-1 min-w-0 items-center justify-center px-2">
-          <PartnerLogoBadge variant="nav" />
-        </div>
-      )}
+      <div className="hidden lg:flex flex-1 min-w-0 items-center justify-center gap-2 px-2">
+        <ActivePackChip />
+        {showCoBrand && <PartnerLogoBadge variant="nav" />}
+      </div>
 
       {/* Right side — three zones separated by hairline dividers.
           Zone 2: Search · Zone 3: Notifications + Help · Zone 4: Account
@@ -585,15 +594,35 @@ function ThemeToggle() {
    A red dot on the icon flags that errors were captured this session,
    so the user notices the entry point is relevant to them. */
 
-function BugReportMenu() {
+/**
+ * Shortest description we will file a report with, in trimmed characters.
+ *
+ * The two channels that transmit a report body (GitHub, e-mail) are disabled
+ * below this, and the requirement is stated above the field before anyone
+ * types rather than discovered on the way out. Roughly four words: enough to
+ * name what was clicked and what happened, which is exactly the question we
+ * would otherwise have to ask in a reply a day later, and low enough that a
+ * reporter writing in a language with long compounds is not fighting it.
+ */
+export const MIN_DESCRIPTION_LENGTH = 20;
+
+export function BugReportMenu() {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const [open, setOpen] = useState(false);
   // Once the user clicks "report anyway" we stop nagging them with the
   // network-only banner for the rest of the popover lifetime.
   const [overrodeNetworkWarning, setOverrodeNetworkWarning] = useState(false);
+  // What the reporter is telling us. Held here rather than prefilled into the
+  // issue body so there is nothing to accidentally send: an untouched field is
+  // empty, and empty cannot be filed.
+  const [description, setDescription] = useState('');
   const ref = useRef<HTMLDivElement>(null);
+  const descriptionId = useId();
+  const descriptionHintId = `${descriptionId}-hint`;
   const errorCount = getErrorCount();
+  const trimmedDescription = description.trim();
+  const descriptionTooShort = trimmedDescription.length < MIN_DESCRIPTION_LENGTH;
   // Re-evaluated each open of the popover. ``isLastErrorNetworkOnly``
   // returns true when every recent level=error entry is a transport
   // blip (Failed to fetch, AbortError, 502/503/504, …) — i.e. nothing
@@ -619,6 +648,12 @@ function BugReportMenu() {
 
   // Reset the network-only override each time the popover is dismissed
   // so the next open shows the banner again if nothing new has happened.
+  //
+  // `description` is deliberately NOT reset here. The popover closes on any
+  // click outside it, and throwing away a paragraph somebody just typed
+  // because they reached for the scrollbar is the same disrespect for their
+  // effort as making them file an empty report. It is cleared once a channel
+  // actually fires.
   useEffect(() => {
     if (!open) setOverrodeNetworkWarning(false);
   }, [open]);
@@ -635,8 +670,10 @@ function BugReportMenu() {
   }, []);
 
   const handleGithub = () => {
+    if (descriptionTooShort) return;
     setOpen(false);
-    const { url, body } = buildBugReportUrl(t);
+    setDescription('');
+    const { url, body } = buildBugReportUrl(t, trimmedDescription);
     if (url) {
       openLink(url);
       return;
@@ -658,8 +695,10 @@ function BugReportMenu() {
   };
 
   const handleEmail = () => {
+    if (descriptionTooShort) return;
     setOpen(false);
-    const { body, title } = buildBugReportUrl(t);
+    setDescription('');
+    const { body, title } = buildBugReportUrl(t, trimmedDescription);
     const subject = `OpenConstructionERP Issue - ${title}`;
     // mailto bodies are also length-limited (~2000 chars in Chrome),
     // so we trim aggressively. The downloaded log JSON is the long form.
@@ -709,6 +748,14 @@ function BugReportMenu() {
     title: string;
     desc: string;
     onClick: () => void;
+    /**
+     * True for the channels that file a written report and therefore need the
+     * description. The other two are not reports: the web form asks for the
+     * story again in its own fields, and downloading the log is usually the
+     * step BEFORE writing anything. Gating those would block a user from
+     * getting the JSON they were about to attach.
+     */
+    requiresDescription: boolean;
   };
 
   const channels: Channel[] = [
@@ -721,6 +768,7 @@ function BugReportMenu() {
       title: t('app.report_bug', { defaultValue: 'Report a bug (with logs)' }),
       desc: t('bug.channel_github_desc', { defaultValue: 'Pre-filled with the last error and environment. Public.' }),
       onClick: handleGithub,
+      requiresDescription: true,
     },
     {
       icon: Mail,
@@ -728,6 +776,7 @@ function BugReportMenu() {
       title: t('bug.channel_email', { defaultValue: 'Email the team' }),
       desc: t('bug.channel_email_desc', { defaultValue: 'Opens your mail client with the report attached.' }),
       onClick: handleEmail,
+      requiresDescription: true,
     },
     {
       icon: MessageSquarePlus,
@@ -735,6 +784,7 @@ function BugReportMenu() {
       title: t('bug.channel_form', { defaultValue: 'Web feedback form' }),
       desc: t('bug.channel_form_desc', { defaultValue: 'Richer fields and screenshots on openconstructionerp.com.' }),
       onClick: handleFeedbackForm,
+      requiresDescription: false,
     },
     {
       icon: Upload,
@@ -742,6 +792,7 @@ function BugReportMenu() {
       title: t('bug.channel_download', { defaultValue: 'Download log only' }),
       desc: t('bug.channel_download_desc', { defaultValue: 'Save the JSON to share manually with support.' }),
       onClick: handleDownloadLog,
+      requiresDescription: false,
     },
   ];
 
@@ -750,7 +801,7 @@ function BugReportMenu() {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={open}
         className={clsx(
           'relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors',
@@ -773,8 +824,12 @@ function BugReportMenu() {
       </button>
 
       {open && (
+        // A non-modal dialog rather than a menu: it holds a text field now,
+        // and a textarea is not a valid child of `role="menu"` - a screen
+        // reader in menu mode cannot reach it to type into.
         <div
-          role="menu"
+          role="dialog"
+          aria-label={t('bug.menu_heading', { defaultValue: 'Report a bug' })}
           className="absolute right-0 top-full mt-1.5 w-80 rounded-xl border border-border-light bg-surface-elevated shadow-lg animate-scale-in py-2 z-40"
         >
           <div className="px-3 pb-2 border-b border-border-light">
@@ -798,6 +853,47 @@ function BugReportMenu() {
                 defaultValue: 'Pick where to send it - every channel includes the same diagnostic payload.',
               })}
             </p>
+          </div>
+
+          {/* What happened, in the reporter's own words. Nothing is prefilled:
+              the placeholder is a real placeholder attribute, so an untouched
+              field is empty and the two channels that file a written report
+              stay disabled until it is not. The minimum is stated here, above
+              the field, so nobody learns it on the way out. */}
+          <div className="px-3 pt-2.5">
+            <label
+              htmlFor={descriptionId}
+              className="block text-2xs font-medium text-content-secondary"
+            >
+              {t('bug.description_label', { defaultValue: 'What happened?' })}
+              <span className="text-semantic-error ml-0.5" aria-hidden="true">*</span>
+            </label>
+            <p id={descriptionHintId} className="mt-0.5 text-2xs text-content-tertiary leading-snug">
+              {t('bug.description_hint', {
+                defaultValue:
+                  'What you clicked and what happened instead, in at least {{min}} characters. Sent exactly as written, so leave out anything private.',
+                min: MIN_DESCRIPTION_LENGTH,
+              })}
+            </p>
+            <textarea
+              id={descriptionId}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder={t('bug.description_placeholder', {
+                defaultValue: 'I clicked Install on a module and the page stayed empty...',
+              })}
+              rows={3}
+              maxLength={2000}
+              required
+              aria-required="true"
+              aria-describedby={descriptionHintId}
+              className={clsx(
+                'mt-1.5 w-full rounded-lg border border-border-light bg-surface-primary px-2.5 py-1.5',
+                'text-xs text-content-primary placeholder:text-content-quaternary',
+                'focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue',
+                'transition-colors resize-none',
+              )}
+            />
           </div>
 
           {networkOnly && (
@@ -831,13 +927,20 @@ function BugReportMenu() {
           <div className={clsx('py-1', networkOnly && 'opacity-40 pointer-events-none')}>
             {channels.map((ch, idx) => {
               const Icon = ch.icon;
+              // Disabled for real, not dimmed: a `pointer-events-none` wrapper
+              // (the trick used for the network banner above) still lets a
+              // keyboard reach the control, and tells nobody why it is grey.
+              const blocked = ch.requiresDescription && descriptionTooShort;
               return (
                 <button
                   key={idx}
                   type="button"
-                  role="menuitem"
                   onClick={ch.onClick}
-                  className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-surface-secondary transition-colors"
+                  disabled={blocked}
+                  className={clsx(
+                    'flex w-full items-start gap-3 px-3 py-2 text-left transition-colors',
+                    blocked ? 'cursor-not-allowed opacity-60' : 'hover:bg-surface-secondary',
+                  )}
                 >
                   <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-surface-secondary">
                     <Icon size={14} className={ch.iconColor} />
@@ -846,8 +949,17 @@ function BugReportMenu() {
                     <span className="block text-[13px] font-medium text-content-primary">
                       {ch.title}
                     </span>
-                    <span className="block text-2xs text-content-tertiary leading-snug mt-0.5">
-                      {ch.desc}
+                    <span
+                      className={clsx(
+                        'block text-2xs leading-snug mt-0.5',
+                        blocked ? 'text-amber-600 dark:text-amber-400' : 'text-content-tertiary',
+                      )}
+                    >
+                      {blocked
+                        ? t('bug.description_required', {
+                            defaultValue: 'Describe what happened above before sending this.',
+                          })
+                        : ch.desc}
                     </span>
                   </span>
                 </button>
@@ -1152,6 +1264,10 @@ const ROUTE_COMPONENT_MAP: ReadonlyArray<readonly [string, string]> = [
   ['/catalog', 'Resource Catalog'],
   ['/assemblies', 'Assemblies'],
   ['/validation', 'Validation'],
+  // `/compliance` itself mounts nothing; it is the prefix the Rule Builder
+  // hangs off. Name the builder explicitly so a bug report from that screen
+  // says which screen it came from rather than the bare prefix.
+  ['/compliance/builder', 'Compliance Rule Builder'],
   ['/compliance', 'Compliance'],
   ['/quantities', 'Quantity Takeoff'],
   ['/takeoff', 'PDF Takeoff'],
@@ -1243,15 +1359,38 @@ export function deriveComponentFromRoute(pathname: string): string {
 }
 
 /**
- * Build the GitHub "new issue" URL pre-filled with environment + last error.
+ * Build the GitHub "new issue" URL pre-filled with the reporter's own
+ * description, the environment and the last captured error.
  *
  * Returns `{ url, body }` so callers can fall back to clipboard when the
- * repo is not configured.  The body is plain text (markdown-ish) and never
- * contains user JWT, email, or other PII — `getLastError()` returns
- * already-anonymized strings via `errorLogger.anonymize()`.
+ * repo is not configured.
+ *
+ * `description` is what the reporter typed in the bug menu, embedded verbatim.
+ * It is deliberately NOT passed through `errorLogger.anonymize()`: that
+ * scrubber rewrites "invoice 1234567 failed" as "invoice [ID] failed" and
+ * would eat the detail the report exists to carry. The diagnostic half is
+ * still anonymized at capture time — `getLastError()` returns strings that
+ * already went through `anonymize()` — so the only text that can carry PII is
+ * text the reporter chose to write, on a field that says the issue is public
+ * before they type into it.
+ *
+ * The description comes first because the size guard below keeps the head and
+ * trims the tail, so a long stack is never what the guard reaches for. It is
+ * not an absolute guarantee: the field allows 2000 characters, and in a script
+ * that encodes to three bytes each that alone can pass `MAX_BODY_BYTES`, at
+ * which point the proportional slice cuts inside the description. Ordering
+ * buys the common case, not every case. This
+ * slot used to hold the literal placeholder `<!-- describe what you were
+ * doing -->`, which renders as nothing on GitHub: a reporter who pressed
+ * submit without editing filed a visibly empty issue and only learned it was
+ * useless a day later, when we wrote back to ask what they had clicked. The
+ * caller now requires the text (see `MIN_DESCRIPTION_LENGTH`) rather than
+ * inviting it, so there is no longer a version of this body that travels
+ * looking filled in while saying nothing.
  */
 function buildBugReportUrl(
   t: (key: string, opts?: { defaultValue?: string; [k: string]: unknown }) => string,
+  description: string,
 ): {
   url: string;
   body: string;
@@ -1267,7 +1406,7 @@ function buildBugReportUrl(
 
   const body = [
     '### Description',
-    '<!-- describe what you were doing -->',
+    description.trim(),
     '',
     '### Environment',
     `- App version: ${APP_VERSION}`,
@@ -1354,10 +1493,17 @@ function UserMenu() {
       >
         {userInitial}
         {/* Online status dot — bottom-right of the avatar. Matches the
-            UserBadge in the sidebar so the two surfaces feel coherent. */}
+            UserBadge in the sidebar so the two surfaces feel coherent.
+            `overflow-hidden` clips the `animate-ping` ring to this badge's
+            own box: the avatar is the last element in the header, which at
+            desktop widths sits flush against the viewport's right edge, so
+            the ring's `scale(2)` keyframe (unclipped) painted past the
+            window edge and made `document.documentElement.scrollWidth`
+            exceed `innerWidth` by up to 7px — a real, continuously
+            repeating horizontal-scroll bug, not just a test artifact. */}
         <span
           aria-hidden
-          className="absolute -bottom-0.5 -right-0.5 flex h-2.5 w-2.5 items-center justify-center"
+          className="absolute -bottom-0.5 right-0 flex h-2.5 w-2.5 items-center justify-center overflow-hidden"
         >
           <span className="absolute inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400/70 animate-ping" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-surface-primary" />
@@ -1481,8 +1627,17 @@ function ProjectSwitcher() {
   });
 
   const MAX_VISIBLE = 20;
-  const filteredProjects = (projects ?? []).filter((p) =>
-    p.name.toLowerCase().includes(searchQuery.toLowerCase()),
+  // The type argument on apiGet is a compile-time claim, not a runtime check —
+  // the response body arrives exactly as the server sent it. A 200 carrying an
+  // object where this expects a list (a proxy envelope, a paginated wrapper)
+  // used to reach `.filter` as-is, because `?? []` answers for null and
+  // undefined and says nothing about the wrong type, and threw "is not a
+  // function" out of the header. Degrade to an empty picker: an unreadable list
+  // is a list we can't show, not a reason to stop rendering. Same reasoning for
+  // the name — `.toLowerCase()` on a missing field is the identical throw.
+  const projectList = Array.isArray(projects) ? projects : [];
+  const filteredProjects = projectList.filter((p) =>
+    String(p?.name ?? '').toLowerCase().includes(searchQuery.toLowerCase()),
   );
   // When the user is actively searching, show every hit — typing is an
   // implicit "show all that match". The collapse/expand affordance only
@@ -1542,6 +1697,12 @@ function ProjectSwitcher() {
     // deciding on it could clear a perfectly valid selection. Bail until a
     // successful fetch lands.
     if (isError) return;
+    // Second reader of the same untrusted body, and `.some` throws on a
+    // non-array exactly like `.filter` above did — fixing only the render path
+    // would have moved the crash one line down. A shape we don't recognise
+    // tells us nothing about whether the stored selection still exists, so
+    // decline to purge rather than guess.
+    if (!Array.isArray(projects)) return;
     const stillExists = projects.some((p) => p.id === activeProjectId);
     if (!stillExists) {
       clearProject();
@@ -1640,14 +1801,14 @@ function ProjectSwitcher() {
           </div>
           <div className="px-3 py-2 border-b border-border-light">
             <div className="relative">
-              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-content-quaternary pointer-events-none" />
+              <Search size={14} className="absolute start-2.5 top-1/2 -translate-y-1/2 text-content-quaternary pointer-events-none" />
               <input
                 ref={searchRef}
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={t('common.search', { defaultValue: 'Search...' })}
-                className="w-full rounded-lg border border-border-light bg-surface-secondary pl-8 pr-3 py-1.5 text-sm text-content-primary placeholder:text-content-quaternary focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
+                className="w-full rounded-lg border border-border-light bg-surface-secondary ps-8 pe-3 py-1.5 text-sm text-content-primary placeholder:text-content-quaternary focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
               />
             </div>
           </div>

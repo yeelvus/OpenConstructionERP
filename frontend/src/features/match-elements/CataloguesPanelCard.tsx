@@ -242,12 +242,7 @@ export function CataloguesPanelCard({ preferredRegion }: Props) {
                 { region },
               ),
             });
-            await Promise.all([
-              queryClient.invalidateQueries({ queryKey: ['catalogues-v3'] }),
-              queryClient.invalidateQueries({
-                queryKey: ['match-vector-readiness'],
-              }),
-            ]);
+            await queryClient.invalidateQueries({ queryKey: ['catalogues-v3'] });
           },
           onError: (region, error) => {
             addToast({
@@ -418,7 +413,7 @@ export function CataloguesPanelCard({ preferredRegion }: Props) {
                   ? t('catalogues.install_progress', 'Installing catalogue…')
                   : t('catalogues.refresh_progress', 'Refreshing catalogues…')
               }
-              className="pointer-events-none absolute top-0 left-0 right-0 h-0.5 overflow-hidden bg-indigo-500/15"
+              className="pointer-events-none absolute top-0 start-0 end-0 h-0.5 overflow-hidden bg-indigo-500/15"
             >
               <div className="h-full w-1/3 bg-indigo-500 dark:bg-indigo-400 animate-[catalogues-progress_1.2s_ease-in-out_infinite]" />
               <style>{`@keyframes catalogues-progress { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }`}</style>
@@ -548,22 +543,22 @@ export function CataloguesPanelCard({ preferredRegion }: Props) {
                       className="border-b border-border/50 last:border-b-0"
                     >
                       <td className="py-2 pr-2">
-                        <div className="h-3 w-32 rounded bg-content-tertiary/15 animate-pulse" />
+                        <div className="h-3 w-32 rounded bg-black/[0.06] dark:bg-white/10 animate-pulse" />
                       </td>
                       <td className="py-2 pr-2 hidden sm:table-cell">
-                        <div className="h-3 w-6 rounded bg-content-tertiary/15 animate-pulse" />
+                        <div className="h-3 w-6 rounded bg-black/[0.06] dark:bg-white/10 animate-pulse" />
                       </td>
                       <td className="py-2 pr-2 hidden sm:table-cell">
-                        <div className="h-3 w-8 rounded bg-content-tertiary/15 animate-pulse" />
+                        <div className="h-3 w-8 rounded bg-black/[0.06] dark:bg-white/10 animate-pulse" />
                       </td>
                       <td className="py-2 pr-2 hidden md:table-cell">
-                        <div className="h-3 w-12 rounded bg-content-tertiary/15 animate-pulse" />
+                        <div className="h-3 w-12 rounded bg-black/[0.06] dark:bg-white/10 animate-pulse" />
                       </td>
                       <td className="py-2 pr-2">
-                        <div className="h-4 w-16 rounded bg-content-tertiary/15 animate-pulse" />
+                        <div className="h-4 w-16 rounded bg-black/[0.06] dark:bg-white/10 animate-pulse" />
                       </td>
                       <td className="py-2">
-                        <div className="h-5 w-16 rounded bg-content-tertiary/15 animate-pulse" />
+                        <div className="h-5 w-16 rounded bg-black/[0.06] dark:bg-white/10 animate-pulse" />
                       </td>
                     </tr>
                   ))

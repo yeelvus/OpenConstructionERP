@@ -41,7 +41,6 @@ import random as _random
 import threading
 import time as _time
 import uuid as _uuid
-from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import mean as _mean
@@ -53,11 +52,25 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 
 from app.core.content_disposition import attachment_disposition
+from app.core.converter_source import (
+    DEFAULT_CONVERTER_REF,
+    WINDOWS_CONVERTER_DIRS,
+    is_graphical_only,
+    resolve_converter_ref,
+    resolve_converter_repo,
+)
 from app.core.csv_safety import neutralise_formula
+from app.core.host_disclosure import without_host_fields
 from app.core.i18n import get_locale
 from app.core.rate_limiter import ai_limiter, upload_limiter
 from app.core.validation.messages import translate
-from app.dependencies import CurrentUserId, RequirePermission, SessionDep, verify_project_access
+from app.dependencies import (
+    CurrentUserId,
+    OptionalUserPayload,
+    RequirePermission,
+    SessionDep,
+    verify_project_access,
+)
 from app.modules.takeoff.manifest_verifier import (
     InstallNotSupported,
     InstallSHAMismatch,
@@ -159,12 +172,37 @@ _CONVERTER_META: list[dict[str, Any]] = [
 ]
 
 
+#: What an anonymous caller may not read off a converter row. ``path`` is the
+#: exe's absolute location on the server's disk and ``health_message`` names
+#: the folder it lives in whenever the smoke test has something to report, so
+#: both carry the operator's home directory and account name. See
+#: ``app.core.host_disclosure`` for why the route stays open and these do not.
+_CONVERTER_ROW_ANONYMOUS_BLANKS = {"path": None, "health_message": ""}
+
+#: The same rule over an install-progress record. ``path`` is where the exe
+#: landed, ``message`` quotes it back on success, ``error`` is an OS exception
+#: that names the file it failed on, and ``instructions`` is a generated shell
+#: snippet with directories in it. The counters and the stage are not host
+#: facts and stay.
+_INSTALL_PROGRESS_ANONYMOUS_BLANKS = {"path": None, "message": "", "error": "", "instructions": ""}
+
+
 @router.get("/converters/")
-async def list_converters(verify: bool = False) -> dict[str, Any]:
+async def list_converters(verify: bool = False, user: OptionalUserPayload = None) -> dict[str, Any]:
     """Return the status of all known CAD/BIM converters.
 
     Scans standard install paths and returns which converters are found.
-    No authentication required - this is a public status check.
+    No authentication required - this is a public status check, because the
+    BIM page asks for it before anyone has signed in.
+
+    That the route is reachable anonymously is not a licence for the body to
+    describe the machine. ``path`` and ``health_message`` name the folder the
+    converter sits in, which on a default install is under the operator's home
+    directory and therefore carries their account name; both are emptied for a
+    caller who has not signed in. What the status check is *for* survives that
+    untouched: ``installed``, ``health`` and ``suggested_actions`` say whether
+    a converter is there and what to do about it, and none of them needs to say
+    where it is.
 
     Args:
         verify: When ``true``, also runs a quick smoke test (~8 s timeout
@@ -172,11 +210,26 @@ async def list_converters(verify: bool = False) -> dict[str, Any]:
             loads. Result is cached for 5 minutes so repeated calls are
             cheap. The default is ``false`` so the page-load list call
             stays fast (<50 ms); the BIM page polls with ``verify=true``
-            after install completes.
+            after install completes. Ignored for a caller who has not
+            signed in, see below.
+        user: The caller, or ``None`` when there is no usable token. Resolving
+            it costs an anonymous request nothing - no header, no database
+            read - so the route's public contract is unchanged.
     """
     import asyncio
 
     from app.modules.boq.cad_import import find_converter, smoke_test_converter
+
+    # A smoke test is not a file stat. It launches the converter exe and waits
+    # up to 8 s for it, four of them on a full install. The per-converter
+    # verify route below asks for ``takeoff.read`` for that exact reason, and
+    # this flag is the same act under a query parameter, so an anonymous caller
+    # gets the listing with the smoke test declined rather than the request
+    # refused. It costs them nothing they could read anyway: the health prose
+    # is emptied for them further down, and ``health: "unknown"`` is what the
+    # default listing answers, a shape every reader already handles.
+    if user is None:
+        verify = False
 
     # Phase 1: cheap file-stat lookup for every converter (synchronous,
     # bounded by ~4 disk reads - sub-millisecond on a warm cache).
@@ -233,6 +286,8 @@ async def list_converters(verify: bool = False) -> dict[str, Any]:
             entry["health"] = "unknown"
             entry["health_message"] = ""
             entry["suggested_actions"] = []
+        if user is None:
+            entry = without_host_fields(entry, _CONVERTER_ROW_ANONYMOUS_BLANKS)
         converters.append(entry)
 
     installed_count = sum(1 for c in converters if c["installed"])
@@ -261,7 +316,8 @@ async def verify_converter(converter_id: str) -> dict[str, Any]:
     asks for. What this returns is health, so the bar is a read; what made it
     worth gating is that producing that health spawns the converter binary,
     and it used to do so for a caller who had not logged in. The listing at
-    ``/converters/`` stays open because it only stats files.
+    ``/converters/`` stays open because for a caller who has not signed in it
+    only stats files: it declines the smoke test rather than the request.
     """
     import asyncio
 
@@ -302,61 +358,27 @@ async def verify_converter(converter_id: str) -> dict[str, Any]:
 
 
 #
-# Source repository for DDC Community converters. The binaries are NOT
-# published as GitHub Releases - they live committed on the default
-# branch under `DDC_WINDOWS_Converters/DDC_CONVERTER_{FORMAT}/`. Linux
-# users get separate `.deb` packages from the apt source maintained at
-# `pkg.datadrivenconstruction.io` (handled separately below).
+# Source repository, ref and per-format directories for the DDC Community
+# converters all live in ``app.core.converter_source`` - one declaration
+# read by both the installer here and the ``/api/system/converters/
+# version-check`` endpoint in ``app.main``. They used to be written down
+# separately in each, which is how the version check ended up comparing
+# against the branch tip while the installer fetched a pinned commit: the
+# dashboard would show an "Update available" badge whose button reinstalls
+# identical bytes, so the badge never clears.
 #
-# The ref is a COMMIT SHA and must stay one. It used to read ``"main"``,
-# which meant every install fetched whatever the branch tip happened to
-# be at that moment: no tag, no pin, no checksum, and native executables
-# at the other end. A ref is not a cosmetic detail here, because the
-# `download_url` the Contents API hands back carries the ref, so a
-# SHA-pinned listing resolves to SHA-addressed `raw.githubusercontent.com`
-# blobs that a later force-push cannot change. A branch name resolves to
-# whatever that branch points at today.
-#
-# The upstream repository publishes no tags and no releases (measured:
-# `/tags` returns an empty array, `/releases/latest` returns 404), so a
-# commit SHA is the only pinnable ref available. This one is the tree the
-# 2026-08-22 licence audit enumerated - 1266 entries, verified identical
-# to `main` at the time of pinning.
-#
-# Moving the pin is a deliberate act: bump the literal below, or set
-# ``OE_CONVERTER_REF`` (``OE_CONVERTER_BRANCH`` is still honoured as the
-# older name) to point a fork or a newer commit at the installer without
-# a code change. ``tests/unit/test_converter_ref_is_pinned.py`` fails if
-# the default goes back to a branch name, or if this literal and the
-# desktop release workflow drift apart.
-_DDC_DEFAULT_REF = "45498426fd225c36a2a2a3a67993fd39c5d9d0ff"
-_DDC_REPO = os.environ.get("OE_CONVERTER_REPO", "datadrivenconstruction/cad2data-Revit-IFC-DWG-DGN")
+# ``app.core.converter_source`` imports nothing but ``os``, which keeps the
+# system endpoint working when the takeoff module is not loaded - the reason
+# the constants were duplicated in the first place. The module docstring
+# carries the rest: why the ref is a commit SHA, why it must stay one, and
+# how to move it deliberately.
+_DDC_DEFAULT_REF = DEFAULT_CONVERTER_REF
+_DDC_REPO = resolve_converter_repo()
+_DDC_REF = resolve_converter_ref()
 
-
-def _resolve_converter_ref(env: Mapping[str, str] | None = None) -> str:
-    """Pick the converter ref: new env name, old env name, then the pin.
-
-    Takes ``env`` so the precedence is testable without touching the real
-    process environment. An empty string is treated as unset - a CI runner
-    that exports ``OE_CONVERTER_REF=`` from an undefined variable should get
-    the pin, not an empty ref that would make every Contents API call 404.
-    """
-    source = os.environ if env is None else env
-    return source.get("OE_CONVERTER_REF") or source.get("OE_CONVERTER_BRANCH") or _DDC_DEFAULT_REF
-
-
-_DDC_REF = _resolve_converter_ref()
-
-# Per-format directory inside the repo for Windows binaries. Each
-# directory contains the small `*Exporter.exe`, the matching
-# `DDC_Community_*_converter.exe` GUI shell, the bundled Qt6 DLLs, and
-# `platforms/`, `styles/`, `datadrivenlibs/` subfolders.
-_WINDOWS_CONVERTER_DIRS: dict[str, str] = {
-    "rvt": "DDC_WINDOWS_Converters/DDC_CONVERTER_REVIT",
-    "ifc": "DDC_WINDOWS_Converters/DDC_CONVERTER_IFC",
-    "dwg": "DDC_WINDOWS_Converters/DDC_CONVERTER_DWG",
-    "dgn": "DDC_WINDOWS_Converters/DDC_CONVERTER_DGN",
-}
+# Re-exported under the router's own name because call sites below and the
+# module's tests refer to it here.
+_WINDOWS_CONVERTER_DIRS: dict[str, str] = WINDOWS_CONVERTER_DIRS
 
 # Linux apt package names. We don't auto-install these (would need
 # `sudo` and an apt source rewrite of `/etc/apt/sources.list.d/`),
@@ -1048,10 +1070,11 @@ def _github_list_directory(repo_path: str) -> list[dict[str, Any]]:
         if item_type == "file":
             files.append(item)
         elif item_type == "dir":
-            # Recurse into subdirectories. The Qt-based converters keep
-            # their plugins under platforms/ / styles/ / datadrivenlibs/
-            # so we MUST recurse - flat downloads would miss the DLLs
-            # the .exe needs at runtime.
+            # Recurse into subdirectories. The exporter loads most of what
+            # it needs from datadrivenlibs/, so a flat download would miss
+            # the DLLs the .exe needs at runtime. platforms/ and styles/ are
+            # listed by this walk too and then dropped by the caller, because
+            # they belong to the graphical converter we do not ship.
             files.extend(_github_list_directory(item["path"]))
     return files
 
@@ -1474,17 +1497,41 @@ def _download_converter_files_windows(converter_id: str, *, clean: bool = False)
     # BEFORE any network IO - we want to fail fast on a hostile
     # listing rather than partway through a 600 MB download.
     download_jobs: list[tuple[str, Path]] = []
+    skipped_graphical = 0
     for entry in files:
         download_url = entry.get("download_url")
         if not download_url:
             continue  # submodules / symlinks - skip
+        # THE DOWNLOAD IS THE TERMINAL BUILD ONLY. Upstream ships the
+        # command-line ``*Exporter.exe`` and a windowed
+        # ``DDC_Community_*_converter.exe`` in the same folder, and we drive
+        # only the first one - see ``is_graphical_only`` in
+        # app/core/converter_source.py for the file-by-file measurement of
+        # what that leaves out and why Qt6Core.dll is not in the list. Do not
+        # widen this back to "download everything the listing returns": that
+        # is how ~19 MB of Qt GUI libraries, under LGPL-3.0, ended up on
+        # every user's disk for a window nothing in this codebase opens.
+        # Skipped files are also absent from the prune set below, so a repair
+        # install clears them out of a folder that already has them.
+        repo_path = entry["path"]
+        rel_path = repo_path[len(src_prefix) :] if repo_path.startswith(src_prefix) else Path(repo_path).name
+        if is_graphical_only(rel_path):
+            skipped_graphical += 1
+            continue
         target = _resolve_target_path(
-            entry["path"],
+            repo_path,
             src_prefix,
             dest_root,
             install_dir_resolved,
         )
         download_jobs.append((download_url, target))
+
+    if skipped_graphical:
+        logger.info(
+            "Converter %s: skipping %d file(s) that only the graphical shell needs",
+            converter_id,
+            skipped_graphical,
+        )
 
     if not download_jobs:
         _clear_install_progress(converter_id)
@@ -1648,8 +1695,19 @@ def _download_converter_files_windows(converter_id: str, *, clean: bool = False)
     "/converters/{converter_id}/install-progress/",
     include_in_schema=True,
 )
-async def get_install_progress(converter_id: str) -> dict[str, Any]:
+async def get_install_progress(converter_id: str, user: OptionalUserPayload = None) -> dict[str, Any]:
     """Lightweight progress poll for an in-flight converter install.
+
+    Open to an anonymous caller, and the four fields that describe the server's
+    own disk are emptied for one. A finished install leaves ``path`` and a
+    ``message`` reading "installed successfully at <absolute path>" in the
+    record, and a failed one leaves an ``error`` stringified from an OS
+    exception that names the file it could not touch; the record lingers for
+    three minutes afterwards, so anyone polling in that window used to be
+    handed the operator's home directory. Everything the progress bar renders -
+    stage, counts, bytes, the file currently being fetched - is untouched, and
+    the caller who started the install holds a token by construction, since
+    installing needs ``takeoff.create``.
 
     The Windows installer downloads 30-175 files (~600 MB for RVT) inside
     a thread pool. ``install_converter`` doesn't return until the smoke
@@ -1683,6 +1741,8 @@ async def get_install_progress(converter_id: str) -> dict[str, Any]:
     if finished_at and (_time.time() - float(finished_at)) > _INSTALL_RESULT_TTL_SEC:
         _clear_install_progress(converter_id)
         return {"active": False}
+    if user is None:
+        progress = without_host_fields(progress, _INSTALL_PROGRESS_ANONYMOUS_BLANKS)
     return {"active": True, **progress}
 
 
@@ -1955,7 +2015,9 @@ async def _install_converter_impl(converter_id: str, force: bool, app: Any) -> d
                     smoke_message = (
                         f"Installed but the binary can't load - "
                         f"a required DLL is missing (Windows error 0x{rc & 0xFFFFFFFF:08x}). "
-                        f"This usually means the Qt6 plugins didn't download correctly. "
+                        f"Check that Qt6Core.dll landed next to the exe: it is the only Qt library "
+                        f"this converter needs, and the platforms/ and styles/ plugin folders are "
+                        f"not part of a healthy install any more. "
                         f"Try uninstalling and reinstalling, or install manually from "
                         f"https://github.com/{_DDC_REPO}/tree/{_DDC_REF}/"
                         f"{_WINDOWS_CONVERTER_DIRS[converter_id]}"
@@ -2538,6 +2600,17 @@ async def _verify_cad_session_access(
     2. Standalone session (no project) - only the original uploader
        can touch it. We return 404 on access failure to avoid
        leaking session existence.
+
+    The standalone branch denies whenever the two sides do not both
+    name the same identity. An empty owner is not "nobody recorded an
+    owner, so there is nothing to check": both writers store
+    ``user_id or ""`` and the column defaults to the empty string, so a
+    session with no owner is a state the system can actually produce.
+    Reading it as "open to everyone" would turn this gate into a second
+    way past the ownership check it exists to enforce. An unidentified
+    caller is denied for the same reason - every endpoint hands us
+    ``str(user_id) if user_id else ""``, and two empty strings comparing
+    equal must not read as a match.
     """
     raw_pid = cad_session.get("project_id")
     if raw_pid:
@@ -2549,8 +2622,9 @@ async def _verify_cad_session_access(
             await verify_project_access(pid, str(user_id), db_session)
             return
 
-    owner = str(cad_session.get("user_id", "") or "")
-    if owner and owner != str(user_id):
+    owner = str(cad_session.get("user_id", "") or "").strip()
+    caller = str(user_id or "").strip()
+    if not owner or not caller or owner != caller:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=translate("errors.session_not_found", locale=get_locale()),
@@ -4786,12 +4860,22 @@ async def _verify_takeoff_doc_access(
     # TakeoffDocument uses ``owner_id`` (a UUID column) while the
     # CadExtractionSession sibling uses ``user_id`` (string). Try
     # both names so a legacy row layout doesn't bypass the gate.
-    owner = str(getattr(doc, "owner_id", None) or getattr(doc, "user_id", "") or "")
-    # R7 deep-improve: a document with NO owner (NULL on both columns)
-    # must block everyone - otherwise the empty-owner branch silently
-    # opens orphaned rows to any caller. Match by string after trimming
-    # both sides so UUID-vs-str drift doesn't bypass the gate.
-    if owner != str(user_id):
+    owner = str(getattr(doc, "owner_id", None) or getattr(doc, "user_id", "") or "").strip()
+    caller = str(user_id or "").strip()
+    # A document with no owner must block everyone, and so must a caller
+    # with no identity. Comparing the two directly is not enough to get
+    # that: an ownerless document and an unidentified caller are both the
+    # empty string, and comparing equal reads as a match. The earlier note
+    # here reasoned about one empty side only, which is why a named caller
+    # was already denied while an unnamed one was not.
+    #
+    # Every call site hands us ``str(user_id) if user_id else ""``, so the
+    # unidentified caller is a value this function is actually offered
+    # rather than a hypothetical. The gate now denies unless both sides
+    # name the same identity, which is the form its CAD session sibling
+    # ``_verify_cad_session_access`` already uses. Trim both sides so
+    # UUID-vs-str drift does not bypass the gate.
+    if not owner or not caller or owner != caller:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=translate("errors.document_not_found", locale=get_locale()),

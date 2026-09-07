@@ -37,6 +37,7 @@ import {
   syncContractFromSigning,
   type ContractSigningSession,
 } from './api';
+import { fmtList } from '@/shared/lib/formatters';
 
 // Last-resort English for the signing module's own vocabularies, reached only
 // if a bundle is missing the key. Both families are in all 29 locale files, so
@@ -245,7 +246,7 @@ export function ContractSigningPanel({
                     {t('contracts.esign.stale_body', {
                       defaultValue:
                         '{{names}} signed an earlier version. Ask them to sign again before the contract is activated.',
-                      names: staleNames.join(', '),
+                      names: fmtList(staleNames),
                     })}
                   </p>
                 </div>
@@ -316,6 +317,31 @@ export function ContractSigningPanel({
                       CAPABILITY_LABELS[current.provider_capability] ??
                       current.provider_capability,
                   })}
+                </dd>
+              </div>
+              {/* Shown beside the requirement, always, and never falling back
+                  to it. The platform resolves a session to whatever provider
+                  is registered for the required capability, and core ships one
+                  that performs no cryptography - so the two can differ, and a
+                  reader who only ever sees the requirement would take it for
+                  what was done. A null value means no derivation recorded one;
+                  it renders as that rather than borrowing the line above. */}
+              <div className="flex items-center gap-1.5">
+                <dt className="text-content-tertiary">
+                  {t('signing.field_delivered_capability', {
+                    defaultValue: 'Delivered capability',
+                  })}
+                </dt>
+                <dd className="text-content-secondary">
+                  {current.delivered_capability
+                    ? t(`signing.capability_${current.delivered_capability}`, {
+                        defaultValue:
+                          CAPABILITY_LABELS[current.delivered_capability] ??
+                          current.delivered_capability,
+                      })
+                    : t('signing.capability_not_recorded', {
+                        defaultValue: 'Not recorded',
+                      })}
                 </dd>
               </div>
               <div className="flex items-center gap-1.5">

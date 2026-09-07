@@ -35,15 +35,19 @@ The five things it proves, in order
    same missing set has to be empty. This is the check a NOT NULL column with
    no default fails, because the auto-migrate helper cannot add one to a table
    that has rows in it.
-4. The health signal agrees. ``schema_heal_failed`` must read false, not null,
-   and ``alembic_head_matches`` must read true - not unknown, and not false.
-   That last one passes today only because a pre-15.4.0 wheel ships no
-   revision tree, so the aged database arrives with no revision recorded at
-   all and ``stamp_head_if_unstamped`` lands it at head. Age from 15.4.0 or
-   later and the database arrives already stamped at that older revision, the
-   stamp helper returns early because a revision is present, and this check
-   reads false - which is a true statement about the product rather than a
-   fault in this script: nothing advances the stamp on upgrade.
+4. The health signal agrees. ``schema_heal_failed`` must read false, not null.
+   What ``alembic_head_matches`` has to read depends on which cohort the aged
+   database belongs to, because the two have genuinely different honest answers
+   and a single expectation would make one of them unsatisfiable.
+
+   A database that arrives already carrying a revision - 15.4.0 and later - must
+   read true. A database that arrives with none at all - pre-15.4.0, whose wheels
+   ship no revision tree - must read unknown, and must still be carrying no
+   revision afterwards. That is not a lowered bar. Stamping such a database head
+   would claim a position nothing verified and would erase the only durable
+   record that it is behind, permanently, so the boot refuses and the refusal is
+   what is being checked here. This check used to demand true from both, which
+   the second cohort could only ever satisfy by being lied about.
 5. A real read path answers. The NCR register is reached over HTTP with a
    token, because an authenticated endpoint answers 401 to an anonymous
    caller and a 401 would satisfy any assertion written as "not a 500".
@@ -118,24 +122,38 @@ def load_current_metadata():
     return Base
 
 
-def schema_gap(engine, base) -> tuple[list[str], list[str], list[str]]:
+def schema_gap(engine, base) -> tuple[list[str], list[str], list[str], list[str]]:
     """Where the database disagrees with what the current metadata declares.
 
-    Returns missing tables, missing columns, and columns that exist but accept
-    NULL where the model says they must not.
+    Returns missing tables, missing columns, and then nullability disagreements
+    split by DIRECTION, because the two directions are different defects with
+    different repairs and one shared list would blur them:
 
-    That third list is not decoration. ``postgres_migrator`` writes NOT NULL
-    into its ``ADD COLUMN`` only when the column also carries a server default
-    to backfill the rows already there::
+    ``model_notnull_db_nullable``
+        The model promises NOT NULL and the database accepts NULL.
+        ``postgres_migrator`` writes NOT NULL into its ``ADD COLUMN`` only when
+        the column also carries a server default to backfill the rows already
+        there::
 
-        not_null = " NOT NULL" if (not col.nullable and default) else ""
+            not_null = " NOT NULL" if (not col.nullable and default) else ""
 
-    A NOT NULL column with no default - the textbook change an additive heal
-    cannot make - is therefore added NULLABLE instead of failing. The column
-    name appears, so a check that only compares names reports the upgrade as
-    complete while the constraint the model promises is simply absent. This is
-    the one shape the lane exists to catch, and it is invisible without
-    comparing nullability.
+        A NOT NULL column with no default - the textbook change an additive
+        heal cannot make - is therefore added NULLABLE instead of failing. The
+        column name appears, so a check that only compares names reports the
+        upgrade as complete while the constraint the model promises is simply
+        absent.
+
+    ``db_notnull_model_nullable``
+        The database insists on NOT NULL and the model does not. This is what a
+        revision that WIDENS a column leaves behind when it never runs: the
+        heal only ever adds columns and indexes, it has no ``DROP NOT NULL``,
+        so the old constraint survives. Application code that assigns ``None``
+        into such a column then raises NotNullViolation on an ordinary write,
+        which is a live 500 rather than a latent gap.
+
+    Checking only the first direction is what let an upgrade ship with two
+    columns NOT NULL that the models declare nullable: the lane compared one
+    way, found nothing, and called the schema healed.
     """
     import sqlalchemy as sa
 
@@ -146,7 +164,8 @@ def schema_gap(engine, base) -> tuple[list[str], list[str], list[str]]:
     by_table = {key[1]: columns for key, columns in inspector.get_multi_columns().items()}
     missing_tables: list[str] = []
     missing_columns: list[str] = []
-    nullable_mismatches: list[str] = []
+    model_notnull_db_nullable: list[str] = []
+    db_notnull_model_nullable: list[str] = []
     for table in base.metadata.sorted_tables:
         if table.name not in by_table:
             missing_tables.append(table.name)
@@ -157,8 +176,15 @@ def schema_gap(engine, base) -> tuple[list[str], list[str], list[str]]:
             if found is None:
                 missing_columns.append(f"{table.name}.{col.name}")
             elif not col.nullable and found.get("nullable"):
-                nullable_mismatches.append(f"{table.name}.{col.name}")
-    return sorted(missing_tables), sorted(missing_columns), sorted(nullable_mismatches)
+                model_notnull_db_nullable.append(f"{table.name}.{col.name}")
+            elif col.nullable and not found.get("nullable"):
+                db_notnull_model_nullable.append(f"{table.name}.{col.name}")
+    return (
+        sorted(missing_tables),
+        sorted(missing_columns),
+        sorted(model_notnull_db_nullable),
+        sorted(db_notnull_model_nullable),
+    )
 
 
 def main() -> int:
@@ -177,16 +203,17 @@ def main() -> int:
     engine = sa.create_engine(sync_url, poolclass=sa.pool.NullPool)
 
     # ── 1 & 2. Before the current code runs: is this database actually old? ──
-    missing_tables, missing_columns, nullable_gaps = schema_gap(engine, base)
+    missing_tables, missing_columns, nullable_gaps, overtight_gaps = schema_gap(engine, base)
     print(
         f"..    the aged database is missing {len(missing_tables)} table(s) and {len(missing_columns)} column(s), "
-        f"and accepts NULL in {len(nullable_gaps)} column(s) the model marks NOT NULL"
+        f"accepts NULL in {len(nullable_gaps)} column(s) the model marks NOT NULL, "
+        f"and insists on NOT NULL in {len(overtight_gaps)} column(s) the model marks nullable"
     )
-    for name in (missing_tables + missing_columns + nullable_gaps)[:20]:
+    for name in (missing_tables + missing_columns + nullable_gaps + overtight_gaps)[:20]:
         print(f"        - {name}")
 
     check(
-        bool(missing_tables or missing_columns or nullable_gaps),
+        bool(missing_tables or missing_columns or nullable_gaps or overtight_gaps),
         "the aged database is missing something the current code declares, so there is an upgrade to test "
         f"(release {state['aged_from_version']}); an empty gap means the pin has been moved forward to a "
         "release with no schema change and this lane would prove nothing",
@@ -210,7 +237,7 @@ def main() -> int:
 
     print("..    booting the current code against the aged database")
     with TestClient(create_app()) as client:
-        healed_tables, healed_columns, healed_nullable = schema_gap(engine, base)
+        healed_tables, healed_columns, healed_nullable, healed_overtight = schema_gap(engine, base)
         residue = healed_tables + healed_columns
         check(
             not residue,
@@ -227,11 +254,24 @@ def main() -> int:
                 "backfill leaves behind"
             ),
         )
+        check(
+            not healed_overtight,
+            "every column the current code declares nullable accepts NULL in the database after boot"
+            + (
+                ""
+                if not healed_overtight
+                else f" - {healed_overtight} are still NOT NULL, which is what a revision that WIDENS a "
+                "column leaves behind when it never runs; the heal has no DROP NOT NULL, so application "
+                "code assigning None into these raises NotNullViolation on an ordinary write"
+            ),
+        )
 
         # The query shape an ORM read issues, on exactly the tables that were
         # behind. A missing column raises UndefinedColumn here and nowhere in
         # a checkfirst=True create_all.
-        touched = {name.split(".")[0] for name in missing_columns + nullable_gaps} | set(missing_tables)
+        touched = {name.split(".")[0] for name in missing_columns + nullable_gaps + overtight_gaps} | set(
+            missing_tables
+        )
         unreadable: list[str] = []
         for table_name in sorted(touched):
             table = base.metadata.tables.get(table_name)
@@ -260,11 +300,37 @@ def main() -> int:
             "heal never ran at all",
         )
         head_matches = body.get("alembic_head_matches")
-        check(
-            head_matches is True,
-            f"alembic_head_matches reads {head_matches!r}; null means the migration head cannot be told and "
-            "false means the database is not at it",
-        )
+        with engine.connect() as conn:
+            if sa.inspect(conn).has_table("alembic_version"):
+                stamped_after = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
+            else:
+                stamped_after = None
+
+        if aged_revision is None:
+            # The pre-15.4.0 shape: a real install of one of those releases records
+            # no revision at all. Stamping it head would claim a position nothing
+            # verified and would destroy the only durable evidence the database is
+            # behind, so the boot deliberately refuses. "Cannot be told" is then the
+            # honest reading and the one this lane has to require - demanding true
+            # here would demand the product resume lying, and no aged database of
+            # this cohort could ever satisfy it.
+            check(
+                head_matches is None,
+                f"alembic_head_matches reads {head_matches!r}; a database that arrived with no revision has "
+                "nothing to compare, so anything other than unknown means it was stamped at a position "
+                "nothing checked",
+            )
+            check(
+                stamped_after is None,
+                f"the database was stamped at {stamped_after!r} despite arriving with no revision at all; "
+                "that is the write the refusal exists to prevent, and it cannot be undone",
+            )
+        else:
+            check(
+                head_matches is True,
+                f"alembic_head_matches reads {head_matches!r}; null means the migration head cannot be told "
+                "and false means the database is not at it",
+            )
 
         # ── 5. A real read path, authenticated ──────────────────────────────
         login = client.post(

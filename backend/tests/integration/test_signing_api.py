@@ -71,14 +71,14 @@ async def _activate_user(email: str) -> None:
         await s.commit()
 
 
-async def _promote_to_editor(client: AsyncClient, email: str, password: str) -> dict[str, str]:
+async def _promote_to_role(client: AsyncClient, email: str, password: str, role: str) -> dict[str, str]:
     from sqlalchemy import update
 
     from app.database import async_session_factory
     from app.modules.users.models import User
 
     async with async_session_factory() as s:
-        await s.execute(update(User).where(User.email == email.lower()).values(role="editor"))
+        await s.execute(update(User).where(User.email == email.lower()).values(role=role))
         await s.commit()
 
     resp = await client.post(
@@ -121,18 +121,28 @@ async def _create_project(owner_user_id: str, name: str) -> str:
 
 @pytest_asyncio.fixture(scope="module")
 async def two_tenants(http_client):
-    # Tenant A owns the project under test and has to be able to create in it.
-    # Registration cannot be relied on for that: self-registration only hands out
-    # admin to the very first account on a fresh install, and every module in this
-    # job shares one database, so exactly one of them wins that slot and the rest
-    # get a viewer with no <module>.create permission. A was then refused 403 in
-    # its own project and the cross-tenant probe below never ran. Promote it the
-    # same way B is promoted. Editor, not admin, so A passes verify_project_access
-    # on the ownership branch a real tenant would use rather than an admin bypass.
+    # Tenant A owns the project under test and has to be able to run every verb
+    # these tests exercise in it. Registration cannot be relied on for that:
+    # self-registration only hands out admin to the very first account on a fresh
+    # install, and every module in this job shares one database, so exactly one of
+    # them wins that slot and the rest get a viewer with no <module>.create
+    # permission. A was then refused 403 in its own project and the cross-tenant
+    # probe below never ran.
+    #
+    # Manager rather than editor, because this module registers <module>.create at
+    # editor and <module>.delete one rank above it, and the delete tests below are
+    # A's as well. Pinning A at editor left those refused on a permission the
+    # product has required since the module shipped. Manager is still not admin, so
+    # A keeps passing verify_project_access on the ownership branch a real tenant
+    # would use rather than on the admin bypass, and RequirePermission still makes
+    # a real rank comparison instead of short-circuiting.
+    #
+    # B stays editor. It is the attacker in the isolation probe and has to reach
+    # the isolation check rather than be turned away by a role check first.
     a_uid, a_email, a_pw, _a_hdr = await _register_login(http_client, tenant="a")
-    a_hdr = await _promote_to_editor(http_client, a_email, a_pw)
+    a_hdr = await _promote_to_role(http_client, a_email, a_pw, "manager")
     b_uid, b_email, b_pw, _b_hdr = await _register_login(http_client, tenant="b")
-    b_hdr = await _promote_to_editor(http_client, b_email, b_pw)
+    b_hdr = await _promote_to_role(http_client, b_email, b_pw, "editor")
     a_project = await _create_project(a_uid, "A's project")
     b_project = await _create_project(b_uid, "B's project")
     return {
@@ -205,6 +215,63 @@ async def test_full_signing_flow(http_client, two_tenants):
     body = r2.json()
     assert body["status"] == "fully_signed"
     assert body["signed_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_required_capability_is_not_reported_as_delivered(http_client, two_tenants):
+    """A session may require more than the platform can deliver, and must say so.
+
+    ``_two_party_body`` asks for ``qualified_electronic`` - eIDAS QES and the
+    like. No adapter for it exists in this tree, so the registry resolves to the
+    built-in provider, which performs no cryptography and delivers
+    ``simple_electronic``. The session is still created and can still reach
+    fully_signed: refusing here is a separate product decision and would break
+    existing sessions on upgrade. What must not happen is the record and the
+    interface repeating the requirement as though it had been met.
+
+    The assertions are deliberately on the delivered value being DIFFERENT from
+    the required one rather than merely present. A later ``delivered or
+    required`` fallback anywhere between the column and the response would make
+    the two agree, which reads as correct everywhere except here.
+    """
+    a = two_tenants["a"]
+    create = await http_client.post(
+        "/api/v1/signing/sessions/",
+        json=_two_party_body(a["project_id"], content_hash="hash-capability"),
+        headers=a["headers"],
+    )
+    assert create.status_code == 201, create.text
+    data = create.json()
+
+    assert data["provider_capability"] == "qualified_electronic"
+    assert data["delivered_capability"] == "simple_electronic"
+    assert data["delivered_capability"] != data["provider_capability"]
+
+    # Signing it through does not upgrade the claim.
+    for name, role in (("Contractor Rep", "contractor"), ("Client Rep", "client")):
+        attest = await http_client.post(
+            f"/api/v1/signing/sessions/{data['id']}/attest",
+            json={
+                "signatory_name": name,
+                "signatory_role": role,
+                "content_hash": "hash-capability",
+            },
+            headers=a["headers"],
+        )
+        assert attest.status_code == 201, attest.text
+    assert attest.json()["status"] == "fully_signed"
+    assert attest.json()["delivered_capability"] == "simple_electronic"
+
+    # The manifest is the closest thing to a legal record here, so it carries
+    # both values too.
+    manifest = await http_client.get(
+        f"/api/v1/signing/sessions/{data['id']}/manifest",
+        headers=a["headers"],
+    )
+    assert manifest.status_code == 200, manifest.text
+    body = manifest.json()
+    assert body["provider_capability"] == "qualified_electronic"
+    assert body["delivered_capability"] == "simple_electronic"
 
 
 @pytest.mark.asyncio

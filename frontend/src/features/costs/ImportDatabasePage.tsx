@@ -30,13 +30,24 @@ import {
   pollVectorIndexLanded,
   mayStillBeRunning,
   reportBackgroundIndexFailure,
+  describeSnapshotRestore,
+  SNAPSHOT_RESTORE_TIMEOUT_MS,
   VECTOR_READY_MIN_COUNT,
+  type SnapshotRestoreOutcome,
+  type SnapshotRestoreResponse,
 } from './vectorIndex';
-import { formatFileSize } from '@/shared/lib/formatters';
+import { fmtList, formatFileSize } from '@/shared/lib/formatters';
 import { COMMON_CURRENCIES } from '@/features/boq/boqHelpers';
+// Pure payload module, not the panel component: importing the fetcher out of
+// CataloguesPanelCard would drag that whole component into this page's graph.
+import {
+  unwrapCataloguesPayload,
+  type CataloguesPayloadCatalogue,
+} from '@/features/match-elements/catalogues-payload';
 import { fetchCostCatalogs, type CostCatalog } from './api';
 import { ResourcePriceSheetPanel } from './ResourcePriceSheetPanel';
 import { BaseCatalogBrowser } from './BaseCatalogBrowser';
+import { BaseCatalogError } from './BaseCatalogError';
 import { useBaseCatalog, flattenVariants, type BaseVariant } from './baseCatalog';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
 
@@ -78,6 +89,20 @@ interface PreviewResult {
 // Sentinel used by the per-field <select> to mean "this canonical field has
 // no source column". Kept out of the submitted column_map.
 const NOT_MAPPED = '';
+
+// The three template download links. They are anchors, not buttons, so they
+// cannot go through <Button> - this borrows its secondary variant instead
+// (same radius, border, shadow lift and focus ring) so the tertiary row on
+// this page speaks the same language as every other control.
+// The border token here used to read `border-border-default`, which is not a
+// key in the palette: Tailwind emitted nothing for it and the links fell back
+// to the preflight grey in both themes.
+const TEMPLATE_LINK_CLASS =
+  'inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-primary px-3 py-1.5 ' +
+  'text-xs font-medium text-content-secondary shadow-xs ' +
+  'transition-all duration-normal ease-oe ' +
+  'hover:bg-surface-secondary hover:text-oe-blue hover:shadow-sm active:scale-[0.98] ' +
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue';
 
 // ── Loaded databases localStorage helper ────────────────────────────────────
 
@@ -412,7 +437,7 @@ function CWICRDatabaseGrid(_props: { onLoadDatabase: (file: File) => void }) {
   // The whole loadable catalog (9 base families, 38 cost bases) with real
   // work-item counts, from the single-source backend registry. The browser
   // renders it; this component keeps the load/progress/toast logic.
-  const { data: baseCatalog } = useBaseCatalog();
+  const { data: baseCatalog, error: baseCatalogError, refetch: refetchBaseCatalog } = useBaseCatalog();
 
   // The timeout-recovery poll below can run for ~a minute after a slow import.
   // If the user navigates away from /costs/import during that window we must
@@ -706,6 +731,8 @@ function CWICRDatabaseGrid(_props: { onLoadDatabase: (file: File) => void }) {
           onSetActive={handleSetActive}
           elapsedSeconds={elapsed}
         />
+      ) : baseCatalogError ? (
+        <BaseCatalogError error={baseCatalogError} onRetry={() => void refetchBaseCatalog()} />
       ) : (
         <div className="flex items-center justify-center gap-2 py-12 text-sm text-content-tertiary">
           <Loader2 size={16} className="animate-spin" />
@@ -1010,12 +1037,23 @@ function LoadedDatabasesSection() {
           </div>
           {hasData && (
             <div className="flex items-center gap-2">
+              {/* The spinner rides in the icon slot rather than through the
+                  `loading` prop: `loading` swaps the whole label out for a
+                  spinner, which collapses the button to icon width and shoves
+                  its neighbour sideways mid-export. Same-sized icon, same
+                  label, no reflow. */}
               <Button
                 variant="secondary"
                 size="sm"
-                icon={<Download size={14} />}
+                icon={
+                  exportMutation.isPending ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Download size={14} />
+                  )
+                }
                 onClick={() => exportMutation.mutate()}
-                loading={exportMutation.isPending}
+                disabled={exportMutation.isPending}
               >
                 {t('costs.export_excel', { defaultValue: 'Export Excel' })}
               </Button>
@@ -1023,9 +1061,15 @@ function LoadedDatabasesSection() {
                 <Button
                   variant="danger"
                   size="sm"
-                  icon={<Trash2 size={14} />}
+                  icon={
+                    clearMutation.isPending ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Trash2 size={14} />
+                    )
+                  }
                   onClick={() => setShowClearConfirm(true)}
-                  loading={clearMutation.isPending}
+                  disabled={clearMutation.isPending}
                 >
                   {t('costs.clear_all', { defaultValue: 'Clear All' })}
                 </Button>
@@ -1083,6 +1127,13 @@ function LoadedDatabasesSection() {
                 // non-ISO-prefix map). Falling back to a Globe icon when
                 // it can't resolve, never to "first 2 letters of city".
                 const flagCode = db?.flagId ?? (rs.region === 'DACH' ? 'de' : rs.region);
+                // The only name this icon-only button has, for both the
+                // tooltip and the accessibility tree. It used to be an
+                // untranslated `Delete ${region}`; the region is already the
+                // first cell of this row, so the shared key carries the
+                // meaning without inventing one every locale would have to
+                // catch up on.
+                const deleteLabel = t('common.delete', { defaultValue: 'Delete' });
                 return (
                   <tr key={rs.region} className="hover:bg-surface-secondary/50 transition-colors">
                     <td className="px-3 py-2.5">
@@ -1121,10 +1172,15 @@ function LoadedDatabasesSection() {
                       <span className="text-2xs text-content-quaternary">--</span>
                     </td>
                     <td className="px-2 py-2.5">
+                      {/* Both branches sit in the same 28px box so starting a
+                          delete does not shrink the cell and jump the row. */}
                       {isDeleting ? (
-                        <Loader2 size={14} className="animate-spin text-semantic-error mx-auto" />
+                        <span className="flex h-7 w-7 items-center justify-center mx-auto">
+                          <Loader2 size={14} className="animate-spin text-semantic-error" />
+                        </span>
                       ) : (
                         <button
+                          type="button"
                           onClick={async () => {
                             const ok = await confirm({
                               title: t('costs.confirm_delete_region_title', {
@@ -1141,8 +1197,9 @@ function LoadedDatabasesSection() {
                             setDeletingRegion(rs.region);
                             deleteRegionMutation.mutate(rs.region);
                           }}
-                          title={`Delete ${db?.name ?? rs.region}`}
-                          className="flex h-7 w-7 items-center justify-center rounded-md text-content-tertiary hover:text-semantic-error hover:bg-semantic-error-bg transition-colors mx-auto"
+                          title={deleteLabel}
+                          aria-label={deleteLabel}
+                          className="flex h-7 w-7 items-center justify-center rounded-lg text-content-tertiary transition-all duration-fast ease-oe hover:text-semantic-error hover:bg-semantic-error-bg active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue mx-auto"
                         >
                           <Trash2 size={13} />
                         </button>
@@ -1173,11 +1230,20 @@ function LoadedDatabasesSection() {
               })}
             </p>
             <div className="flex items-center gap-2">
+              {/* Carries an icon even at rest so the spinner has a slot to
+                  appear in without resizing the button. */}
               <Button
                 variant="danger"
                 size="sm"
+                icon={
+                  clearMutation.isPending ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Trash2 size={14} />
+                  )
+                }
                 onClick={() => clearMutation.mutate()}
-                loading={clearMutation.isPending}
+                disabled={clearMutation.isPending}
               >
                 {t('costs.yes_clear_all', { defaultValue: 'Yes, Clear All' })}
               </Button>
@@ -1217,13 +1283,45 @@ interface VectorRegionStat {
   count: number;
 }
 
-function VectorDatabaseSection() {
+/**
+ * Second readiness source for this page, and it is a different store.
+ *
+ * This card offers two install routes that do not populate the same place.
+ * "Generate All Regions" (`POST /vector/index/`) fills the `cost_items`
+ * collection, which is what rate suggestion, classification and anomaly
+ * checks search. Restoring a published snapshot fills `cwicr_<lang>_v3`,
+ * which is what element matching searches. Neither one populates the other.
+ *
+ * `/vector/status/` can only see the first of those, so it cannot answer
+ * "is matching ready" and must not be asked to. That number comes from here.
+ *
+ * Named rather than inline: an inline envelope generic on `apiGet` trips the
+ * repo-hygiene bare-array check even when the call is correct.
+ */
+interface V3CataloguesResponse {
+  catalogues?: CataloguesPayloadCatalogue[];
+  server?: { reachable?: boolean };
+}
+
+// Exported for the readiness wiring test. This card is the only place in the
+// product that offers both install routes, so it is the only place where the
+// two vector stores can be observed disagreeing - which is the property that
+// test pins. The page below is the sole runtime consumer.
+export function VectorDatabaseSection() {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const queryClient = useQueryClient();
   const [loadingRegion, setLoadingRegion] = useState<string | null>(null);
   const [isIndexingAll, setIsIndexingAll] = useState(false);
-  const [lastResult, setLastResult] = useState<{ region: string; indexed: number; duration: number } | null>(null);
+  // `restore` is absent for the loaders that really do index vectors. It is set
+  // only by the snapshot restore, which produces the same count by a different
+  // verb, and the summary panel has to say which one happened.
+  const [lastResult, setLastResult] = useState<{
+    region: string;
+    indexed: number;
+    duration: number;
+    restore?: SnapshotRestoreOutcome['kind'];
+  } | null>(null);
   // Guards the poll-after-abort fallback in the handlers below: a minute of
   // polling must not land toasts or state on a section the user left.
   const mountedRef = useRef(true);
@@ -1282,6 +1380,32 @@ function VectorDatabaseSection() {
   const indexedCount = vectorStatus?.cost_collection?.vectors_count ?? 0;
   const isFullyIndexed = indexedCount > 0 && indexedCount >= totalItems * 0.9;
 
+  // Matching readiness, and it is deliberately a second query rather than a
+  // second field on the first one. The catch at the bottom of
+  // `handleLoadVectors` already knows these are different collections; the
+  // summary tiles never did, so a snapshot restore left them reading 0% and a
+  // local re-index left them reading 100% over a store matching never opens.
+  //
+  // Keyed under ['costs', 'vector', ...] on purpose: both install paths
+  // already invalidate that prefix in their `finally`, so installing from
+  // this card refreshes this number without new wiring.
+  const { data: v3Catalogues } = useQuery({
+    queryKey: ['costs', 'vector', 'catalogues-v3'],
+    queryFn: () => apiGet<V3CataloguesResponse>('/v1/costs/catalogues-v3/'),
+    retry: false,
+  });
+
+  // `list_v3_catalogues` derives every row's `install_status` from a single
+  // probe of the Qdrant server. When that probe fails, or no URL is
+  // configured, each row falls back to `available` - so a bare count of
+  // `loaded` rows says 0 for "the server did not answer" in exactly the same
+  // words it says 0 for "nothing is installed". Those are different claims,
+  // so the unreachable case renders as unknown rather than as a zero.
+  const cataloguesReachable = v3Catalogues?.server?.reachable ?? false;
+  const loadedCatalogues = unwrapCataloguesPayload(v3Catalogues).filter(
+    (c) => c.install_status === 'loaded',
+  ).length;
+
   // Build a set of regions that already have vectors
   const vectorizedRegions = new Set(
     (vectorRegionStats ?? []).filter((r) => r.count > 0).map((r) => r.region),
@@ -1297,16 +1421,77 @@ function VectorDatabaseSection() {
       setLastResult(null);
       try {
         if (vectorStatus?.can_restore_snapshots) {
-          // Qdrant: restore pre-built 3072d snapshot from GitHub
-          const data = await apiPost<Record<string, unknown>>(`/v1/costs/vector/restore-snapshot/${db.id}`);
-          const indexed = (data.indexed as number) ?? (data.restored ? 1 : 0);
-          const duration = (data.duration_seconds as number) ?? 0;
-          setLastResult({ region: db.id, indexed, duration });
-          addToast({
-            type: 'success',
-            title: `${db.name} snapshot restored`,
-            message: `Qdrant 3072d vectors restored in ${duration}s`,
-          });
+          // Qdrant: restore pre-built 3072d snapshot from GitHub. On the
+          // server's own budget, not the client's default 45s or even the 5-min
+          // long budget: the handler may spend 600s downloading ~1.1 GB and a
+          // further 1800s handing it to Qdrant, and it never checks whether we
+          // are still listening. The wrapper's timeout toast is suppressed
+          // because the catch below is the single voice reporting this call,
+          // and its wording - cancelled - would be false about work that is
+          // still running.
+          try {
+            const data = await apiPost<SnapshotRestoreResponse>(
+              `/v1/costs/vector/restore-snapshot/${db.id}`,
+              undefined,
+              { timeoutMs: SNAPSHOT_RESTORE_TIMEOUT_MS, suppressTimeoutToast: true },
+            );
+            // Read `vectors_count`, never `indexed` - this endpoint does not
+            // return `indexed`, so the old read reported one single vector for
+            // a restore of tens of thousands.
+            const outcome = describeSnapshotRestore(data);
+            if (outcome.kind === 'not_restored') {
+              throw new Error(
+                t('costs.snapshot_not_restored', {
+                  defaultValue: 'The server did not report a restored snapshot.',
+                }),
+              );
+            }
+            setLastResult({
+              region: db.id,
+              indexed: outcome.vectors,
+              duration: outcome.duration,
+              restore: outcome.kind,
+            });
+            addToast({
+              type: 'success',
+              title: t('costs.snapshot_restored_title', {
+                defaultValue: '{{name}} snapshot restored',
+                name: db.name,
+              }),
+              message:
+                outcome.kind === 'restored'
+                  ? t('costs.snapshot_restored_msg', {
+                      defaultValue: '{{vectors}} vectors restored in {{duration}}s',
+                      vectors: outcome.vectors.toLocaleString(getNumberLocale()),
+                      duration: outcome.duration,
+                    })
+                  : t('costs.snapshot_restored_no_count', {
+                      defaultValue:
+                        'The snapshot was restored. The vector database did not report how many vectors it holds.',
+                    }),
+            });
+          } catch (restoreErr: unknown) {
+            // We stopped listening; the download and the Qdrant restore both
+            // run off the event loop and neither watches the client, so the
+            // work carries on. There is no status endpoint that can prove it
+            // landed - `/vector/status/` and `/vector/regions/` both read the
+            // `cost_items` collection while a restore writes
+            // `cwicr_<region>`, so polling them would report failure for every
+            // successful restore. Say what is true instead of guessing, and
+            // do NOT reach for `pollVectorIndexLanded` here: it watches the
+            // wrong collection.
+            if (!mayStillBeRunning(restoreErr)) throw restoreErr;
+            addToast({
+              type: 'info',
+              title: t('costs.snapshot_restore_running_title', {
+                defaultValue: 'Snapshot restore still running',
+              }),
+              message: t('costs.snapshot_restore_running_msg', {
+                defaultValue:
+                  'The server keeps downloading and restoring the snapshot after the browser stops waiting, so nothing was cancelled. A snapshot this size can take well over half an hour.',
+              }),
+            });
+          }
         } else {
           // LanceDB: try pre-built vectors from GitHub first
           try {
@@ -1424,6 +1609,22 @@ function VectorDatabaseSection() {
     // the catch below is the single voice reporting this call.
     const startedAt = Date.now();
     const baseline = await readVectorCount();
+    // The count this button reports has always been true and has always been
+    // read as more than it says. It fills `cost_items` and nothing else, on a
+    // card whose other button installs the catalogues that element matching
+    // searches - so "N items indexed" was taken as "matching is ready now",
+    // and matching then returned nothing. The count is left exactly as it
+    // was and the scope it was missing is added after it. Composed once
+    // because both success paths below report it and they must not drift.
+    const indexedMessage = (indexed: number, duration: number) =>
+      `${t('costs.vec_items_indexed_msg', {
+        defaultValue: '{{items}} items indexed in {{duration}}s',
+        items: indexed.toLocaleString(getNumberLocale()),
+        duration,
+      })} ${t('costs.vec_items_indexed_scope', {
+        defaultValue:
+          'This powers rate suggestion, classification and anomaly checks. Element matching searches the installed cost catalogues instead.',
+      })}`;
     const refresh = () => {
       refetchStatus();
       refetchVectorRegions();
@@ -1441,11 +1642,7 @@ function VectorDatabaseSection() {
       addToast({
         type: 'success',
         title: t('costs.vector_index_created', { defaultValue: 'Vector index created' }),
-        message: t('costs.vec_items_indexed_msg', {
-          defaultValue: '{{items}} items indexed in {{duration}}s',
-          items: indexed.toLocaleString(getNumberLocale()),
-          duration,
-        }),
+        message: indexedMessage(indexed, duration),
       });
       refresh();
     } catch (err: unknown) {
@@ -1467,11 +1664,7 @@ function VectorDatabaseSection() {
         addToast({
           type: 'success',
           title: t('costs.vector_index_created', { defaultValue: 'Vector index created' }),
-          message: t('costs.vec_items_indexed_msg', {
-            defaultValue: '{{items}} items indexed in {{duration}}s',
-            items: indexed.toLocaleString(getNumberLocale()),
-            duration,
-          }),
+          message: indexedMessage(indexed, duration),
         });
       } else {
         addToast({
@@ -1575,10 +1768,14 @@ function VectorDatabaseSection() {
                       ${isLoading && !isLoadingThis ? 'opacity-40 pointer-events-none' : ''}
                     `}
                   >
+                    {/* The whole card is the control, so the focus ring has to
+                        trace the card, not sit inside it - rounded-xl matches
+                        the wrapper. */}
                     <button
+                      type="button"
                       onClick={() => handleLoadVectors(db)}
                       disabled={isLoading}
-                      className="flex items-center gap-3 px-3.5 py-3 text-left active:scale-[0.98] transition-transform"
+                      className="flex items-center gap-3 rounded-xl px-3.5 py-3 text-left transition-all duration-normal ease-oe active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oe-blue disabled:cursor-default"
                     >
                       <MiniFlag code={db.flagId} />
                       <div className="min-w-0 flex-1">
@@ -1589,16 +1786,19 @@ function VectorDatabaseSection() {
                           {isVectorized && (
                             <CheckCircle2
                               size={14}
-                              className="text-purple-500 shrink-0"
+                              className="text-oe-purple shrink-0"
                             />
                           )}
                         </div>
                         <div className="text-2xs text-content-tertiary">
                           {db.city} &middot; {db.lang} &middot; {db.currency}
                         </div>
+                        {/* The count below takes -text, which resolves per
+                            theme; the raw purple-600 it replaced stayed dark
+                            on the dark card. */}
                         <div className="flex items-center gap-1.5 mt-1">
                           {isVectorized ? (
-                            <span className="text-2xs text-purple-600 font-medium">
+                            <span className="text-2xs text-oe-purple-text font-medium">
                               {vecCount.toLocaleString(getNumberLocale())} vectors
                             </span>
                           ) : (
@@ -1609,17 +1809,28 @@ function VectorDatabaseSection() {
                           </Badge>
                         </div>
                       </div>
-                      {isLoadingThis && (
-                        <Loader2 size={16} className="animate-spin text-purple-500 shrink-0" />
-                      )}
+                      {/* The slot is always there; only its contents change.
+                          Mounting the spinner into the flex row would squeeze
+                          the label the moment indexing starts. */}
+                      <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                        {isLoadingThis && (
+                          <Loader2 size={16} className="animate-spin text-oe-purple" />
+                        )}
+                      </span>
                     </button>
                   </div>
                 );
               })}
             </div>
 
-            {/* Summary stats */}
-            <div className="grid grid-cols-3 gap-3 mb-4">
+            {/* Summary stats.
+                Four tiles over two stores, not three tiles over one. The
+                middle pair measures `cost_items`, which is what the AI
+                features search; the last measures the v3 catalogue
+                collections, which is what element matching searches. Both
+                install buttons on this card are on this page, so a single
+                "ready" number here is always wrong for one of them. */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
               <div className="rounded-lg bg-surface-secondary p-3 text-center">
                 <div className="text-lg font-bold tabular-nums text-content-primary">
                   {totalItems.toLocaleString(getNumberLocale())}
@@ -1627,16 +1838,59 @@ function VectorDatabaseSection() {
                 <div className="text-2xs text-content-tertiary">Cost items</div>
               </div>
               <div className="rounded-lg bg-surface-secondary p-3 text-center">
-                <div className={`text-lg font-bold tabular-nums ${indexedCount > 0 ? 'text-purple-600' : 'text-content-tertiary'}`}>
+                <div
+                  data-testid="tile-ai-vectors"
+                  className={`text-lg font-bold tabular-nums ${indexedCount > 0 ? 'text-purple-600' : 'text-content-tertiary'}`}
+                >
                   {indexedCount.toLocaleString(getNumberLocale())}
                 </div>
-                <div className="text-2xs text-content-tertiary">Vectors indexed</div>
+                <div className="text-2xs text-content-tertiary">
+                  {t('costs.tile_ai_vectors', { defaultValue: 'AI feature vectors' })}
+                </div>
               </div>
               <div className="rounded-lg bg-surface-secondary p-3 text-center">
-                <div className={`text-lg font-bold ${isFullyIndexed ? 'text-semantic-success' : 'text-content-tertiary'}`}>
+                <div
+                  data-testid="tile-ai-coverage"
+                  className={`text-lg font-bold ${isFullyIndexed ? 'text-semantic-success' : 'text-content-tertiary'}`}
+                >
                   {isFullyIndexed ? '100%' : indexedCount > 0 ? `${Math.round((indexedCount / Math.max(totalItems, 1)) * 100)}%` : '0%'}
                 </div>
                 <div className="text-2xs text-content-tertiary">Coverage</div>
+              </div>
+              <div
+                className="rounded-lg bg-surface-secondary p-3 text-center"
+                data-testid="matching-catalogues-tile"
+                title={
+                  cataloguesReachable
+                    ? undefined
+                    : t('catalogues.server_unreachable_title', {
+                        defaultValue: 'Qdrant server unreachable',
+                      })
+                }
+              >
+                {/* An em dash, never a 0: the server not answering is not the
+                    same finding as nothing being installed, and printing the
+                    second for the first is the shape of bug this tile exists
+                    to close. */}
+                <div
+                  data-testid="tile-matching-catalogues"
+                  className={`text-lg font-bold tabular-nums ${
+                    !cataloguesReachable
+                      ? 'text-content-tertiary'
+                      : loadedCatalogues > 0
+                        ? 'text-emerald-600'
+                        : 'text-content-tertiary'
+                  }`}
+                >
+                  {cataloguesReachable
+                    ? loadedCatalogues.toLocaleString(getNumberLocale())
+                    : '—'}
+                </div>
+                <div className="text-2xs text-content-tertiary">
+                  {t('costs.tile_matching_catalogues', {
+                    defaultValue: 'Matching catalogues',
+                  })}
+                </div>
               </div>
             </div>
 
@@ -1780,7 +2034,18 @@ function VectorDatabaseSection() {
                 <div className="flex items-center gap-2">
                   <CheckCircle2 size={14} className="text-semantic-success" />
                   <span className="text-xs font-medium text-semantic-success">
-                    {lastResult.indexed.toLocaleString(getNumberLocale())} vectors indexed in {lastResult.duration}s
+                    {lastResult.restore === 'restored_unknown_count'
+                      ? t('costs.snapshot_restored_no_count', {
+                          defaultValue:
+                            'The snapshot was restored. The vector database did not report how many vectors it holds.',
+                        })
+                      : lastResult.restore === 'restored'
+                        ? t('costs.snapshot_restored_msg', {
+                            defaultValue: '{{vectors}} vectors restored in {{duration}}s',
+                            vectors: lastResult.indexed.toLocaleString(getNumberLocale()),
+                            duration: lastResult.duration,
+                          })
+                        : `${lastResult.indexed.toLocaleString(getNumberLocale())} vectors indexed in ${lastResult.duration}s`}
                     {lastResult.region !== 'all' && ` (${CWICR_DATABASES.find((d) => d.id === lastResult.region)?.name ?? lastResult.region})`}
                   </span>
                 </div>
@@ -1839,6 +2104,23 @@ function VectorDatabaseSection() {
         </div>
       </div>
     </Card>
+  );
+}
+
+// ── Busy label ───────────────────────────────────────────────────────────────
+
+/** Stacks the resting and busy labels of an action button in one grid cell so
+ *  the button is always as wide as the longer of the two. Swapping the text in
+ *  place resizes the button the instant an import starts, which drags the row
+ *  it sits in sideways - and the widths differ per language, so no fixed width
+ *  would hold. `invisible` is visibility:hidden, which also keeps the label
+ *  that is not showing out of the accessibility tree. */
+function BusyLabel({ idle, busy, isBusy }: { idle: string; busy: string; isBusy: boolean }) {
+  return (
+    <span className="grid justify-items-center">
+      <span className={`col-start-1 row-start-1 ${isBusy ? 'invisible' : ''}`}>{idle}</span>
+      <span className={`col-start-1 row-start-1 ${isBusy ? '' : 'invisible'}`}>{busy}</span>
+    </span>
   );
 }
 
@@ -2213,27 +2495,35 @@ function ColumnMappingPanel({
             <AlertTriangle size={13} className="shrink-0" />
             {t('costs_catalogs.import_required_missing', {
               defaultValue: 'Map the required columns before importing: {{fields}}.',
-              fields: unmappedRequired.map((f) => fieldMeta(f).label).join(', '),
+              fields: fmtList(unmappedRequired.map((f) => fieldMeta(f).label)),
             })}
           </span>
         )}
         {/* This action discards the staged file entirely (handleReset), so it
-            is labelled Cancel rather than Back. */}
-        <Button variant="secondary" onClick={onCancel} disabled={importing}>
+            is labelled Cancel rather than Back. Both buttons take the large
+            size: this is the page's committing step, and matching heights keep
+            the row level while the primary carries the weight. */}
+        <Button variant="secondary" size="lg" onClick={onCancel} disabled={importing}>
           {t('costs_import.cancel', { defaultValue: 'Cancel' })}
         </Button>
+        {/* `loading` is deliberately not used - it replaces the label with a
+            spinner, so the translated "Importing..." below would never reach
+            the screen and the button would shrink to icon width. `canImport`
+            already goes false while importing, which disables it. */}
         <Button
           variant="primary"
+          size="lg"
           onClick={onImport}
           disabled={!canImport}
-          loading={importing}
           icon={
             importing ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />
           }
         >
-          {importing
-            ? t('costs.import_importing', { defaultValue: 'Importing...' })
-            : t('costs_import.import_mapped', { defaultValue: 'Import' })}
+          <BusyLabel
+            idle={t('costs_import.import_mapped', { defaultValue: 'Import' })}
+            busy={t('costs.import_importing', { defaultValue: 'Importing...' })}
+            isBusy={importing}
+          />
         </Button>
       </div>
     </Card>
@@ -2681,11 +2971,13 @@ export function ImportDatabasePage() {
               </div>
             )}
 
+            {/* Where the import lands. Same large size as the other two
+                action rows on the page, so the three read as one family. */}
             <div className="flex items-center gap-3 pt-1">
-              <Button variant="secondary" onClick={handleReset}>
+              <Button variant="secondary" size="lg" onClick={handleReset}>
                 {t('costs.import_another', { defaultValue: 'Import Another' })}
               </Button>
-              <Button variant="primary" onClick={() => navigate('/costs')}>
+              <Button variant="primary" size="lg" onClick={() => navigate('/costs')}>
                 {t('costs.import_go_to_database', { defaultValue: 'Go to Cost Database' })}
               </Button>
             </div>
@@ -2734,7 +3026,7 @@ export function ImportDatabasePage() {
                   <a
                     href="/templates/cost_database_template.csv"
                     download
-                    className="inline-flex items-center gap-1.5 rounded-md border border-border-default bg-surface-primary px-2.5 py-1 text-xs font-medium text-content-secondary hover:bg-surface-secondary hover:text-oe-blue transition-colors"
+                    className={TEMPLATE_LINK_CLASS}
                   >
                     <Download size={12} />
                     {t('costs.import_template_minimal', { defaultValue: 'Minimal CSV (3 rows)' })}
@@ -2742,7 +3034,7 @@ export function ImportDatabasePage() {
                   <a
                     href="/templates/example_us_construction.csv"
                     download
-                    className="inline-flex items-center gap-1.5 rounded-md border border-border-default bg-surface-primary px-2.5 py-1 text-xs font-medium text-content-secondary hover:bg-surface-secondary hover:text-oe-blue transition-colors"
+                    className={TEMPLATE_LINK_CLASS}
                   >
                     <Download size={12} />
                     {t('costs.import_template_example', { defaultValue: 'Example US construction (30 rows)' })}
@@ -2750,7 +3042,7 @@ export function ImportDatabasePage() {
                   <a
                     href="/templates/cost_database_with_assemblies.json"
                     download
-                    className="inline-flex items-center gap-1.5 rounded-md border border-border-default bg-surface-primary px-2.5 py-1 text-xs font-medium text-content-secondary hover:bg-surface-secondary hover:text-oe-blue transition-colors"
+                    className={TEMPLATE_LINK_CLASS}
                   >
                     <Download size={12} />
                     {t('costs.import_template_recipes', { defaultValue: 'Recipes JSON (6 assemblies)' })}
@@ -2877,13 +3169,17 @@ export function ImportDatabasePage() {
               auto-detect import path available. */}
           {selectedFile && !previewData && !previewMutation.isPending && (
             <div className="flex items-center justify-end gap-3 animate-fade-in">
-              <Button variant="secondary" onClick={handleReset} disabled={directImportMutation.isPending}>
+              <Button variant="secondary" size="lg" onClick={handleReset} disabled={directImportMutation.isPending}>
                 {t('common.cancel', { defaultValue: 'Cancel' })}
               </Button>
+              {/* Same reasoning as the mapped-import button above: the spinner
+                  rides in the icon slot so the label survives, and `disabled`
+                  stands in for what `loading` used to do. */}
               <Button
                 variant="primary"
+                size="lg"
                 onClick={() => directImportMutation.mutate(selectedFile)}
-                loading={directImportMutation.isPending}
+                disabled={directImportMutation.isPending}
                 icon={
                   directImportMutation.isPending ? (
                     <Loader2 size={16} className="animate-spin" />
@@ -2892,9 +3188,11 @@ export function ImportDatabasePage() {
                   )
                 }
               >
-                {directImportMutation.isPending
-                  ? t('costs.import_importing', { defaultValue: 'Importing...' })
-                  : t('costs.import_all', { defaultValue: 'Import All' })}
+                <BusyLabel
+                  idle={t('costs.import_all', { defaultValue: 'Import All' })}
+                  busy={t('costs.import_importing', { defaultValue: 'Importing...' })}
+                  isBusy={directImportMutation.isPending}
+                />
               </Button>
             </div>
           )}

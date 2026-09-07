@@ -5,6 +5,7 @@
 Tables (all prefixed ``oe_variations_``):
     notice                  -- early-warning notice of variation
     variation_request       -- formal request for a variation (pre-issue)
+    boq_trace               -- provenance of one line in a request's own bill
     variation_order         -- issued variation order (post-agreement)
     cost_impact             -- VO cost-impact line
     schedule_impact         -- VO schedule-impact line
@@ -19,7 +20,7 @@ Tables (all prefixed ``oe_variations_``):
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db_types import MoneyType
@@ -99,6 +100,39 @@ class VariationRequest(Base):
     decision_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     decision_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     decided_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    # ── The commercial approval boundary (Issue #435) ────────────────────
+    # A request carries a headline estimate and may own a priced bill, and
+    # the two are allowed to differ while the change is being priced. What
+    # nothing recorded was the boundary between them: which pricing state
+    # was put in front of the approver, and what the approver actually
+    # agreed to. Without both, the agreed value is inherited implicitly
+    # from whatever figure happened to be on the request, and a negotiated
+    # amount is indistinguishable from a stale headline. Both are plausible
+    # numbers of the right order of magnitude, so nothing downstream can
+    # tell them apart either.
+    #
+    # ``submitted_boq_total`` is frozen at submission and never recomputed.
+    # The bill goes on being revised afterwards; this column answers what
+    # the approver was looking at, not what the bill says today.
+    submitted_boq_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    submitted_boq_total: Mapped[Decimal | None] = mapped_column(MoneyType(), nullable=True)
+    #: The commercial amount actually approved. NULL until a decision is
+    #: taken, and NULL on every request decided before this existed: putting
+    #: a figure there for them would be putting a decision in somebody's
+    #: mouth years after the fact.
+    agreed_cost_impact: Mapped[Decimal | None] = mapped_column(MoneyType(), nullable=True)
+    #: Why the agreed amount is what it is - ``negotiated`` when a person
+    #: named it, ``priced_boq`` when it is the submitted bill's own total,
+    #: ``headline_estimate`` when there was no bill to price. Empty until
+    #: decided. It exists so "the agreed value equals the bill total" and
+    #: "the agreed value was never really decided" cannot look the same.
+    agreed_basis: Mapped[str] = mapped_column(String(30), nullable=False, default="", server_default="")
+    #: Why an agreed amount departs from the pricing state it was agreed
+    #: against. Required when a person names an amount that differs, because
+    #: a difference nobody explained is the one this whole boundary exists
+    #: to stop being invisible.
+    agreed_variance_note: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     # Contract standard + sub-clause reference (FIDIC 13.x / JCT 5.x /
     # NEC4 60-65). Free string so unsupported standards still record.
     contract_standard: Mapped[str] = mapped_column(String(20), nullable=False, default="", server_default="")
@@ -121,6 +155,70 @@ class VariationRequest(Base):
 
     def __repr__(self) -> str:
         return f"<VariationRequest {self.code} ({self.status})>"
+
+
+class VariationBOQTrace(Base):
+    """Where one line of a variation request's own bill came from.
+
+    A variation request may own a dedicated bill of quantities holding only
+    the scope that variation changes (Issue #435). The bill itself is an
+    ordinary ``oe_boq_boq`` row carrying ``variation_request_id``, so it gets
+    the whole BOQ module - positions, assemblies, markups, calculation,
+    revisions, snapshots, exports - without any of it being reimplemented
+    here. What the BOQ module has no place for is *why* a line is in that
+    bill, and this table is that answer: one row per line, naming the
+    contract schedule-of-values line the change affects and the estimating
+    BOQ position the scope was taken from.
+
+    Both references are optional and independent. A line that adds scope
+    nobody contracted for has no SoV line; a line invented for the variation
+    has no originating position; a line that re-measures a contracted item
+    has both. A line that has neither is a hand-entered addition, recorded
+    with ``origin='manual'`` rather than left without a row, so the trace
+    covers the bill rather than only the parts of it that were derived.
+
+    Every cross-module reference is a plain GUID, not a ForeignKey, the same
+    convention ``VariationOrder.affected_contract_id`` and
+    ``SiteMeasurement.contract_line_id`` already follow: the variations
+    module must not put a DB-level dependency on the BOQ or contracts
+    tables. Only ``variation_request_id`` is a real FK, because that row is
+    in this module and deleting a request must take its trace with it.
+    """
+
+    __tablename__ = "oe_variations_boq_trace"
+    __table_args__ = (
+        # One trace row per priced line. The line is the thing whose
+        # provenance is being recorded, so two rows about it would be two
+        # answers to one question.
+        UniqueConstraint("position_id", name="uq_oe_variations_boq_trace_position"),
+        # "Show me this request's trace" is the only read this table has.
+        Index("ix_oe_variations_boq_trace_request_boq", "variation_request_id", "boq_id"),
+    )
+
+    variation_request_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("oe_variations_request.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    #: The variation bill this line lives in (``oe_boq_boq.id``).
+    boq_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False, index=True)
+    #: The line itself (``oe_boq_position.id``).
+    position_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
+    #: How the line got here: ``boq_position`` (copied from the estimating
+    #: bill), ``contract_line`` (taken from the contract schedule of values)
+    #: or ``manual`` (entered for this variation and derived from nothing).
+    origin: Mapped[str] = mapped_column(String(20), nullable=False, default="manual", server_default="manual")
+    #: The estimating bill and position the scope was taken from.
+    source_boq_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    source_position_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True, index=True)
+    #: The contract and schedule-of-values line the change affects.
+    contract_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
+    contract_line_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True, index=True)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+
+    def __repr__(self) -> str:
+        return f"<VariationBOQTrace {self.origin} pos={self.position_id}>"
 
 
 class VariationOrder(Base):

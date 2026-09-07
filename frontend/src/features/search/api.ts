@@ -10,6 +10,8 @@
  * `backend/app/modules/search/router.py` for the contract.
  */
 
+import type { TFunction } from 'i18next';
+
 import { apiGet } from '@/shared/lib/api';
 
 /** One unified-search hit returned by the backend.  Mirrors the
@@ -37,8 +39,15 @@ export interface UnifiedSearchResponse {
 }
 
 export interface SearchTypeMeta {
+  /** Full collection key, e.g. `oe_boq_positions`. Label it with
+   *  `collectionLabel`, which reads the reader's locale. */
   name: string;
+  /** The server's own English name for the collection, from
+   *  `COLLECTION_LABELS` in `backend/app/core/vector_index.py`. The server
+   *  cannot know the reader's language, so nothing in this app renders it;
+   *  it stays on the wire for other API consumers. */
   label: string;
+  /** `name` without its `oe_` prefix; what `GET /search/?types=` accepts. */
   short: string;
 }
 
@@ -174,8 +183,24 @@ export async function fetchSimilarItems(
  *    /bim?element=<element_id>               → BIMPage
  *    /validation?id=<report_id>              → ValidationPage
  *    /chat?session=<session_id>              → ERP Chat full page
+ *    /changeorders?highlight=<order_id>      → ChangeOrdersPage
+ *    /variations                             → VariationsPage
+ *    /moc                                    → MoCPage
+ *    /costs                                  → CostsPage
  *
- *  Returns ``#`` for unknown collections so the click is a safe no-op.
+ *  The last three land on the register rather than on the record. Neither
+ *  page can select one from the URL - they read no search param at all - so
+ *  a parameter here would be a link that looks precise and is not, which is
+ *  the shape `linkedRecordDeepLink.test.tsx` already settled for the same
+ *  question: the bare register is the honest destination until the page can
+ *  read an id, and a test says which ones are still waiting.
+ *
+ *  Returns ``#`` for unknown collections so the click is a safe no-op. Every
+ *  collection in ALL_COLLECTIONS (backend/app/core/vector_index.py:112) is
+ *  answered above, so today that branch is only reachable by a collection
+ *  the backend has grown and this build has not heard of yet - which is
+ *  exactly how the four cases above came to be missing. The modal marks such
+ *  a row non-navigable rather than letting the click do nothing in silence.
  */
 export function hitToHref(hit: UnifiedSearchHit): string {
   switch (hit.collection) {
@@ -220,37 +245,129 @@ export function hitToHref(hit: UnifiedSearchHit): string {
         ? `/chat?session=${encodeURIComponent(sessionId)}`
         : '/chat';
     }
+    case 'oe_change_orders':
+      // `?highlight=` is the house convention for list screens, and
+      // ChangeOrdersPage reads it (ChangeOrdersPage.tsx:2107).
+      return `/changeorders?highlight=${encodeURIComponent(hit.id)}`;
+    case 'oe_variations':
+      return '/variations';
+    case 'oe_moc':
+      return '/moc';
+    case 'oe_cost_items':
+      return '/costs';
     default:
       return '#';
   }
 }
 
-/** Human-readable label for a collection key — used for facet pills. */
-export function collectionLabel(collection: string): string {
+/** The localised name of the kind of thing a collection holds.
+ *
+ *  This wording heads a group of results and stands in for the type of a
+ *  hit that has no title of its own, so it belongs to the locale files
+ *  rather than to this module. `t` is a required argument for that
+ *  reason - an optional one would let a call site quietly render English
+ *  to every reader, which is the defect this function used to be.
+ *
+ *  Acronyms are keyed like everything else here even though most
+ *  languages keep them as they are. A locale that leaves BOQ, BIM or RFI
+ *  alone has made that decision; a term never offered for translation
+ *  has not.
+ *
+ *  Args:
+ *    t: The i18next translator, from `useTranslation()`.
+ *    collection: Backend collection key, for example `oe_boq_positions`.
+ *
+ *  Returns:
+ *    The label in the reader's language.
+ */
+export function collectionLabel(t: TFunction, collection: string): string {
   switch (collection) {
     case 'oe_boq_positions':
-      return 'BOQ';
+      return t('global_search.collection.boq', { defaultValue: 'BOQ' });
     case 'oe_documents':
-      return 'Documents';
+      return t('global_search.collection.documents', {
+        defaultValue: 'Documents',
+      });
     case 'oe_tasks':
-      return 'Tasks';
+      return t('global_search.collection.tasks', { defaultValue: 'Tasks' });
     case 'oe_risks':
-      return 'Risks';
+      return t('global_search.collection.risks', { defaultValue: 'Risks' });
     case 'oe_bim_elements':
-      return 'BIM';
+      return t('global_search.collection.bim', { defaultValue: 'BIM' });
     case 'oe_requirements':
-      return 'Requirements';
+      return t('global_search.collection.requirements', {
+        defaultValue: 'Requirements',
+      });
     case 'oe_rfi_rfis':
-      return 'RFI';
+      return t('global_search.collection.rfi', { defaultValue: 'RFI' });
     case 'oe_submittals_submittals':
-      return 'Submittals';
+      return t('global_search.collection.submittals', {
+        defaultValue: 'Submittals',
+      });
     case 'oe_correspondence_correspondence':
-      return 'Correspondence';
+      return t('global_search.collection.correspondence', {
+        defaultValue: 'Correspondence',
+      });
     case 'oe_validation':
-      return 'Validation';
+      return t('global_search.collection.validation', {
+        defaultValue: 'Validation',
+      });
     case 'oe_chat':
-      return 'Chat';
+      return t('global_search.collection.chat', { defaultValue: 'Chat' });
+    case 'oe_change_orders':
+      return t('global_search.collection.change_orders', {
+        defaultValue: 'Change Orders',
+      });
+    case 'oe_variations':
+      return t('global_search.collection.variations', {
+        defaultValue: 'Variations',
+      });
+    case 'oe_moc':
+      return t('global_search.collection.moc', {
+        defaultValue: 'Management of Change',
+      });
+    case 'oe_cost_items':
+      return t('global_search.collection.costs', {
+        defaultValue: 'Cost Database',
+      });
     default:
+      // A collection this build has never heard of has no key to read, so
+      // the raw name without its `oe_` prefix is the only honest answer.
+      // Inventing a key here would only add one no locale can answer.
       return collection.replace(/^oe_/, '');
   }
+}
+
+/** The label a person can recognise a hit by.
+ *
+ *  Two shapes arrive here with nothing to say. A hit can carry an empty
+ *  title, and it can carry its own id as the title, because `VectorHit.title`
+ *  falls back to the row id when a payload holds neither a title nor any
+ *  text. The second one is truthy, so a plain `title || id` hands it straight
+ *  to the screen. Both read as a bare UUID, which names nothing to the person
+ *  scanning the list.
+ *
+ *  Both halves of the last-resort wording come from the caller - the
+ *  sentence through `unnamed` and the name of the kind through
+ *  `kindLabel` - so this stays a pure function and every string it can
+ *  produce for an unnamed hit stays in the locale files.
+ *
+ *  Args:
+ *    hit: The hit to name.
+ *    kindLabel: Resolves a collection key to its localised name; pass
+ *      `(c) => collectionLabel(t, c)`.
+ *    unnamed: Renders the fallback sentence from the kind and a short
+ *      reference.
+ *
+ *  Returns:
+ *    The title the backend sent, or the fallback wording.
+ */
+export function hitLabel(
+  hit: UnifiedSearchHit,
+  kindLabel: (collection: string) => string,
+  unnamed: (kind: string, ref: string) => string,
+): string {
+  const title = (hit.title ?? '').trim();
+  if (title && title !== hit.id) return title;
+  return unnamed(kindLabel(hit.collection), String(hit.id).slice(0, 8));
 }

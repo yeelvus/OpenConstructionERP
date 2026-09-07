@@ -20,12 +20,22 @@ from typing import get_args
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.i18n import load_translations, set_locale
+from app.core.validation.engine import RuleCategory, Severity, rule_registry
+from app.core.validation.messages import available_locales, is_key_present
 from app.modules.cases import schemas, service
 from app.modules.cases.models import CASE_CATEGORIES, CasePin, UserCase
 from app.modules.cases.permissions import register_cases_permissions
-from app.modules.cases.validators import blocking_findings, evaluate_case, register_cases_rules
+from app.modules.cases.validators import (
+    CASES_RULE_SET,
+    VALIDATION_UNAVAILABLE,
+    blocking_findings,
+    evaluate_case,
+    register_cases_rules,
+)
 from app.modules.projects.models import Project
 from app.modules.users.models import User
 from tests._pg import transactional_session
@@ -404,6 +414,72 @@ class TestCaseValidation:
         assert "cases.step_titled" in {f.rule_id for f in blocking_findings(findings)}
 
 
+class TestCaseMessageCoverage:
+    """The rule set's messages must be reachable in every locale the bundle ships.
+
+    ``rule_registry`` reads the registered rule classes, which is not the JSON
+    catalog this test checks, so a rule dropped from the bundle is caught. The
+    locale axis cannot lean on that same trick: ``available_locales()`` reads
+    whatever ``*.json`` files exist on disk, which *is* the thing under test,
+    so a whole locale file going missing would shrink both the loop and its
+    own would-be failure together and this test would stay green. The
+    required set below is a literal, independent of what is actually on disk,
+    so that failure mode is closed.
+    """
+
+    #: The four locales ``cases`` rules are translated into, matching every
+    #: rule set added since ``es.json`` shipped (2026-07-01): variations,
+    #: subcontract, submittal, rfq, procurement, sheet_completeness, mexico.
+    #: A literal, not ``available_locales()`` - see the class docstring.
+    _REQUIRED_LOCALES = {"en", "de", "ru", "es"}
+
+    def test_every_cases_rule_has_fail_and_suggestion_in_every_shipped_locale(self):
+        register_cases_rules()
+        rules = rule_registry.get_rules_for_sets([CASES_RULE_SET])
+        assert rules, "no cases rules registered; the coverage check below would be vacuous"
+        locales = available_locales()
+        assert set(locales) >= self._REQUIRED_LOCALES, sorted(self._REQUIRED_LOCALES - set(locales))
+        missing: list[str] = []
+        for rule in rules:
+            for locale in self._REQUIRED_LOCALES:
+                for suffix in ("fail", "suggestion"):
+                    key = f"{rule.rule_id}.{suffix}"
+                    if not is_key_present(key, locale):
+                        missing.append(f"{locale}:{key}")
+        assert missing == []
+
+    async def test_a_finding_actually_changes_text_with_locale(self):
+        """Coverage in the JSON is not enough - the rule has to read it."""
+        register_cases_rules()
+        empty_case = _case_body(steps=[], description="")
+        english = await evaluate_case(empty_case, locale="en")
+        german = await evaluate_case(empty_case, locale="de")
+        en_message = next(f.message for f in english if f.rule_id == "cases.has_steps")
+        de_message = next(f.message for f in german if f.rule_id == "cases.has_steps")
+        assert en_message != de_message
+
+    async def test_the_request_locale_is_used_when_the_caller_names_none(self):
+        """The router never passes ``locale=`` explicitly; it relies on this default.
+
+        Before this fix the metadata locale defaulted to an empty string, which
+        the rules read as English no matter what the accept-language middleware
+        had already resolved for the request.
+        """
+        register_cases_rules()
+        # SUPPORTED_LOCALES gates set_locale(); idempotent if the app already
+        # loaded it, but a bare unit test process never has on its own.
+        load_translations()
+        set_locale("de")
+        try:
+            findings = await evaluate_case(_case_body(steps=[], description=""))
+        finally:
+            set_locale("en")
+        with_context_locale = next(f.message for f in findings if f.rule_id == "cases.has_steps")
+        english = await evaluate_case(_case_body(steps=[], description=""), locale="en")
+        en_message = next(f.message for f in english if f.rule_id == "cases.has_steps")
+        assert with_context_locale != en_message
+
+
 # ── Permissions ──────────────────────────────────────────────────────────────
 
 
@@ -452,3 +528,157 @@ async def test_case_and_pin_tables_are_named_by_convention():
     assert UserCase.__tablename__ == "oe_cases_user_case"
     assert CasePin.__tablename__ == "oe_cases_pin"
     assert isinstance(uuid.uuid4(), uuid.UUID)
+
+
+@pytest.mark.asyncio
+async def test_a_case_whose_validation_engine_died_does_not_look_publishable(monkeypatch):
+    """An engine failure must not read as a clean bill of health.
+
+    ``evaluate_case`` is guarded so that a broken rule cannot stop somebody
+    saving their work, which is a real requirement. The guard returned an
+    empty list, and an empty list already meant "checked, nothing wrong". One
+    value carrying both meanings is the defect: ``blocking_findings`` saw
+    nothing to block on and the router shared the case, so a case nobody had
+    been able to check went out to the team marked as validated.
+
+    Validation is not optional in this product. Not being able to run it is a
+    reason to withhold publication, never a reason to grant it.
+    """
+    from app.modules.cases import validators
+
+    async def _die(**_kwargs):
+        raise RuntimeError("rule registry exploded")
+
+    monkeypatch.setattr(validators.validation_engine, "validate", _die)
+
+    findings = await evaluate_case(_case_body(), case_id="c1")
+
+    # The save itself must still work, so this call may not raise.
+    assert [f.rule_id for f in findings] == [VALIDATION_UNAVAILABLE]
+    assert [f.rule_id for f in blocking_findings(findings)] == [VALIDATION_UNAVAILABLE]
+    # DIAGNOSTIC records that the infrastructure failed rather than the case.
+    assert findings[0].category is RuleCategory.DIAGNOSTIC
+
+
+@pytest.mark.asyncio
+async def test_a_case_that_validates_clean_is_still_publishable():
+    """The negative control: the fix must not make every case unpublishable.
+
+    Without this, returning a blocking finding unconditionally would satisfy
+    the test above while making it impossible to share any case at all.
+    """
+    register_cases_rules()
+    findings = await evaluate_case(_case_body(), case_id="c2")
+    assert VALIDATION_UNAVAILABLE not in {f.rule_id for f in findings}
+    assert blocking_findings(findings) == []
+
+
+@pytest.mark.asyncio
+async def test_sharing_is_refused_while_validation_is_down_but_a_draft_still_saves(monkeypatch):
+    """The two halves of the requirement, at the gate that enforces them.
+
+    Saving privately must keep working, because a validation outage is not the
+    author's fault and losing their work would be the worse failure. Sharing
+    must not, because sharing is the claim that the case was checked.
+    """
+    from app.modules.cases import router as cases_router
+    from app.modules.cases import validators
+
+    async def _die(**_kwargs):
+        raise RuntimeError("rule registry exploded")
+
+    monkeypatch.setattr(validators.validation_engine, "validate", _die)
+
+    # A private draft saves: no exception, and the finding is reported back.
+    draft = schemas.CaseCreateRequest(**_case_body(is_shared=False))
+    findings = await cases_router._validated(draft)
+    assert [f.rule_id for f in findings] == [VALIDATION_UNAVAILABLE]
+
+    # Sharing the same case is refused rather than granted.
+    shared = schemas.CaseCreateRequest(**_case_body(is_shared=True))
+    with pytest.raises(HTTPException) as exc:
+        await cases_router._validated(shared)
+    assert exc.value.status_code == 422
+    assert exc.value.detail["findings"][0]["rule_id"] == VALIDATION_UNAVAILABLE
+
+
+def _break_one_rule(monkeypatch, rule_id: str) -> None:
+    """Make one registered cases rule raise, leaving the others running.
+
+    This is the half of the failure the whole-engine tests above do not cover:
+    the engine survives, catches the exception itself, and writes an
+    ``is_engine_error`` row for that one rule.
+    """
+
+    async def _boom(_context):
+        raise RuntimeError("this rule cannot read the case")
+
+    crashed = next(rule for rule in rule_registry.get_rules_for_sets([CASES_RULE_SET]) if rule.rule_id == rule_id)
+    monkeypatch.setattr(crashed, "validate", _boom)
+
+
+@pytest.mark.asyncio
+async def test_a_rule_that_crashed_reaches_the_reader_instead_of_vanishing(monkeypatch):
+    """A check that could not run is the row most worth showing, not the least.
+
+    ``evaluate_case`` used to end ``and not result.is_engine_error``. That is
+    the right filter for a list that feeds a gate, and the wrong one here,
+    because this one list is also everything the author is ever shown. A case
+    where a rule crashed came back indistinguishable from a case where every
+    rule ran and found nothing, and the check that failed was the one worth
+    reading about.
+
+    Nothing is stored on this path - findings are computed per save and travel
+    in the response - so there is no row to read back from a column.
+    """
+    from app.modules.cases import router as cases_router
+
+    register_cases_rules()
+    _break_one_rule(monkeypatch, "cases.step_purpose")
+
+    findings = await evaluate_case(_case_body(), case_id="c3")
+
+    engine_errors = [f for f in findings if f.is_engine_error]
+    assert [f.rule_id for f in engine_errors] == ["cases.step_purpose"]
+    # Reported as infrastructure rather than as a verdict on the case: the
+    # author is told a check did not run, and publishing is not held on it.
+    assert engine_errors[0].category is RuleCategory.DIAGNOSTIC
+    assert engine_errors[0].severity is Severity.INFO
+    assert "could not run" in engine_errors[0].message
+    assert blocking_findings(findings) == []
+    # Passing rules are still dropped: widening the filter must not turn this
+    # into "return everything the engine produced".
+    assert all(not f.passed for f in findings)
+
+    # The same silence has a second home one layer up, so assert on the
+    # serialised payload. A field the response object holds but never emits
+    # hides the row just as completely as dropping it here would.
+    payload = [f.model_dump() for f in cases_router._to_findings(findings)]
+    emitted = [row for row in payload if row.get("is_engine_error")]
+    assert len(emitted) == 1
+    assert emitted[0]["rule_id"] == "cases.step_purpose"
+    # Not under the crashed rule's own key. Every locale translates that key
+    # into the sentence for a check that ran and found something, so rendering
+    # the crash there would read as a finding about the case.
+    assert emitted[0]["key"] == "cases.validation.engine_error"
+
+
+@pytest.mark.asyncio
+async def test_a_crashed_rule_is_reported_without_making_every_case_unpublishable(monkeypatch):
+    """The negative control for the fix above.
+
+    Surfacing the row must not become a second way to block sharing. One rule
+    crashing means almost everything was checked, which is not the same as the
+    engine dying and nothing being checked at all - that case still blocks, two
+    tests up. What the author gets here is the case shared and the row shown.
+    """
+    from app.modules.cases import router as cases_router
+
+    register_cases_rules()
+    _break_one_rule(monkeypatch, "cases.step_purpose")
+
+    shared = schemas.CaseCreateRequest(**_case_body(is_shared=True))
+    findings = await cases_router._validated(shared)
+
+    assert [f.rule_id for f in findings if f.is_engine_error] == ["cases.step_purpose"]
+    assert VALIDATION_UNAVAILABLE not in {f.rule_id for f in findings}

@@ -15,16 +15,48 @@ repos:
       - id: detect-private-key
 
   # Python linting & formatting. Pinned to the same ruff the CI gate and
-  # backend/pyproject.toml dev extra use (ruff==0.15.20): the "ruff format
+  # backend/pyproject.toml dev extra use (ruff==0.16.6): the "ruff format
   # --check" gate compares against the formatter's exact output, so a hook on
   # an older ruff would reformat differently and fail CI on code that passed
   # locally. Bump this in lockstep with the pyproject pin.
+  #
+  # Two pairs of hooks, split by path, and the split is load bearing. Ruff finds
+  # its configuration by walking up from each file, and the only configuration
+  # in this repository is backend/pyproject.toml. A file under backend/ finds it
+  # and is formatted at 120 columns with the demo pack data tables excluded. A
+  # file under scripts/ or tools/ finds nothing, falls back to the default 88,
+  # and gets reformatted to a width no gate here asks for.
+  #
+  # Passing --config to a single pair does not fix it, it breaks the other half:
+  # measured, `ruff format --check --config backend/pyproject.toml` run from the
+  # repository root reports 19 of the demo pack tables as needing reformatting,
+  # because an explicit config resolves its exclude patterns differently from a
+  # discovered one. Those tables are hand laid out, one BOQ position per line,
+  # and the formatter explodes each row into eight or more.
+  #
+  # So: backend keeps discovery and changes not at all, and the scripts and tools
+  # trees get the config named explicitly, which is what the CI gate for them
+  # does too.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.20
+    rev: v0.16.6
     hooks:
       - id: ruff
+        name: ruff (backend, configuration discovered)
+        files: ^backend/
         args: [--fix]
       - id: ruff-format
+        name: ruff-format (backend, configuration discovered)
+        files: ^backend/
+      - id: ruff
+        name: ruff (scripts and tools)
+        alias: ruff-scripts
+        files: ^(scripts|tools)/
+        args: [--fix, --config, backend/pyproject.toml]
+      - id: ruff-format
+        name: ruff-format (scripts and tools)
+        alias: ruff-format-scripts
+        files: ^(scripts|tools)/
+        args: [--config, backend/pyproject.toml]
 
   # Secret scanning
   - repo: https://github.com/gitleaks/gitleaks
@@ -38,7 +70,12 @@ repos:
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]
-        args: [feat, fix, refactor, docs, test, chore, perf, ci, build, style]
+        # Ordered by how often the type actually appears in this history, not
+        # by convention, because the list exists to describe what we write.
+        # release (193) and site (52) both outrank refactor (50), which was
+        # already here: they were missing because nobody had counted, not
+        # because they were rejected.
+        args: [feat, fix, refactor, docs, test, chore, perf, ci, build, style, i18n, release, site]
 
   # Local hooks
   - repo: local
@@ -53,6 +90,51 @@ repos:
         language: system
         pass_filenames: false
         files: ^(backend/pyproject\.toml|frontend/package\.json|CHANGELOG\.md|frontend/src/features/about/Changelog\.tsx)$
+
+      # backend/NOTICE is a byte copy of the root NOTICE, carried because PEP 639
+      # cannot reach outside the project root. Nothing local stopped an edit
+      # landing on one side alone: the enforcement was a pytest in the backend
+      # lane, which only speaks after a push, to whoever pushes next rather than
+      # to whoever caused it. Commits 9489d2b96 and 891d56ef0 each edited the
+      # root copy only and left that lane red until 863076d86 restored the copy.
+      #
+      # Scoped by files: so it costs nothing on a commit that touches neither.
+      # It compares the way the gating test does, normalising CRLF first, so a
+      # Windows checkout is not reported as drift the test would pass. Run it
+      # with --fix to copy the root file over the backend one.
+      #
+      # It compares the index as well as the disk, and here that is the half
+      # that matters. We commit with `git commit --only -- <paths>`, which takes
+      # the working tree state of the paths it is given and leaves the rest at
+      # HEAD. So the two files can be identical on disk while the commit carries
+      # only one of them, and a disk-only check passes it. --fix makes that more
+      # likely, not less, by tidying the disk and leaving the staging alone, so
+      # a disk-only gate would bless the state its own repair produced.
+      - id: notice-mirror-check
+        name: Check NOTICE and backend/NOTICE have not drifted
+        entry: python scripts/check_notice_mirror.py
+        language: system
+        pass_filenames: false
+        files: ^(NOTICE|backend/NOTICE)$
+
+      # Copyleft licence gate. Registered as a manual-stage hook on purpose, so
+      # it is discoverable here and runs on request rather than on every commit:
+      #
+      #   pre-commit run --hook-stage manual dependency-licence-check
+      #   python scripts/check_dependency_licences.py
+      #
+      # It inventories the installed Python environment, which is the only way
+      # to see transitive copyleft, and refuses to report clean when the
+      # packages it is meant to measure are not installed. As an automatic hook
+      # that refusal would block every commit from anyone who has not installed
+      # the backend, which is how a gate gets uninstalled. The lane that runs it
+      # on every push is the Repo hygiene workflow, after its backend install.
+      - id: dependency-licence-check
+        name: Check no dependency carries copyleft we have not accepted
+        entry: python scripts/check_dependency_licences.py
+        language: system
+        pass_filenames: false
+        stages: [manual]
 
       # Block competitor/vendor brand names from entering the repo. Scans the
       # staged files only (so it guards new work without a full-tree pass), and
@@ -72,6 +154,19 @@ repos:
       # spellings that were broken in this repo, per file, because no rule about
       # German or Portuguese orthography can tell "Wasser" from "Strasse" or
       # Spanish "agua" from Portuguese "água" without false positives.
+      # The denylist of known-weak JWT secrets and its 32-unit minimum length
+      # lived in app/config.py and app/main.py at once, each maintained by hand.
+      # They had already drifted apart unnoticed - the second copy was missing
+      # three of the denied strings and counted UTF-8 bytes where the first
+      # counted characters - because nothing was comparing them. They are now
+      # one source; this refuses a second copy at the moment it appears rather
+      # than at the moment it starts to matter.
+      - id: secret-denylist-single-source
+        name: Keep one source of truth for the weak-secret rules
+        entry: python scripts/check_secret_denylist_single_source.py
+        language: system
+        pass_filenames: false
+
       - id: seed-diacritics-check
         name: Keep accents in the demo seed text
         entry: python scripts/check_seed_diacritics.py
@@ -88,6 +183,44 @@ repos:
         entry: python scripts/check_repo_hygiene.py
         language: system
         pass_filenames: false
+
+      # Refuse a commit whose Python imports a module the same commit does not
+      # carry. The module is usually right there on the author's disk, untracked,
+      # so everything imports and every test passes locally and the backend fails
+      # to start on the first machine that reads the commit instead of the disk.
+      #
+      # Scoped to the staged files on purpose, which is the half of the defect a
+      # commit hook can see: you are committing the importer. The other half - a
+      # module leaving the tree while files that import it stay - needs the whole
+      # tree, and that scan runs in .github/workflows/repo-hygiene.yml, where it
+      # can parse all 4800 files with nobody waiting on it.
+      #
+      # Worth knowing before relying on this: nothing here runs until somebody
+      # has run `pre-commit install` in their clone. A clone without it has no
+      # .git/hooks/pre-commit at all, and every hook in this file at the commit
+      # stage is inert - the file is the declared intent, not the enforcement.
+      - id: untracked-import-check
+        name: Block imports of modules the commit does not carry
+        entry: python scripts/check_untracked_imports.py --paths
+        language: system
+        files: ^backend/.*\.py$
+
+      # Parse every tracked YAML and JSON file, as a category. check-yaml and
+      # check-json above are the per-file version of this and are scoped to
+      # whatever is staged; this one takes the whole tracked set from git, so a
+      # malformed file in a directory no reader is addressed at still fails.
+      # That is the actual gap: both kinds are already parsed in plenty of
+      # places, five unit tests over the workflows and 25 scripts over the JSON
+      # trees they own, but every one of those is addressed at a named file or
+      # one directory glob. The four tsconfig files are skipped because they
+      # are JSONC and tsc reads them in npm run typecheck:e2e, and a fifth one
+      # appearing fails until somebody decides about it.
+      - id: config-file-syntax
+        name: Parse every tracked YAML and JSON file
+        entry: python scripts/check_config_file_syntax.py
+        language: system
+        pass_filenames: false
+        files: \.(ya?ml|json)$
 
       # Forbid recording an AI assistant as a commit contributor. Runs at
       # commit-msg time on the message being written and rejects a
@@ -126,6 +259,122 @@ repos:
         language: system
         pass_filenames: false
         files: ^frontend/src/app/locales/.*\.ts$
+
+      # The other direction of the same defect: an escape stripped to bare
+      # letters, `u2013` where the value should carry one backslash and render
+      # as a dash. The guard above looks for a doubled backslash and cannot see
+      # this, and its own docstring opens by naming itself the second half of
+      # that pair. Same files, and provably so: all three locale scripts carry
+      # the identical `LOCALE_GLOB = "frontend/src/app/locales/*.ts"`, which is
+      # why the pattern below is copied rather than written afresh. Undeclared
+      # here until now for no reason anyone recorded. CI already runs it on
+      # every push, so this changes the accounting and not the coverage.
+      - id: locale-lost-escape-check
+        name: Block Unicode escapes stripped to bare letters in locale files
+        entry: python scripts/check_locale_lost_escapes.py
+        language: system
+        pass_filenames: false
+        files: ^frontend/src/app/locales/.*\.ts$
+
+      # A third way the same locale text gets damaged, and the only one where
+      # the damage is done by the fix. German writes an umlaut either as the
+      # letter or as an ASCII digraph, `fuer` for `für`, so a file drifts into
+      # carrying both spellings of one word. Whoever tidies that up with a
+      # find/replace on `ue` also eats the digraph where it was never a fold -
+      # Steuer, Quelle, neue, bauen, zuerst - and leaves non-words behind. 99
+      # of those shipped in the German UI (6a33a1982) with every gate green,
+      # because the key is present, the placeholders are unchanged and the file
+      # parses. This guard fails on the disagreement that invites the pass,
+      # before anyone reaches for the replace. Reads the backend validation
+      # messages too, where half the German instance lived.
+      - id: locale-umlaut-folding-check
+        name: Block a word spelled two ways in one locale file
+        entry: python scripts/check_locale_umlaut_folding.py
+        language: system
+        pass_filenames: false
+        files: ^(frontend/src/app/locales/.*\.ts|backend/app/core/validation/messages/.*\.json)$
+
+      # Locales ship prose with every diacritic deleted: the right words in the
+      # right order, unreadable to a native speaker, and invisible to every
+      # other gate because the key is present and the file parses. Two rules
+      # run, because the first one alibis itself. It counts a bare word as
+      # evidence only when the file never writes that skeleton bare, so a file
+      # damaged in bulk supplies its own alibi and the wider the damage the
+      # better it hides - it reported nothing on the Italian file that was
+      # shipping 689 stripped words. The second rule takes every OTHER namespace
+      # as the dictionary, so the damaged strings cannot vote on their own
+      # spelling. Both baselines beside this script are declared debt; the hook
+      # only stops a new one joining. A green run means no new string crossed
+      # either bar, not that none was stripped - see the script docstring.
+      - id: locale-stripped-diacritics-ratchet
+        name: Block a new locale string with its diacritics stripped
+        entry: python scripts/check_locale_stripped_diacritics.py
+        language: system
+        pass_filenames: false
+        files: ^frontend/src/app/locales/.*\.ts$
+
+      # The requirements import panel shows a sample row, and the user copies
+      # its shape. Five of its seven fields are free text and translating them
+      # helps; constraint_type and priority are closed vocabularies the importer
+      # matches literally. 36 of 42 locales had translated the priority, which
+      # RequirementCreate rejects, and ten the operator, which is worse because
+      # the parser only warns and falls back to equals. CI runs this too.
+      - id: locale-requirement-sample-check
+        name: Block a requirements import sample the importer would reject
+        entry: python scripts/check_locale_requirement_sample.py
+        language: system
+        pass_filenames: false
+        files: ^(frontend/src/app/locales/.*\.ts|backend/app/modules/requirements/(evaluator|intl|schemas)\.py)$
+
+      # Block one word built from both Cyrillic and Latin letters. Two scripts
+      # in one value are fine, "Excel файл" is correct; two inside one word
+      # come only from a homoglyph or a half-finished edit, and the bg value
+      # reading "Заменен" with a Latin a where Bulgarian needs U+0430 is the
+      # same glyph on screen, so no amount of reading the page finds it. 75
+      # words across 14 locales when it was written. Same glob as the two
+      # above, same reason. CI already runs it on every push.
+      - id: locale-mixed-script-check
+        name: Block Cyrillic and Latin letters inside one locale word
+        entry: python scripts/check_locale_mixed_script.py
+        language: system
+        pass_filenames: false
+        files: ^frontend/src/app/locales/.*\.ts$
+
+      # Block a UTF-8 string that something read one byte at a time as CP1252.
+      # An em dash becomes "a with circumflex, euro sign, right double quote"
+      # and the value stays valid TypeScript, parses, renders and equals
+      # nothing, so the parse gate, both diacritic rules, the homoglyph rule
+      # and the leak baseline are all blind to it by construction. Four hits
+      # when this was written, all the same em dash in the same key in ar, da,
+      # it and no, from one translation batch; twelve other locales carried the
+      # correct character for the same key. The test is the definition of the
+      # corruption rather than a guess at it, a lead byte in C2..F4 with the
+      # right number of continuation bytes in 80..BF, so the 108 real A and O
+      # circumflex letters in fr, pt, pt-BR, ro and vi do not qualify. No
+      # baseline: it is at zero and any hit is new.
+      - id: locale-mojibake-check
+        name: Block locale text that was UTF-8 and got read as a code page
+        entry: python scripts/check_locale_mojibake.py
+        language: system
+        pass_filenames: false
+        files: ^frontend/src/app/locales/.*\.ts$
+
+      # The boot heal runs create_all before anything reads alembic_version, so
+      # every table in the model metadata already exists by the time an operator
+      # runs `alembic upgrade head` by hand. An unguarded op.create_table then
+      # hits DuplicateTable, and because PostgreSQL runs DDL inside a
+      # transaction the failure rolls back the WHOLE run: alembic_version does
+      # not move and every later revision is skipped along with its backfills.
+      # Reported from an install stuck 26 revisions behind across four releases.
+      # 169 of the 173 revisions that create tables already asked an inspector
+      # first, which is exactly the kind of near-universal convention nobody
+      # notices breaking.
+      - id: migration-create-table-guarded
+        name: Block a migration that creates a table without checking for it
+        entry: python scripts/check_migration_create_table_guarded.py
+        language: system
+        pass_filenames: false
+        files: ^backend/alembic/versions/.*\.py$
 
       # Scan the whole of en.ts for values byte-identical to their source in
       # 24+ of 28 non-en locales, and require every hit to land in exactly
@@ -225,6 +474,96 @@ repos:
         pass_filenames: false
         files: ^(frontend/src/app/locales/.*\.ts|scripts/i18n_script_baseline\.json)$
 
+      # Every guard above asks about the key, or about the words in the
+      # value. This one asks about the text inside the braces, which is not
+      # words at all: i18next substitutes by name, so {{count}} is code and a
+      # translation that rewrites it has changed a variable, not a sentence.
+      # Two mechanical passes have done exactly that here. A spelling pass
+      # turned {{labor}} into {{labour}} in all 42 translations and left
+      # en-US.ts holding the only name the call site passes, so the majority
+      # looked right and the one correct file looked like the outlier. A
+      # glossary pass turned {{count}} into {{Pays}} in 37 French strings,
+      # plural forms among them, and a counted key with no count in it has no
+      # number to switch on. Neither is visible to any other gate: the key is
+      # present, both plural forms are present, the value is not English, no
+      # escape is doubled, and tsc never reads locale content. It also blocks
+      # ${...}, which i18next never evaluates and which arrives whenever a
+      # call site's defaultValue template literal is copied in as text; that
+      # is how one tooltip shipped reading "${variantCount} variants
+      # available" in 41 languages. Dropping a placeholder is the other
+      # direction and does NOT block: it still renders, and in a language
+      # whose _one form means exactly one, writing the word is better prose.
+      - id: i18n-placeholder-parity-check
+        name: Gate translations that renamed a variable
+        entry: python scripts/check_i18n_placeholder_parity.py
+        language: system
+        pass_filenames: false
+        files: ^(frontend/src/app/locales/.*\.ts|scripts/check_i18n_placeholder_parity\.py)$
+
+      # The UI hides a control the current role could not use anyway. That is
+      # a courtesy, not a wall, but it goes wrong silently in both directions
+      # and the worse direction is the quiet one: when a permission is
+      # lowered, the stale role list keeps hiding the control from the role
+      # the change was made for, and the successful change reads as a failed
+      # one. Watches both sides, since either can move. Stdlib only, so it
+      # needs no backend install.
+      #
+      # Scoped to the whole of frontend/src rather than to the files that
+      # hold the tables today, because the failure it guards against is a
+      # NEW copy appearing somewhere else: the alias map is eight short lines
+      # and had already been typed out by hand in three features. Locales are
+      # excluded because they name every role as translated UI text, which is
+      # data rather than a mirror, and they are large and edited constantly.
+      - id: role-mirrors-match-the-backend
+        name: Gate a UI copy of the backend role tables that drifted from it
+        entry: python scripts/check_role_mirrors_match_the_backend.py
+        language: system
+        pass_filenames: false
+        files: ^(frontend/src/(?!app/locales/).*\.tsx?|backend/app/modules/property_dev/permissions\.py|backend/app/core/permissions\.py|scripts/check_role_mirrors_match_the_backend\.py)$
+
+      # A playbook carries its English inline, so adding one looks correct
+      # locally and renders English in every other language. One commit added
+      # thirty eight of them and touched no locale file at all. This does not
+      # demand every language, only that the ones already finished stay
+      # finished, which is the smallest rule that would have caught it.
+      - id: case-playbook-catalogue-locales
+        name: Gate a case playbook that un-finishes a finished language
+        entry: python scripts/check_case_playbook_catalogue_locales.py
+        language: system
+        pass_filenames: false
+        files: ^(frontend/src/features/cases/data/.*\.playbook\.ts|frontend/src/app/locales/.*\.ts|frontend/src/features/cases/case-coverage-manifest\.json|scripts/check_case_playbook_catalogue_locales\.py)$
+
+      # The hook above holds the finished languages to the catalogue text.
+      # This one holds every offered language to the step text it already
+      # answers: a floor per locale and per playbook that only moves down,
+      # so a case cannot ship without its strings and a locale cannot lose
+      # a key it had. The manifest is in the pattern because the floor is
+      # part of the check.
+      - id: case-coverage-ratchet
+        name: Gate a case that answers fewer translated keys than the manifest records
+        entry: node frontend/scripts/check-case-coverage.mjs
+        language: system
+        pass_filenames: false
+        files: ^(frontend/src/features/cases/data/.*\.playbook\.ts|frontend/src/app/locales/.*\.ts|frontend/src/app/i18n\.ts|frontend/src/features/cases/case-coverage-manifest\.json|frontend/scripts/check-case-coverage\.mjs)$
+
+      # "Payment application" here is a claim for work done, and seventeen
+      # locales had it as a phone app. That class of fix does not stay fixed: a
+      # later batch pass translating the word out of context puts it straight
+      # back, and every other check passes on a fluent wrong noun.
+      #
+      # This used to say "narrow on purpose, an enumerated key list". That list
+      # was the bug. It went green while two hundred and thirty strings still
+      # read as software, because a key that is not on the list is never looked
+      # at, so "clean" was a fact about the list. The scope is derived from the
+      # English now, which is why the file list below has to include the case
+      # playbooks: twelve hundred English strings live there and nowhere else.
+      - id: payment-application-sense
+        name: Gate a payment application that reads as software
+        entry: python scripts/check_payment_application_sense.py
+        language: system
+        pass_filenames: false
+        files: ^(frontend/src/features/cases/data/.*\.playbook\.ts|frontend/src/app/locales/.*\.ts|scripts/check_payment_application_sense\.py)$
+
       # A collection endpoint that starts returning {items, total, offset,
       # limit} breaks every caller still reading a bare array. TypeScript
       # catches most of that, but not the case this exists for: React Query
@@ -270,6 +609,22 @@ repos:
         pass_filenames: false
         files: ^backend/alembic/versions/.*\.py$
 
+      # The other question about the same set of revisions: does the rewrite
+      # reach anybody. The product never runs `alembic upgrade` - the schema
+      # moves at boot through postgres_auto_migrate plus create_all, neither of
+      # which executes a revision body, and the database is then stamped at
+      # head. v3271_formwork_debrand renamed trademarked catalogue rows and had
+      # never run on any install brought up the normal way, and nothing could
+      # have said so. This fails when a revision that rewrites pre-existing rows
+      # carries no "# boot-repair:" line saying where that rewrite lands, and
+      # prints every declared gap on every run. CI runs the same script.
+      - id: migration-boot-repair-declaration
+        name: Gate migrations whose data rewrite never reaches a real install
+        entry: python scripts/check_data_rewrite_boot_repair.py
+        language: system
+        pass_filenames: false
+        files: ^(backend/alembic/versions/.*\.py|backend/app/core/data_repairs\.py|scripts/check_data_rewrite_boot_repair\.py)$
+
       # Keep the test suite's 99 file-local date constants unable to collide.
       # They name 40 distinct instants under 43 names - NOW is five different
       # days, TODAY is six - and that is harmless only because every one is
@@ -304,3 +659,23 @@ repos:
         # catching it at commit time is the whole reason this exists as a hook
         # rather than only as a release-time generator.
         files: ^(.*\.(ttf|otf|ttc|woff2?)|backend/app/core/fonts/.*|frontend/public/assets/vendor/fonts/.*|NOTICE|backend/pyproject\.toml|scripts/check_bundled_font_licences\.py)$
+
+      # The desktop launcher navigates its webview to http://127.0.0.1:<port>/,
+      # which Tauri classifies as a REMOTE origin, so the access control list
+      # decides every command the application window invokes. With no
+      # permissions declared and no capability naming that origin, the answer
+      # was no to all of them, and the shape that took on screen was that every
+      # outbound link in the shipped product - docs, repository, marketing site,
+      # contact mail - did nothing at all when clicked. Nothing failed loudly:
+      # the click was swallowed, the command was refused, and the rejection was
+      # dropped. This resolves the permission for real rather than grepping for
+      # the loopback pattern, because renaming the permission leaves that string
+      # in place and severs the grant. It also fails on a registered command
+      # that no capability grants, since declaring an application ACL turns the
+      # same check on for the launcher's own splash and failure screens too.
+      - id: desktop-link-acl
+        name: Check the desktop app window can still open a link
+        entry: python scripts/check_desktop_link_acl.py
+        language: system
+        pass_filenames: false
+        files: ^(desktop/src-tauri/(permissions|capabilities)/.*\.json|desktop/src-tauri/src/main\.rs|scripts/check_desktop_link_acl\.py)$

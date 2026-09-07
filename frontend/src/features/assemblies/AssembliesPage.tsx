@@ -14,7 +14,7 @@ import {
 import { Button, Card, Badge, DismissibleInfo, IntroRichText, EmptyState, SkeletonGrid, Breadcrumb, ModuleGuideButton } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { apiGet, apiPost, apiDelete } from '@/shared/lib/api';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fmtList, getIntlLocale } from '@/shared/lib/formatters';
 import { unitLabel } from '@/shared/lib/unitLabels';
 import { copyToClipboard } from '@/shared/lib/browser';
 import { useToastStore } from '@/stores/useToastStore';
@@ -560,9 +560,8 @@ export function AssembliesPage() {
             value={String(banner.totalCount)}
             title={
               banner.mostUsed.length > 0
-                ? `${t('assemblies.stat_most_used', { defaultValue: 'Most used' })}: ${banner.mostUsed
-                    .map((m) => `${m.name} (${m.usage_count})`)
-                    .join(', ')}`
+                ? `${t('assemblies.stat_most_used', { defaultValue: 'Most used' })}: ${fmtList(banner.mostUsed
+                    .map((m) => `${m.name} (${m.usage_count})`))}`
                 : undefined
             }
           />
@@ -606,7 +605,7 @@ export function AssembliesPage() {
             label={t('assemblies.stat_top_categories', { defaultValue: 'Top categories' })}
             value={
               banner.topCategories.length > 0
-                ? banner.topCategories.map(([c, n]) => `${c} (${n})`).join(', ')
+                ? fmtList(banner.topCategories.map(([c, n]) => `${c} (${n})`))
                 : '—'
             }
             valueClassName="text-xs leading-snug"
@@ -696,7 +695,7 @@ export function AssembliesPage() {
             <label htmlFor="assemblies-search" className="sr-only">
               {t('common.search', { defaultValue: 'Search' })}
             </label>
-            <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-content-tertiary">
+            <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center ps-3 text-content-tertiary">
               <Search size={16} />
             </div>
             <input
@@ -709,12 +708,12 @@ export function AssembliesPage() {
                 'Search by name or code...',
               )}
               aria-label={t('assemblies.search_placeholder', { defaultValue: 'Search by name or code...' })}
-              className="h-10 w-full rounded-lg border border-border bg-surface-primary pl-10 pr-9 text-sm text-content-primary placeholder:text-content-tertiary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary"
+              className="h-10 w-full rounded-lg border border-border bg-surface-primary ps-10 pe-9 text-sm text-content-primary placeholder:text-content-tertiary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary"
             />
             {query && (
               <button
                 onClick={() => { setQuery(''); setDebouncedQuery(''); setOffset(0); }}
-                className="absolute inset-y-0 right-0 flex items-center pr-3 text-content-tertiary hover:text-content-primary transition-colors"
+                className="absolute inset-y-0 end-0 flex items-center pe-3 text-content-tertiary hover:text-content-primary transition-colors"
                 aria-label={t('common.clear', { defaultValue: 'Clear' })}
               >
                 <X size={14} />
@@ -730,7 +729,7 @@ export function AssembliesPage() {
               aria-label={t('a11y.assemblies.category_filter', {
                 defaultValue: 'Filter assemblies by category',
               })}
-              className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-44"
+              className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-9 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-44"
             >
               {CATEGORY_VALUES.map((c) => (
                 <option key={c.value} value={c.value}>
@@ -738,14 +737,14 @@ export function AssembliesPage() {
                 </option>
               ))}
             </select>
-            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+            <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-2.5 text-content-tertiary">
               <ChevronDown size={14} />
             </div>
           </div>
 
           {/* Tag filter */}
           <div className="relative">
-            <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-content-tertiary">
+            <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center ps-3 text-content-tertiary">
               <Tag size={14} />
             </div>
             <input
@@ -753,7 +752,7 @@ export function AssembliesPage() {
               value={tagFilter}
               onChange={(e) => { setTagFilter(e.target.value); setOffset(0); }}
               placeholder={t('assemblies.filter_by_tag', { defaultValue: 'Filter by tag...' })}
-              className="h-10 w-full rounded-lg border border-border bg-surface-primary pl-9 pr-3 text-sm text-content-primary placeholder:text-content-tertiary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-40"
+              className="h-10 w-full rounded-lg border border-border bg-surface-primary ps-9 pe-3 text-sm text-content-primary placeholder:text-content-tertiary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-40"
             />
           </div>
 
@@ -762,7 +761,7 @@ export function AssembliesPage() {
             <label htmlFor="assemblies-sort" className="sr-only">
               {t('assemblies.sort_label', { defaultValue: 'Sort' })}
             </label>
-            <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 text-content-tertiary">
+            <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center ps-2.5 text-content-tertiary">
               <ArrowUpDown size={13} />
             </div>
             <select
@@ -774,7 +773,7 @@ export function AssembliesPage() {
                 setSortDir(d);
               }}
               aria-label={t('assemblies.sort_label', { defaultValue: 'Sort' })}
-              className="h-10 appearance-none rounded-lg border border-border bg-surface-primary pl-8 pr-7 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary"
+              className="h-10 appearance-none rounded-lg border border-border bg-surface-primary ps-8 pe-7 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary"
             >
               <option value="updated_at:desc">{t('assemblies.sort_recent', { defaultValue: 'Recently updated' })}</option>
               <option value="updated_at:asc">{t('assemblies.sort_oldest', { defaultValue: 'Oldest updated' })}</option>
@@ -787,7 +786,7 @@ export function AssembliesPage() {
               <option value="usage_count:desc">{t('assemblies.sort_usage_hi', { defaultValue: 'Most used' })}</option>
               <option value="component_count:desc">{t('assemblies.sort_comp_hi', { defaultValue: 'Most components' })}</option>
             </select>
-            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-content-tertiary">
+            <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-2 text-content-tertiary">
               <ChevronDown size={13} />
             </div>
           </div>
@@ -961,7 +960,7 @@ export function AssembliesPage() {
                 </p>
                 {totalPages > 1 && (
                   <div className="flex items-center gap-1">
-                    <button
+                    <button aria-label={t('common.previous_page', { defaultValue: 'Previous page' })}
                       onClick={() => goToPage(currentPage - 1)}
                       disabled={currentPage === 1 || isFetching}
                       className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:bg-surface-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
@@ -994,7 +993,7 @@ export function AssembliesPage() {
                         <button onClick={() => goToPage(totalPages)} className="flex h-8 min-w-[32px] items-center justify-center rounded-lg text-xs text-content-secondary hover:bg-surface-secondary transition-colors">{totalPages}</button>
                       </>
                     )}
-                    <button
+                    <button aria-label={t('common.next_page', { defaultValue: 'Next page' })}
                       onClick={() => goToPage(currentPage + 1)}
                       disabled={currentPage === totalPages || isFetching}
                       className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:bg-surface-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"

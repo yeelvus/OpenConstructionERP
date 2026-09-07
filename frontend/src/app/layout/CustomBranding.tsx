@@ -474,7 +474,7 @@ function BrandingEditor({
                 <div className="mt-4 flex items-center gap-3 rounded-lg border border-border-light bg-surface-secondary/40 p-3">
                   <img
                     src={logoDataUrl}
-                    alt="Current logo"
+                    alt={t('branding.current_logo', { defaultValue: 'Current logo' })}
                     className="h-10 w-10 object-contain rounded"
                     draggable={false}
                   />
@@ -509,7 +509,7 @@ function BrandingEditor({
               <div className="relative">
                 <Building2
                   size={16}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-content-tertiary"
+                  className="absolute start-3 top-1/2 -translate-y-1/2 text-content-tertiary"
                 />
                 <input
                   ref={nameInputRef}
@@ -521,7 +521,7 @@ function BrandingEditor({
                     defaultValue: 'Acme Construction GmbH',
                   })}
                   maxLength={MAX_NAME_LEN}
-                  className="w-full pl-9 pr-3 py-2 rounded-lg bg-surface-secondary border border-border-light focus:border-oe-blue focus:ring-2 focus:ring-oe-blue/20 focus:outline-none text-sm text-content-primary placeholder:text-content-tertiary"
+                  className="w-full ps-9 pe-3 py-2 rounded-lg bg-surface-secondary border border-border-light focus:border-oe-blue focus:ring-2 focus:ring-oe-blue/20 focus:outline-none text-sm text-content-primary placeholder:text-content-tertiary"
                 />
               </div>
               <p className="text-[11px] text-content-tertiary mt-1.5">

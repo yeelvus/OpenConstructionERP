@@ -19,6 +19,7 @@ from app.dependencies import (
     SessionDep,
     verify_project_access,
 )
+from app.modules.boq.schemas import BOQResponse
 from app.modules.variations.schemas import (
     DayworkSheetCreate,
     DayworkSheetLineCreate,
@@ -48,6 +49,8 @@ from app.modules.variations.schemas import (
     SiteMeasurementListResponse,
     SiteMeasurementResponse,
     SiteMeasurementUpdate,
+    VariationBOQCreate,
+    VariationBOQResponse,
     VariationCostImpactCreate,
     VariationCostImpactResponse,
     VariationCostImpactUpdate,
@@ -90,14 +93,29 @@ class _DecisionBody(BaseModel):
     decision_notes: str | None = None
     decided_amount: Decimal | None = None
     granted_days: int | None = Field(default=None, ge=0, le=3650)
+    #: Why an approved amount departs from the pricing state it was agreed
+    #: against (Issue #435). Approving a variation at an amount that differs
+    #: from the submitted bill total is refused without it.
+    agreed_variance_note: str | None = None
 
 
 class _ConvertVOBody(BaseModel):
     title: str = ""
-    final_cost_impact: Decimal = Decimal("0")
-    final_schedule_days: int = 0
+    # The two figures are nullable where the two strings are not, because nil
+    # is a real answer for both of them and for neither of the others: a
+    # variation can be agreed at no cost, or add no time, and either has to
+    # stick rather than be read as "say nothing and inherit the estimate".
+    # An empty title or currency is not an answer in that sense, so those keep
+    # the falsy fallback the route has always used.
+    final_cost_impact: Decimal | None = None
+    final_schedule_days: int | None = None
     currency: str = ""
     agreed_at: str | None = None
+    # The contract this order amends. Completing an order that names one is
+    # what moves the contract sum, and a promotion is the moment somebody
+    # knows which contract it lands on, so it can be named here rather than
+    # only patched on afterwards.
+    affected_contract_id: uuid.UUID | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -354,12 +372,24 @@ async def approve_variation_request(
     # variations.approve_request must not wave through a variation whose cost
     # impact exceeds HIGH_VALUE_APPROVAL_THRESHOLD without the admin-only
     # variations.approve_high_value permission (closes the dead-gate finding).
-    ensure_high_value_authorised(existing.estimated_cost_impact, payload=payload)
+    # The gate is applied to the LARGER of the request's own figure and the
+    # amount actually being approved. Checking only the stored figure would
+    # let a Manager approve a small variation at a large number, which is the
+    # same authorisation hole the gate was added to close, reopened by the
+    # field that lets the approver name a different amount.
+    ensure_high_value_authorised(
+        max(existing.estimated_cost_impact, body.decided_amount)
+        if body.decided_amount is not None
+        else existing.estimated_cost_impact,
+        payload=payload,
+    )
     vr = await service.transition_variation_request(
         vr_id,
         "approved",
         user_id=user_id,
         decision_notes=body.decision_notes,
+        agreed_cost_impact=body.decided_amount,
+        agreed_variance_note=body.agreed_variance_note,
     )
     return VariationRequestResponse.model_validate(vr)
 
@@ -400,20 +430,114 @@ async def convert_vr_to_vo(
     # (and a mirrored ChangeOrder), so it is symmetric with approval - gate
     # high-value conversions behind variations.approve_high_value too. Use the
     # effective committed amount (body override else the source VR estimate).
-    effective_amount = body.final_cost_impact or vr.estimated_cost_impact
+    effective_amount = body.final_cost_impact if body.final_cost_impact is not None else vr.estimated_cost_impact
     ensure_high_value_authorised(effective_amount, payload=user_payload)
     payload = VariationOrderCreate(
         project_id=vr.project_id,
         variation_request_id=vr_id,
         title=body.title or vr.title,
-        final_cost_impact=body.final_cost_impact,
-        final_schedule_days=body.final_schedule_days,
+        # The amount the gate above was applied to is the amount the order has
+        # to carry. Passing the body's own field here instead let a conversion
+        # that named no figure - which is what the variations page sends - be
+        # authorised against the request's estimate and then commit zero, so
+        # every order promoted through the interface lost its money and its
+        # mirrored change order was priced off the same nothing.
+        final_cost_impact=effective_amount,
+        final_schedule_days=(
+            body.final_schedule_days if body.final_schedule_days is not None else vr.estimated_schedule_days
+        ),
         currency=body.currency or vr.currency,
         agreed_at=body.agreed_at,
+        affected_contract_id=body.affected_contract_id,
         metadata=body.metadata,
     )
     vo = await service.convert_vr_to_vo(vr_id, payload, user_id=user_id)
     return VariationOrderResponse.model_validate(vo)
+
+
+# ── Variation request BOQ (Issue #435) ────────────────────────
+#
+# A variation request may own a dedicated bill of quantities holding only the
+# scope that variation changes. The bill itself is served by the BOQ module -
+# everything at /api/v1/boq/boqs/{boq_id}/... works on it unchanged, which is
+# the point of making it an ordinary bill. These three routes cover only what
+# the BOQ module cannot answer: open one for a request, read it back with its
+# provenance, and let the priced total become the request's headline figure.
+
+
+@router.post(
+    "/variation-requests/{vr_id}/boq/",
+    response_model=BOQResponse,
+    status_code=201,
+    summary="Open a dedicated bill for a variation request",
+)
+async def create_variation_request_boq(
+    vr_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId,
+    body: VariationBOQCreate = Body(default=VariationBOQCreate()),
+    _perm: None = Depends(RequirePermission("variations.create")),
+    service: VariationsService = Depends(_get_service),
+) -> BOQResponse:
+    """Open the request's own bill, optionally seeded from existing scope.
+
+    ``source_positions`` names positions on the project's estimating bills and
+    ``source_contract_lines`` names schedule-of-values lines of the project's
+    contracts; each seeded line records where it came from. Both are optional,
+    and an empty body opens an empty bill.
+    """
+    vr = await service.get_request(vr_id)
+    await verify_project_access(vr.project_id, str(user_id), session)
+    boq = await service.create_request_boq(vr_id, body, user_id=str(user_id) if user_id else None)
+    return BOQResponse.model_validate(boq)
+
+
+@router.get(
+    "/variation-requests/{vr_id}/boq/",
+    response_model=VariationBOQResponse,
+    summary="The request's bill, priced and traced",
+)
+async def get_variation_request_boq(
+    vr_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId = None,  # type: ignore[assignment]
+    _perm: None = Depends(RequirePermission("variations.read")),
+    service: VariationsService = Depends(_get_service),
+) -> VariationBOQResponse:
+    """Read the request's bill with its totals, provenance and checks.
+
+    A request that has no bill answers ``has_boq`` false with its headline
+    estimate and no money fields - the state every request was in before this
+    existed, and still the state of most of them.
+    """
+    vr = await service.get_request(vr_id)
+    await verify_project_access(vr.project_id, str(user_id), session)
+    view = await service.get_request_boq_view(vr_id)
+    return VariationBOQResponse.model_validate(view)
+
+
+@router.post(
+    "/variation-requests/{vr_id}/boq/adopt",
+    response_model=VariationRequestResponse,
+    summary="Adopt the bill's priced total as the request's estimate",
+)
+async def adopt_variation_request_boq(
+    vr_id: uuid.UUID,
+    session: SessionDep,
+    user_id: CurrentUserId,
+    _perm: None = Depends(RequirePermission("variations.update")),
+    service: VariationsService = Depends(_get_service),
+) -> VariationRequestResponse:
+    """Replace the headline estimate with what the bill actually prices.
+
+    Deliberately explicit. Every other module reads the headline off the
+    request, so moving it is a decision somebody takes rather than something
+    that happens while a bill is still being edited.
+    """
+    vr = await service.get_request(vr_id)
+    await verify_project_access(vr.project_id, str(user_id), session)
+    updated = await service.adopt_request_boq_total(vr_id, user_id=str(user_id) if user_id else None)
+    return VariationRequestResponse.model_validate(updated)
 
 
 # ── Variation orders ───────────────────────────────────────────────────────

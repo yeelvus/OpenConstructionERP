@@ -212,7 +212,7 @@ function useSafetyIncidents(projectId: string, enabled = true) {
   return useQuery({
     queryKey: ['hse-safety-incidents', projectId],
     queryFn: () => fetchSafetyIncidents(projectId),
-    select: (d) => normalizeListResponse<SafetyIncidentOption>(d),
+    select: (d) => d.items,
     enabled: enabled && !!projectId,
     staleTime: 30_000,
   });
@@ -757,7 +757,7 @@ function SearchBar({
   return (
     <div className="p-4 border-b border-border-light flex items-center gap-3 flex-wrap">
       <div className="relative max-w-sm flex-1">
-        <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-content-tertiary">
+        <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center pl-3 text-content-tertiary">
           <Search size={16} />
         </div>
         <input
@@ -766,7 +766,7 @@ function SearchBar({
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           aria-label={placeholder}
-          className="h-10 w-full rounded-lg border border-border bg-surface-primary pl-10 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
+          className="h-10 w-full rounded-lg border border-border bg-surface-primary ps-10 pe-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
         />
       </div>
       <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={onCreate}>
@@ -4910,7 +4910,7 @@ function CAPADetailDrawer({
           </p>
           <div className="space-y-2">
             {whys.map((w, i) => (
-              <div key={i} className="grid grid-cols-[1fr,1fr,auto] gap-2 items-start">
+              <div key={i} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 items-start">
                 <input
                   className={inputCls}
                   placeholder={t('hse_advanced.why_n', { defaultValue: 'Why #{{n}}?', n: i + 1 })}

@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.orm.util import identity_key
-from sqlalchemy.sql.elements import ClauseElement
+from sqlalchemy.sql.elements import ClauseElement, ColumnElement
 
 from app.modules.construction_control.models import (
     AcceptanceCriterion,
@@ -627,3 +627,122 @@ class HandoverPackageRepository:
         if package is not None:
             await self.session.delete(package)
             await self.session.flush()
+
+
+class ReferenceCountRepository:
+    """Counts of the records that point at a row, for the deletion guards.
+
+    Every cross-record link in this module lives in a ``String(36)`` column
+    holding the referenced id as text, never a database foreign key. So each
+    count compares against ``str(row_id)``: handing SQLAlchemy a raw ``UUID``
+    against a ``VARCHAR`` column matches nothing on PostgreSQL, which would make
+    a guard silently pass and a delete go through unrefused.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def _count(self, model: type, column: ColumnElement[bool]) -> int:
+        stmt = select(func.count()).select_from(model).where(column)
+        return int((await self.session.execute(stmt)).scalar_one())
+
+    # -- Acceptance criterion holders ----------------------------------------
+
+    async def count_inspections_using_criterion(self, criterion_id: uuid.UUID) -> int:
+        return await self._count(Inspection, Inspection.criterion_id == str(criterion_id))
+
+    async def count_materials_using_criterion(self, criterion_id: uuid.UUID) -> int:
+        return await self._count(MaterialRecord, MaterialRecord.criterion_id == str(criterion_id))
+
+    async def count_tests_using_criterion(self, criterion_id: uuid.UUID) -> int:
+        return await self._count(TestResult, TestResult.criterion_id == str(criterion_id))
+
+    async def count_asbuilt_using_criterion(self, criterion_id: uuid.UUID) -> int:
+        return await self._count(AsBuiltRecord, AsBuiltRecord.criterion_id == str(criterion_id))
+
+    async def count_gates_using_criterion(self, criterion_id: uuid.UUID) -> int:
+        return await self._count(HoldGate, HoldGate.criterion_id == str(criterion_id))
+
+    # -- Inspection holders ---------------------------------------------------
+
+    async def count_tests_on_inspection(self, inspection_id: uuid.UUID) -> int:
+        return await self._count(TestResult, TestResult.inspection_id == str(inspection_id))
+
+    async def count_gates_on_inspection(self, inspection_id: uuid.UUID) -> int:
+        """Gates naming this inspection through either of the two columns that can.
+
+        A gate names an inspection as its verification source in
+        ``inspection_id`` and, independently, as the thing it is attached to in
+        ``attached_kind`` / ``attached_id``. Counting only the first leaves the
+        second kind of holder invisible, so the two are unioned per gate id
+        rather than added, which would double-count a gate that does both.
+        """
+        ref = str(inspection_id)
+        stmt = (
+            select(func.count(func.distinct(HoldGate.id)))
+            .select_from(HoldGate)
+            .where(
+                (HoldGate.inspection_id == ref)
+                | ((HoldGate.attached_kind == "inspection") & (HoldGate.attached_id == ref)),
+            )
+        )
+        return int((await self.session.execute(stmt)).scalar_one())
+
+    async def count_ncrs_on_inspection(self, inspection_id: uuid.UUID) -> int:
+        """Non-conformance reports raised against this inspection.
+
+        Lazy-imported so construction control keeps working in a deployment that
+        does not have the NCR module. The reachable case is the module missing
+        from disk rather than disabled: ``oe_ncr`` is core and the loader refuses
+        to disable it, but nothing enforces ``depends`` at startup, so this module
+        boots without it.
+
+        The catch is narrowed to that one case on purpose. A blanket
+        ``except ImportError`` also swallows an NCR module that is present but
+        broken, and a broken module would then report no holders and let
+        evidence be deleted with nothing said. So only ``app.modules.ncr`` (or a
+        submodule of it) going missing returns zero; any other name in the
+        traceback is somebody else's import failing inside a module that is
+        installed, and it is re-raised. A module that imports cleanly but no
+        longer defines ``NCR`` raises plain ``ImportError`` rather than
+        ``ModuleNotFoundError`` and propagates for the same reason.
+
+        Be precise about what the zero claims. It means no NCR can be COUNTED,
+        not that none exists: rows written while the module was present outlive
+        its removal in the database, so the zero is sound for a deployment that
+        never had the NCR module and optimistic for one that lost it.
+
+        Zero is still the right answer here, because the alternative is worse.
+        This is a read-only count feeding a delete guard, so raising instead
+        would turn every delete in the module into a 500 the moment the NCR
+        module went missing, which fails closed in the wrong direction. The
+        trade is a narrow stale-count risk against breaking deletion outright.
+
+        That trade holds only while the write path refuses to degrade.
+        ``ncr_bridge.raise_ncr`` and ``ConstructionControlService._raise_ncr_for_failure``
+        raise rather than returning ``None`` when the NCR module is gone, which is
+        what keeps the window narrow: nothing new can be written that this count
+        would then miss. If either is ever made to degrade, this zero stops being
+        a narrow risk and becomes a hole, and has to be revisited with it.
+        """
+        try:
+            from app.modules.ncr.models import NCR
+        except ModuleNotFoundError as exc:
+            missing = exc.name or ""
+            if missing != "app.modules.ncr" and not missing.startswith("app.modules.ncr."):
+                raise
+            return 0
+        return await self._count(NCR, NCR.linked_inspection_id == str(inspection_id))
+
+    # -- Material record holders ----------------------------------------------
+
+    async def count_tests_on_material(self, material_id: uuid.UUID) -> int:
+        return await self._count(TestResult, TestResult.material_record_id == str(material_id))
+
+    # -- Handover package holders ---------------------------------------------
+
+    async def count_gates_on_handover(self, package_id: uuid.UUID) -> int:
+        return await self._count(
+            HoldGate,
+            (HoldGate.attached_kind == "handover_package") & (HoldGate.attached_id == str(package_id)),
+        )

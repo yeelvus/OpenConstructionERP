@@ -34,11 +34,11 @@ from app.core.validation.rules import (
 )
 from app.modules.boq.importers.gaeb_xml import GAEBXMLImporter
 
-# Committed official GAEB DA XML 3.3 Pruefdateien (see fixtures README for
-# provenance). X83 = unpriced tender request, X84 = priced bid.
+# In-house GAEB DA XML 3.3 conformance fixtures (see the fixtures README
+# for how they are produced). X83 = unpriced tender request, X84 = priced bid.
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "gaeb"
-_PRUEFDATEI_X83 = _FIXTURES / "pruefdatei_3.3_x83.x83"
-_PRUEFDATEI_X84 = _FIXTURES / "bvbs_pruefdatei_3.3_x84.x84"
+_CONFORMANCE_X83 = _FIXTURES / "oce_conformance_x83.x83"
+_CONFORMANCE_X84 = _FIXTURES / "oce_conformance_x84.x84"
 
 
 def _ctx(positions: list[dict], locale: str = "en") -> ValidationContext:
@@ -66,8 +66,8 @@ class TestGAEBOrdinalFormat:
         assert results[0].severity == Severity.WARNING
 
     @pytest.mark.asyncio
-    async def test_pass_level3_pruefdatei_ordinal(self) -> None:
-        """Real BVBS Pruefdatei OZ is 3.3.4 with an optional index - must pass."""
+    async def test_pass_level3_indexed_ordinal(self) -> None:
+        """A real 3.3.4 OZ with an optional index must pass."""
         rule = GAEBOrdinalFormat()
         for oz in ("001.001.0010", "001.001.0010.1", "001.001.0010.A"):
             results = await rule.validate(_ctx([{"id": "1", "ordinal": oz}]))
@@ -196,6 +196,41 @@ class TestGAEBEinheitspreisSanity:
     async def test_lump_sum_skipped(self) -> None:
         rule = GAEBEinheitspreisSanity()
         positions = [{"id": "p1", "ordinal": "012.01.0010", "unit": "lsum", "unit_rate": 0}]
+        results = await rule.validate(_ctx(positions))
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_negative_rate_is_blocked_on_a_lump_sum_too(self) -> None:
+        """A negative Einheitspreis is invalid under every unit, lump sums included.
+
+        The unit used to be consulted first, so a lump sum was stepped over
+        before the negative check could run. That made the block unreachable on
+        X84, the only phase carrying bidder prices: its schema forbids QU on an
+        item, so the importer sees no unit and normalises the position to a lump
+        sum. Every position in such a file was skipped, and the one value this
+        rule exists to refuse could not be refused where it matters most.
+        """
+        rule = GAEBEinheitspreisSanity()
+        positions = [{"id": "p1", "ordinal": "012.01.0010", "unit": "lsum", "unit_rate": -1.0}]
+        results = await rule.validate(_ctx(positions))
+        assert len(results) == 1
+        assert not results[0].passed
+        assert results[0].severity == Severity.ERROR
+        assert "negative" in results[0].message.lower()
+
+    @pytest.mark.asyncio
+    async def test_a_lump_sum_with_no_unit_still_blocks_a_negative_rate(self) -> None:
+        """The X84 shape itself: no unit stated at all, priced, and negative."""
+        rule = GAEBEinheitspreisSanity()
+        positions = [{"id": "p1", "ordinal": "012.01.0010", "unit": "lsum", "unit_rate": "-0.01"}]
+        results = await rule.validate(_ctx(positions))
+        assert [r.severity for r in results] == [Severity.ERROR]
+
+    @pytest.mark.asyncio
+    async def test_a_positive_lump_sum_is_still_silent(self) -> None:
+        """The exemption itself is unchanged: only the negative case moved."""
+        rule = GAEBEinheitspreisSanity()
+        positions = [{"id": "p1", "ordinal": "012.01.0010", "unit": "lsum", "unit_rate": 1234.56}]
         results = await rule.validate(_ctx(positions))
         assert results == []
 
@@ -404,11 +439,11 @@ class TestGAEBRuleSetIntegration:
         assert "Einheitspreis" in error_messages, f"expected German Einheitspreis message, got: {error_messages}"
 
 
-# ── Acceptance: GAEB rule set over the official BVBS Pruefdateien ───────────
+# ── Acceptance: GAEB rule set over the conformance fixtures ─────────────────
 
 
 async def _import_and_validate(path: Path):
-    """Import a GAEB Pruefdatei and run the GAEB rule set over it.
+    """Import a GAEB conformance fixture and run the GAEB rule set over it.
 
     Mirrors the import-to-validation path: each imported position becomes a
     validation dict carrying its ordinal, unit, rate and the importer's
@@ -439,19 +474,19 @@ async def _import_and_validate(path: Path):
     )
 
 
-class TestGAEBPruefdateiNoFalsePositives:
-    """FA-STD-044/045/046: the official Pruefdatei must not drown in noise.
+class TestGAEBConformanceNoFalsePositives:
+    """FA-STD-044/045/046: a conformant LV must not drown in noise.
 
-    Before this wave, importing the official Pruefdatei and running the GAEB
-    rule set scored ~0.02 - 24 ERROR-level false positives (every 0.00 line and
-    every level-3 OZ) buried the real money loss. After the validator fixes the
-    file must score above 0.9 and the two previously-false-positive rules
+    Before this wave, importing a conformant file and running the GAEB rule
+    set scored ~0.02 - 24 ERROR-level false positives (every 0.00 line and
+    every level-3 OZ) buried the real money loss. After the validator fixes,
+    the file must score above 0.9 and the two previously-false-positive rules
     (ordinal_format, einheitspreis_sanity) must pass for every position.
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("fixture", [_PRUEFDATEI_X83, _PRUEFDATEI_X84])
-    async def test_pruefdatei_scores_above_threshold(self, fixture: Path) -> None:
+    @pytest.mark.parametrize("fixture", [_CONFORMANCE_X83, _CONFORMANCE_X84])
+    async def test_conformance_file_scores_above_threshold(self, fixture: Path) -> None:
         if not fixture.exists():  # pragma: no cover - committed fixture
             pytest.skip(f"fixture missing: {fixture}")
         report = await _import_and_validate(fixture)
@@ -466,13 +501,13 @@ class TestGAEBPruefdateiNoFalsePositives:
         assert not report.has_errors
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("fixture", [_PRUEFDATEI_X83, _PRUEFDATEI_X84])
+    @pytest.mark.parametrize("fixture", [_CONFORMANCE_X83, _CONFORMANCE_X84])
     async def test_previously_false_positive_rules_now_pass(self, fixture: Path) -> None:
         if not fixture.exists():  # pragma: no cover - committed fixture
             pytest.skip(f"fixture missing: {fixture}")
         report = await _import_and_validate(fixture)
 
-        # Every real Pruefdatei OZ (001.001.0010, 001.001.0010.A, the 1/2-level
+        # Every OZ in the file (001.001.0010, 001.001.0010.A, the 1/2-level
         # section headers) must pass the OZ-Maske check.
         ordinal_results = [r for r in report.results if r.rule_id == "gaeb.ordinal_format"]
         assert ordinal_results, "ordinal_format rule did not run"
@@ -480,6 +515,37 @@ class TestGAEBPruefdateiNoFalsePositives:
 
         # No legitimate 0.00 / optional position is flagged as a pricing error.
         price_results = [r for r in report.results if r.rule_id == "gaeb.einheitspreis_sanity"]
+        if fixture == _CONFORMANCE_X83:
+            # Every ordinary position of an unpriced phase carries a zero rate,
+            # so the rule has something to say about all of them. Assert that it
+            # ran: without this, the check below is true of an empty list.
+            assert price_results, "einheitspreis_sanity rule did not run"
+        else:
+            # In an X84 this rule still says nothing, and half of that is now
+            # deliberate rather than accidental. The published schema does not
+            # allow QU on an X84 item - tgItem there is NotOffered, Qty, UP, IT
+            # and no unit - so the importer sees an empty unit and normalises
+            # the position to a lump sum.
+            #
+            # The blocking half no longer depends on that. A negative
+            # Einheitspreis is refused on a lump sum as well, because it is
+            # invalid under every unit and in every phase and never needed the
+            # unit to decide. That check now reaches the only phase carrying
+            # bidder prices, which it could not before.
+            #
+            # What stays silent is the zero-rate WARNING, which does need a
+            # unit: on a shape where a lump sum cannot be stated it would flag
+            # every declined and every genuinely lump-sum line. Closing that
+            # half means letting the unit be genuinely absent instead of
+            # guessed at in the importer, and exempting NotOffered, and it is
+            # not a one-line change. This fixture carries no negative rate, so
+            # the list is empty and the emptiness is pinned: a finding here
+            # means the zero half started firing and this claim needs redoing.
+            assert not price_results, (
+                "einheitspreis_sanity now reports on X84 positions. If this fixture gained a "
+                "negative rate that is correct and expected; otherwise the zero-rate half "
+                "started firing and the comment above needs redoing."
+            )
         assert all(r.passed for r in price_results), [
             (r.element_ref, r.severity.value) for r in price_results if not r.passed
         ]

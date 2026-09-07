@@ -242,7 +242,7 @@ function StageRail({
                 isCurrent
                   ? 'bg-oe-blue/10 ring-1 ring-oe-blue/30'
                   : reachable
-                    ? 'hover:bg-surface-muted'
+                    ? 'hover:bg-surface-secondary'
                     : 'opacity-50 cursor-not-allowed',
               )}
               aria-current={isCurrent ? 'step' : undefined}
@@ -254,7 +254,7 @@ function StageRail({
                     ? 'bg-oe-blue text-white'
                     : isDone
                       ? 'bg-emerald-500 text-white'
-                      : 'bg-surface-muted text-content-secondary',
+                      : 'bg-surface-secondary text-content-secondary',
                 )}
               >
                 {isDone ? <Check className="h-4 w-4" /> : <Icon className="h-4 w-4" />}
@@ -324,7 +324,7 @@ function StatTile({
           ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/50 dark:bg-emerald-900/20'
           : tone === 'warn'
             ? 'border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-900/20'
-            : 'border-border-light bg-surface-muted',
+            : 'border-border-light bg-surface-secondary',
       )}
     >
       <div className="text-2xl font-semibold text-content-primary tabular-nums">{value}</div>
@@ -454,7 +454,7 @@ function LaneSection({
         {groups.map((g) => (
           <li
             key={g.id}
-            className="flex flex-wrap items-center gap-3 px-4 py-2.5 hover:bg-surface-muted"
+            className="flex flex-wrap items-center gap-3 px-4 py-2.5 hover:bg-surface-secondary"
           >
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-medium text-content-primary">
@@ -1239,7 +1239,7 @@ export function MatchWizardFlow() {
           <button
             type="button"
             onClick={() => setShowTemplates(true)}
-            className="inline-flex items-center gap-2 rounded-lg border border-border-light bg-surface-primary px-3 py-2 text-sm font-medium text-content-primary transition-colors hover:bg-surface-muted"
+            className="inline-flex items-center gap-2 rounded-lg border border-border-light bg-surface-primary px-3 py-2 text-sm font-medium text-content-primary transition-colors hover:bg-surface-secondary"
           >
             <Library className="h-4 w-4 text-indigo-500" />
             {t('match.wizard.openTemplateLibrary', {
@@ -1519,7 +1519,7 @@ export function MatchWizardFlow() {
 
                   <QdrantHealthCard alwaysShow />
 
-                  <div className="rounded-lg border border-border-light bg-surface-muted p-4 text-sm text-content-secondary">
+                  <div className="rounded-lg border border-border-light bg-surface-secondary p-4 text-sm text-content-secondary">
                     {t('match.wizard.catalogueNote', {
                       defaultValue:
                         'If your region has no dedicated catalogue, pick a multilingual one (e.g. EN) - the search model is multilingual and still returns real candidates.',
@@ -1593,7 +1593,7 @@ export function MatchWizardFlow() {
                             'rounded-lg border px-3 py-2 text-sm transition-colors',
                             useNet === opt.v
                               ? 'border-oe-blue bg-oe-blue/5 text-oe-blue'
-                              : 'border-border-light hover:bg-surface-muted',
+                              : 'border-border-light hover:bg-surface-secondary',
                           )}
                         >
                           {opt.l}
@@ -1653,7 +1653,7 @@ export function MatchWizardFlow() {
                                 : ''}
                             </span>
                           ) : (
-                            <span className="rounded-full bg-surface-muted px-2 py-0.5 text-[11px] font-medium text-content-tertiary">
+                            <span className="rounded-full bg-surface-secondary px-2 py-0.5 text-[11px] font-medium text-content-tertiary">
                               {t('match.wizard.aiNotConnected', {
                                 defaultValue: 'Not connected',
                               })}
@@ -1810,7 +1810,7 @@ export function MatchWizardFlow() {
                   </div>
 
                   {groups.length === 0 ? (
-                    <div className="rounded-lg border border-border-light bg-surface-muted p-4 text-sm text-content-secondary">
+                    <div className="rounded-lg border border-border-light bg-surface-secondary p-4 text-sm text-content-secondary">
                       {t('match.wizard.noGroupsReview', {
                         defaultValue:
                           'No groups to review yet. Run the match, or go back and adjust grouping.',
@@ -1936,7 +1936,7 @@ export function MatchWizardFlow() {
                           estimator can fix them before writing. */}
                       {applyResult.positions.length > 0 && (
                         <div className="rounded-lg border border-border-light overflow-hidden">
-                          <div className="flex items-center justify-between gap-2 border-b border-border-light bg-surface-muted px-3 py-2">
+                          <div className="flex items-center justify-between gap-2 border-b border-border-light bg-surface-secondary px-3 py-2">
                             <div className="text-sm font-medium text-content-primary">
                               {t('match.wizard.previewLines', {
                                 defaultValue: '{{n}} positions',

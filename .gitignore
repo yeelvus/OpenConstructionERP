@@ -83,14 +83,10 @@ qa-output/
 playwright/.auth/
 test-results/
 
-# Dev / debug artefacts
-backend/audit_output.txt
-backend/data/bim_samples/
-backend/app/scripts/seed_demo_v*.py
-backend/app/scripts/seed_*school*.py
-backend/app/scripts/seed_*technical*.py
-backend/app/scripts/audit_*.py
-backend/app/scripts/demo_seed_issues.md
+# Backend dev/debug artefacts, QA scratch and runtime data are ignored in
+# backend/.gitignore, which is the Python project root. A pattern written here
+# as backend/... is inert for the wheel build: hatchling matches repo-root
+# patterns against paths relative to backend/, so it looks for backend/backend/.
 
 # Build
 *.tar.gz
@@ -129,6 +125,19 @@ frontend/debug-bim/
 # MCP artifacts
 .mcp.json
 
+# The agent working notes. Local only, and the only thing that kept them out
+# of the repo until now was .git/info/exclude, which is per-clone and does not
+# survive a fresh clone. .claude/ also holds credentials (pypi-api-token.txt,
+# token.txt, _pat.txt) beside the notes, so a pathless add there costs more
+# than an embarrassing document. Nothing under .claude/ is tracked today, so
+# the blanket pattern changes nothing; if we ever want to ship part of it,
+# say .claude/skills/, this needs a negation rather than a wider net.
+# marketing-site/CLAUDE.md needs no line here: /marketing-site/ below
+# already ignores that whole tree. It is in the hygiene denylist instead,
+# which is the half that still applies if one is ever force-added.
+.claude/
+CLAUDE-DASHBOARDS.md
+
 # Internal-only files: planning, strategy, QA artifacts, audits and runbooks.
 # Kept local, never published. Enforced by scripts/check_repo_hygiene.py at
 # commit, CI and build time. If you keep one of these locally it stays
@@ -153,6 +162,7 @@ frontend/debug-bim/
 /scripts/*_report.json
 /scripts/i18n_coverage_report.txt
 **/__audit_report.md
+**/*UI_FLOWS.html
 .playwright-mcp/
 
 # TS incremental build cache
@@ -206,12 +216,6 @@ test-screenshots/
 !frontend/public/*.jpeg
 # Partner-pack company logos are real shipped assets, not dev screenshots
 !packs/**/logo.png
-# Bundled demo site photos are real shipped seed assets, not dev screenshots
-!backend/app/scripts/flagship_assets/site_photos/*.jpg
-
-# QA test scripts (contain demo credentials)
-backend/qa_*.py
-backend/tmp_*.json
 
 # LanceDB local data
 lancedb_data/
@@ -229,9 +233,6 @@ desktop/src-tauri/binaries/
 
 # Backup files
 *.backup.*
-backend/data/dwg_uploads/
-backend/data/dwg_entities/
-backend/data/dwg_thumbnails/
 
 # Local-only working state (not for commit)
 tmp/
@@ -258,15 +259,6 @@ qa-tests/v275-probe/shots*/
 i18n_audit_report.md
 qa-report/
 
-# Ad-hoc QA/test scripts that hit a hardcoded localhost — not real tests
-backend/qa_api_test.py
-backend/qa_ai_test.py
-backend/test_all_modules.py
-backend/test_final_qa.py
-backend/test_full.py
-backend/test_upload.dxf
-backend/tmp_api.json
-
 # Heavy sample data — fetched on demand, not committed
 data/bim/
 docs/media/*.mp4
@@ -279,14 +271,6 @@ data/reingest_backup_*.json
 # Generated license inventories — attached to GH Releases, not committed
 /NOTICE.backend.json
 /NOTICE.frontend.json
-
-# Runtime QMS upload artifacts (smoke/demo attachments, not source)
-backend/uploads/qms/
-
-# Scratch dev/test output
-backend/.pytest_*.out
-backend/_dev_backend.err
-backend/*.err
 
 # Deep-QA sweep working artifacts (progress + per-module findings; durable on disk, not committed)
 qa-sweep/
@@ -347,17 +331,6 @@ _qa_tmp/
 /_dl_build/
 /_i18n_gaps/
 /_pr_review/
-backend/_*.py
-backend/_*.txt
-backend/*_id.txt
-backend/markup_id_qa.txt
-backend/sess_id.txt
-backend/_qa_findings.json
-backend/_e2e_shots/
-backend/_flagship/
-backend/_pdfreport/
-backend/_report_pages/
-backend/app/_frontend_dist_prev/
 frontend/_*.cjs
 frontend/_*.mjs
 frontend/_qa_b3dm.bin
@@ -368,7 +341,6 @@ docs/postgres-migration/*.json
 docs/postgres-migration/*.diff
 docs/strategy/improvement-2026-06/_*.txt
 /_wheelboot_health.json
-backend/uploads/
 data/connectors/
 
 # Recurring session scratch (QA temp output + i18n build/merge tooling)
@@ -378,7 +350,6 @@ data/connectors/
 /_i18n_*.json
 /_i18n_new_*.txt
 /_qa_tsc_out.txt
-backend/_qa_tmp_*
 
 frontend/_qa_tmp_*
 frontend/tsc_result.txt
@@ -405,8 +376,6 @@ scripts/translate_mn_*.py
 /_m_*.json
 /_backend_restart.*
 /tmp_rvt_repro*.py
-backend/app/scripts/_flagship_dump.txt
-backend/app/scripts/_snap_dump.txt
 frontend/_qa/
 frontend/scripts/_apply_translations.cjs
 frontend/scripts/_dupcheck.cjs
@@ -490,9 +459,21 @@ frontend/scripts/_i18n_*.py
 # Session working directory: translation intermediates, audit dumps and one-off
 # scripts. Local only, and it holds source-language drafts we do not publish.
 /scratchpad/
+# The same material, written next to the directory rather than into it. A
+# directory pattern does not cover a sibling file, and sixteen of these had
+# accumulated in the root before anyone noticed, none of them ignored. They are
+# key censuses, duplicate-key dumps and build logs, so the cost of one landing
+# in a commit is an unreadable diff rather than a leak, but the reason they are
+# untracked is that nothing reads them twice.
+/scratchpad_*
 # Module inventory dump: regenerated on demand for the marketing honeycomb,
 # not an input to anything in this repository.
 /modules.json
+# A build script's HEAD marker: one commit SHA, written so a later step can tell
+# what it built. It says nothing a reader of this repository needs and it changes
+# on every build, so a commit that picks it up is noise that conflicts with every
+# other commit that picks it up.
+/build_head.txt
 
 # --- Personal data: never in this repository, which is public ---
 # The marketing host captures signups and enquiries as JSONL under /root/clawd,

@@ -20,25 +20,32 @@
  * ``playwright.config.ts``.
  */
 
-import { test, expect, type BrowserContext } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { login } from '../../e2e/helpers';
 import path from 'path';
 import fs from 'fs';
+import { fileURLToPath } from 'node:url';
 
-const SCREENSHOT_DIR = path.resolve(__dirname, 'screenshots');
+// __dirname does not exist under "type": "module", so this file threw
+// "ReferenceError: __dirname is not defined in ES module scope" at collection
+// time and took every config that loaded this directory down with it. Derived
+// from import.meta.url, the same way folder-permissions.spec.ts and
+// floating-chat.spec.ts already do it.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+const SCREENSHOT_DIR = path.resolve(HERE, 'screenshots');
 fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
 const SHARE_PASSWORD = 'testpw';
 const WRONG_PASSWORD = 'wrongpw';
 
 test.describe('Password-protected share links', () => {
-  test('owner mints a share link, recipient unlocks it', async ({
-    page,
-    browser,
-  }: {
-    page: Awaited<ReturnType<BrowserContext['newPage']>>;
-    browser: BrowserContext['browser'];
-  }) => {
+  // Fixture types come from Playwright's own `test`. They were hand-written
+  // here as `BrowserContext['browser']`, which is the *method* type
+  // `() => Browser | null`, not a Browser - so `browser.newContext()` was
+  // reached through a `!` that silenced a wrong annotation rather than a
+  // nullable value.
+  test('owner mints a share link, recipient unlocks it', async ({ page, browser }) => {
     // ── 1. Owner: log in and navigate to /files ────────────────────────
     await login(page);
     await page.goto('/files');
@@ -83,7 +90,7 @@ test.describe('Password-protected share links', () => {
     expect(shareUrl).toMatch(/\/share\/[A-Za-z0-9_-]{20,}/);
 
     // ── 3. Recipient: open the URL in an incognito context ────────────
-    const incognito = await browser!.newContext();
+    const incognito = await browser.newContext();
     const guestPage = await incognito.newPage();
     // ``shareUrl`` is absolute (window.origin prefixed) — strip the host
     // so we hit the dev server via baseURL.

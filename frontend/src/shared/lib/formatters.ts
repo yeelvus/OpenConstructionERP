@@ -72,6 +72,34 @@ export function fmtFixed(value: number, decimals = 2): string {
 }
 
 /**
+ * A number written for a field a person is still editing, not for reading.
+ *
+ * `fmtFixed` and every other formatter in this module answer "how does this
+ * reader write a number", and the answer is a separator. That is right on a
+ * screen and wrong inside a control: `<input type="number">` accepts exactly
+ * one spelling, digits with a point, and silently empties itself when handed
+ * anything else. Issue #466 was a total that vanished from a thousand upwards
+ * because it had been grouped, and the same grouped string was what the form
+ * read back when it built the request, so `parseFloat` truncated the invoice
+ * at the separator. Under a comma-decimal reader the same call dropped the
+ * cents off every amount at any size.
+ *
+ * So an editable number stays in the canonical form, which has no locale and
+ * therefore cannot be right for one convention and wrong for the other. Where
+ * the same figure also has to be read, that is a second, read-only element
+ * formatted by the functions above.
+ *
+ * A non-finite value comes back as an empty field rather than as the text
+ * `NaN`, which is the one place this parts company with `fmtFixed`: there is
+ * no editing a NaN, the control empties itself on it anyway, and a blank field
+ * says "nothing here yet" where `NaN` says the software is confused. Still no
+ * invented zero, for the reason `fmtFixed` gives.
+ */
+export function fmtNumberForInput(value: number, decimals = 2): string {
+  return Number.isFinite(value) ? value.toFixed(decimals) : '';
+}
+
+/**
  * `toPrecision` with the reader's separators: a count of significant digits
  * rather than of decimal places.
  *
@@ -119,6 +147,53 @@ export function fmtCompact(value: number | string | null | undefined): string {
     notation: 'compact',
     maximumFractionDigits: 1,
   }).format(safe);
+}
+
+/**
+ * "A, B and C" written the way the reader's language writes a list.
+ *
+ * The separator between list items is part of the sentence, not punctuation
+ * the code gets to choose: Japanese and Chinese enumerate with U+3001, Arabic
+ * with U+060C, and a Latin comma in those languages is as wrong as a Latin
+ * decimal point in German. `items.join(', ')` writes one language's separator
+ * for every reader, and no argument to `join` fixes that - the call has to
+ * move onto a formatter, exactly as `toFixed` did.
+ *
+ * This reads `getIntlLocale()`, the language, and deliberately not
+ * `getNumberLocale()`. A reader who set the number preference to a different
+ * convention was answering a question about digits; the comma between two
+ * module names is a fact about the sentence they are reading.
+ *
+ * The two modes are named for what the caller means, not for Intl's two axes,
+ * because the axis names mislead and the wrong pick is worse than the defect.
+ * `'list'` is a bare enumeration after a label ("Modules: A, B, C"); `'prose'`
+ * is a phrase inside a sentence ("written for A, B and C").
+ *
+ * Do NOT reach for Intl's `type: 'unit'` for an enumeration, whatever its name
+ * suggests. In CLDR that type is a list of MEASUREMENTS - "3 ft 7 in" - so it
+ * joins with a space in Japanese, Korean and Russian and with nothing at all
+ * in Chinese. Measured: `['A','B','C']` comes back "ABC" in zh. That is not a
+ * milder version of the Latin-comma bug, it is a worse one. `'narrow'` plus
+ * `'conjunction'` is the combination that yields a real separator everywhere,
+ * and it happens to be byte-identical to the old `join(', ')` in English and
+ * Russian, so it changes only the languages that were being written wrongly.
+ *
+ * The catch path is not a fallback to English by choice: it runs only once
+ * Intl has already refused the locale, and asking it the same question again
+ * would not be a fix.
+ */
+export function fmtList(items: readonly string[], mode: 'list' | 'prose' = 'list'): string {
+  const parts = items.filter((s) => s && s.trim().length > 0);
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return parts[0] ?? '';
+  try {
+    return new Intl.ListFormat(getIntlLocale(), {
+      style: mode === 'prose' ? 'long' : 'narrow',
+      type: 'conjunction',
+    }).format(parts);
+  } catch {
+    return parts.join(', ');
+  }
 }
 
 /**

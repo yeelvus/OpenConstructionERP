@@ -420,18 +420,36 @@ class ProjectService:
             reserved_code = project_code
 
         # Compliance rule packs (Item #27). When the caller left the default
-        # ``["universal"]`` we upgrade it to a region-matched pack so a DACH /
-        # UK / US project gets its jurisdiction gate out of the box; an
-        # explicit non-default choice is always respected verbatim.
+        # ``["universal"]`` we upgrade it to a jurisdiction-matched pack so a
+        # DACH / UK / US project gets its gate out of the box; an explicit
+        # non-default choice is always respected verbatim.
+        #
+        # Resolved from ``country_code`` (ISO 3166-1 alpha-2, a controlled
+        # value) with ``region`` as a fallback only. It used to read the
+        # free-text region alone, by substring, so the pack a project enforced
+        # depended on how its region label was spelled.
         from app.modules.contracts.compliance_packs import (
             DEFAULT_PACK_ID,
-            suggest_pack_for_region,
+            resolve_pack,
             valid_pack_ids,
         )
 
         requested_packs = valid_pack_ids(list(data.compliance_rule_packs or []))
         if not requested_packs or requested_packs == [DEFAULT_PACK_ID]:
-            requested_packs = [suggest_pack_for_region(data.region)]
+            requested_packs = [resolve_pack(data.country_code, data.region)]
+
+        # A pack that is active at creation time widens what the new project
+        # validates against. Additive: whatever the caller asked for is kept,
+        # the pack's sets are appended, and a set the engine does not register
+        # is dropped rather than written - a project must be creatable even
+        # when a pack is wrong. Fail-soft, like the pack lookup below.
+        try:
+            from app.core.partner_pack.apply import inherited_rule_sets
+            from app.core.partner_pack.discovery import get_active_pack
+
+            _rule_sets = inherited_rule_sets(data.validation_rule_sets, get_active_pack())
+        except Exception:  # noqa: BLE001 - creation must never break on pack lookup
+            _rule_sets = list(data.validation_rule_sets or [])
 
         project = Project(
             name=data.name,
@@ -440,7 +458,7 @@ class ProjectService:
             classification_standard=data.classification_standard,
             currency=data.currency,
             locale=data.locale,
-            validation_rule_sets=data.validation_rule_sets,
+            validation_rule_sets=_rule_sets,
             compliance_rule_packs=requested_packs,
             owner_id=owner_id,
             # Phase 12 expansion fields
@@ -487,6 +505,31 @@ class ProjectService:
 
                     if _meth in TEMPLATES_BY_SLUG:
                         _pack_meta["methodology_slug"] = _meth
+                # Inherit the pack's country too, and only when the creator
+                # named none. A country pack is an unambiguous statement of
+                # market, and without this the pack fitted out the methodology
+                # cascade while the country column stayed unset, so the bill's
+                # markup region, the working calendar, the compliance-pack
+                # resolver and the measurement system all still answered "no
+                # opinion" on a workspace that had just been told which country
+                # it was for. An explicit choice always wins: this only ever
+                # fills a blank.
+                #
+                # 'XX' is the manifest's own cross-region marker, used by the
+                # sector packs, and means the opposite of a country. Anything
+                # that is not a clean alpha-2 is left alone rather than
+                # normalised, because a pack that cannot state its market
+                # plainly should not be guessed at.
+                #
+                # Recorded in metadata as well as written to the column,
+                # because a country the product filled in is not the same fact
+                # as a country the user typed, and v3319 exists precisely so
+                # those two stop being the same row.
+                if not (data.country_code or "").strip():
+                    _pack_country = getattr(_pack, "market_country_code", None)
+                    if _pack_country:
+                        project.country_code = _pack_country
+                        _pack_meta["country_from_pack"] = _pack_country
                 project.metadata_ = merge_metadata(project.metadata_, _pack_meta)
         except Exception:  # noqa: BLE001 - creation must never break on pack lookup
             pass

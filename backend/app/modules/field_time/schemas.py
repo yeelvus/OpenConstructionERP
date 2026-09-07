@@ -56,6 +56,10 @@ class FieldTimesheetLineCreate(BaseModel):
     hours: Decimal = Field(default=Decimal("0"), ge=0, le=100000, max_digits=18, decimal_places=4)
     cost_code: str = Field(default="", max_length=100)
     wbs: str | None = Field(default=None, max_length=100)
+    # The bill position these hours went on, when the foreman knows which one.
+    # Optional on purpose: a day spent across six positions names none of them,
+    # and the estimate is better served by an honest blank than by a guess.
+    boq_position_id: UUID | None = None
     is_daywork: bool = False
     variation_id: UUID | None = None
     note: str | None = Field(default=None, max_length=2000)
@@ -83,6 +87,7 @@ class FieldTimesheetLineUpdate(BaseModel):
     hours: Decimal | None = Field(default=None, ge=0, le=100000, max_digits=18, decimal_places=4)
     cost_code: str | None = Field(default=None, max_length=100)
     wbs: str | None = Field(default=None, max_length=100)
+    boq_position_id: UUID | None = None
     is_daywork: bool | None = None
     variation_id: UUID | None = None
     note: str | None = Field(default=None, max_length=2000)
@@ -108,6 +113,7 @@ class FieldTimesheetLineResponse(BaseModel):
     hours: Decimal = Decimal("0")
     cost_code: str = ""
     wbs: str | None = None
+    boq_position_id: UUID | None = None
     is_daywork: bool = False
     variation_id: UUID | None = None
     daywork_sheet_id: UUID | None = None
@@ -281,6 +287,28 @@ class FieldTimesheetResponse(BaseModel):
     plant_hours: str = "0"
     created_at: datetime
     updated_at: datetime
+
+
+class FieldTimesheetListResponse(BaseModel):
+    """One page of field timesheets plus the size of the matching set.
+
+    ``total`` counts the rows the query matched, not the length of ``items``.
+    The project, the date window and the status filter are all applied before
+    the count is taken, so a zero here means this question found nothing rather
+    than the project holding nothing.
+
+    A timesheet register grows by one row per worker per day, which makes it the
+    fastest-filling list in the product. The page could hand back its ceiling
+    and say nothing, and a reader adding up hours by eye would be adding up a
+    slice.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    items: list[FieldTimesheetResponse]
+    total: int
+    offset: int
+    limit: int
 
 
 # ── Offline capture and replay ───────────────────────────────────────────────

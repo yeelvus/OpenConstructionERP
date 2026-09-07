@@ -38,7 +38,7 @@ import { PageHeader } from '@/shared/ui/PageHeader';
 import { catalogGuide } from './catalogGuide';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { apiGet, apiPost, apiPatch, apiDelete } from '@/shared/lib/api';
-import { fmtPercent, getIntlLocale, fmtFixed } from '@/shared/lib/formatters';
+import { fmtList, fmtPercent, getIntlLocale, fmtFixed } from '@/shared/lib/formatters';
 import { useToastStore } from '@/stores/useToastStore';
 import { usePreferencesStore } from '@/stores/usePreferencesStore';
 import { REGION_MAP } from '@/stores/useCostDatabaseStore';
@@ -438,7 +438,7 @@ function RegionTabBar({
         <button
           onClick={() => scroll('left')}
           aria-label={t('common.scroll_left', { defaultValue: 'Scroll left' })}
-          className="absolute left-0 top-0 bottom-0 z-10 flex items-center pl-0.5 pr-3 bg-gradient-to-r from-surface-elevated/80 via-surface-elevated/60 to-transparent rounded-l-xl"
+          className="absolute start-0 top-0 bottom-0 z-10 flex items-center ps-0.5 pe-3 bg-gradient-to-r from-surface-elevated/80 via-surface-elevated/60 to-transparent rounded-s-xl"
         >
           <ChevronLeft size={16} className="text-content-tertiary" />
         </button>
@@ -447,7 +447,7 @@ function RegionTabBar({
         <button
           onClick={() => scroll('right')}
           aria-label={t('common.scroll_right', { defaultValue: 'Scroll right' })}
-          className="absolute right-0 top-0 bottom-0 z-10 flex items-center pr-0.5 pl-3 bg-gradient-to-l from-surface-elevated/80 via-surface-elevated/60 to-transparent rounded-r-xl"
+          className="absolute end-0 top-0 bottom-0 z-10 flex items-center pe-0.5 ps-3 bg-gradient-to-l from-surface-elevated/80 via-surface-elevated/60 to-transparent rounded-e-xl"
         >
           <ChevronRight size={16} className="text-content-tertiary" />
         </button>
@@ -1120,7 +1120,7 @@ function BuildAssemblyModal({
         message: t('catalog.mixed_currency_block', {
           defaultValue:
             'Selected resources use different currencies ({{codes}}). Build the assembly from resources sharing one currency.',
-          codes: distinctCurrencies.join(', '),
+          codes: fmtList(distinctCurrencies),
         }),
       });
       return;
@@ -1400,7 +1400,7 @@ function BuildAssemblyModal({
                   {t('catalog.mixed_currency_warning', {
                     defaultValue:
                       'Selected resources use {{codes}}. An assembly has a single currency, so amounts cannot be combined. Remove rows until one currency remains.',
-                    codes: distinctCurrencies.join(', '),
+                    codes: fmtList(distinctCurrencies),
                   })}
                 </p>
               </div>
@@ -1697,7 +1697,7 @@ export function CatalogPage() {
                 value={region}
                 onChange={(e) => handleRegionChange(e.target.value)}
                 aria-label={t('catalog.filter_region', { defaultValue: 'Filter by region' })}
-                className="h-7 appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-8 text-sm text-content-primary transition-all focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
+                className="h-7 appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-8 text-sm text-content-primary transition-all focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent"
               >
                 <option value="">
                   {t('catalog.all_regions', { defaultValue: 'All regions' })}
@@ -1711,7 +1711,7 @@ export function CatalogPage() {
                   );
                 })}
               </select>
-              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-content-tertiary">
+              <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pr-2 text-content-tertiary">
                 <ChevronDown size={14} />
               </div>
             </div>
@@ -1849,7 +1849,7 @@ export function CatalogPage() {
         <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
           {/* Search input */}
           <div className="relative flex-1">
-            <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-content-tertiary">
+            <div className="pointer-events-none absolute inset-y-0 start-0 flex items-center ps-3 text-content-tertiary">
               <Search size={16} />
             </div>
             <input
@@ -1865,7 +1865,7 @@ export function CatalogPage() {
                       defaultValue: 'Search by name or code...',
                     })
               }
-              className="h-10 w-full rounded-lg border border-border bg-surface-primary pl-10 pr-9 text-sm text-content-primary placeholder:text-content-tertiary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary"
+              className="h-10 w-full rounded-lg border border-border bg-surface-primary ps-10 pe-9 text-sm text-content-primary placeholder:text-content-tertiary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary"
             />
             {query && (
               <button
@@ -1874,7 +1874,7 @@ export function CatalogPage() {
                   setDebouncedQuery('');
                   setOffset(0);
                 }}
-                className="absolute inset-y-0 right-0 flex items-center pr-3 text-content-tertiary hover:text-content-secondary transition-colors"
+                className="absolute inset-y-0 end-0 flex items-center pe-3 text-content-tertiary hover:text-content-secondary transition-colors"
                 aria-label={t('common.clear', { defaultValue: 'Clear' })}
               >
                 <X size={14} />
@@ -1889,7 +1889,7 @@ export function CatalogPage() {
                 value={category}
                 onChange={(e) => handleCategoryChange(e.target.value)}
                 aria-label={t('catalog.filter_category', { defaultValue: 'Filter by category' })}
-                className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-48"
+                className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-9 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-48"
               >
                 <option value="">
                   {t('catalog.all_categories', { defaultValue: 'All categories' })}
@@ -1900,7 +1900,7 @@ export function CatalogPage() {
                   </option>
                 ))}
               </select>
-              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+              <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-2.5 text-content-tertiary">
                 <ChevronDown size={14} />
               </div>
             </div>
@@ -1915,7 +1915,7 @@ export function CatalogPage() {
                 setUnit(e.target.value);
                 setOffset(0);
               }}
-              className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary pl-3 pr-9 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-32"
+              className="h-10 w-full appearance-none rounded-lg border border-border bg-surface-primary ps-3 pe-9 text-sm text-content-primary transition-all duration-fast ease-oe focus:outline-none focus:ring-2 focus:ring-oe-blue focus:border-transparent hover:border-content-tertiary sm:w-32"
             >
               <option value="">
                 {t('catalog.all_units', { defaultValue: 'All units' })}
@@ -1926,7 +1926,7 @@ export function CatalogPage() {
                 </option>
               ))}
             </select>
-            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5 text-content-tertiary">
+            <div className="pointer-events-none absolute inset-y-0 end-0 flex items-center pe-2.5 text-content-tertiary">
               <ChevronDown size={14} />
             </div>
           </div>

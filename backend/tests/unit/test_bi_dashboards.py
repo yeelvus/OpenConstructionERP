@@ -6,6 +6,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -1121,12 +1122,20 @@ async def test_alert_dsl_or_fires_on_either(session: AsyncSession) -> None:
 async def test_alert_dsl_malformed_expression_does_not_fire(
     session: AsyncSession,
 ) -> None:
-    from app.modules.bi_dashboards.schemas import AlertRuleCreate
+    """A stored rule the evaluator cannot read still fails closed.
+
+    The row is built through the repository rather than through
+    ``create_alert``, because ``create_alert`` refuses this expression
+    now. The evaluation-time behaviour still has to hold: validation
+    closed the way in, it did not sweep the rows that came in before it
+    existed.
+    """
+    from app.modules.bi_dashboards.models import AlertRule
     from app.modules.bi_dashboards.service import BIDashboardsService
 
     svc = BIDashboardsService(session)
-    alert = await svc.create_alert(
-        AlertRuleCreate(
+    alert = await svc.repo.create_alert(
+        AlertRule(
             name="bad",
             kpi_code="cpi",
             condition="below",
@@ -1134,7 +1143,7 @@ async def test_alert_dsl_malformed_expression_does_not_fire(
             expression_json={"op": "BOGUS"},
         ),
     )
-    # Fails closed — does NOT raise to caller, returns False
+    # Fails closed - does NOT raise to caller, returns False
     assert await svc.evaluate_alert(alert) is False
 
 
@@ -1145,6 +1154,286 @@ def test_alert_dsl_eval_directly() -> None:
     assert _compare(Decimal("1.5"), "gt", Decimal("1.0")) is True
     assert _compare("execution", "eq", "execution") is True
     assert _compare("planning", "neq", "execution") is True
+
+
+# ── A threshold has to be a number ────────────────────────────────────
+#
+# The DSL compares a measured KPI against a threshold somebody wrote. A
+# threshold that is not a number does not fail loudly, it answers: an
+# ordering comparison against NaN raises out of the evaluator once a
+# cycle forever, ``neq`` against it is true forever so the rule fires
+# every cycle, an infinity is simply larger or smaller than everything,
+# and a boolean used to be read as ``Decimal("0")`` and compared against
+# zero. Each of those is a rule that reads as working. They are refused
+# where the rule is written.
+
+#: Every spelling ``Decimal`` accepts and arithmetic cannot use. The
+#: parser is case-insensitive and takes the short forms, so a gate that
+#: knows only "NaN" and "Infinity" is a gate with two holes in it.
+NON_FINITE_SPELLINGS = [
+    "NaN",
+    "nan",
+    "NAN",
+    "sNaN",
+    "snan",
+    "Infinity",
+    "infinity",
+    "INFINITY",
+    "-Infinity",
+    "inf",
+    "Inf",
+]
+
+
+def test_a_non_finite_string_parses_as_a_decimal() -> None:
+    """The fact the old fallback was blind to, pinned on its own.
+
+    ``_coerce_decimal`` fell back to ``Decimal("0")`` when a value could
+    not be parsed. None of these fails to parse, so the fallback never
+    fired for any of them and each one reached the comparison intact.
+    """
+    for spelling in NON_FINITE_SPELLINGS:
+        parsed = Decimal(str(spelling))  # does not raise
+        assert parsed.is_finite() is False, spelling
+
+
+@pytest.mark.parametrize("value", NON_FINITE_SPELLINGS)
+def test_a_non_finite_threshold_is_refused_when_the_rule_is_written(value: str) -> None:
+    from app.modules.bi_dashboards.alert_dsl import (
+        AlertExpressionError,
+        validate_alert_expression,
+    )
+
+    with pytest.raises(AlertExpressionError) as exc_info:
+        validate_alert_expression(
+            {"op": "kpi", "code": "cpi", "compare": "lt", "value": value},
+        )
+    assert "$.value" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_a_boolean_threshold_is_refused_when_the_rule_is_written(value: bool) -> None:
+    """The other route into the same silence.
+
+    ``Decimal(str(True))`` raises, so a boolean took the fallback rather
+    than the parse, and the fallback turned it into ``Decimal("0")``. A
+    rule written against ``true`` compared against zero, and zero is a
+    threshold somebody could have meant, so nothing about the stored rule
+    said it had been rewritten.
+    """
+    from app.modules.bi_dashboards.alert_dsl import (
+        AlertExpressionError,
+        validate_alert_expression,
+    )
+
+    with pytest.raises(AlertExpressionError) as exc_info:
+        validate_alert_expression(
+            {"op": "kpi", "code": "cpi", "compare": "lt", "value": value},
+        )
+    assert "boolean" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("value", NON_FINITE_SPELLINGS)
+def test_a_non_finite_literal_is_refused_on_a_field_leaf_too(value: str) -> None:
+    """The same value on the other kind of leaf.
+
+    A field comparison is where a non-numeric value is legitimate, so the
+    check there is narrower: only a value shaped like a number is held to
+    being a finite one.
+    """
+    from app.modules.bi_dashboards.alert_dsl import (
+        AlertExpressionError,
+        validate_alert_expression,
+    )
+
+    with pytest.raises(AlertExpressionError):
+        validate_alert_expression(
+            {
+                "op": "field",
+                "source": "project",
+                "path": "budget",
+                "compare": "gt",
+                "value": value,
+            },
+        )
+
+
+def test_a_field_leaf_still_compares_against_text_and_booleans() -> None:
+    """The counterweight, and the reason the field check is not the KPI one."""
+    from app.modules.bi_dashboards.alert_dsl import validate_alert_expression
+
+    validate_alert_expression(
+        {
+            "op": "and",
+            "operands": [
+                {"op": "kpi", "code": "cpi", "compare": "lt", "value": "0.95"},
+                {
+                    "op": "field",
+                    "source": "project",
+                    "path": "phase",
+                    "compare": "eq",
+                    "value": "execution",
+                },
+                {
+                    "op": "field",
+                    "source": "project",
+                    "path": "is_active",
+                    "compare": "eq",
+                    "value": True,
+                },
+            ],
+        },
+    )
+
+
+def test_an_empty_expression_is_the_single_kpi_path_not_a_refusal() -> None:
+    """An empty ``expression_json`` means the rule uses condition + threshold."""
+    from app.modules.bi_dashboards.alert_dsl import validate_alert_expression
+
+    validate_alert_expression({})
+    validate_alert_expression(None)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        {"op": "and", "operands": []},
+        {"op": "or", "operands": []},
+        {"op": "not", "operands": []},
+        {"op": "and"},
+        {"op": "kpi", "compare": "lt", "value": "1"},
+        {"op": "kpi", "code": "", "compare": "lt", "value": "1"},
+        {"op": "kpi", "code": "cpi", "compare": "between", "value": "1"},
+        {"op": "kpi", "code": "cpi", "compare": "lt"},
+        {"op": "kpi", "code": "cpi", "compare": "lt", "value": "not a number"},
+        {"op": "field", "source": "budget_table", "path": "x", "compare": "eq", "value": "1"},
+        {"op": "field", "source": "project", "path": "", "compare": "eq", "value": "1"},
+        {"op": "BOGUS"},
+        ["not", "a", "node"],
+    ],
+)
+def test_an_expression_the_evaluator_could_only_fail_on_is_refused(expression: Any) -> None:
+    """An empty ``and`` is the loud one: it evaluates to True every cycle."""
+    from app.modules.bi_dashboards.alert_dsl import (
+        AlertExpressionError,
+        validate_alert_expression,
+    )
+
+    with pytest.raises(AlertExpressionError):
+        validate_alert_expression(expression)
+
+
+@pytest.mark.asyncio
+async def test_the_way_in_refuses_a_rule_that_could_never_fire(
+    session: AsyncSession,
+) -> None:
+    """The check belongs on the write path, so this is where it is proven."""
+    from app.modules.bi_dashboards.alert_dsl import AlertExpressionError
+    from app.modules.bi_dashboards.schemas import AlertRuleCreate
+    from app.modules.bi_dashboards.service import BIDashboardsService
+
+    svc = BIDashboardsService(session)
+    with pytest.raises(AlertExpressionError):
+        await svc.create_alert(
+            AlertRuleCreate(
+                name="never fires",
+                kpi_code="cpi",
+                condition="below",
+                threshold_value=Decimal("0"),
+                expression_json={
+                    "op": "kpi",
+                    "code": "cpi",
+                    "compare": "lt",
+                    "value": "NaN",
+                },
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_stored_non_finite_threshold_no_longer_fires_every_cycle(
+    session: AsyncSession,
+) -> None:
+    """The false-positive half of the defect, on a row that predates the check.
+
+    ``neq`` against NaN is true whatever the measurement, so this rule
+    used to fire on every evaluation with a trace saying the KPI differed
+    from its threshold. It cannot be answered, so it fails closed.
+    """
+    from app.modules.bi_dashboards import kpis
+    from app.modules.bi_dashboards.models import AlertRule
+    from app.modules.bi_dashboards.service import BIDashboardsService
+
+    @kpis.register_kpi(
+        "_test_dsl_nan_kpi",
+        name="N",
+        unit="ratio",
+        category="operational",
+    )
+    async def _n(session, **_):
+        return kpis.KPIComputation(value=Decimal("0.5"), unit="ratio", source_record_count=1)
+
+    svc = BIDashboardsService(session)
+    alert = await svc.repo.create_alert(
+        AlertRule(
+            name="fires every cycle",
+            kpi_code="_test_dsl_nan_kpi",
+            condition="below",
+            threshold_value=Decimal("0"),
+            expression_json={
+                "op": "kpi",
+                "code": "_test_dsl_nan_kpi",
+                "compare": "neq",
+                "value": "NaN",
+            },
+        ),
+    )
+    assert await svc.evaluate_alert(alert) is False
+
+
+def test_two_booleans_compare_as_booleans() -> None:
+    """Reading a boolean as a number folded True and False onto zero.
+
+    Both sides came back ``Decimal("0")``, so every boolean comparison
+    said equal, ``True == False`` included.
+    """
+    from app.modules.bi_dashboards.alert_dsl import _compare
+
+    assert _compare(True, "eq", False) is False
+    assert _compare(True, "neq", False) is True
+    assert _compare(True, "eq", True) is True
+    assert _compare(False, "eq", False) is True
+
+
+def test_an_unset_field_is_not_read_as_zero() -> None:
+    """A NULL column used to answer the comparison rather than refuse it.
+
+    ``Decimal(str(None))`` raises, the fallback made it ``Decimal("0")``,
+    and ``project.budget < 100`` then fired on a project with no budget
+    recorded. There is no answer to give, so the rule fails closed.
+    """
+    from app.modules.bi_dashboards.alert_dsl import AlertExpressionError, _compare
+
+    with pytest.raises(AlertExpressionError):
+        _compare(None, "lt", Decimal("100"))
+    with pytest.raises(AlertExpressionError):
+        _compare(Decimal("100"), "gt", "not a number")
+
+
+def test_a_non_finite_measurement_refuses_rather_than_answers() -> None:
+    """The measured side, which is not the authored one.
+
+    A threshold is written by a person and can be refused when they write
+    it. A measurement arrives from a KPI at evaluation time, so the only
+    place to catch it is here. It raises rather than returning False:
+    under a ``not`` a False leaf inverts, and a rule nobody can evaluate
+    would fire every cycle.
+    """
+    from app.modules.bi_dashboards.alert_dsl import AlertExpressionError, _compare
+
+    for spelling in ("NaN", "sNaN", "Infinity"):
+        with pytest.raises(AlertExpressionError):
+            _compare(Decimal(spelling), "lt", Decimal("1"))
 
 
 # ── Report file generation ────────────────────────────────────────────
@@ -1194,6 +1483,16 @@ async def test_run_report_produces_pdf_file(session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_run_report_csv_format(session: AsyncSession) -> None:
+    """A CSV run writes a headed file with the KPI's row in it.
+
+    The heading is the reader's, not the API's: ``output_format`` is a
+    choice somebody made about how to read this report, and all three
+    formats go to a person through the same download endpoint. The
+    machine's copy of the same run is ``ReportRunResponse.rows``, which
+    keeps ``kpi_code`` and the raw values untouched. This assertion used
+    to name the row key, which read as a promise about the CSV that the
+    PDF of the same report had already stopped making.
+    """
     from app.modules.bi_dashboards.schemas import ReportDefinitionCreate
     from app.modules.bi_dashboards.service import BIDashboardsService
 
@@ -1213,7 +1512,8 @@ async def test_run_report_csv_format(session: AsyncSession) -> None:
     assert run.file_path.endswith(".csv")
     with open(run.file_path) as fh:
         body = fh.read()
-    assert "kpi_code" in body
+    assert "KPI code" in body
+    assert "kpi_code" not in body
     assert "cpi" in body
 
 
@@ -2039,3 +2339,87 @@ async def test_evaluate_dashboard_scopes_portfolio_to_allowed_projects(
     admin = await svc.evaluate_dashboard(dashboard.id, allowed_project_ids=None)
     assert admin is not None
     assert admin.widgets[0].value >= Decimal("2")
+
+
+# ── safety_trir: a rate with no denominator has to say so ──────────────
+
+
+async def _make_incident(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    *,
+    number: str,
+    man_hours: float | None = None,
+) -> None:
+    """One OSHA-recordable incident, with or without its exposure hours."""
+    from app.modules.safety.models import SafetyIncident
+
+    session.add(
+        SafetyIncident(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            incident_number=number,
+            incident_date="2026-05-10",
+            incident_type="injury",
+            title="Recordable injury",
+            description="Fall from height",
+            severity="major",
+            osha_recordable=True,
+            metadata_={} if man_hours is None else {"man_hours_total": man_hours},
+        )
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_safety_trir_reports_no_data_when_exposure_hours_are_missing(
+    session: AsyncSession,
+) -> None:
+    """TRIR is incidents x 200000 / hours worked, and nothing in the platform
+    writes ``man_hours_total``, so the denominator is routinely absent.
+
+    A rate computed against an absent denominator is a wrong answer rather
+    than a missing one, and it is wrong in the direction that reads as
+    plausible: with the fallback denominator equal to the OSHA numerator
+    constant, TRIR came back numerically equal to the incident count and was
+    charted as a rate. The formula has to decline instead.
+    """
+    from app.modules.bi_dashboards import kpis
+
+    proj = await _make_project(session, currency="EUR")
+    await _make_incident(session, proj.id, number="INC-001")
+    await _make_incident(session, proj.id, number="INC-002")
+
+    result = await kpis.compute("safety_trir", session, project_id=proj.id)
+
+    # ``source_record_count == 0`` is this module's no-data signal, not a
+    # style choice: it is what stops the value reaching KPIValue
+    # (service.py:408) and being averaged into a benchmark (kpis.py:3813),
+    # and it is what makes the controls tile render an em dash and the
+    # words "no data" instead of a number (ControlsTile.tsx:25).
+    assert result.source_record_count == 0
+    assert result.value == Decimal("0")
+    assert result.breakdown.get("reason") == "no_exposure_hours"
+    # The incidents themselves are not lost, they are just not a rate.
+    assert result.breakdown.get("recordable_incidents") == 2
+
+
+@pytest.mark.asyncio
+async def test_safety_trir_computes_the_rate_when_exposure_hours_are_recorded(
+    session: AsyncSession,
+) -> None:
+    """Control for the test above: the refusal has to be conditional.
+
+    Without this, a formula that returned no-data unconditionally would pass
+    the test above while being just as broken in the other direction.
+    """
+    from app.modules.bi_dashboards import kpis
+
+    proj = await _make_project(session, currency="EUR")
+    await _make_incident(session, proj.id, number="INC-001", man_hours=100_000)
+
+    result = await kpis.compute("safety_trir", session, project_id=proj.id)
+
+    assert result.source_record_count == 1
+    assert result.value == Decimal("2")  # 1 x 200000 / 100000
+    assert Decimal(result.breakdown["hours_worked"]) == Decimal("100000")

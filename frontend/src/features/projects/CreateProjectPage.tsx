@@ -151,6 +151,23 @@ const REGION_TO_PACK: Record<string, string> = {
 
 // ── Classification Standards ──────────────────────────────────────────────
 
+// Every value below must be one ``resolve_standard`` accepts, which is
+// KNOWN_CLASSIFICATION_STANDARDS on the backend and not the longer
+// CLASSIFICATION_STANDARD_LABELS. The two sets are not the same and the
+// difference is deliberate: a standard has a label so that a CostItem encoded
+// against it can be named, and it is in the known set only if the product
+// renders a section path for it. An option carrying a labelled-but-not-known
+// value writes a project standard that resolve_standard drops on the floor,
+// falling through to the region and then to DIN 276, with no error and no log
+// the user will ever see.
+//
+// UniFormat, Uniclass and OmniClass sat here doing exactly that. So did the
+// short 'gbt' for China, which the backend spells 'gb50500'. They are removed
+// rather than added to the known set because "we don't render it yet" is the
+// true statement about them, and a picker is not the place to promise
+// otherwise. The label maps on the reading screens still name all three, which
+// is the right asymmetry: stop writing a value that cannot resolve, keep
+// naming one that is already stored.
 const STANDARD_GROUPS: OptionGroup[] = [
   {
     group: 'Common Standards',
@@ -158,10 +175,26 @@ const STANDARD_GROUPS: OptionGroup[] = [
       { value: 'din276', label: 'DIN 276 (Germany / DACH)' },
       { value: 'nrm', label: 'NRM 1/2 (United Kingdom)' },
       { value: 'masterformat', label: 'MasterFormat (US / Canada)' },
-      { value: 'uniformat', label: 'UniFormat (US)' },
-      { value: 'uniclass', label: 'Uniclass (UK)' },
-      { value: 'omniclass', label: 'OmniClass (International)' },
-      { value: 'gbt', label: 'GB/T (China)' },
+      { value: 'gb50500', label: 'GB/T (China)' },
+      { value: 'tetelrend', label: 'Tételrend (Hungary)' },
+    ],
+  },
+  {
+    // The rest of what the backend resolves. These were reachable server-side
+    // and unreachable from here, so an estimator in Russia, Spain, France,
+    // Austria, Brazil, Japan, Korea or Turkey could not name their own
+    // standard on a project. The list is hand-written because the picker needs
+    // a country beside the name and the registry has no opinion about wording.
+    group: 'National Standards',
+    options: [
+      { value: 'gesn', label: 'GESN / FER (Russia, CIS)' },
+      { value: 'bc3', label: 'BC3 (Spain)' },
+      { value: 'untec', label: 'UNTEC (France)' },
+      { value: 'voci', label: 'VOCI (Austria)' },
+      { value: 'sinapi', label: 'SINAPI (Brazil)' },
+      { value: 'sekisan', label: 'Sekisan (Japan)' },
+      { value: 'kbim', label: 'KBIM (South Korea)' },
+      { value: 'birimfiyat', label: 'Birim Fiyat (Turkey)' },
     ],
   },
   {
@@ -1148,7 +1181,7 @@ export function CreateProjectModal({
           <button
             onClick={requestClose}
             aria-label={t('common.close', { defaultValue: 'Close' })}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:text-content-primary hover:bg-surface-hover transition-colors"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-content-tertiary hover:text-content-primary hover:bg-surface-secondary transition-colors"
           >
             <X size={18} />
           </button>
@@ -1163,7 +1196,7 @@ export function CreateProjectModal({
           <div className="relative">
             {/* neutral track behind the dots — the dots themselves carry
                 all progress state, so no same-colour camouflage. */}
-            <div className="absolute left-3 right-3 top-3 h-px bg-border-light" />
+            <div className="absolute start-3 end-3 top-3 h-px bg-border-light" />
             <div
               className="relative grid"
               style={{ gridTemplateColumns: `repeat(${STEP_COUNT}, minmax(0, 1fr))` }}

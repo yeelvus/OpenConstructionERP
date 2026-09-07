@@ -26,7 +26,9 @@ import { usePreferencesStore, useNumberLocale } from '@/stores/usePreferencesSto
 import { useDisplayQuantity } from '@/shared/hooks/useDisplayQuantity';
 import {
   boqApi,
+  exportablePositions,
   groupPositionsIntoSections,
+  isEmptyPosition,
   isSection,
   getPositionDepth,
   normalizePositions,
@@ -63,6 +65,7 @@ import { ResourceSummary } from './ResourceSummary';
 import { CommentDrawer, type CommentEntry } from './CommentDrawer';
 import { PriceAnalysisPanel } from './PriceAnalysisPanel';
 import { PositionActualsDrawer } from '@/features/costmodel/PositionActualsDrawer';
+import { MeasurementDrawer } from './MeasurementDrawer';
 import { SensitivityChart } from './SensitivityChart';
 import { CostRiskPanel } from './CostRiskPanel';
 import { MarkupPanel } from './MarkupPanel';
@@ -111,6 +114,7 @@ import { BOQVariablesDialog } from './BOQVariablesDialog';
 import { CostPerAreaBenchmark } from './CostPerAreaBenchmark';
 import { RenumberDialog, type RenumberScheme, type RenumberCustom } from './RenumberDialog';
 import { LinkedPositionsModal } from './LinkedPositionsModal';
+import { fmtList } from '@/shared/lib/formatters';
 
 /* ── Re-exports for tests ────────────────────────────────────────────── */
 
@@ -2452,7 +2456,11 @@ export function BOQEditorPage() {
   const miniSummaryStats = useMemo(() => {
     const allPositions = boq?.positions ?? [];
     const sectionCount = grouped.sections.length;
-    const positionCount = allPositions.filter((p) => !isSection(p)).length;
+    // Counts the bill, not the grid: a row nobody has typed into yet is not a
+    // position, and this figure has to agree with the one on the bill's card
+    // in the listing. The "X of Y" count above deliberately does not use this
+    // rule - it describes the rows the grid is rendering, blank ones included.
+    const positionCount = allPositions.filter((p) => !isSection(p) && !isEmptyPosition(p)).length;
     const errorCount = allPositions.filter(
       (p) => !isSection(p) && p.validation_status === 'errors',
     ).length;
@@ -2807,7 +2815,7 @@ export function BOQEditorPage() {
             (known.length > 0
               ? `\n\n${t('boq.reuse_code_existing', {
                   defaultValue: 'Existing codes: {{codes}}',
-                  codes: known.slice(0, 40).join(', '),
+                  codes: fmtList(known.slice(0, 40)),
                 })}`
               : ''),
           '',
@@ -4590,6 +4598,12 @@ export function BOQEditorPage() {
    */
   const [actualsPositionId, setActualsPositionId] = useState<string | null>(null);
 
+  /** Take-off sheet state. The panel reads and computes on its own; this
+   *  page keeps the id because it owns the position mutation the sheet is
+   *  saved through, and a second mutation over the same cache would be one
+   *  writer too many. */
+  const [measurementPositionId, setMeasurementPositionId] = useState<string | null>(null);
+
   /** Comment drawer state */
   const [commentPositionId, setCommentPositionId] = useState<string | null>(null);
   const userEmail = useAuthStore((s) => s.userEmail) ?? '';
@@ -4848,6 +4862,8 @@ export function BOQEditorPage() {
 
         <BOQToolbar
           t={t}
+          projectId={boq.project_id}
+          boqId={boq.id}
           canUndo={canUndo}
           canRedo={canRedo}
           onUndo={handleUndo}
@@ -5008,6 +5024,7 @@ export function BOQEditorPage() {
           onOpenAICopilot={handleOpenAICopilot}
           onPriceAnalysis={setPriceAnalysisPositionId}
           onShowPositionActuals={setActualsPositionId}
+          onShowMeasurement={setMeasurementPositionId}
           aiCopilotPositionId={aiCopilotOpen ? aiCopilotPositionId : null}
           renderInlineCopilot={renderInlineCopilot}
           onAddManualResource={handleAddManualResource}
@@ -5348,7 +5365,9 @@ export function BOQEditorPage() {
                   {t('boq.gaeb_positions', { defaultValue: 'Positions' })}
                 </span>
                 <span className="font-medium text-content-primary">
-                  {positions.filter((p) => !isSection(p)).length}
+                  {/* Counts what the GAEB file will actually contain, so this
+                      preview cannot promise a position the export then drops. */}
+                  {exportablePositions(positions).filter((p) => !isSection(p)).length}
                 </span>
               </div>
               <div className="flex items-center justify-between text-xs">
@@ -5619,6 +5638,40 @@ export function BOQEditorPage() {
             positionId={actualsPositionId}
             positionOrdinal={pos?.ordinal ?? ''}
             positionDescription={pos?.description ?? ''}
+          />
+        );
+      })()}
+
+      {/* ── Measurement sheet ───────────────────────────────────────────
+          Hand measurement with no drawing and no model: units, length, width,
+          height, add or deduct, subtotals and a total. Saving is a normal
+          position update carrying the new quantity and the lines under
+          `metadata.measurement`, which is what the backend documented and why
+          there is no save endpoint for the panel to call. It goes through this
+          page's own mutation rather than one of its own, so the grid's cache
+          is written by a single writer, exactly as the comment drawer does. */}
+      {measurementPositionId && (() => {
+        const pos = boq?.positions.find((p) => p.id === measurementPositionId);
+        if (!pos) return null;
+        return (
+          <MeasurementDrawer
+            position={pos}
+            readOnly={Boolean(boq?.is_locked)}
+            saving={updateMutation.isPending}
+            onClose={() => setMeasurementPositionId(null)}
+            onSave={(quantity, lines) => {
+              updateMutation.mutate({
+                id: pos.id,
+                data: {
+                  quantity,
+                  metadata: {
+                    ...pos.metadata,
+                    measurement: { unit: pos.unit, lines },
+                  },
+                },
+              });
+              setMeasurementPositionId(null);
+            }}
           />
         );
       })()}

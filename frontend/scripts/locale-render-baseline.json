@@ -1,0 +1,24 @@
+{
+  "_comment": [
+    "Declared debt for scripts/check-locale-render.mjs: cells that render blank",
+    "in an offered locale where English renders text, so the reader of that",
+    "language is looking at an empty control.",
+    "",
+    "Each key maps to the explicit SET of locales still blank, never a count. A",
+    "count cannot tell a repaired cell from a newly broken one, and a bare key",
+    "list goes green the moment the first locale is filled in. Same shape, and",
+    "the same reason, as scripts/i18n_leak_baseline.json.",
+    "",
+    "This list may only shrink. A cell blank and not named here fails the",
+    "guard. A cell named here and no longer blank is reported on every run with",
+    "the line to delete, and does not fail, because several sessions edit these",
+    "files at once and a guard that turns red when somebody repairs a string is",
+    "a guard that gets switched off. Trim it in the change that repaired the",
+    "value.",
+    "",
+    "Recorded 2026-08-26 with 25 cells across 9 keys, in bg, it, ro and ky. All",
+    "25 were translated the same day and the entries were trimmed with them, so",
+    "there is no declared debt left. An empty list is the intended steady state:",
+    "the next blank cell fails the guard rather than joining a backlog."
+  ]
+}

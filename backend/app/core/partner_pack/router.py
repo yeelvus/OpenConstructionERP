@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from app.core.partner_pack._safe_extract import has_zip_magic
 from app.core.partner_pack.apply import (
+    UnknownRuleSetError,
     apply_pack,
     build_preview,
     get_applied_info,
@@ -35,6 +36,7 @@ from app.core.partner_pack.full_install import (
     full_install,
     full_install_stream,
 )
+from app.core.partner_pack.state import PackStateWriteError
 from app.dependencies import RequireRole
 
 _IMAGE_MEDIA_TYPES = {
@@ -101,6 +103,10 @@ def apply_preview(slug: str) -> dict[str, Any]:
     """Return the field-by-field effect plan without changing anything."""
     try:
         return build_preview(slug)
+    except UnknownRuleSetError as exc:
+        # The pack is installed and readable; it is its contents that are
+        # wrong, so this is not a 404.
+        raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -119,6 +125,13 @@ async def apply(body: ApplyRequest, request: Request) -> dict[str, Any]:
             install_demo=body.install_demo,
             app=request.app,
         )
+    except UnknownRuleSetError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except PackStateWriteError as exc:
+        # The pack is not active and must not be reported as applied. 507 says
+        # what this almost always is - a data directory that is full or not
+        # writable - so the admin fixes the disk rather than the pack.
+        raise HTTPException(status_code=507, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -303,6 +316,8 @@ def partner_logo() -> Response:
     active = get_active_pack()
     if not active:
         raise HTTPException(status_code=404, detail="No active partner pack")
+    if not active.branding.logo_path:
+        raise HTTPException(status_code=404, detail=f"Pack '{active.slug}' ships no logo")
     # Use the universal by-slug reader, not the pip-only _read_pack_resource.
     # In-app one-click installs activate *source-checkout* packs under packs/,
     # which have no importable entry-point module - _read_pack_resource would
@@ -340,6 +355,8 @@ def partner_logo_by_slug(slug: str) -> Response:
     m = get_pack_by_slug(slug)
     if not m:
         raise HTTPException(status_code=404, detail=f"Pack '{slug}' not installed")
+    if not m.branding.logo_path:
+        raise HTTPException(status_code=404, detail=f"Pack '{slug}' ships no logo")
     data = read_pack_file(slug, m.branding.logo_path)
     if data is None:
         raise HTTPException(
@@ -370,8 +387,20 @@ def partner_favicon() -> Response:
 def partner_onboarding_script() -> Response:
     """Stream the onboarding YAML/JSON shipped by the active pack.
 
-    Frontend OnboardingWizard fetches this and renders partner-specific
-    steps instead of the default sequence.
+    Nothing in the product calls this. The line that stood here said the
+    OnboardingWizard fetches it and renders partner-specific steps instead of
+    the default sequence, and that is not true and may never have been: the
+    frontend has no reference to this route under any spelling, and carries
+    ``has_onboarding_script`` only as a field on a type. The scripts themselves
+    are equally inert. Fifteen packs ship one, each with ``apply:`` verbs such
+    as ``set_default_currency`` and ``set_tax_template``, and the only code
+    anywhere that reads those verbs is a unit test checking one pack's YAML
+    against itself.
+
+    Left in place rather than deleted, because the endpoint does what it says
+    and the scripts are a designed feature somebody may finish. But a docstring
+    asserting a consumer that does not exist is worse than no docstring: it is
+    what makes a pack author believe the steps they wrote will run.
     """
     active = get_active_pack()
     if not active or not active.onboarding_script_path:

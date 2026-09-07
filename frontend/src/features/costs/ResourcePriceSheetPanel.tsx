@@ -46,6 +46,7 @@ import {
   type ResourceType,
 } from './useResourcePrices';
 import { getNumberLocale } from '@/stores/usePreferencesStore';
+import { fmtList } from '@/shared/lib/formatters';
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
@@ -527,7 +528,7 @@ export function ResourcePriceSheetPanel({
             <div className="relative min-w-[200px] flex-1">
               <Search
                 size={14}
-                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-content-tertiary"
+                className="pointer-events-none absolute start-2.5 top-1/2 -translate-y-1/2 text-content-tertiary"
               />
               <input
                 type="search"
@@ -536,7 +537,7 @@ export function ResourcePriceSheetPanel({
                 placeholder={t('costs.resource_prices.search_placeholder', {
                   defaultValue: 'Search resources by name…',
                 })}
-                className="w-full rounded-lg border border-border-light bg-surface-primary py-1.5 pl-8 pr-2.5 text-sm text-content-primary placeholder:text-content-quaternary focus:border-oe-blue/40 focus:outline-none focus:ring-2 focus:ring-oe-blue/20"
+                className="w-full rounded-lg border border-border-light bg-surface-primary py-1.5 ps-8 pe-2.5 text-sm text-content-primary placeholder:text-content-quaternary focus:border-oe-blue/40 focus:outline-none focus:ring-2 focus:ring-oe-blue/20"
               />
             </div>
             <select
@@ -749,7 +750,7 @@ export function ResourcePriceSheetPanel({
                   {t('costs.resource_prices.preview_missing', {
                     defaultValue: '{{count}} resources still need a price, for example: {{sample}}',
                     count: preview.missing_resource_count,
-                    sample: preview.missing_resources_sample.slice(0, 5).join(', '),
+                    sample: fmtList(preview.missing_resources_sample.slice(0, 5)),
                   })}
                 </p>
               )}

@@ -74,7 +74,7 @@ import {
 } from './api';
 import { InsightsPanel, InsightsToggleButton, useModuleInsights } from '@/features/insights';
 import { buildCvrInsights } from './cvrInsights';
-import { fmtPercent } from '@/shared/lib/formatters';
+import { fmtList, fmtPercent } from '@/shared/lib/formatters';
 
 interface Project {
   id: string;
@@ -291,7 +291,7 @@ function LinesTable({
                   <span className="inline-flex items-center gap-1.5">
                     {line.description || '-'}
                     {line.flags.length > 0 && (
-                      <span title={line.flags.join(', ')}>
+                      <span title={fmtList(line.flags)}>
                         <AlertTriangle size={13} className="text-amber-500" />
                       </span>
                     )}
