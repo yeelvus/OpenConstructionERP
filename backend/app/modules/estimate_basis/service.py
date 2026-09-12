@@ -22,6 +22,7 @@ from sqlalchemy.orm import noload
 
 from app.core.sql_numeric import numeric_value
 from app.modules.allowances.models import Allowance
+from app.modules.boq.base_date import latest_base_date
 from app.modules.boq.models import BOQ, BOQMarkup, Position, QuantityLink
 from app.modules.costs.models import CostItem, CostItemUsage
 from app.modules.estimate_basis.derivation import (
@@ -308,6 +309,14 @@ class EstimateBasisService:
         summary.grand_total = fmt_decimal(grand)
         return summary
 
+    async def _resolve_locale(self, project_id: uuid.UUID) -> str:
+        """Return the project's locale for condition-text generation."""
+        from app.modules.projects.models import Project
+
+        stmt = select(Project.locale).where(Project.id == project_id)
+        found = (await self.session.execute(stmt)).scalar()
+        return str(found or "en").strip()
+
     async def _resolve_currency(self, project_id: uuid.UUID, currency: str) -> str:
         """Return the stated currency, or the project's when none was stated.
 
@@ -390,6 +399,13 @@ class EstimateBasisService:
         Prefers the freshest ``price_as_of`` across the cost items actually
         applied in the project (through the usage ledger); falls back to the
         estimate's stated base date (the BOQ ``base_date``, the escalation base).
+
+        The bills are ranked by :func:`app.modules.boq.base_date.latest_base_date`
+        rather than by ``max()`` in SQL. ``base_date`` is free text holding a
+        day, a month, a quarter or a year, and those strings do not sort in the
+        order their dates run: ``"2026-Q1"`` sorts above ``"2026-12-01"``. A
+        project mixing shapes was quoting the wrong bill's price base in a
+        document that goes to a client.
         """
         price_stmt = (
             select(func.max(CostItem.price_as_of))
@@ -401,13 +417,10 @@ class EstimateBasisService:
         if price_as_of is not None:
             return price_as_of.isoformat()
 
-        base_stmt = select(func.max(BOQ.base_date)).where(BOQ.project_id == project_id)
+        base_stmt = select(BOQ.base_date).where(BOQ.project_id == project_id, BOQ.base_date.is_not(None))
         if boq_id is not None:
             base_stmt = base_stmt.where(BOQ.id == boq_id)
-        base_date = (await self.session.execute(base_stmt)).scalar()
-        if base_date:
-            return str(base_date).strip() or None
-        return None
+        return latest_base_date((await self.session.execute(base_stmt)).scalars().all())
 
     # ── Generate ─────────────────────────────────────────────────────────────
 
@@ -446,6 +459,7 @@ class EstimateBasisService:
             markup_count=len(markups.lines),
         )
 
+        project_locale = await self._resolve_locale(project_id)
         draft = draft_basis(
             coverage,
             currency=resolved_currency,
@@ -455,6 +469,7 @@ class EstimateBasisService:
             pricing_base_date=pricing_base_date,
             provenance=provenance,
             markups=markups,
+            locale=project_locale,
         )
 
         doc = EstimateBasis(
@@ -651,6 +666,8 @@ class EstimateBasisService:
             doc.market_conditions = payload.market_conditions
         if payload.contingency_rationale is not None:
             doc.contingency_rationale = payload.contingency_rationale
+        if payload.budget_target is not None:
+            doc.budget_target = payload.budget_target
         self._apply_class(doc, payload)
         await self.session.flush()
         return doc
@@ -737,6 +754,7 @@ class EstimateBasisService:
             accuracy_high_amount=high_amount,
             market_conditions=doc.market_conditions or "",
             contingency_rationale=doc.contingency_rationale or "",
+            budget_target=doc.budget_target,
             generated_at=doc.generated_at,
             created_at=cls._iso(doc.created_at),
             updated_at=cls._iso(doc.updated_at),

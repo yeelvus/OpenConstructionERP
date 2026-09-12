@@ -82,12 +82,15 @@ from app.modules.projects.schemas import (
     MilestoneUpdate,
     PresetRead,
     ProfileSpec,
+    ProjectBackupResponse,
     ProjectCardMetrics,
     ProjectCreate,
     ProjectModulePresence,
     ProjectModuleRead,
     ProjectProfileResult,
     ProjectResponse,
+    ProjectRestoreRequest,
+    ProjectRestoreResponse,
     ProjectStatusHistoryResponse,
     ProjectUpdate,
     WBSCreate,
@@ -1127,6 +1130,372 @@ async def revoke_folder_permission_endpoint(
     await revoke_permission(session, project_id=project_id, permission_id=permission_id)
 
 
+# ── Dashboard Summary Cards (lightweight, single endpoint) ──────────────
+
+
+@router.get(
+    "/dashboard/cards/",
+    response_model=list[ProjectCardMetrics],
+    summary="Get dashboard summary cards for all projects",
+    description="Returns lightweight per-project summary metrics for dashboard cards: "
+    "BOQ total value, open tasks count, open RFIs count, active safety incidents, "
+    "and schedule progress percentage. All modules degrade gracefully.",
+)
+async def dashboard_cards(
+    session: SessionDep,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+) -> list[ProjectCardMetrics]:
+    """Dashboard summary cards - lightweight per-project KPIs in a single call.
+
+    Returns a list of project summaries with key metrics aggregated from
+    multiple modules. Each module section is wrapped in try/except for
+    graceful degradation if a module table does not exist yet.
+    """
+    from types import SimpleNamespace
+
+    from sqlalchemy import func, select
+
+    from app.core.partner_pack.scope import scope_project_query
+    from app.modules.projects.models import Project
+
+    # Fetch all projects (admin sees all, regular user sees owned + member
+    # projects). When a partner pack is active, the workspace is scoped to that
+    # pack's projects only - applied to both branches so the dashboard counts
+    # match the (scoped) projects page.
+    is_admin = payload.get("role") == "admin"
+    if is_admin:
+        stmt = select(Project).where(Project.status != "archived")
+        stmt = scope_project_query(stmt, Project).order_by(Project.updated_at.desc())
+        proj_result = await session.execute(stmt)
+    else:
+        from app.modules.teams.access import member_project_ids_subquery
+
+        try:
+            uid = uuid.UUID(user_id)
+        except (ValueError, TypeError):
+            return []
+        stmt = select(Project).where(
+            (Project.owner_id == uid) | (Project.id.in_(member_project_ids_subquery(uid))),
+            Project.status != "archived",
+        )
+        stmt = scope_project_query(stmt, Project).order_by(Project.updated_at.desc())
+        proj_result = await session.execute(stmt)
+    all_projects = proj_result.scalars().all()
+
+    if not all_projects:
+        return []
+
+    project_ids = [p.id for p in all_projects]
+
+    # ── BOQ total value per project ─────────────────────────────────────
+    #
+    # Money rule (a): WITHIN a single project, foreign-currency positions are
+    # converted to the project's base currency via ``Project.fx_rates``.
+    # Each project carries exactly one base currency (``Project.currency``),
+    # so the per-project ``boq_total_value`` is a single well-defined number
+    # in that currency - the frontend groups ACROSS projects by currency
+    # (rule b) and never blends different currencies into one scalar.
+    boq_values: dict[str, float] = {}
+    boq_counts: dict[str, int] = {}
+    position_counts: dict[str, int] = {}
+    base_by_project: dict[str, str] = {str(p.id): (p.currency or "") for p in all_projects}
+    fx_by_project: dict[str, dict[str, str]] = {}
+    try:
+        from app.modules.boq.service import _project_fx_map as _pfx
+
+        fx_by_project = {str(p.id): _pfx(p) for p in all_projects}
+    except Exception:
+        fx_by_project = {}
+
+    try:
+        from app.modules.boq.models import BOQ, Position
+        from app.modules.boq.service import (
+            _position_currency,
+            _position_total_in_base,
+        )
+
+        # BOQ count per project
+        boq_count_rows = (
+            await session.execute(
+                select(BOQ.project_id, func.count(BOQ.id))
+                .where(BOQ.project_id.in_(project_ids))
+                .group_by(BOQ.project_id)
+            )
+        ).all()
+        for pid, cnt in boq_count_rows:
+            boq_counts[str(pid)] = cnt
+
+        # Get all BOQ IDs grouped by project
+        boq_rows = (await session.execute(select(BOQ.id, BOQ.project_id).where(BOQ.project_id.in_(project_ids)))).all()
+        boq_id_to_project: dict[str, str] = {}
+        for bid, pid in boq_rows:
+            boq_id_to_project[str(bid)] = str(pid)
+
+        if boq_id_to_project:
+            all_boq_ids = [uuid.UUID(bid) for bid in boq_id_to_project]
+
+            # Stream positions with their currency metadata so each total can
+            # be converted into its project's base currency before summing.
+            pos_rows = (
+                await session.execute(
+                    select(Position.boq_id, Position.total, Position.metadata_).where(Position.boq_id.in_(all_boq_ids))
+                )
+            ).all()
+            for boq_id, total, metadata in pos_rows:
+                pid = boq_id_to_project.get(str(boq_id), "")
+                if not pid:
+                    continue
+                position_counts[pid] = position_counts.get(pid, 0) + 1
+                code = _position_currency(SimpleNamespace(metadata_=metadata))
+                converted = _position_total_in_base(
+                    total,
+                    code,
+                    fx_by_project.get(pid),
+                    base_by_project.get(pid, ""),
+                )
+                boq_values[pid] = boq_values.get(pid, 0.0) + float(converted)
+    except Exception:
+        logger.debug("Dashboard cards: BOQ query failed", exc_info=True)
+
+    # ── Open tasks per project ──────────────────────────────────────────
+    open_tasks: dict[str, int] = {}
+    try:
+        from app.modules.tasks.models import Task
+
+        task_rows = (
+            await session.execute(
+                select(Task.project_id, func.count(Task.id))
+                .where(
+                    Task.project_id.in_(project_ids),
+                    Task.status.in_(["draft", "open", "in_progress"]),
+                )
+                .group_by(Task.project_id)
+            )
+        ).all()
+        for pid, cnt in task_rows:
+            open_tasks[str(pid)] = cnt
+    except Exception:
+        logger.debug("Dashboard cards: Tasks query failed", exc_info=True)
+
+    # ── Open RFIs per project ───────────────────────────────────────────
+    open_rfis: dict[str, int] = {}
+    try:
+        from app.modules.rfi.models import RFI
+
+        rfi_rows = (
+            await session.execute(
+                select(RFI.project_id, func.count(RFI.id))
+                .where(
+                    RFI.project_id.in_(project_ids),
+                    RFI.status.in_(["draft", "open", "in_review"]),
+                )
+                .group_by(RFI.project_id)
+            )
+        ).all()
+        for pid, cnt in rfi_rows:
+            open_rfis[str(pid)] = cnt
+    except Exception:
+        logger.debug("Dashboard cards: RFI query failed", exc_info=True)
+
+    # ── Active safety incidents per project ─────────────────────────────
+    safety_incidents: dict[str, int] = {}
+    try:
+        from app.modules.safety.models import SafetyIncident
+
+        safety_rows = (
+            await session.execute(
+                select(SafetyIncident.project_id, func.count(SafetyIncident.id))
+                .where(
+                    SafetyIncident.project_id.in_(project_ids),
+                    SafetyIncident.status.in_(["reported", "under_investigation", "open"]),
+                )
+                .group_by(SafetyIncident.project_id)
+            )
+        ).all()
+        for pid, cnt in safety_rows:
+            safety_incidents[str(pid)] = cnt
+    except Exception:
+        logger.debug("Dashboard cards: Safety query failed", exc_info=True)
+
+    # ── Schedule progress per project ───────────────────────────────────
+    schedule_progress: dict[str, float] = {}
+    try:
+        from app.modules.schedule.models import Activity, Schedule
+
+        sched_rows = (
+            await session.execute(select(Schedule.id, Schedule.project_id).where(Schedule.project_id.in_(project_ids)))
+        ).all()
+        sched_to_project: dict[str, str] = {}
+        sched_ids = []
+        for sid, pid in sched_rows:
+            sched_to_project[str(sid)] = str(pid)
+            sched_ids.append(sid)
+
+        if sched_ids:
+            act_rows = (
+                await session.execute(
+                    select(
+                        Activity.schedule_id,
+                        Activity.status,
+                        func.count(Activity.id),
+                    )
+                    .where(Activity.schedule_id.in_(sched_ids))
+                    .group_by(Activity.schedule_id, Activity.status)
+                )
+            ).all()
+
+            # Aggregate per project
+            project_totals: dict[str, int] = {}
+            project_completed: dict[str, int] = {}
+            for sid, act_status, cnt in act_rows:
+                pid = sched_to_project.get(str(sid), "")
+                if pid:
+                    project_totals[pid] = project_totals.get(pid, 0) + cnt
+                    if act_status in ("completed", "complete"):
+                        project_completed[pid] = project_completed.get(pid, 0) + cnt
+
+            for pid, total in project_totals.items():
+                if total > 0:
+                    done = project_completed.get(pid, 0)
+                    schedule_progress[pid] = round(done / total * 100, 1)
+    except Exception:
+        logger.debug("Dashboard cards: Schedule query failed", exc_info=True)
+
+    # ── Contract register totals (合同管理) per project ──────────────────
+    #
+    # Distinct from Project.contract_value / budget_estimate (manual fields
+    # on the project row). Convert each contract into the project base
+    # currency when metadata.fx or project.fx_rates provides a rate.
+    def _parse_money_str(raw: object) -> float:
+        if raw is None:
+            return 0.0
+        text = str(raw).strip().replace(",", "")
+        if not text:
+            return 0.0
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _contract_amount_in_base(
+        total: object,
+        contract_currency: str | None,
+        project_currency: str,
+        metadata: object,
+        fx_map: dict[str, str] | None,
+    ) -> float:
+        try:
+            amount = float(total or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        if amount == 0:
+            return 0.0
+        cur = (contract_currency or "").strip().upper()
+        base = (project_currency or "").strip().upper()
+        if not cur or not base or cur == base:
+            return amount
+        rate: float | None = None
+        if isinstance(metadata, dict):
+            fx = metadata.get("fx")
+            if isinstance(fx, dict):
+                for key in ("rate", "last_spot_rate"):
+                    raw = fx.get(key)
+                    if raw is not None and str(raw).strip() != "":
+                        try:
+                            rate = float(raw)
+                            break
+                        except (TypeError, ValueError):
+                            pass
+        if rate is None and fx_map:
+            raw = fx_map.get(cur)
+            if raw is not None and str(raw).strip() != "":
+                try:
+                    rate = float(raw)
+                except (TypeError, ValueError):
+                    rate = None
+        if rate is not None and rate > 0:
+            return amount * rate
+        # No FX — keep nominal amount (same as list when currencies match in practice).
+        return amount
+
+    register_total: dict[str, float] = {}
+    register_main: dict[str, float] = {}
+    register_sub: dict[str, float] = {}
+    try:
+        from app.modules.contracts.models import Contract
+
+        # Exclude terminated / cancelled from commercial totals.
+        excluded = {"terminated", "cancelled", "canceled", "void"}
+        c_rows = (
+            await session.execute(
+                select(
+                    Contract.project_id,
+                    Contract.total_value,
+                    Contract.currency,
+                    Contract.counterparty_type,
+                    Contract.status,
+                    Contract.metadata_,
+                ).where(Contract.project_id.in_(project_ids))
+            )
+        ).all()
+        for pid, total_value, ccy, cptype, cstatus, meta in c_rows:
+            if (cstatus or "").lower() in excluded:
+                continue
+            key = str(pid)
+            converted = _contract_amount_in_base(
+                total_value,
+                ccy,
+                base_by_project.get(key, ""),
+                meta,
+                fx_by_project.get(key),
+            )
+            register_total[key] = register_total.get(key, 0.0) + converted
+            if (cptype or "").lower() == "subcontractor":
+                register_sub[key] = register_sub.get(key, 0.0) + converted
+            else:
+                register_main[key] = register_main.get(key, 0.0) + converted
+    except Exception:
+        logger.debug("Dashboard cards: Contracts query failed", exc_info=True)
+
+    # ── Assemble response ───────────────────────────────────────────────
+    result = []
+    for p in all_projects:
+        pid = str(p.id)
+        result.append(
+            {
+                "id": pid,
+                "name": p.name,
+                "description": p.description or "",
+                "region": p.region or "",
+                "currency": p.currency or "",
+                "classification_standard": p.classification_standard or "",
+                "status": p.status or "active",
+                "phase": getattr(p, "phase", None),
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+                "boq_total_value": round(boq_values.get(pid, 0.0), 2),
+                "boq_count": boq_counts.get(pid, 0),
+                "position_count": position_counts.get(pid, 0),
+                "open_tasks": open_tasks.get(pid, 0),
+                "open_rfis": open_rfis.get(pid, 0),
+                "safety_incidents": safety_incidents.get(pid, 0),
+                "progress_pct": schedule_progress.get(pid, 0.0),
+                "contract_register_value": round(register_total.get(pid, 0.0), 2),
+                "contract_main_value": round(register_main.get(pid, 0.0), 2),
+                "contract_sub_value": round(register_sub.get(pid, 0.0), 2),
+                "project_contract_value": round(
+                    _parse_money_str(getattr(p, "contract_value", None)), 2
+                ),
+                "budget_estimate": round(
+                    _parse_money_str(getattr(p, "budget_estimate", None)), 2
+                ),
+            }
+        )
+
+    return result
+
+
 # ── Project Dashboard (cross-module aggregation) ───────────────────────
 
 
@@ -2072,372 +2441,6 @@ async def project_activity(
             logger.debug("Activity: union query failed", exc_info=True)
 
     return events
-
-
-# ── Dashboard Summary Cards (lightweight, single endpoint) ──────────────
-
-
-@router.get(
-    "/dashboard/cards/",
-    response_model=list[ProjectCardMetrics],
-    summary="Get dashboard summary cards for all projects",
-    description="Returns lightweight per-project summary metrics for dashboard cards: "
-    "BOQ total value, open tasks count, open RFIs count, active safety incidents, "
-    "and schedule progress percentage. All modules degrade gracefully.",
-)
-async def dashboard_cards(
-    session: SessionDep,
-    user_id: CurrentUserId,
-    payload: CurrentUserPayload,
-) -> list[ProjectCardMetrics]:
-    """Dashboard summary cards - lightweight per-project KPIs in a single call.
-
-    Returns a list of project summaries with key metrics aggregated from
-    multiple modules. Each module section is wrapped in try/except for
-    graceful degradation if a module table does not exist yet.
-    """
-    from types import SimpleNamespace
-
-    from sqlalchemy import func, select
-
-    from app.core.partner_pack.scope import scope_project_query
-    from app.modules.projects.models import Project
-
-    # Fetch all projects (admin sees all, regular user sees owned + member
-    # projects). When a partner pack is active, the workspace is scoped to that
-    # pack's projects only - applied to both branches so the dashboard counts
-    # match the (scoped) projects page.
-    is_admin = payload.get("role") == "admin"
-    if is_admin:
-        stmt = select(Project).where(Project.status != "archived")
-        stmt = scope_project_query(stmt, Project).order_by(Project.updated_at.desc())
-        proj_result = await session.execute(stmt)
-    else:
-        from app.modules.teams.access import member_project_ids_subquery
-
-        try:
-            uid = uuid.UUID(user_id)
-        except (ValueError, TypeError):
-            return []
-        stmt = select(Project).where(
-            (Project.owner_id == uid) | (Project.id.in_(member_project_ids_subquery(uid))),
-            Project.status != "archived",
-        )
-        stmt = scope_project_query(stmt, Project).order_by(Project.updated_at.desc())
-        proj_result = await session.execute(stmt)
-    all_projects = proj_result.scalars().all()
-
-    if not all_projects:
-        return []
-
-    project_ids = [p.id for p in all_projects]
-
-    # ── BOQ total value per project ─────────────────────────────────────
-    #
-    # Money rule (a): WITHIN a single project, foreign-currency positions are
-    # converted to the project's base currency via ``Project.fx_rates``.
-    # Each project carries exactly one base currency (``Project.currency``),
-    # so the per-project ``boq_total_value`` is a single well-defined number
-    # in that currency - the frontend groups ACROSS projects by currency
-    # (rule b) and never blends different currencies into one scalar.
-    boq_values: dict[str, float] = {}
-    boq_counts: dict[str, int] = {}
-    position_counts: dict[str, int] = {}
-    base_by_project: dict[str, str] = {str(p.id): (p.currency or "") for p in all_projects}
-    fx_by_project: dict[str, dict[str, str]] = {}
-    try:
-        from app.modules.boq.service import _project_fx_map as _pfx
-
-        fx_by_project = {str(p.id): _pfx(p) for p in all_projects}
-    except Exception:
-        fx_by_project = {}
-
-    try:
-        from app.modules.boq.models import BOQ, Position
-        from app.modules.boq.service import (
-            _position_currency,
-            _position_total_in_base,
-        )
-
-        # BOQ count per project
-        boq_count_rows = (
-            await session.execute(
-                select(BOQ.project_id, func.count(BOQ.id))
-                .where(BOQ.project_id.in_(project_ids))
-                .group_by(BOQ.project_id)
-            )
-        ).all()
-        for pid, cnt in boq_count_rows:
-            boq_counts[str(pid)] = cnt
-
-        # Get all BOQ IDs grouped by project
-        boq_rows = (await session.execute(select(BOQ.id, BOQ.project_id).where(BOQ.project_id.in_(project_ids)))).all()
-        boq_id_to_project: dict[str, str] = {}
-        for bid, pid in boq_rows:
-            boq_id_to_project[str(bid)] = str(pid)
-
-        if boq_id_to_project:
-            all_boq_ids = [uuid.UUID(bid) for bid in boq_id_to_project]
-
-            # Stream positions with their currency metadata so each total can
-            # be converted into its project's base currency before summing.
-            pos_rows = (
-                await session.execute(
-                    select(Position.boq_id, Position.total, Position.metadata_).where(Position.boq_id.in_(all_boq_ids))
-                )
-            ).all()
-            for boq_id, total, metadata in pos_rows:
-                pid = boq_id_to_project.get(str(boq_id), "")
-                if not pid:
-                    continue
-                position_counts[pid] = position_counts.get(pid, 0) + 1
-                code = _position_currency(SimpleNamespace(metadata_=metadata))
-                converted = _position_total_in_base(
-                    total,
-                    code,
-                    fx_by_project.get(pid),
-                    base_by_project.get(pid, ""),
-                )
-                boq_values[pid] = boq_values.get(pid, 0.0) + float(converted)
-    except Exception:
-        logger.debug("Dashboard cards: BOQ query failed", exc_info=True)
-
-    # ── Open tasks per project ──────────────────────────────────────────
-    open_tasks: dict[str, int] = {}
-    try:
-        from app.modules.tasks.models import Task
-
-        task_rows = (
-            await session.execute(
-                select(Task.project_id, func.count(Task.id))
-                .where(
-                    Task.project_id.in_(project_ids),
-                    Task.status.in_(["draft", "open", "in_progress"]),
-                )
-                .group_by(Task.project_id)
-            )
-        ).all()
-        for pid, cnt in task_rows:
-            open_tasks[str(pid)] = cnt
-    except Exception:
-        logger.debug("Dashboard cards: Tasks query failed", exc_info=True)
-
-    # ── Open RFIs per project ───────────────────────────────────────────
-    open_rfis: dict[str, int] = {}
-    try:
-        from app.modules.rfi.models import RFI
-
-        rfi_rows = (
-            await session.execute(
-                select(RFI.project_id, func.count(RFI.id))
-                .where(
-                    RFI.project_id.in_(project_ids),
-                    RFI.status.in_(["draft", "open", "in_review"]),
-                )
-                .group_by(RFI.project_id)
-            )
-        ).all()
-        for pid, cnt in rfi_rows:
-            open_rfis[str(pid)] = cnt
-    except Exception:
-        logger.debug("Dashboard cards: RFI query failed", exc_info=True)
-
-    # ── Active safety incidents per project ─────────────────────────────
-    safety_incidents: dict[str, int] = {}
-    try:
-        from app.modules.safety.models import SafetyIncident
-
-        safety_rows = (
-            await session.execute(
-                select(SafetyIncident.project_id, func.count(SafetyIncident.id))
-                .where(
-                    SafetyIncident.project_id.in_(project_ids),
-                    SafetyIncident.status.in_(["reported", "under_investigation", "open"]),
-                )
-                .group_by(SafetyIncident.project_id)
-            )
-        ).all()
-        for pid, cnt in safety_rows:
-            safety_incidents[str(pid)] = cnt
-    except Exception:
-        logger.debug("Dashboard cards: Safety query failed", exc_info=True)
-
-    # ── Schedule progress per project ───────────────────────────────────
-    schedule_progress: dict[str, float] = {}
-    try:
-        from app.modules.schedule.models import Activity, Schedule
-
-        sched_rows = (
-            await session.execute(select(Schedule.id, Schedule.project_id).where(Schedule.project_id.in_(project_ids)))
-        ).all()
-        sched_to_project: dict[str, str] = {}
-        sched_ids = []
-        for sid, pid in sched_rows:
-            sched_to_project[str(sid)] = str(pid)
-            sched_ids.append(sid)
-
-        if sched_ids:
-            act_rows = (
-                await session.execute(
-                    select(
-                        Activity.schedule_id,
-                        Activity.status,
-                        func.count(Activity.id),
-                    )
-                    .where(Activity.schedule_id.in_(sched_ids))
-                    .group_by(Activity.schedule_id, Activity.status)
-                )
-            ).all()
-
-            # Aggregate per project
-            project_totals: dict[str, int] = {}
-            project_completed: dict[str, int] = {}
-            for sid, act_status, cnt in act_rows:
-                pid = sched_to_project.get(str(sid), "")
-                if pid:
-                    project_totals[pid] = project_totals.get(pid, 0) + cnt
-                    if act_status in ("completed", "complete"):
-                        project_completed[pid] = project_completed.get(pid, 0) + cnt
-
-            for pid, total in project_totals.items():
-                if total > 0:
-                    done = project_completed.get(pid, 0)
-                    schedule_progress[pid] = round(done / total * 100, 1)
-    except Exception:
-        logger.debug("Dashboard cards: Schedule query failed", exc_info=True)
-
-    # ── Contract register totals (合同管理) per project ──────────────────
-    #
-    # Distinct from Project.contract_value / budget_estimate (manual fields
-    # on the project row). Convert each contract into the project base
-    # currency when metadata.fx or project.fx_rates provides a rate.
-    def _parse_money_str(raw: object) -> float:
-        if raw is None:
-            return 0.0
-        text = str(raw).strip().replace(",", "")
-        if not text:
-            return 0.0
-        try:
-            return float(text)
-        except (TypeError, ValueError):
-            return 0.0
-
-    def _contract_amount_in_base(
-        total: object,
-        contract_currency: str | None,
-        project_currency: str,
-        metadata: object,
-        fx_map: dict[str, str] | None,
-    ) -> float:
-        try:
-            amount = float(total or 0)
-        except (TypeError, ValueError):
-            return 0.0
-        if amount == 0:
-            return 0.0
-        cur = (contract_currency or "").strip().upper()
-        base = (project_currency or "").strip().upper()
-        if not cur or not base or cur == base:
-            return amount
-        rate: float | None = None
-        if isinstance(metadata, dict):
-            fx = metadata.get("fx")
-            if isinstance(fx, dict):
-                for key in ("rate", "last_spot_rate"):
-                    raw = fx.get(key)
-                    if raw is not None and str(raw).strip() != "":
-                        try:
-                            rate = float(raw)
-                            break
-                        except (TypeError, ValueError):
-                            pass
-        if rate is None and fx_map:
-            raw = fx_map.get(cur)
-            if raw is not None and str(raw).strip() != "":
-                try:
-                    rate = float(raw)
-                except (TypeError, ValueError):
-                    rate = None
-        if rate is not None and rate > 0:
-            return amount * rate
-        # No FX — keep nominal amount (same as list when currencies match in practice).
-        return amount
-
-    register_total: dict[str, float] = {}
-    register_main: dict[str, float] = {}
-    register_sub: dict[str, float] = {}
-    try:
-        from app.modules.contracts.models import Contract
-
-        # Exclude terminated / cancelled from commercial totals.
-        excluded = {"terminated", "cancelled", "canceled", "void"}
-        c_rows = (
-            await session.execute(
-                select(
-                    Contract.project_id,
-                    Contract.total_value,
-                    Contract.currency,
-                    Contract.counterparty_type,
-                    Contract.status,
-                    Contract.metadata_,
-                ).where(Contract.project_id.in_(project_ids))
-            )
-        ).all()
-        for pid, total_value, ccy, cptype, cstatus, meta in c_rows:
-            if (cstatus or "").lower() in excluded:
-                continue
-            key = str(pid)
-            converted = _contract_amount_in_base(
-                total_value,
-                ccy,
-                base_by_project.get(key, ""),
-                meta,
-                fx_by_project.get(key),
-            )
-            register_total[key] = register_total.get(key, 0.0) + converted
-            if (cptype or "").lower() == "subcontractor":
-                register_sub[key] = register_sub.get(key, 0.0) + converted
-            else:
-                register_main[key] = register_main.get(key, 0.0) + converted
-    except Exception:
-        logger.debug("Dashboard cards: Contracts query failed", exc_info=True)
-
-    # ── Assemble response ───────────────────────────────────────────────
-    result = []
-    for p in all_projects:
-        pid = str(p.id)
-        result.append(
-            {
-                "id": pid,
-                "name": p.name,
-                "description": p.description or "",
-                "region": p.region or "",
-                "currency": p.currency or "",
-                "classification_standard": p.classification_standard or "",
-                "status": p.status or "active",
-                "phase": getattr(p, "phase", None),
-                "created_at": p.created_at.isoformat() if p.created_at else None,
-                "updated_at": p.updated_at.isoformat() if p.updated_at else None,
-                "boq_total_value": round(boq_values.get(pid, 0.0), 2),
-                "boq_count": boq_counts.get(pid, 0),
-                "position_count": position_counts.get(pid, 0),
-                "open_tasks": open_tasks.get(pid, 0),
-                "open_rfis": open_rfis.get(pid, 0),
-                "safety_incidents": safety_incidents.get(pid, 0),
-                "progress_pct": schedule_progress.get(pid, 0.0),
-                "contract_register_value": round(register_total.get(pid, 0.0), 2),
-                "contract_main_value": round(register_main.get(pid, 0.0), 2),
-                "contract_sub_value": round(register_sub.get(pid, 0.0), 2),
-                "project_contract_value": round(
-                    _parse_money_str(getattr(p, "contract_value", None)), 2
-                ),
-                "budget_estimate": round(
-                    _parse_money_str(getattr(p, "budget_estimate", None)), 2
-                ),
-            }
-        )
-
-    return result
 
 
 # ── Cross-Project Analytics ─────────────────────────────────────────────
@@ -3837,3 +3840,96 @@ async def get_module_presence(
     # ``probe_project_modules`` returns sidebar slugs (incl. "5d");
     # ``model_validate`` resolves the ``5d`` → ``five_d`` alias.
     return ProjectModulePresence.model_validate(presence)
+
+
+# ── Project backup / restore ─────────────────────────────────────────────
+
+
+@router.post(
+    "/{project_id}/backup",
+    response_model=ProjectBackupResponse,
+    summary="Export project backup",
+    description=(
+        "Export a project and all its related data (BOQ positions, markups, "
+        "WBS nodes, milestones) as a JSON archive. The archive carries a "
+        "format version for future compatibility and can be restored into "
+        "a new project via the restore endpoint."
+    ),
+)
+@router.post(
+    "/{project_id}/backup/",
+    response_model=ProjectBackupResponse,
+    include_in_schema=False,
+)
+async def backup_project(
+    project_id: uuid.UUID,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: ProjectService = Depends(_get_service),
+) -> ProjectBackupResponse:
+    """Export a project as a JSON backup archive.
+
+    Requires read access to the project (owner, admin, or team member).
+    Returns the full project data tree including BOQs with their positions
+    and markups, WBS hierarchy and milestones.
+    """
+    await _verify_project_access(service, project_id, user_id, session, payload)
+    try:
+        backup_data = await service.backup_project(project_id)
+        return ProjectBackupResponse(backup=backup_data)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to create backup for project %s", project_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create project backup",
+        )
+
+
+@router.post(
+    "/{project_id}/backup/restore",
+    response_model=ProjectRestoreResponse,
+    status_code=201,
+    summary="Restore project from backup",
+    description=(
+        "Create a new project from a JSON backup archive. The original "
+        "project is never modified. A fresh project is created with new "
+        "UUIDs and an auto-generated project code. The project_id in the "
+        "URL is used only for access verification (the caller must have "
+        "access to the source project context)."
+    ),
+)
+@router.post(
+    "/{project_id}/backup/restore/",
+    response_model=ProjectRestoreResponse,
+    status_code=201,
+    include_in_schema=False,
+)
+async def restore_project_from_backup(
+    project_id: uuid.UUID,
+    body: ProjectRestoreRequest,
+    user_id: CurrentUserId,
+    payload: CurrentUserPayload,
+    session: SessionDep,
+    service: ProjectService = Depends(_get_service),
+) -> ProjectRestoreResponse:
+    """Restore a project from a JSON backup archive.
+
+    Creates a new project owned by the current user. The project_id in the
+    URL is used for access verification only. All data is created with
+    fresh UUIDs.
+    """
+    await _verify_project_access(service, project_id, user_id, session, payload)
+    try:
+        result = await service.restore_project_from_backup(body.backup, uuid.UUID(user_id))
+        return result
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to restore project from backup")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to restore project from backup",
+        )

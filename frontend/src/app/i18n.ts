@@ -5,13 +5,25 @@ import { initReactI18next } from 'react-i18next';
 import { useTranslation as useI18nTranslation } from 'react-i18next';
 
 export const SUPPORTED_LANGUAGES = [
-  { code: 'en', name: 'English', flag: '🇬🇧', country: 'gb' },
-  // American English is a regional variant of the entry above, in the same sense
-  // es-MX is one of es: the file under `locales/en-US.ts` holds only the words
-  // American practice names differently, and every other key is answered by
-  // `en.ts` through the fallback chain. The region subtag is upper case because
-  // that is how i18next normalises a two-part code, and the bundle has to be
-  // registered under the same spelling it looks up.
+  // Plain English names no region, and the two entries under it are how a
+  // reader says which one they mean rather than working out what unqualified
+  // `English` is. It used to fly a Union Jack over a `gb` country, which said
+  // British in the picker while `shared/lib/intlLocale.ts` said American in
+  // every date and price on screen. Both halves now say the same thing: the
+  // country is `xx`, this codebase's existing code for "not tied to a market"
+  // (`shared/lib/regionalPack.ts`, `features/onboarding/countryOffer.ts`), so
+  // no flag is claimed, `detectCountry` offers no pack off the back of a bare
+  // `en` browser, and `homeMarketForLanguage` steers nobody at the British
+  // cases who did not ask for Britain.
+  { code: 'en', name: 'English', flag: '🌐', country: 'xx' },
+  // British and American English are regional variants of the entry above, in
+  // the same sense es-MX is one of es: the files under `locales/en-GB.ts` and
+  // `locales/en-US.ts` hold only the words that region names differently, and
+  // every other key is answered by `en.ts` through the fallback chain. The
+  // region subtag is upper case because that is how i18next normalises a
+  // two-part code, and the bundle has to be registered under the same spelling
+  // it looks up.
+  { code: 'en-GB', name: 'English (UK)', english: 'English (United Kingdom)', flag: '🇬🇧', country: 'gb' },
   { code: 'en-US', name: 'English (US)', english: 'English (United States)', flag: '🇺🇸', country: 'us' },
   { code: 'de', name: 'Deutsch', english: 'German', flag: '🇩🇪', country: 'de' },
   { code: 'fr', name: 'Français', english: 'French', flag: '🇫🇷', country: 'fr' },
@@ -38,6 +50,16 @@ export const SUPPORTED_LANGUAGES = [
   { code: 'fi', name: 'Suomi', english: 'Finnish', flag: '🇫🇮', country: 'fi' },
   { code: 'bg', name: 'Български', english: 'Bulgarian', flag: '🇧🇬', country: 'bg' },
   { code: 'hr', name: 'Hrvatski', english: 'Croatian', flag: '🇭🇷', country: 'hr' },
+  // Hungarian was held back while its bundle measured 73.7% of values
+  // byte-identical to English, where `scripts/check_locale_english_placeholder.py`
+  // refuses anything above 10%. The rebuilt hu.ts measures 1.0%, and the two
+  // English nouns the byte comparison cannot see (takeoff and validation, kept
+  // as Hungarian nouns across some 470 values) were translated before it was
+  // offered. `backend/locales/hu.json` landed with it, as every language here
+  // is answered by one. Hungary was already a full market on the backend, so
+  // the market reads in its own language now rather than through an English
+  // menu.
+  { code: 'hu', name: 'Magyar', english: 'Hungarian', flag: '🇭🇺', country: 'hu' },
   { code: 'id', name: 'Bahasa Indonesia', english: 'Indonesian', flag: '🇮🇩', country: 'id' },
   { code: 'ro', name: 'Română', english: 'Romanian', flag: '🇷🇴', country: 'ro' },
   { code: 'th', name: 'ไทย', english: 'Thai', flag: '🇹🇭', country: 'th' },
@@ -86,7 +108,11 @@ export function getLanguageByCode(code: string): (typeof SUPPORTED_LANGUAGES)[nu
  * (batimatech-ca ships ``fr-CA`` for French Canada, uk-jct ships ``en-GB``,
  * commercial-denver ships ``en-US``). A regional code the UI actually ships is
  * answered with itself, because a pack that names a region has asked for that
- * region and stripping it would hand a Denver pack British English. Anything
+ * region and stripping it would hand a Denver pack the unqualified English
+ * that names no region at all. ``en-GB`` is answered with itself for the same
+ * reason from the moment the UI started offering it, so a uk-jct reader gets
+ * the British dates and the pack's own vocabulary rather than both of them
+ * landing on the neutral entry. Anything
  * else falls back to the base language (``fr-CA`` -> ``fr``), and a locale we do
  * not ship at all returns ``'en'``, so a pack can never force the app into a
  * language that has no strings.
@@ -129,18 +155,21 @@ export function matchSupportedLanguage(raw: string | null | undefined): string |
  * Two sources, and both are needed. The region subtag of
  * ``navigator.language`` is the better one wherever it exists, and it is the
  * ONLY one that can reach Australia, New Zealand or South Africa, because no
- * language we offer names those countries -- ``en`` names Great Britain. But
+ * language we offer names those countries. But
  * a German, French, Polish or Russian browser commonly sends a bare ``de``,
  * ``fr``, ``pl`` or ``ru`` with no region at all, so a region-only reading
  * returns nothing for most of Europe, which is where most of our cases are.
  * Falling back to the country named by the resolved language covers those,
  * and every one of the SUPPORTED_LANGUAGES entries carries that field.
  *
- * ``en`` maps to ``gb``, so a browser sending a bare ``en`` is read as United
- * Kingdom rather than United States. That is chosen, not overlooked:
- * ``en-US`` is its own entry with its own country, so a reader who wants
- * American English has a browser that already says so, and guessing the
- * larger market from silence would be guessing.
+ * ``en`` maps to ``xx``, which is this codebase's code for "not tied to a
+ * market", so a browser sending a bare ``en`` and nothing else gets no
+ * country read out of its language at all. That is chosen, not overlooked.
+ * ``en-GB`` and ``en-US`` are their own entries with their own countries, so a
+ * reader who wants one of them has a browser that already says so, and
+ * naming either from silence would be guessing. ``xx`` is a value the offer
+ * side already knows: ``resolveCountryOffer`` returns null for it, the same
+ * answer it gives for ``null``.
  *
  * This is a hint used to OFFER something, never a gate. Nothing may become
  * unreachable because the guess was wrong, and a wrong guess must always be
@@ -375,7 +404,44 @@ export function resolveInitialLanguage(): string {
   return 'en';
 }
 
+/**
+ * The writing direction of one supported language.
+ *
+ * Read from the ``dir`` field on the ``SUPPORTED_LANGUAGES`` entry rather than
+ * from a list of codes kept somewhere else, so a fifth right-to-left language
+ * is carried by the entry that adds it. Four languages we offer are written
+ * right to left today: ar, fa, he and ur.
+ */
+export function resolveDirection(code: string): 'rtl' | 'ltr' {
+  const lang = getLanguageByCode(code);
+  return lang && 'dir' in lang && lang.dir === 'rtl' ? 'rtl' : 'ltr';
+}
+
+/** Write ``dir`` and ``lang`` onto <html> for the given language. SSR-safe. */
+export function applyDocumentDirection(code: string): void {
+  if (typeof document === 'undefined') return;
+  document.documentElement.dir = resolveDirection(code);
+  document.documentElement.lang = code;
+}
+
 const initialLanguage = resolveInitialLanguage();
+
+// Direction has to be on <html> BEFORE the first paint, and until now nothing
+// put it there. `useDocumentDirection` in App.tsx sets it from a `useEffect`,
+// which by definition runs after React has mounted and painted, and `main.tsx`
+// additionally awaits `initialLocaleReady` (capped at 2000 ms) before mounting
+// at all. So an Arabic, Persian, Hebrew or Urdu session painted its first frame
+// left-to-right - sidebar on the wrong edge, every label flush to the wrong
+// margin - and flipped once the effect ran.
+//
+// `index.html` cannot answer this: it is static, ships `lang="en"` with no
+// `dir`, and teaching it the rule would be a third hardcoded copy of the RTL
+// language list after `SUPPORTED_LANGUAGES` here and `SPLASH_RTL` in
+// public/splash.html. `public/splash.html:1998` already sets `dir` on its own
+// root, which is why the splash screen got this right while the app shell did
+// not. Module scope runs before `createRoot`, so this closes the window while
+// still reading the one source of truth.
+applyDocumentDirection(initialLanguage);
 
 i18n
   .use(initReactI18next)
@@ -396,10 +462,11 @@ i18n
     // a key not localised for Chile shows Spanish rather than English. That is
     // what lets those files carry only the words that actually differ.
     //
-    // en-US needs no line of its own. i18next resolves a two-part code through
-    // ['en-US', 'en'] before it ever consults this map, and the `default` branch
-    // below names the same fallback again, so a key absent from en-US.ts is
-    // answered by en.ts either way. Asserted in enUSFallsBackToEnglish.test.ts
+    // en-GB and en-US need no line of their own. i18next resolves a two-part
+    // code through ['en-US', 'en'] before it ever consults this map, and the
+    // `default` branch below names the same fallback again, so a key absent
+    // from en-US.ts is answered by en.ts either way. Asserted in
+    // enUSFallsBackToEnglish.test.ts
     // rather than assumed, because a missing key and a resolved one look alike
     // on screen when every call site passes a defaultValue.
     fallbackLng: {
@@ -451,6 +518,16 @@ i18n.on('languageChanged', (lng) => {
   } catch {
     // localStorage not available (private browsing, etc.)
   }
+  // Keep <html dir> with the active language here, at the i18n layer, rather
+  // than only in App.tsx's `useDocumentDirection`. That hook is correct but it
+  // is bound to a mounted App, so direction was a property of the React tree
+  // instead of a property of the language. Anything that switches language
+  // outside a mounted App - the partner-pack locale hook, a test driving
+  // `changeLanguage`, the onboarding wizard before the shell renders - moved
+  // the strings without moving the layout. Applying it here is idempotent with
+  // the hook: both write the same value from the same `SUPPORTED_LANGUAGES`
+  // entry, so whichever runs first wins and the second is a no-op.
+  applyDocumentDirection(lng);
   // Fire-and-forget; i18next will trigger a re-render when addResourceBundle
   // resolves. UI flashes English for the in-flight ms then re-paints.
   void loadLocaleResource(lng);

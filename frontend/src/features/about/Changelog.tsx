@@ -46,6 +46,55 @@ interface ChangelogEntry {
 // carry the long form and are left alone as the record of what shipped.
 const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '17.5.0',
+    date: '2026-09-12',
+    tag: 'NEW',
+    summary:
+      'Twelve platform improvements from the Landshut review. Country code wired into project creation, estimate basis shows "Not yet estimated" for empty bills, conditions generated in the project language (13 locales), bulk check/uncheck for template conditions, save indicator, budget target alongside the estimate, location precision on geocoded addresses, persistent notification dismiss, document reference on variations, linked review tasks on assumptions, and standalone CO overlap warning.',
+  },
+  {
+    version: '17.4.1',
+    date: '2026-09-11',
+    tag: 'NEW',
+    summary:
+      'BOQ import now opens a preview wizard showing parsed positions, sections, currency and warnings before committing. Invoice approval no longer writes the wrong status, and dashboard totals no longer show NaN. Nine backend modules hardened with repository layers, typed schemas and proper ORM relationships.',
+  },
+  {
+    version: '17.4.0',
+    date: '2026-09-10',
+    tag: 'NEW',
+    summary:
+      'Cost explorer substitute results can be added to a BOQ or saved as an assembly, and cost match results can be confirmed in batch. The Hungarian infrastructure importer now captures all ten tag columns and resolves them against the dictionary sheets. The Windows desktop upgrade no longer freezes on a legacy uninstaller.',
+  },
+  {
+    version: '17.3.1',
+    date: '2026-09-10',
+    tag: 'FIX',
+    summary:
+      'Two test fixtures did not carry the new original_contract_value field, breaking the Docker build of 17.3.0.',
+  },
+  {
+    version: '17.3.0',
+    date: '2026-09-10',
+    tag: 'NEW',
+    summary:
+      'One hundred and five hardcoded English strings are now translated into 41 languages. Contracts store their original value as an immutable baseline and the dashboard shows the commercial breakdown: original, agreed variations, current, pending and forecast. A mirrored change order inherits the variation bill as its write-back target. Twelve shadowed API routes are fixed. Two hundred and ten country portraits fill every gap in the cases honeycomb across fifteen markets.',
+  },
+  {
+    version: '17.2.0',
+    date: '2026-09-09',
+    tag: 'NEW',
+    summary:
+      'The sample budget the Spanish exchange screen offers could not be downloaded and could not be read, so the first thing a visitor tried came back as an error page under a budget name and imported nine rows with no money in them; it is rewritten, and a test now asks of every shipped sample whether the origin serves it and whether it imports as a budget with prices. The preview beside that drop zone no longer splits a native format on commas and announces rows it made up. Australia, New Zealand and Brazil gain nine guided cases each, with six more single cases for Mexico, Hungary, Saudi Arabia, South Africa, the United States and Russia, taking the library from 260 to 293 with every card translated into all 36 offered languages. On macOS the bundled database would not start because the build asked for a hardened runtime it had no signing identity to satisfy. On Windows a start refused for want of disk space now says where the space went, counting what earlier versions left behind instead of only printing an error number.',
+  },
+  {
+    version: '17.1.0',
+    date: '2026-09-09',
+    tag: 'NEW',
+    summary:
+      'A Windows desktop that gave up before it had finished starting now waits for the backend to speak first, and opening the API reference no longer makes the desktop shell think the backend has died. Hungary, Mexico, Saudi Arabia, South Africa and Russia each have a full shelf of guided cases, every national exchange format for bills of quantities has one place to go instead of hiding behind a German menu entry, Hungarian and English (UK) are offered in the language picker, and a spreadsheet header row is read in 28 languages. Russian VAT is 22 percent from 2026 with each bill taxed at its own base date, and this release ships on GitHub, as desktop installers and as a container image, but not on PyPI until old releases there are removed to make room.',
+  },
+  {
     version: '17.0.2',
     date: '2026-09-07',
     tag: 'FIX',

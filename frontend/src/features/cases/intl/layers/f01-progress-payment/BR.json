@@ -29,6 +29,7 @@
     "excessTerm": "termo aditivo",
     "retentionTerm": "retencao contratual",
     "payDoc": "nota fiscal",
+    "payAgainst": "the attested boletim de medicao",
     "clockRegime": "the contract payment terms under Lei 14.133",
     "clockStart": "the attestation of the boletim de medicao",
     "payDays": "30",
@@ -128,7 +129,7 @@
       "icon": "Stamp",
       "module": "Approval routes",
       "moduleKey": "approvalRoutes.title",
-      "to": "/approval-routes",
+      "to": "/governance?tab=approvals",
       "in": [
         {
           "key": "boletim",

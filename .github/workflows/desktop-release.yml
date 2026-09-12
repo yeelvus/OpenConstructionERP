@@ -70,12 +70,31 @@ jobs:
   build-sidecar:
     name: Build Sidecar (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Measured over v14.3.0, v14.4.0, v14.5.0 and five sidecar-only runs:
-    # Linux 14.4 to 15.2 min, Windows 15.6 to 17.8, macOS 25.6 to 34.4. The cap
-    # is a little over twice the slowest observed leg, so it cannot fire on a
-    # healthy build. Without one the job inherits the six hour default, which is
-    # what a hung PyInstaller run costs across three parallel legs.
-    timeout-minutes: 75
+    # Without a cap the job inherits the six hour default, which is what a hung
+    # PyInstaller run costs across three parallel legs. So there is a cap, and
+    # the only question is where it goes.
+    #
+    # It was 75, from a measurement of v14.3.0 to v14.5.0 that put macOS at 25.6
+    # to 34.4 minutes. That reading is two months old and macOS is nowhere near
+    # it any more. Over the twelve most recent runs the macOS leg took 18.8,
+    # 37.9, 51.2, 52.6, 55.2, 57.7, 60.1, 63.2, 66.6, 68.3, 68.3 and 75.4
+    # minutes, and the last of those is v17.2.0, which the cap killed after
+    # every check in the job had already passed. Nine of the twelve were over
+    # fifty.
+    #
+    # The spread is the point, not the middle. The same commit builds the
+    # frontend on macOS in 18 minutes on one runner and 60 on another, so a cap
+    # anywhere near the median fires on runner luck rather than on a defect. The
+    # other two legs are steady at 30 and 37 and are nowhere near this.
+    #
+    # 120 is the number build-tauri already uses, and it is above every run in
+    # that sample, so a job that reaches it is stuck rather than unlucky.
+    #
+    # What this does not fix: three legs each build the same frontend from the
+    # same commit and get the same bytes, and on macOS that build is most of the
+    # job. Building it once and passing it to the three would take the whole
+    # variance out of two of them.
+    timeout-minutes: 120
     strategy:
       # Build every OS even if one fails, so a single-platform break never
       # cancels the others and we still ship the installers that did build.
@@ -224,8 +243,9 @@ jobs:
       # is what makes it safe to gate a release on.
       #
       # Know what this step does NOT prove. A control run built from this
-      # workflow with the spec's codesign_identity reverted started here just
-      # fine, so this runner does not reproduce the user's failure: whether dyld
+      # workflow with the spec's codesign_identity set to None, the value it
+      # carries today after issue #480, started here just fine, so this runner
+      # does not reproduce the user's failure: whether dyld
       # enforces Team ID matching depends on the policy applied to the process,
       # and a binary built locally and never quarantined is judged leniently.
       # This step therefore catches "the build does not start at all", the issue
@@ -890,6 +910,22 @@ jobs:
       # exactly the kind that would go missing that way, so --require-member
       # below makes the run fail unless that member was actually opened.
       # Whether 14.4.0 was clean is still an open question, not a settled one.
+      #
+      # The second flag is not a tripwire and reads a different property. Issue
+      # #480: from 14.5.0 to 17.1.0 every member of this archive was signed
+      # ad-hoc AND with the hardened runtime, because the spec named "-" as a
+      # signing identity and PyInstaller reads any truthy identity as a real
+      # Developer ID and adds --options=runtime. That pair enables library
+      # validation in a process with no identity able to pass it, so initdb,
+      # spawned out of the extraction directory, was refused the libpq sitting
+      # beside it and no macOS install could create its database. The Team ID
+      # census was green throughout, correctly: every member agreed with the
+      # wrapper, all of them having no Team ID at all. Agreement was never the
+      # question. The flags word was, and nothing was reading it.
+      #
+      # It is checked here as well as on the bundled copy because the members are
+      # byte-identical at both points, and this is the cheaper and earlier of the
+      # two: a bad spec fails before a Rust build rather than after one.
       - name: Check what the sidecar archive carries
         if: always() && runner.os == 'macOS'
         shell: bash
@@ -898,6 +934,7 @@ jobs:
           set -uo pipefail
           python scripts/inspect_desktop_sidecar_signatures.py \
             --fail-on-foreign-team-id \
+            --fail-on-hardened-adhoc \
             --require-member Python.framework \
             desktop/dist/openconstructionerp-server
 
@@ -1037,6 +1074,49 @@ jobs:
             *)
               echo "Not a release ref (${ref:-<empty>}), so the version is not compared against a tag." ;;
           esac
+
+      # The vendored NSIS template, held against the upstream it was forked from.
+      #
+      # The same script also runs in repo-hygiene.yml, on every push, and that is
+      # not an accident to be tidied away. That lane reports and this one blocks:
+      # no check anywhere is required for a push to main, so the hygiene copy
+      # tells you within minutes and stops nothing, while a red step here
+      # withholds the installer from the tag. Both are wanted. If one is removed,
+      # say in the survivor which one is left.
+      #
+      # Windows only, because Windows is the only leg that bundles NSIS, and this
+      # job rather than a push lane because of how the failure behaves.
+      # desktop/src-tauri/windows/installer.nsi is a Handlebars template and the
+      # bundler renders it with strict mode off, so a name that stops existing
+      # upstream renders as nothing at all and the build stays green. A stale
+      # copy does not break, it produces an installer that is missing files or
+      # missing a language and says so nowhere. The moment that costs us
+      # something is the moment the installer is built, and this is that job.
+      #
+      # What a red check here stops: the Windows leg fails, so no NSIS installer
+      # is built, signed or attached to the tag. fail-fast is false, so macOS and
+      # Linux still publish, which is the right blast radius for a file only
+      # Windows reads. It sits ahead of the frontend and Rust builds so it costs
+      # seconds rather than half an hour when it does fire.
+      #
+      # The check fetches the stock template from raw.githubusercontent.com and
+      # treats an unreachable upstream as a failure rather than a pass. That is
+      # not a new dependency for this job: the Tauri CLI itself arrives over the
+      # network through npx a few steps below.
+      - name: Check the vendored NSIS template is upstream plus our edits
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -uo pipefail
+          py=python3
+          command -v python3 >/dev/null 2>&1 || py=python
+          code=0
+          out=$("$py" scripts/check_nsis_template_drift.py 2>&1) || code=$?
+          echo "$out"
+          if [ "$code" -ne 0 ]; then
+            echo "::error title=The vendored NSIS installer template has drifted::check_nsis_template_drift.py exits ${code}. Either desktop/src-tauri/windows/installer.nsi is no longer the pinned upstream template plus the fork edits that script holds, or tauri.conf.json has stopped naming it and the bundler is using its own built-in copy. An unknown Handlebars name renders as nothing, so the installer this job would build could be missing files or a language with nothing else going red."
+            exit 1
+          fi
 
       - name: Set up Node.js 24
         uses: actions/setup-node@v7
@@ -1512,7 +1592,7 @@ jobs:
           # what this check exists to notice, because the failure it predicts
           # only shows up on a user's Mac.
           if echo "$SIG" | grep -qi 'flags=.*runtime'; then
-            echo "::warning title=The shipped sidecar is ad-hoc and hardened at the same time::The sidecar inside the .app is signed ad-hoc AND with the hardened runtime, and carries no entitlements. That enables library validation with nothing able to satisfy it: the process has no Team ID, every file it unpacks into its _MEI directory has no Team ID, and the loader refuses them with a message about differing Team IDs. A clean member census below does not clear this, because no member is at fault."
+            echo "::warning title=The shipped sidecar is ad-hoc and hardened at the same time::The sidecar inside the .app is signed ad-hoc AND with the hardened runtime, and carries no entitlements. That enables library validation with nothing able to satisfy it: the process has no Team ID, every file it unpacks into its _MEI directory has no Team ID, and the loader refuses them with a message about differing Team IDs. A Team ID census does not clear this, because no member is at fault. It is the census below that fails on it now, under --fail-on-hardened-adhoc, which reads this same pair on the wrapper and on every member."
           else
             echo "The bundled sidecar is not signed with the hardened runtime, so library validation is not in play."
           fi
@@ -1527,6 +1607,7 @@ jobs:
           census_rc=0
           python scripts/inspect_desktop_sidecar_signatures.py \
               --fail-on-foreign-team-id \
+              --fail-on-hardened-adhoc \
               --require-member Python.framework \
               "$SIDECAR" > "$RUNNER_TEMP/census.log" 2>&1 || census_rc=$?
           cat "$RUNNER_TEMP/census.log"
@@ -1538,7 +1619,7 @@ jobs:
           census_n="$(sed -n 's/^census: \([0-9][0-9]*\) member.*/\1/p' "$RUNNER_TEMP/census.log" | tail -1)"
           census_n="${census_n:-0}"
           if [ "$census_rc" -eq 0 ]; then
-            echo "OK: inside the shipped bundle, nothing the sidecar unpacks disagrees with it about a Team ID."
+            echo "OK: inside the shipped bundle, nothing the sidecar unpacks disagrees with it about a Team ID, and nothing is hardened without one."
             echo "Bundled sidecar census: clean over $census_n member(s) inspected." >> "$GITHUB_STEP_SUMMARY"
           elif [ "$census_rc" -eq 2 ]; then
             # Exit 2 is the script saying it read nothing: no codesign on this
@@ -1552,7 +1633,7 @@ jobs:
             echo "Bundled sidecar census: COULD NOT MEASURE, nothing was read, see the Build Desktop (macos-latest) log." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           else
-            echo "::error title=The shipped sidecar disagrees with its own payload about a Team ID::The census above found inside the .app the shape that stops the app at 'Starting the application server' on a user's machine, or could not measure enough of it to rule that out. Compare it against the pre-bundle census in the Build Sidecar job: if that one was clean, bundling is what changed it."
+            echo "::error title=The shipped sidecar cannot load its own payload::The census above found inside the .app one of the two shapes that stop the app on a user's machine, or could not measure enough of it to rule them out. Either a member disagrees with the process about a Team ID, which stops it at 'Starting the application server', or something is signed with the hardened runtime while carrying no Team ID, which stops the children it spawns and shows up as the local database failing to start (issue #480). The log above says which. Compare it against the pre-bundle census in the Build Sidecar job: if that one was clean, bundling is what changed it."
             echo "Bundled sidecar census: MISMATCH or inconclusive over $census_n member(s) inspected, see the Build Desktop (macos-latest) log." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi

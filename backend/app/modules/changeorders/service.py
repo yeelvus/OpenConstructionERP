@@ -654,6 +654,7 @@ class ChangeOrderService:
             )
             try:
                 order = await self.repo.create(order)
+                await self._warn_standalone_overlap(order)
                 logger.info(
                     "Change order created: %s for project %s (attempt %d)",
                     code,
@@ -675,6 +676,47 @@ class ChangeOrderService:
                 f"{_MAX_RETRIES} attempts (concurrent contention). Please retry."
             ),
         ) from last_exc
+
+    async def _warn_standalone_overlap(
+        self,
+        order: ChangeOrder,
+    ) -> None:
+        """Tag a standalone CO when active Variation Orders exist on the project.
+
+        Issue #435 lifecycle enforcement. A standalone CO created alongside
+        active VOs risks duplicating scope and commercial values. We attach a
+        warning to the order's metadata so the UI can surface it. This is
+        deliberately a warning, not a block: construction workflows are diverse
+        and the estimator may have a valid reason to raise a standalone CO.
+        """
+        if mirrored_variation_order_id(order):
+            return  # This CO was created by VO conversion - no overlap concern.
+
+        from sqlalchemy import func, select
+
+        try:
+            from app.modules.variations.models import VariationOrder
+        except ImportError:
+            return  # Variations module not installed.
+
+        stmt = (
+            select(func.count())
+            .select_from(VariationOrder)
+            .where(
+                VariationOrder.project_id == order.project_id,
+                VariationOrder.status.notin_(["rejected", "cancelled", "voided"]),
+            )
+        )
+        active_vo_count = (await self.session.execute(stmt)).scalar() or 0
+        if active_vo_count > 0:
+            metadata = dict(order.metadata_) if order.metadata_ else {}
+            metadata["standalone_overlap_warning"] = (
+                f"This project has {active_vo_count} active variation order(s). "
+                "If this change order covers scope already handled by a variation, "
+                "consider linking it to the variation order instead to avoid "
+                "duplicate commercial values."
+            )
+            order.metadata_ = metadata
 
     async def _resolve_currency(
         self,
@@ -1645,6 +1687,7 @@ class ChangeOrderService:
         self,
         project_id: uuid.UUID,
         boq_id: uuid.UUID | None,
+        order: Any | None = None,
     ) -> tuple[Any | None, str | None]:
         """Decide which bill an approved change order writes into.
 
@@ -1671,6 +1714,12 @@ class ChangeOrderService:
         That distinction matters more now than it did: a bill per variation
         request is a bill per variation request, and each one is another
         unlocked bill on the same project.
+
+        When ``order`` is a change order mirrored from a variation and no
+        explicit ``boq_id`` is given, the variation request's own bill is
+        preferred over the project-wide search. This is the canonical change
+        lifecycle: a CO derived from a VO writes back to the variation's
+        bill, not to an arbitrary unlocked project bill.
         """
         from sqlalchemy import select
 
@@ -1685,6 +1734,28 @@ class ChangeOrderService:
             if boq.is_locked:
                 return None, "boq_locked"
             return boq, None
+
+        # Canonical change lifecycle: a CO mirrored from a VO inherits the
+        # variation request's own bill as the default write-back target,
+        # so a project with multiple unlocked bills (one per variation) does
+        # not require an explicit boq_id from the caller.
+        if order is not None:
+            vo_id = mirrored_variation_order_id(order)
+            if vo_id:
+                vr_id = (getattr(order, "metadata_", None) or {}).get("variation_request_id")
+                if vr_id:
+                    variation_boq = (
+                        await self.session.execute(
+                            select(BOQ).where(
+                                BOQ.variation_request_id == vr_id,
+                                BOQ.project_id == project_id,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if variation_boq is not None:
+                        if variation_boq.is_locked:
+                            return None, "boq_locked"
+                        return variation_boq, None
 
         # Two rows answer the only question this branch asks - "one candidate
         # or several" - so two rows are all that are fetched. This runs on the
@@ -1787,7 +1858,7 @@ class ChangeOrderService:
             # order; skipping costs an unrecoverable desync.
             return
         try:
-            _, refusal = await self._resolve_writeback_boq(order.project_id, boq_id)
+            _, refusal = await self._resolve_writeback_boq(order.project_id, boq_id, order=order)
         except ImportError:
             # The bill-of-quantities module is not installed, so there is no
             # target to be wrong about. That is the ``no_active_boq`` case
@@ -1885,7 +1956,7 @@ class ChangeOrderService:
         if not items:
             return {"applied": False, "reason": "no_items"}
 
-        boq, refusal = await self._resolve_writeback_boq(order.project_id, boq_id)
+        boq, refusal = await self._resolve_writeback_boq(order.project_id, boq_id, order=order)
         if boq is None:
             if refusal == "no_active_boq":
                 logger.info(

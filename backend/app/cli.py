@@ -544,7 +544,12 @@ def check_data_dir(data_dir: Path) -> Check:
             "Data directory",
             "error",
             f"cannot write to {data_dir}: {exc}",
-            f"Use --data-dir to pick a writable path, e.g. --data-dir {Path.home() / 'openconstructionerp-data'}",
+            # Names the command and not only the flag. A hint that says "use
+            # --data-dir" is read as a command line, and typed as one it is
+            # `openconstructionerp --data-dir ...`, which exits 2: the flag is
+            # declared on the subcommands, never on the top-level parser.
+            f"Start with a writable path, e.g. openconstructionerp serve "
+            f"--data-dir {Path.home() / 'openconstructionerp-data'}",
         )
 
 
@@ -557,12 +562,12 @@ def check_path_length(data_dir: Path) -> Check | None:
     doctor and the boot refusal can never disagree about who they apply to.
 
     Ungated on the cluster, unlike the refusal in
-    :func:`app.core.embedded_pg.boot`. That one goes quiet once the cluster
-    exists, because an existing cluster is proof the paths were once short enough
-    and refusing a database that opened yesterday would be the worse bug. Doctor
-    is where somebody looks after it stops working, and reinstalling into a
-    deeper directory while keeping the data directory lands exactly there, so
-    this one always measures.
+    :func:`app.core.embedded_pg.boot`. That one drops to a warning once the
+    cluster exists, because creating the cluster is the step that needs the
+    deepest names and an existing one is not about to be created again. Doctor is
+    where somebody looks after it stops working, and reinstalling into a deeper
+    directory while keeping the data directory lands exactly there, so this one
+    always measures.
 
     Imported inside the function because this file keeps its top-level imports to
     the standard library so the CLI starts fast.
@@ -578,7 +583,8 @@ def check_path_length(data_dir: Path) -> Check | None:
     return Check(
         "Path length",
         "error",
-        f"{problem.directory} is {problem.length} characters, and {problem.limit} is the maximum",
+        f"{problem.directory} is {problem.length} characters, and creating the local database "
+        f"needs {problem.limit} or shorter",
         problem.message,
     )
 
@@ -598,7 +604,8 @@ def check_port_free(host: str, port: int) -> Check:
                         "Port available",
                         "error",
                         f"port {port} on {host} is already in use",
-                        f"Stop the other process or use --port {port + 1}",
+                        f"Stop the other process, or start on another port with "
+                        f"openconstructionerp serve --port {port + 1}",
                     )
                 except (OSError, ConnectionRefusedError):
                     pass
@@ -611,7 +618,8 @@ def check_port_free(host: str, port: int) -> Check:
                         "Port available",
                         "error",
                         f"port {port} on {host} is already in use ({exc})",
-                        f"Stop the other process or use --port {port + 1}",
+                        f"Stop the other process, or start on another port with "
+                        f"openconstructionerp serve --port {port + 1}",
                     )
         return Check("Port available", "ok", f"port {port} is free")
     except Exception as exc:
@@ -1367,6 +1375,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
     try:
         from app.core.embedded_pg import emit_stage
 
+        emit_stage("migrate", "done", "Database ready")
         emit_stage("server", "start", "Starting the application server")
     except Exception:  # noqa: BLE001
         pass

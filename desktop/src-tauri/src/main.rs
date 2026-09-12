@@ -1772,6 +1772,7 @@ enum StartupOutcome {
 }
 
 /// Why the startup wait gave up.
+#[derive(Debug, PartialEq, Eq)]
 enum TimeoutKind {
     /// The backend went quiet: nothing on stdout or stderr for a long time,
     /// which means the step it was on is not progressing.
@@ -1779,6 +1780,10 @@ enum TimeoutKind {
     /// The backend kept talking and still never became ready, so the absolute
     /// ceiling ran out.
     TookTooLong,
+    /// The backend never wrote a single line, so it never got as far as running
+    /// its own code. On Windows that is the one-file bootloader still unpacking
+    /// the program, which is a phase that writes nothing at all.
+    NeverSpoke,
 }
 
 /// What the sidecar's output pump knows about the backend's progress.
@@ -1789,20 +1794,22 @@ enum TimeoutKind {
 ///   backend still doing something", which is the question a timeout should
 ///   actually ask. Reading only STAGE markers would not answer it - migrations,
 ///   the module load and first-run seeding emit no markers at all, and a
-///   recovering database emits one and then works in silence.
+///   recovering database emits one and then works in silence. It is `None`
+///   until the first line arrives, because before that there is no silence to
+///   measure: the sidecar has not begun to run.
 /// * `last_stage` remembers WHICH step the backend last named, so that when the
 ///   wait does give up it can say what the backend was busy with instead of
 ///   only that it was slow.
 #[derive(Clone)]
 struct BootProgress {
-    last_output: Arc<Mutex<Instant>>,
+    last_output: Arc<Mutex<Option<Instant>>>,
     last_stage: Arc<Mutex<Option<(String, String)>>>,
 }
 
 impl BootProgress {
     fn new() -> Self {
         Self {
-            last_output: Arc::new(Mutex::new(Instant::now())),
+            last_output: Arc::new(Mutex::new(None)),
             last_stage: Arc::new(Mutex::new(None)),
         }
     }
@@ -1810,7 +1817,7 @@ impl BootProgress {
     /// Record that the sidecar wrote something, whatever it was.
     fn saw_output(&self) {
         if let Ok(mut slot) = self.last_output.lock() {
-            *slot = Instant::now();
+            *slot = Some(Instant::now());
         }
     }
 
@@ -1821,15 +1828,21 @@ impl BootProgress {
         }
     }
 
-    /// How long the sidecar has said nothing at all.
+    /// How long the sidecar has said nothing at all, or `None` when it has
+    /// never said anything.
+    ///
+    /// The two are different states and the caller has to be able to tell them
+    /// apart. A backend that spoke and then stopped can be judged; a sidecar
+    /// that has not spoken yet has not started, and there is nothing about it
+    /// to judge.
     ///
     /// A poisoned lock reports zero rather than a huge silence: the timeout
     /// this feeds must never fire because a mutex broke.
-    fn quiet_for(&self) -> Duration {
-        self.last_output
-            .lock()
-            .map(|slot| slot.elapsed())
-            .unwrap_or_else(|_| Duration::from_secs(0))
+    fn quiet_for(&self) -> Option<Duration> {
+        match self.last_output.lock() {
+            Ok(slot) => slot.map(|at| at.elapsed()),
+            Err(_) => Some(Duration::from_secs(0)),
+        }
     }
 
     /// The last step the sidecar named, if it named one.
@@ -1908,7 +1921,55 @@ fn judge_health(body: &str) -> HealthProbe {
 /// so the backend that this limit abandons is one that really has stopped.
 /// Abandoning a working backend is strictly worse than waiting longer for a
 /// broken one, so when in doubt this number goes up, not down.
+///
+/// It applies only once the sidecar has written its first line. See
+/// `startup_give_up` for why, and for what is left guarding the phase before
+/// that.
 const STARTUP_QUIET_TIMEOUT: Duration = Duration::from_secs(240);
+
+/// Decide whether the startup wait has run out, from the only two facts it has.
+///
+/// Pure, so the three ways a start can be abandoned can be written down as data
+/// rather than reproduced by waiting minutes in front of a real backend.
+///
+/// The rule that matters is the first one. Silence is only evidence about a
+/// process that has spoken. On Windows the sidecar is a one-file bundle, so
+/// every launch unpacks the whole program, embedded PostgreSQL included, before
+/// a single line of this project's code runs, and the bootloader writes nothing
+/// while it does that. Counting that phase as silence measured the disk and
+/// called it a wedged backend: an unpack has been measured at 302 seconds on a
+/// published build, against a 240 second limit, so a slow or nearly full drive
+/// was enough to have a start that was working perfectly abandoned two minutes
+/// short. The launcher then reported it as the backend having stopped
+/// responding, which sent both the user and us looking at the wrong thing.
+///
+/// Nothing is lost by not judging that phase. A bundle that cannot unpack says
+/// so on stderr and the sidecar exits, which the termination handler reports at
+/// once and by name; a sidecar that dies for any other reason is reported the
+/// same way. What is left for the ceiling is the case where the unpacking is
+/// merely slow, and for that the honest answer is to wait and then say plainly
+/// that the program never got as far as starting.
+fn startup_give_up(
+    quiet_for: Option<Duration>,
+    elapsed: Duration,
+    ceiling: Duration,
+) -> Option<TimeoutKind> {
+    // No `unwrap_or(elapsed)` here, and that is the whole fix: silence since
+    // launch is not silence, it is a process that has not started talking yet.
+    if let Some(quiet) = quiet_for {
+        if quiet >= STARTUP_QUIET_TIMEOUT {
+            return Some(TimeoutKind::WentQuiet(quiet));
+        }
+    }
+    if elapsed >= ceiling {
+        return Some(if quiet_for.is_none() {
+            TimeoutKind::NeverSpoke
+        } else {
+            TimeoutKind::TookTooLong
+        });
+    }
+    None
+}
 
 /// Wait for the backend to become fit to open.
 ///
@@ -1925,16 +1986,16 @@ async fn wait_for_backend(
     let client = reqwest::Client::new();
     let url = format!("http://127.0.0.1:{port}/api/health");
     let start = Instant::now();
+    let ceiling = Duration::from_secs(timeout_secs);
     let mut progress_shown = false;
     let mut broken_since: Option<Instant> = None;
     let mut broken_logged = false;
 
-    while start.elapsed().as_secs() < timeout_secs {
+    loop {
         // Checked before the probe, so a backend that has gone quiet is given
         // up on at the quiet limit rather than one poll later.
-        let quiet_for = progress.quiet_for();
-        if quiet_for >= STARTUP_QUIET_TIMEOUT {
-            return StartupOutcome::TimedOut(TimeoutKind::WentQuiet(quiet_for));
+        if let Some(kind) = startup_give_up(progress.quiet_for(), start.elapsed(), ceiling) {
+            return StartupOutcome::TimedOut(kind);
         }
 
         let probe = match client.get(&url).timeout(HEALTH_PROBE_TIMEOUT).send().await {
@@ -1977,7 +2038,6 @@ async fn wait_for_backend(
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-    StartupOutcome::TimedOut(TimeoutKind::TookTooLong)
 }
 
 /// A fresh secret for the backend's shutdown endpoint, one per run of the app.
@@ -2006,6 +2066,20 @@ fn startup_timeout_message(stage: Option<&(String, String)>, kind: &TimeoutKind)
     let tail = "Please close this window and try again. If the problem persists, please send the \
 log file to info@datadrivenconstruction.io.";
 
+    // Said before anything is asked about the stage, because this is the one
+    // case where there cannot be a stage: nothing was ever reported. It is a
+    // different fault from a slow start and it has a different remedy, so it
+    // gets its own words rather than the generic ones below.
+    let never_spoke = format!(
+        "The application never finished unpacking itself, so its backend never started. The \
+whole program is unpacked every time it starts, before any of it runs, and on a slow or nearly \
+full drive that can take longer than the application waits. Freeing space on the drive usually \
+fixes it. {tail}"
+    );
+    if matches!(kind, TimeoutKind::NeverSpoke) {
+        return never_spoke;
+    }
+
     let Some((id, detail)) = stage else {
         // Nothing was ever reported, so there is no step to name and the old
         // wording is still the honest one.
@@ -2028,6 +2102,10 @@ for {} minutes.{note} {tail}",
         TimeoutKind::TookTooLong => format!(
             "The application backend is still {step} and did not finish in time.{note} {tail}"
         ),
+        // Answered above, before the stage was asked for. Repeated rather than
+        // made a panic: nothing in this file may die on a case it thinks
+        // impossible, because a panic here takes the window with it.
+        TimeoutKind::NeverSpoke => never_spoke,
     }
 }
 
@@ -3120,6 +3198,298 @@ fn human_bytes(bytes: u64) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// What earlier versions left in the system temporary folder.
+//
+// Everything above is scoped to the root this build unpacks into, and that
+// scoping is deliberate. Every version before the spec named a root of its own
+// unpacked into `%TEMP%` instead, so a user who has upgraded through those
+// versions has their extractions sitting outside everything the sweep can
+// reach. The machine in the report had 84 of them, and they are what filled the
+// drive that then could not unpack the next start: installing a version with
+// the sweep in it reclaims none of that, because none of it is in the folder
+// the sweep looks at.
+//
+// Removing them is still not this launcher's to do, and this does not. `_MEI`
+// is PyInstaller's prefix for every program built with it, so `%TEMP%` holds
+// other vendors' extractions under the same names, and Windows already has a
+// janitor for that folder: Disk Cleanup and Storage Sense remove stale
+// temporary files on their own, and Storage Sense runs by itself when the drive
+// is nearly full. Nothing tends the folder this version unpacks into, which is
+// the whole reason the sweep exists there and not here.
+//
+// Naming them is this launcher's to do, and nothing did. The failure that
+// produced the report ends with a person being told to free space on a drive
+// without being told that the space is this application's own, how much of it
+// there is, or where. So this counts and measures and says so, and it counts
+// only directories carrying files this application ships, so that nothing else
+// on the machine is ever described to a user as ours.
+// ---------------------------------------------------------------------------
+
+/// Paths that every extraction of this sidecar contains.
+///
+/// `base_library.zip` says only that a PyInstaller one-file bundle unpacked
+/// here. The other two are this project's own backend package, which the spec
+/// ships as source (`datas.append((BACKEND / "app", "app"))`) and has since the
+/// first build in this repository, so they are present in extractions left by
+/// versions far older than the sweep. All three are required, because each one
+/// alone describes somebody else's program sooner or later.
+const OWNERSHIP_MARKERS: [&str; 3] = ["base_library.zip", "app/main.py", "app/modules"];
+
+/// Whether a directory holds the files this application unpacks.
+///
+/// Answers "is this ours", which is a different and much easier question than
+/// "is this safe to remove". Only the easy one is asked here, because nothing
+/// below this line removes anything.
+fn extraction_looks_like_ours(dir: &std::path::Path) -> bool {
+    OWNERSHIP_MARKERS.iter().all(|marker| {
+        let mut path = dir.to_path_buf();
+        for segment in marker.split('/') {
+            path.push(segment);
+        }
+        path.exists()
+    })
+}
+
+/// Most directories one census will look inside before it stops counting.
+///
+/// Measured rather than guessed. Two of these were found in `%TEMP%` on a
+/// development machine and walked: 13,209 files and 1.37 GB each. The report
+/// names 84, so a census that insisted on all of them would walk about a million
+/// files on a machine already slow enough for its disk to be the problem.
+/// Sixteen puts the answer in gigabytes, which is the number that makes the
+/// sentence worth reading, and a floor of sixteen directories is as persuasive
+/// as a total.
+const LEGACY_CENSUS_DIR_LIMIT: usize = 16;
+
+/// How long one census may take before it reports what it has.
+const LEGACY_CENSUS_BUDGET: Duration = Duration::from_secs(20);
+
+/// What earlier versions of this application left behind in one folder.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct LegacyLeftovers {
+    directories: usize,
+    bytes: u64,
+    /// True when the count stopped with entries still unexamined, so both
+    /// numbers above are a floor and not a total. Said out loud in the wording:
+    /// a number presented as complete when it is not is worse than a smaller
+    /// one presented honestly.
+    partial: bool,
+}
+
+/// Count what earlier versions left in `root`, and remove nothing.
+///
+/// Every input is a parameter so the whole thing can be driven over a fabricated
+/// folder in a test. The order of the questions is the order of their cost: the
+/// name, then the age, then whether the directory is ours, and only then the
+/// walk that produces a size.
+///
+/// A directory is counted only if a live process is not running out of it, for
+/// the same reason the sweep refuses to remove one: this sentence tells a person
+/// the folders are safe to delete, and telling them that about an extraction
+/// some running program still holds would have them take its data files out from
+/// underneath it, which is the exact way a postmaster loses a file it needs.
+fn count_legacy_leftovers_in(
+    root: &std::path::Path,
+    minimum_age: Duration,
+    dir_limit: usize,
+    budget: Duration,
+) -> LegacyLeftovers {
+    let mut found = LegacyLeftovers::default();
+
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        // Nothing to say about a folder that cannot be listed, and nothing that
+        // needs saying: this only ever adds a sentence to a message.
+        Err(_) => return found,
+    };
+
+    let deadline = Instant::now() + budget;
+    let mut examined = 0usize;
+    for entry in entries.flatten() {
+        if examined >= dir_limit || Instant::now() >= deadline {
+            found.partial = true;
+            break;
+        }
+
+        let listed = TempEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            is_dir: entry.file_type().map(|t| t.is_dir()).unwrap_or(false),
+            age: entry
+                .metadata()
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|written| std::time::SystemTime::now().duration_since(written).ok()),
+            in_use: false,
+        };
+        // The same rule the sweep uses, and used here for the same reasons: the
+        // name says PyInstaller made it, the age keeps an unpack that is
+        // happening right now out of the count.
+        if sweep_verdict(&listed, minimum_age) != SweepVerdict::Remove {
+            continue;
+        }
+
+        let path = entry.path();
+        if !extraction_looks_like_ours(&path) {
+            continue;
+        }
+
+        examined += 1;
+        // The sweep's cap, reused, and the reuse was measured rather than
+        // assumed: a real leftover from an earlier version of this bundle holds
+        // about thirteen thousand files against a cap of sixty thousand. The
+        // margin matters because truncation here is silent in the other
+        // direction from the sweep's. The sweep refuses to remove what it could
+        // not finish reading, which is safe; this drops the directory out of the
+        // count, so a cap set below a real extraction would turn the whole
+        // sentence off on exactly the machines it was written for.
+        let scan = scan_extraction(&path, EXTRACTION_FILE_CAP);
+        if scan.truncated {
+            // Read in part is not read. Counting a directory whose size we could
+            // not finish measuring would put a number in front of a user that is
+            // wrong in a direction they cannot see.
+            found.partial = true;
+            continue;
+        }
+        if extraction_is_in_use(&scan) {
+            continue;
+        }
+
+        found.directories += 1;
+        found.bytes += scan.bytes;
+    }
+
+    found
+}
+
+/// The sentence that names them, or nothing at all.
+///
+/// Pure, so the wording can be tested without a temporary folder full of real
+/// extractions behind it.
+fn legacy_leftovers_sentence(root: &str, found: &LegacyLeftovers) -> String {
+    if found.directories == 0 {
+        return String::new();
+    }
+    let floor = if found.partial { "at least " } else { "" };
+    // "the ones counted here" rather than "them", because the census stops at a
+    // limit and a budget. A sentence that vouched for every directory in that
+    // folder would be vouching for ones it never opened, and the reader acts on
+    // it with a delete.
+    format!(
+        " Earlier versions of this application unpacked themselves into {root} and did not \
+clear up after themselves, leaving {floor}{} folders there that hold {floor}{}. Their names \
+begin with {EXTRACTION_PREFIX}, no program is running out of the ones counted here, and \
+deleting them with OpenConstructionERP closed frees that space. This version unpacks into a \
+folder it clears up on its own, so they will not come back.",
+        found.directories,
+        human_bytes(found.bytes)
+    )
+}
+
+/// The same sentence, measured on this machine.
+///
+/// Windows only, because Windows is the only platform whose extractions moved
+/// and therefore the only one with a previous home to look at. On POSIX the spec
+/// still leaves the choice to the bootloader, so the system folder is where this
+/// version unpacks too and what is in it is not a leftover from anything.
+///
+/// Called only where the number is about to be shown to somebody. It is a walk
+/// of real directories, so it is not something to pay for on a start that is
+/// going to work.
+fn legacy_leftovers_hint() -> String {
+    if !cfg!(target_os = "windows") {
+        return String::new();
+    }
+    let root = std::env::temp_dir();
+    // Refuse to describe this version's own extractions as an older version's.
+    // Cannot happen on Windows as the spec stands, and it is one edit away from
+    // being able to: a spec that stopped naming a root would have the sweep and
+    // this looking at the same folder.
+    match extraction_dir() {
+        Some(dir) if !dir.starts_with(&root) && !root.starts_with(&dir) => {}
+        _ => return String::new(),
+    }
+
+    let found = count_legacy_leftovers_in(
+        &root,
+        EXTRACTION_MINIMUM_AGE,
+        LEGACY_CENSUS_DIR_LIMIT,
+        LEGACY_CENSUS_BUDGET,
+    );
+    if found.directories > 0 {
+        log_line(&format!(
+            "earlier versions left {} folders holding {} in {}{}",
+            found.directories,
+            human_bytes(found.bytes),
+            root.display(),
+            if found.partial {
+                ", counted in part"
+            } else {
+                ""
+            }
+        ));
+    }
+    legacy_leftovers_sentence(&root.display().to_string(), &found)
+}
+
+/// Recognise the drive having filled up in whatever a failed start reported.
+///
+/// Separate from `classify_bootloader_failure`, which reads the one-file
+/// bootloader's own words and therefore only ever sees a failure from before the
+/// bundled interpreter started. This reads what this project's own code said
+/// after it did start: a drive that fills during a migration, during first-run
+/// seeding or while the embedded cluster writes its first checkpoint arrives as
+/// a Python OSError, and the launcher passed the tail of it straight through.
+/// "[Errno 28] No space left on device" is a true sentence that tells a person
+/// nothing about which drive, how much room is needed, or that this
+/// application's own leftovers are usually what filled it. The reported machine
+/// logged exactly that line eleven days before it stopped starting at all.
+///
+/// Both spellings, because Windows Python raises the C errno from some calls and
+/// the Windows error from others, and one full drive produces either.
+fn cause_is_a_full_disk(cause: &str) -> bool {
+    const SHAPES: [&str; 4] = [
+        "[errno 28]",
+        "no space left on device",
+        "[winerror 112]",
+        "not enough space on the disk",
+    ];
+    let lowered = cause.to_ascii_lowercase();
+    SHAPES.iter().any(|shape| lowered.contains(shape))
+}
+
+/// What to tell a user whose drive filled while the backend was starting.
+///
+/// Pure, with every measurement handed in. The instruction comes before the
+/// measurements on purpose: it is the only part of this a person has to read.
+fn full_disk_message(notes: &str) -> String {
+    format!(
+        "The drive ran out of space while the application was starting, so its backend could \
+not finish. Free some space and start OpenConstructionERP again.{notes}"
+    )
+}
+
+/// Where this installation keeps its database, and what that drive had left.
+///
+/// The extraction folder is not the answer here. A failure this side of the
+/// bootloader happened while this project's own code was writing, and what it
+/// writes is the data directory, which is a different folder and often a
+/// different drive from the one that gets unpacked into.
+fn data_folder_space_note() -> String {
+    let dir = match workspace_data_dir() {
+        Some(dir) => dir,
+        None => return String::new(),
+    };
+    match free_space_at(&dir) {
+        Some(free) => format!(
+            " It keeps its database in {}, and the drive holding that folder has {} free.",
+            dir.display(),
+            human_bytes(free)
+        ),
+        None => format!(" It keeps its database in {}.", dir.display()),
+    }
+}
+
 /// What to tell a user whose temporary folder has no room in it.
 ///
 /// Both numbers are in it on purpose. "Not enough disk space" is a sentence
@@ -3149,12 +3519,17 @@ fn extraction_space_note(dir: &std::path::Path) -> String {
         None => return String::new(),
     };
     match space_verdict(Some(free), EXTRACTION_SPACE_FLOOR, EXTRACTION_SPACE_COMFORT) {
+        // The one arm that has established a full drive, and therefore the one
+        // arm where the folders this application left on that drive are worth a
+        // person's attention. Above it they would be tidiness, and the screen
+        // this appears on is not the place for tidiness.
         SpaceVerdict::TooLittle | SpaceVerdict::Tight => format!(
             " The drive holding {} has {} free and unpacking needs about {}, so this is a full \
-disk rather than antivirus software.",
+disk rather than antivirus software.{}",
             dir.display(),
             human_bytes(free),
-            human_bytes(EXTRACTION_ESTIMATED_BYTES)
+            human_bytes(EXTRACTION_ESTIMATED_BYTES),
+            legacy_leftovers_hint()
         ),
         _ => format!(
             " The drive holding {} has {} free.",
@@ -3183,11 +3558,17 @@ fn extraction_space_allows_a_sidecar(handle: &tauri::AppHandle) -> bool {
     match space_verdict(free, EXTRACTION_SPACE_FLOOR, EXTRACTION_SPACE_COMFORT) {
         SpaceVerdict::TooLittle => {
             let free = free.unwrap_or(0);
-            report_fatal_stage(
-                handle,
-                "sidecar",
-                &out_of_space_message(&dir.display().to_string(), free),
+            // The refusal is the one screen in this whole file where a person
+            // has been stopped and given a task. Telling them to free space
+            // without telling them that gigabytes of it are this application's
+            // own, and where, is the failure that produced the report rather
+            // than a smaller version of it.
+            let message = format!(
+                "{}{}",
+                out_of_space_message(&dir.display().to_string(), free),
+                legacy_leftovers_hint()
             );
+            report_fatal_stage(handle, "sidecar", &message);
             false
         }
         SpaceVerdict::Tight => {
@@ -3197,6 +3578,12 @@ fn extraction_space_allows_a_sidecar(handle: &tauri::AppHandle) -> bool {
                 dir.display(),
                 human_bytes(EXTRACTION_ESTIMATED_BYTES)
             ));
+            // No census here, deliberately. This start is going ahead, and the
+            // census is a walk of real directories that would add seconds to it
+            // for a log line nobody is waiting on. It is paid for only where its
+            // answer is about to be put in front of somebody who has been
+            // stopped: the refusal above, and the bootloader failure in
+            // `extraction_space_note`.
             true
         }
         SpaceVerdict::Enough | SpaceVerdict::Unknown => true,
@@ -3509,7 +3896,49 @@ tools block newly installed programs; allow OpenConstructionERP and try again."
                                     .unwrap_or_default();
                                 (f.stage, format!("{}{note}", f.message))
                             } else if let Some(cause) = latched_cause.or(tb_cause) {
-                                ("server", format!("The backend could not finish starting: {cause}"))
+                                // A full drive reaches here rather than the
+                                // branch above: the bundle unpacked, our own code
+                                // ran, and the drive filled under it, so what
+                                // arrives is a Python OSError with a real
+                                // traceback behind it. It used to be passed
+                                // through as "The backend could not finish
+                                // starting: [Errno 28] No space left on device",
+                                // which is the cause without the remedy and
+                                // without the drive it is about.
+                                //
+                                // The census inside the note is a blocking walk
+                                // and this is an async task, which is normally
+                                // wrong. It is allowed here because the sidecar
+                                // is already dead, this message is the last thing
+                                // this task does, and there is no start left for
+                                // it to hold up. The refusal path, where a start
+                                // is still in progress, pays for it on the
+                                // dedicated backend thread instead.
+                                if cause_is_a_full_disk(&cause) {
+                                    let notes = format!(
+                                        "{}{}",
+                                        data_folder_space_note(),
+                                        legacy_leftovers_hint()
+                                    );
+                                    ("server", full_disk_message(&notes))
+                                } else {
+                                    (
+                                        "server",
+                                        format!("The backend could not finish starting: {cause}"),
+                                    )
+                                }
+                            } else if cause_is_a_full_disk(&tail_now) {
+                                // The same drive, with nothing latched and no
+                                // traceback captured, which is what happens when
+                                // the failure is written by something that is not
+                                // our own logging: the embedded cluster's own
+                                // stderr, or a library that prints and exits.
+                                let notes = format!(
+                                    "{}{}",
+                                    data_folder_space_note(),
+                                    legacy_leftovers_hint()
+                                );
+                                ("server", full_disk_message(&notes))
                             } else {
                                 let tail = tail_now;
                                 let core = if tail.trim().is_empty() {
@@ -3718,6 +4147,16 @@ info@datadrivenconstruction.io."
                             .map(|(id, _)| id.as_str())
                             .unwrap_or("none"),
                     )),
+                    // The distinction this line exists to record: the sidecar
+                    // never wrote anything, so it never got past unpacking
+                    // itself and none of its own code ever ran. Everything a
+                    // log reader would otherwise reach for here - the last
+                    // stage, the last stderr - is empty for a reason, and
+                    // without this line that emptiness reads as a launcher
+                    // that lost track of a backend.
+                    TimeoutKind::NeverSpoke => log_line(
+                        "backend never wrote a line; it did not get past unpacking itself",
+                    ),
                 }
                 // Only say "slow" when nothing better has been said. The
                 // termination handler above names the real cause the
@@ -5118,19 +5557,98 @@ Content-Length: {}\r\nConnection: close\r\n\r\n{}",
         assert_eq!(detail, "Starting embedded PostgreSQL");
 
         std::thread::sleep(Duration::from_millis(60));
+        // Not "sixty milliseconds of silence". A sidecar that has written
+        // nothing is not a quiet sidecar, it is one that has not started, and
+        // the clock this feeds must not be able to run against it. The
+        // assertion here used to be that the silence had already accumulated,
+        // which is what let the unpacking phase be counted as a fault.
         assert!(
-            progress.quiet_for() >= Duration::from_millis(50),
-            "silence has to accumulate while nothing is written"
+            progress.quiet_for().is_none(),
+            "nothing has been written yet, so there is no silence to measure"
+        );
+
+        progress.saw_output();
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(
+            progress.quiet_for().expect("the sidecar has spoken now") >= Duration::from_millis(50),
+            "silence has to accumulate once the sidecar has written something"
         );
 
         progress.saw_output();
         assert!(
-            progress.quiet_for() < Duration::from_millis(50),
+            progress.quiet_for().expect("still speaking") < Duration::from_millis(50),
             "any line at all has to reset the silence"
         );
         // Output is not a stage: what the backend was doing is still the last
         // step it named.
         assert_eq!(progress.stage().expect("still latched").0, "pg");
+    }
+
+    #[test]
+    fn a_sidecar_that_has_not_spoken_yet_is_not_a_sidecar_that_went_quiet() {
+        // The reported defect, as data. On Windows the one-file bootloader
+        // unpacks the whole program before any of our code runs and writes
+        // nothing while it does, and an unpack has been measured at 302
+        // seconds on a published build. Judged as silence that is 302 seconds
+        // of a backend that has "stopped responding", against a limit of 240,
+        // so the launcher killed a start that was working.
+        let ceiling = Duration::from_secs(1200);
+        assert_eq!(
+            startup_give_up(None, Duration::from_secs(302), ceiling),
+            None,
+            "a start that has written nothing is unpacking, not wedged"
+        );
+
+        // The limit still does its job the moment there is something to
+        // measure it against.
+        assert_eq!(
+            startup_give_up(
+                Some(STARTUP_QUIET_TIMEOUT),
+                Duration::from_secs(600),
+                ceiling
+            ),
+            Some(TimeoutKind::WentQuiet(STARTUP_QUIET_TIMEOUT)),
+            "a backend that spoke and then stopped is still abandoned"
+        );
+        assert_eq!(
+            startup_give_up(Some(Duration::from_secs(1)), Duration::from_secs(30), ceiling),
+            None,
+            "a backend that is talking is left alone"
+        );
+
+        // The ceiling is what bounds the phase no longer being judged, and the
+        // two ways of reaching it are told apart, because they are different
+        // faults with different remedies and the log has to say which happened.
+        assert_eq!(
+            startup_give_up(None, ceiling, ceiling),
+            Some(TimeoutKind::NeverSpoke),
+            "an unpack that never finishes is still given up on, by name"
+        );
+        assert_eq!(
+            startup_give_up(Some(Duration::from_secs(1)), ceiling, ceiling),
+            Some(TimeoutKind::TookTooLong),
+            "a backend that talked all the way to the ceiling is slow, not absent"
+        );
+    }
+
+    #[test]
+    fn the_timeout_message_separates_a_slow_start_from_one_that_never_began() {
+        // The launcher promised to say which of the two it was. A sidecar that
+        // never wrote anything has no stage to name, so the generic wording
+        // would tell the user only that they had waited, which is the one
+        // thing they already knew.
+        let message = startup_timeout_message(None, &TimeoutKind::NeverSpoke);
+        assert!(message.contains("unpacking"), "got: {message}");
+        assert!(message.contains("drive"), "got: {message}");
+        assert!(
+            !message.contains("stopped responding"),
+            "nothing was ever responding, got: {message}"
+        );
+        // Holds even if a stage somehow was reported: the words belong to the
+        // kind of timeout, not to what may or may not be latched beside it.
+        let stage = ("pg".to_string(), "Starting the local database".to_string());
+        let with_stage = startup_timeout_message(Some(&stage), &TimeoutKind::NeverSpoke);
+        assert_eq!(with_stage, message);
     }
 
     #[test]
@@ -5781,6 +6299,300 @@ walking the directory rather than taking the held files first"
         assert_eq!(human_bytes(0), "0 KB");
         assert_eq!(human_bytes(412 * 1024 * 1024), "412 MB");
         assert_eq!(human_bytes(EXTRACTION_ESTIMATED_BYTES), "1.5 GB");
+    }
+
+    /// Lay out a directory that looks like one of this application's own
+    /// extractions, with `bytes` of payload in it.
+    fn fake_extraction(dir: &std::path::Path, bytes: usize) {
+        std::fs::create_dir_all(dir.join("app").join("modules")).expect("a fixture app package");
+        std::fs::write(dir.join("app").join("main.py"), b"# fixture\n")
+            .expect("a fixture entry module");
+        std::fs::write(dir.join("base_library.zip"), vec![0u8; bytes]).expect("a fixture archive");
+    }
+
+    /// Being ours is what the census asks, and it asks it of all three names.
+    ///
+    /// The danger here is not a directory missed, it is a directory of somebody
+    /// else's counted and then described to a user as this application's, on the
+    /// one screen where they are being told what is safe to delete.
+    #[test]
+    fn only_a_directory_carrying_our_own_files_is_called_ours() {
+        let root = fixture_dir("ours");
+
+        let ours = root.join("_MEI900001");
+        fake_extraction(&ours, 16);
+        assert!(extraction_looks_like_ours(&ours));
+
+        // A PyInstaller bundle, and not this one.
+        let stranger = root.join("_MEI900002");
+        std::fs::create_dir_all(&stranger).expect("a fixture stranger");
+        std::fs::write(stranger.join("base_library.zip"), b"payload").expect("a fixture archive");
+        assert!(
+            !extraction_looks_like_ours(&stranger),
+            "the bootloader's own file is every vendor's, not ours"
+        );
+
+        // Ours in every way but one. Each marker has to carry a veto or the
+        // set of three is decoration.
+        for (index, missing) in OWNERSHIP_MARKERS.iter().enumerate() {
+            // Numbered rather than named after the marker: two of the three are
+            // the same length, so a name built from one would have the second
+            // pass reusing the first one's directory.
+            let partial = root.join(format!("_MEI90010{index}"));
+            fake_extraction(&partial, 16);
+            let mut path = partial.clone();
+            for segment in missing.split('/') {
+                path.push(segment);
+            }
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path).expect("remove one marker directory");
+            } else {
+                std::fs::remove_file(&path).expect("remove one marker file");
+            }
+            assert!(
+                !extraction_looks_like_ours(&partial),
+                "{missing} was allowed to be absent"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The census counts what earlier versions left, and removes nothing.
+    ///
+    /// The reported machine had 84 of these in `%TEMP%`, which is outside
+    /// everything the sweep can reach, so installing the version with the sweep
+    /// in it reclaims none of that. All this can honestly do is say the space is
+    /// there and whose it is, and the assertion that matters most is the last
+    /// one: every directory it looked at is still on the disk afterwards.
+    #[cfg(windows)]
+    #[test]
+    fn what_earlier_versions_left_is_counted_and_never_removed() {
+        let root = fixture_dir("legacy-census");
+
+        let ours = root.join("_MEI900101");
+        fake_extraction(&ours, 4096);
+        let second = root.join("_MEI900102");
+        fake_extraction(&second, 2048);
+
+        // Somebody else's bundle, under the same prefix, on the same drive.
+        let stranger = root.join("_MEI900103");
+        std::fs::create_dir_all(&stranger).expect("a fixture stranger");
+        std::fs::write(stranger.join("base_library.zip"), vec![0u8; 8192])
+            .expect("a fixture archive");
+
+        // Not an extraction at all.
+        let unrelated = root.join("chrome_BITS_1234");
+        std::fs::create_dir_all(&unrelated).expect("a fixture directory");
+        std::fs::write(unrelated.join("payload.bin"), vec![0u8; 8192]).expect("a fixture file");
+
+        let found = count_legacy_leftovers_in(&root, Duration::ZERO, 16, Duration::from_secs(30));
+
+        assert_eq!(found.directories, 2, "{found:?}");
+        assert_eq!(
+            found.bytes,
+            4096 + 2048 + 10 + 10,
+            "the size has to be the whole directory, {found:?}"
+        );
+        assert!(!found.partial, "nothing was left unexamined, {found:?}");
+
+        for kept in [&ours, &second, &stranger, &unrelated] {
+            assert!(kept.exists(), "the census removed {}", kept.display());
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A directory written minutes ago is not an older version's leftover, it is
+    /// a start that may be happening right now.
+    #[cfg(windows)]
+    #[test]
+    fn a_freshly_written_extraction_is_not_counted_as_a_leftover() {
+        let root = fixture_dir("legacy-young");
+        fake_extraction(&root.join("_MEI900201"), 4096);
+
+        let found =
+            count_legacy_leftovers_in(&root, EXTRACTION_MINIMUM_AGE, 16, Duration::from_secs(30));
+
+        assert_eq!(found.directories, 0, "{found:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A directory some program is still running out of is left out of the count.
+    ///
+    /// This is the assertion behind the promise the sentence makes. It tells a
+    /// person no program is running out of the folders it named, and the only
+    /// thing standing behind that is the in-use probe. Drop that call and every
+    /// other test here stays green while the sentence starts vouching for a live
+    /// extraction, which is how somebody deletes the files a running postmaster
+    /// is serving from.
+    ///
+    /// The handle is the whole instrument: `file_is_held_open` opens with the
+    /// share mode set to zero, so an ordinary open held anywhere in this process
+    /// is enough to make that probe fail, exactly as another program's would.
+    /// The second census, after the handle is gone, is the control. Without it a
+    /// merely broken probe that answered "in use" for everything would pass, and
+    /// so would one that had been fooled by the file's name rather than by the
+    /// handle on it.
+    #[cfg(windows)]
+    #[test]
+    fn an_extraction_a_program_is_running_out_of_is_left_out_of_the_count() {
+        let root = fixture_dir("legacy-held");
+
+        let free = root.join("_MEI900301");
+        fake_extraction(&free, 4096);
+
+        let held = root.join("_MEI900302");
+        fake_extraction(&held, 2048);
+        let library = held.join("python312.dll");
+        std::fs::write(&library, vec![0u8; 512]).expect("a fixture library");
+        let open = std::fs::File::open(&library).expect("hold the fixture library open");
+
+        let counted = count_legacy_leftovers_in(&root, Duration::ZERO, 16, Duration::from_secs(30));
+        assert_eq!(
+            counted.directories, 1,
+            "the held extraction was counted, {counted:?}"
+        );
+        assert_eq!(
+            counted.bytes,
+            4096 + 10,
+            "the held extraction's bytes were counted, {counted:?}"
+        );
+
+        drop(open);
+
+        let released =
+            count_legacy_leftovers_in(&root, Duration::ZERO, 16, Duration::from_secs(30));
+        assert_eq!(
+            released.directories, 2,
+            "the handle was not what excluded it, {released:?}"
+        );
+        assert_eq!(released.bytes, 4096 + 10 + 2048 + 10 + 512, "{released:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A count that stopped early says so, in the words as well as the struct.
+    ///
+    /// The sentence tells somebody how much space they will get back. A floor
+    /// presented as a total is a number that is wrong in a direction they have
+    /// no way of seeing, on the one screen where they act on it.
+    #[test]
+    fn the_leftovers_sentence_says_when_its_numbers_are_a_floor() {
+        let none = LegacyLeftovers::default();
+        assert_eq!(legacy_leftovers_sentence("C:\\Temp", &none), "");
+
+        let whole = LegacyLeftovers {
+            directories: 3,
+            bytes: 6 * 1024 * 1024 * 1024,
+            partial: false,
+        };
+        let said = legacy_leftovers_sentence("C:\\Temp", &whole);
+        assert!(said.contains("3 folders"), "{said}");
+        assert!(said.contains("6.0 GB"), "{said}");
+        assert!(said.contains("C:\\Temp"), "{said}");
+        assert!(said.contains(EXTRACTION_PREFIX), "{said}");
+        assert!(!said.contains("at least"), "{said}");
+
+        let counted_in_part = LegacyLeftovers {
+            partial: true,
+            ..whole
+        };
+        let hedged = legacy_leftovers_sentence("C:\\Temp", &counted_in_part);
+        assert!(hedged.contains("at least 3 folders"), "{hedged}");
+        assert!(hedged.contains("at least 6.0 GB"), "{hedged}");
+    }
+
+    /// A stopped run reports a full drive as a full drive, not as an errno.
+    ///
+    /// The reported machine logged "[Errno 28] No space left on device" eleven
+    /// days before it stopped starting at all, and what the launcher did with it
+    /// was print it. That is the cause with the remedy left out.
+    #[test]
+    fn a_full_drive_is_named_rather_than_passed_through_as_an_errno() {
+        for said in [
+            "OSError: [Errno 28] No space left on device",
+            "sqlite3.OperationalError: database or disk is full: [errno 28]",
+            "OSError: [WinError 112] There is not enough space on the disk",
+            "PermissionError: [WinError 112] there is Not Enough Space On The Disk: 'x'",
+        ] {
+            assert!(cause_is_a_full_disk(said), "{said}");
+        }
+
+        for innocent in [
+            "RuntimeError: the locale catalogue is missing",
+            "OSError: [Errno 13] Permission denied",
+            "alembic.util.exc.CommandError: Can't locate revision '28'",
+        ] {
+            assert!(!cause_is_a_full_disk(innocent), "{innocent}");
+        }
+
+        let message = full_disk_message(" It keeps its database in C:\\Users\\a\\.openestimate.");
+        assert!(message.contains("ran out of space"), "{message}");
+        assert!(message.contains("Free some space"), "{message}");
+        assert!(message.contains(".openestimate"), "{message}");
+        assert!(
+            !message.to_ascii_lowercase().contains("errno"),
+            "the raw code has no business on the screen: {message}"
+        );
+    }
+
+    /// The silence clock is fed by the output stream, not by the spawn.
+    ///
+    /// `startup_give_up` is covered as a function just above, and `quiet_for`
+    /// separately, and neither of them covers the one line that was the defect:
+    /// the call site, which used to turn "has not spoken yet" into "has been
+    /// silent since launch" with an `unwrap_or`. Restore that and every test in
+    /// this file still passes, while a Windows unpack measured at 302 seconds is
+    /// once again abandoned at 240 and reported as a backend that stopped
+    /// responding.
+    ///
+    /// Read off disk because there is nothing else to read it from: the wait is
+    /// an async function that polls a real HTTP endpoint for minutes, so the
+    /// wiring cannot be driven from a unit test at all, and a mechanism nothing
+    /// checks is a mechanism that comes back. The same shape as
+    /// `the_sweep_looks_where_the_spec_unpacks` below, which reads the spec.
+    #[test]
+    fn the_silence_clock_is_fed_by_the_output_stream_and_not_by_the_spawn() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("main.rs");
+        let text = std::fs::read_to_string(&source)
+            .unwrap_or_else(|e| panic!("this file must be readable at {}: {e}", source.display()));
+
+        // The wait alone, so that this test's own words are not part of what it
+        // reads. Both ends are function signatures, and a rename of either shows
+        // up here as a failure rather than as a check that quietly stopped
+        // looking at anything.
+        let opens = text
+            .find("async fn wait_for_backend(")
+            .expect("wait_for_backend has been renamed, and this test with it");
+        let closes = text[opens..]
+            .find("\nfn new_shutdown_token(")
+            .expect("the function after the wait has been renamed");
+        let wait = &text[opens..opens + closes];
+
+        // The first argument alone, and deliberately not the whole call. That
+        // substring already carries the entire claim, that the number the
+        // decision is made on is the pump's measurement rather than the time
+        // since spawn, and it survives the day somebody runs the formatter over
+        // this file and the call gets wrapped across lines. Matching the full
+        // call would turn a reflow into a red test about nothing.
+        assert!(
+            wait.contains("startup_give_up(progress.quiet_for()"),
+            "the wait no longer hands startup_give_up the silence the output pump measured"
+        );
+
+        // Assembled rather than written out, because a literal here would be
+        // found in this test's own source by the search above the day somebody
+        // widens the slice.
+        let regression = format!("quiet_for(){}", ".unwrap_or(");
+        assert!(
+            !wait.contains(&regression),
+            "silence since launch is not silence: {regression} counts the unpack, which writes \
+nothing, and abandons a start that is working"
+        );
     }
 
     /// The bootloader failure now arrives with the measurement that settles it.

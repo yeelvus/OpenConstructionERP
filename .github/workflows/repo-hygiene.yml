@@ -1,6 +1,6 @@
 # Repo hygiene gate.
 #
-# Guards: 76. They run on every push and pull request, grouped into three
+# Guards: 81. They run on every push and pull request, grouped into three
 # jobs. A guard is a named step that is not a tooling install, and that rule is
 # not a matter of taste: it is the one that reproduces both counts this header
 # carried when it was written on 2026-08-24 - twenty-one guards, over jobs of
@@ -150,21 +150,37 @@ jobs:
         run: python scripts/check_untracked_imports.py
 
       # desktop/src-tauri/windows/installer.nsi is a fork of the stock Tauri
-      # NSIS template, and the single line it changes is what keeps an upgrade
-      # from hanging forever. Upstream starts "Uninstall before installing"
-      # selected, which ExecWaits the uninstaller already on the machine, and
-      # every uninstaller from v11.7.1 to v15.8.0 calls nsExec with no timeout,
-      # so a PowerShell that never returns stops the upgrade dead. The fork
-      # pre-selects "Do not uninstall" on the upgrade branch instead.
+      # NSIS template, and everything it changes is on the page a user meets
+      # when a previous version is already installed. There are three edits now,
+      # not the one this comment used to name.
       #
-      # The script was written months ago and nothing ever ran it. A fork
-      # nobody compares against upstream stops being a fork and becomes a copy
-      # that drifts, and the drift that matters here is silent: bumping the
+      # The first keeps an upgrade from hanging forever. Upstream starts
+      # "Uninstall before installing" selected, which ExecWaits the uninstaller
+      # already on the machine, and every uninstaller from v11.7.1 to v15.8.0
+      # calls nsExec with no timeout, so a PowerShell that never returns stops
+      # the upgrade dead. The fork pre-selects "Do not uninstall" on the upgrade
+      # branch instead. The second makes the WiX migration branch obey whichever
+      # button was selected rather than uninstalling either way. The third stops
+      # a file the old uninstaller left behind, after reporting success, from
+      # aborting an install that would have written over it anyway, and puts the
+      # exit code and the path into the message when the abort is real.
+      #
+      # The script was written months ago and nothing ran it until this step. A
+      # fork nobody compares against upstream stops being a fork and becomes a
+      # copy that drifts, and the drift that matters here is silent: bumping the
       # Tauri CLI regenerates the template with different Handlebars
       # expressions, our block survives textually, and the installer builds
       # green while the page it patches has moved. This fetches the template at
       # the CLI version pinned in desktop-release.yml, reconstructs the file
       # from it, and fails when the two stop agreeing.
+      #
+      # This lane reports, it does not block: nothing here is a required status
+      # check, so a red run does not stop the push that caused it. The same
+      # script therefore runs a second time in desktop-release.yml, on the
+      # Windows leg, ahead of the bundle. That copy is the one that blocks,
+      # because a tag is the only place in this repository where a red check
+      # withholds something. Two placements, one script, on purpose; if either
+      # is ever removed, say in the other which one is left.
       - name: Check the installer template against the Tauri version it forks
         if: ${{ !cancelled() }}
         run: python scripts/check_nsis_template_drift.py
@@ -185,6 +201,25 @@ jobs:
       - name: Check case step targets against the route table
         if: ${{ !cancelled() }}
         run: python scripts/check_case_routes.py
+
+      # The public origin serves the marketing site and the app from one
+      # hostname, and Caddy decides which a URL belongs to from one allowlist of
+      # top-level segments. A route the app serves that the list does not carry
+      # never reaches the app at all: the visitor gets the static site's 404. On
+      # 2026-09-09 that was the whole regional BOQ exchange feature, the hub plus
+      # twenty country screens, and the gate that exists for this was run that
+      # same day and passed over every one of them, because it read App.tsx and
+      # those routes come from a module manifest that builds them from a table.
+      #
+      # This compares against the committed mirror, not the host: the runner has
+      # no access to the VPS. That catches the common case, a route added with
+      # nothing added to the proxy, on the commit that adds it. The mirror is
+      # extracted from a real Caddyfile and never generated from the routes, and
+      # `--compare-mirror --caddyfile <live file>` is the manual step that checks
+      # the mirror against the host. See the script header.
+      - name: Check app routes against the proxy allowlist mirror
+        if: ${{ !cancelled() }}
+        run: python scripts/check_app_route_allowlist.py
 
       # frontend/src/features/cases/countryPortraits.generated.ts is derived
       # from the filenames under frontend/public/assets/people and imported at
@@ -970,6 +1005,25 @@ jobs:
         if: ${{ !cancelled() }}
         run: python scripts/check_i18n_orphan_keys.py
 
+      # The language count in README.md sat at 42 while two more were added, and
+      # the paragraph in DEVELOPING.md whose entire subject is how to count them
+      # correctly was itself wrong about both of its numbers and still said
+      # Uzbek was commented out of the picker months after Uzbek was offered.
+      # Nothing could have noticed: a number in prose is not a symbol, so no
+      # import, no render and no type check has any opinion about it, and the
+      # count a reader takes for the size of the product is the one thing here
+      # with no owner. The guard recounts all three from the tree, checks every
+      # claim it can find, and refuses when a rule stops finding the claim it
+      # exists to check, because a sentence reworded out of reach of its own
+      # check is the state this was written to prevent.
+      - name: Prove the public language count guard can fail
+        if: ${{ !cancelled() }}
+        run: python scripts/check_public_language_counts.py --selftest
+
+      - name: Check the public documents still count the languages correctly
+        if: ${{ !cancelled() }}
+        run: python scripts/check_public_language_counts.py
+
       - name: Check computed t() keys against the English bundle
         if: ${{ !cancelled() }}
         run: python scripts/check_i18n_computed_keys.py
@@ -1056,6 +1110,27 @@ jobs:
         run: node scripts/check-case-coverage.mjs
         working-directory: frontend
 
+
+      # A case string whose English was rewritten under an unchanged key. The
+      # key still resolves, so nothing else in this file reports it: the page
+      # publishes in every language carrying a faithful translation of a
+      # sentence that no longer exists. The ratchet form tolerates the debt
+      # already written down in case-en-manifest.json and fails on anything
+      # added today, which is the only part anybody can still do something
+      # about. Until now the check lived only in an npm script nothing calls.
+      #
+      # The proof step runs first, for the same reason the coverage ratchet's
+      # does: a ratchet that had stopped firing reports a clean tree, and a
+      # clean tree reports a clean tree.
+      - name: Prove the case drift ratchet can fail
+        if: ${{ !cancelled() }}
+        run: node scripts/check-case-translation-drift.mjs --selftest
+        working-directory: frontend
+
+      - name: Check no case English was reworded without its translations
+        if: ${{ !cancelled() }}
+        run: node scripts/check-case-translation-drift.mjs --ratchet
+        working-directory: frontend
       - name: Prove the payment application sense gate can fail
         if: ${{ !cancelled() }}
         run: python scripts/check_payment_application_sense.py --selftest
@@ -1094,14 +1169,18 @@ jobs:
         if: ${{ !cancelled() }}
         run: python scripts/check_locale_mojibake.py
 
-      # A revision that creates a table without asking whether it is already
-      # there cannot run on any install this application has booted, because the
-      # boot heal's create_all built that table first. The upgrade dies on
-      # DuplicateTable, PostgreSQL rolls the whole transaction back, and every
-      # revision behind it is skipped in silence along with its backfills.
-      - name: Check migrations guard create_table against an existing table
+      # A revision that adds schema without asking whether it is already there
+      # cannot run on any install this application has booted, because the boot
+      # heal's create_all built that schema first. The upgrade dies on
+      # DuplicateTable, DuplicateColumn or DuplicateObject, PostgreSQL rolls the
+      # whole transaction back, and every revision behind it is skipped in
+      # silence along with its backfills. Widened from create_table alone after
+      # a replay over a booted database died on DuplicateColumn for
+      # oe_changeorders_order.rejected_by, a call the old gate could not see
+      # because it was written as batch.add_column rather than op.create_table.
+      - name: Check migrations guard additive DDL against an existing schema
         if: ${{ !cancelled() }}
-        run: python scripts/check_migration_create_table_guarded.py
+        run: python scripts/check_migration_ddl_guarded.py
 
       # A class like `bg-oe-blue-subtle/60` names a colour token that cannot
       # take an alpha modifier, and Tailwind's answer to that is to emit

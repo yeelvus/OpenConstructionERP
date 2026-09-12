@@ -12,6 +12,8 @@ export interface ProjectAddress {
    *  the client doesn't re-hit Nominatim on every project open. */
   lat?: number | null;
   lng?: number | null;
+  /** OC-11: precision of the geocoded location (city/street/address). */
+  location_precision?: 'city' | 'street' | 'address' | 'region' | 'country' | null;
 }
 
 /** RFC 37 §3 — single FX rate row attached to a project.
@@ -80,6 +82,8 @@ export interface CreateProjectData {
   regional_factor?: number;
   /** Optional postal address — used to anchor the project map + weather. */
   address?: ProjectAddress | null;
+  /** ISO 3166-1 alpha-2 country code resolved from address or manual input. */
+  country_code?: string | null;
   /** Phase-12 expansion fields — all optional on the backend schema. */
   project_code?: string | null;
   project_type?: string | null;
@@ -171,7 +175,7 @@ export interface ProjectDashboard {
   recent_activity: DashboardActivity[];
   // Legacy flat fields
   boq_count: number;
-  boq_total_value: number;
+  boq_total_value: number | string;
   position_count: number;
   punch_items: Record<string, number>;
 }

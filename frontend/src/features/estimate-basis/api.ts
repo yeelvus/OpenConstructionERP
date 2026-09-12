@@ -21,6 +21,8 @@ export interface QualificationItem {
   basis: string;
   source: 'auto' | 'manual';
   enabled: boolean;
+  /** OC-14: linked review task id. */
+  linked_task_id?: string | null;
 }
 
 export interface TradePresence {
@@ -159,9 +161,24 @@ export interface EstimateBasisDocument {
   accuracy_high_amount: string;
   market_conditions: string;
   contingency_rationale: string;
+  /** OC-03: client budget target, separate from the calculated estimate. */
+  budget_target?: BudgetTarget | null;
   generated_at: string | null;
   created_at: string | null;
   updated_at: string | null;
+}
+
+/** OC-03: client's stated budget target alongside the calculated estimate. */
+export interface BudgetTarget {
+  type: 'client_target' | 'budget' | 'tender' | 'contract' | string;
+  amount: string;
+  currency: string;
+  gross_net: 'gross' | 'net';
+  contingency_mode: 'included' | 'additional';
+  contingency_amount?: string | null;
+  source?: string | null;
+  date?: string | null;
+  notes?: string | null;
 }
 
 export interface EstimateBasisSummary {
@@ -207,6 +224,8 @@ export interface UpdateBasisRequest {
   accuracy_high_pct?: string | null;
   market_conditions?: string | null;
   contingency_rationale?: string | null;
+  /** OC-03: client budget target. */
+  budget_target?: BudgetTarget | null;
 }
 
 const BASE = '/v1/estimate-basis';

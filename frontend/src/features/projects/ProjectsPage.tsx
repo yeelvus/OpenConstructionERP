@@ -16,6 +16,8 @@ import { PageHeader } from '@/shared/ui/PageHeader';
 import { DismissibleInfo, IntroRichText } from '@/shared/ui/DismissibleInfo';
 import { useWidgetSettingsStore } from '@/stores/useWidgetSettingsStore';
 import { fmtNumber, getIntlLocale, fmtFixed } from '@/shared/lib/formatters';
+import { toNum } from '@/shared/lib/money';
+import { useNameCollator } from '@/shared/lib/collator';
 import { getDateFnsLocale } from '@/shared/lib/dateFnsLocale';
 import { projectsApi, type Project } from './api';
 import { apiGet, apiPatch, apiPost, apiDelete } from '@/shared/lib/api';
@@ -129,6 +131,7 @@ function compareProjects(
   sort: ProjectSortState,
   boqStatsMap: Map<string, ProjectBOQStats>,
   hasMultipleCurrencies: boolean,
+  compareNames: (left: string, right: string) => number,
 ): number {
   const mul = sort.dir === 'asc' ? 1 : -1;
   const emptyLast = (va: string, vb: string) => {
@@ -142,7 +145,7 @@ function compareProjects(
 
   switch (sort.field) {
     case 'name':
-      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) * mul;
+      return compareNames(a.name, b.name) * mul;
     case 'code':
       return emptyLast(
         (a.project_code || '').trim(),
@@ -702,7 +705,7 @@ export function ProjectsPage() {
      archived projects are rarely sorted by value). */
   interface DashboardCard {
     id: string;
-    boq_total_value: number;
+    boq_total_value: number | string;
     boq_count: number;
     open_tasks?: number;
     open_rfis?: number;
@@ -738,12 +741,12 @@ export function ProjectsPage() {
         return {
           projectId: p.id,
           boqCount: c?.boq_count ?? 0,
-          totalValue: c?.boq_total_value ?? 0,
-          contractRegisterValue: c?.contract_register_value ?? 0,
-          contractMainValue: c?.contract_main_value ?? 0,
-          contractSubValue: c?.contract_sub_value ?? 0,
-          projectContractValue: projectContract,
-          budgetEstimate: budget,
+          totalValue: toNum(c?.boq_total_value),
+          contractRegisterValue: toNum(c?.contract_register_value),
+          contractMainValue: toNum(c?.contract_main_value),
+          contractSubValue: toNum(c?.contract_sub_value),
+          projectContractValue: toNum(projectContract),
+          budgetEstimate: toNum(budget),
           hasError: false,
         };
       });
@@ -772,6 +775,11 @@ export function ProjectsPage() {
   /* ── Filter + Sort ────────────────────────────────────────────────── */
 
   const pinnedIds = useProjectContextStore((s) => s.pinnedProjectIds);
+
+  // Project names are user data in whatever language the site works in, so
+  // "Name A-Z" has to order them the way THIS reader's language does, not the
+  // way the browser's locale happens to.
+  const compareNames = useNameCollator();
 
   // Whether the user's projects span more than one currency. Used to guard
   // the "Value" sort (cross-currency ordering is apples-to-oranges, since
@@ -815,11 +823,11 @@ export function ProjectsPage() {
       const aPinned = pinnedIds.includes(a.id) ? 0 : 1;
       const bPinned = pinnedIds.includes(b.id) ? 0 : 1;
       if (aPinned !== bPinned) return aPinned - bPinned;
-      return compareProjects(a, b, sortState, boqStatsMap, hasMultipleCurrencies);
+      return compareProjects(a, b, sortState, boqStatsMap, hasMultipleCurrencies, compareNames);
     });
 
     return list;
-  }, [projects, searchQuery, statusFilter, regionFilter, sortState, boqStatsMap, pinnedIds, hasMultipleCurrencies]);
+  }, [projects, searchQuery, statusFilter, regionFilter, sortState, boqStatsMap, pinnedIds, hasMultipleCurrencies, compareNames]);
 
   // Reset page when filters change
   useEffect(() => {
@@ -947,8 +955,8 @@ export function ProjectsPage() {
     if (!projects) return ['all'];
     const set = new Set<string>();
     for (const p of projects) if (p.region) set.add(p.region);
-    return ['all', ...Array.from(set).sort()];
-  }, [projects]);
+    return ['all', ...Array.from(set).sort(compareNames)];
+  }, [projects, compareNames]);
 
   // Available status filter values - the curated recommended set UNION any
   // distinct statuses actually present on the fetched projects (mirrors the

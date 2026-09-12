@@ -54,6 +54,10 @@ describe('resolveHomeMarket, the language table', () => {
       ['ru', 'RU'],
       ['ar', 'SA'],
       ['en-US', 'US'],
+      // Hungarian answered 'nearest' through the fallback table while the
+      // language sat on disk unregistered; it declares Hungary since it was
+      // offered, so it is the language step that answers now.
+      ['hu', 'HU'],
     ] as const) {
       expect(resolve(language), language).toEqual({ market, source: 'language' });
       expect(homeMarketForLanguage(language, MARKETS), language).toBe(market);
@@ -77,7 +81,6 @@ describe('resolveHomeMarket, the language table', () => {
     expect(resolve('pt')).toEqual({ market: 'BR', source: 'nearest' });
     expect(resolve('fr')).toEqual({ market: 'CA', source: 'nearest' });
     expect(resolve('bn')).toEqual({ market: 'IN', source: 'nearest' });
-    expect(resolve('hu')).toEqual({ market: 'HU', source: 'nearest' });
     // A regional tag with no row of its own reads through its base language.
     expect(resolve('pt-PT')).toEqual({ market: 'BR', source: 'nearest' });
   });
@@ -99,15 +102,24 @@ describe('resolveHomeMarket, the language table', () => {
   });
 
   it('English without a pack follows the registry, the same as the catalogue', () => {
-    // `en` declares Britain in SUPPORTED_LANGUAGES and `en-US` the United
-    // States. The card must lead with what the hub leads with for the same
-    // reader, so the answer is read off the shared helper rather than pinned.
-    const expected = homeMarketForLanguage('en', MARKETS);
-    expect(expected).not.toBeNull();
-    expect(resolve('en')).toEqual({ market: expected, source: 'language' });
-    // Every other English-speaking market is a candidate behind it.
-    for (const market of ['US', 'GB', 'CA', 'AU', 'NZ', 'IN', 'ZA']) {
-      expect(nearestMarketsForLanguage('en')).toContain(market);
+    // Plain `en` declares no country in SUPPORTED_LANGUAGES: a reader who has
+    // said only that they read English has not said whose procurement they
+    // work under, and the hub leaves the catalogue in its own order for them.
+    // The card must lead with what the hub leads with for the same reader, so
+    // it answers nothing too, rather than reading a country off the nearest
+    // table that the registry had just declined to guess.
+    expect(homeMarketForLanguage('en', MARKETS)).toBeNull();
+    expect(nearestMarketsForLanguage('en')).toEqual([]);
+    expect(resolve('en')).toEqual({ market: null, source: null });
+    // The two regional entries do name a country, and each degrades to the
+    // other English-speaking markets should its own cases ever be gone.
+    expect(resolve('en-GB')).toEqual({ market: 'GB', source: 'language' });
+    expect(resolve('en-US')).toEqual({ market: 'US', source: 'language' });
+    for (const market of ['US', 'CA', 'AU', 'NZ', 'IN', 'ZA']) {
+      expect(nearestMarketsForLanguage('en-GB')).toContain(market);
+    }
+    for (const market of ['GB', 'CA', 'AU', 'NZ', 'IN', 'ZA']) {
+      expect(nearestMarketsForLanguage('en-US')).toContain(market);
     }
   });
 
