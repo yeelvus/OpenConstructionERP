@@ -588,6 +588,40 @@ async def create_cost_item(
 
 # ── Search / List ─────────────────────────────────────────────────────────
 
+# The ``metadata_`` keys a slim (``lite=true``) list row keeps: the small ones
+# the list views render or copy onto a new BOQ position. It drops ``variants``
+# (a CWICR row's alternate price catalogue, kilobytes per row) and any other
+# large array; a caller that needs them reads ``GET /v1/costs/{id}``.
+_LITE_METADATA_KEYS: tuple[str, ...] = (
+    "variant_stats",
+    "labor_cost",
+    "material_cost",
+    "equipment_cost",
+    "other_cost",
+    "labor_hours",
+    "workers_per_unit",
+    "scope_of_work",
+)
+
+
+def _slim_list_row(payload: dict[str, Any]) -> dict[str, Any]:
+    """Trim one serialised list row to its ``lite`` shape, in place.
+
+    A CWICR row is mostly its component breakdown (with a variant catalogue on
+    every abstract-resource component) and ``metadata_.variants``. A list
+    renders neither, so the slim row empties ``components``, keeps their count
+    in ``components_count`` for the "has breakdown" badge, and keeps only the
+    ``_LITE_METADATA_KEYS`` of ``metadata_``. Every other field is unchanged,
+    so a slim row is the full row minus its bulk.
+    """
+    comps = payload.get("components") or []
+    payload["components_count"] = len(comps)
+    payload["components"] = []
+    md = payload.get("metadata_") or {}
+    if isinstance(md, dict):
+        payload["metadata_"] = {k: md[k] for k in _LITE_METADATA_KEYS if k in md}
+    return payload
+
 
 @router.get("/")
 async def search_cost_items(
@@ -830,28 +864,7 @@ async def search_cost_items(
             resolved_locale,
         )
         if lite:
-            comps = payload.get("components") or []
-            payload["components_count"] = len(comps)
-            payload["components"] = []
-            md = payload.get("metadata_") or {}
-            if isinstance(md, dict):
-                # Whitelist tiny keys the list view + BOQ-add synth path
-                # actually consume. Drops ``variants`` (~6 KB / row of
-                # alternate price entries) and any other large arrays.
-                payload["metadata_"] = {
-                    k: md[k]
-                    for k in (
-                        "variant_stats",
-                        "labor_cost",
-                        "material_cost",
-                        "equipment_cost",
-                        "other_cost",
-                        "labor_hours",
-                        "workers_per_unit",
-                        "scope_of_work",
-                    )
-                    if k in md
-                }
+            payload = _slim_list_row(payload)
         return payload
 
     serialized = [_serialize(i) for i in items]
@@ -917,8 +930,12 @@ def _invalidate_cost_cache() -> None:
 @router.get("/regions/", response_model=list[str])
 async def list_loaded_regions(
     session: SessionDep,
+    _user_id: CurrentUserId,
 ) -> list[str]:
-    """List distinct regions that have cost items loaded."""
+    """List distinct regions that have cost items loaded.
+
+    Signed-in callers only, like its sibling ``/regions/stats/``.
+    """
     now = _time.monotonic()
     if _region_cache["regions"] is not None and now - _region_cache["ts"] < _CACHE_TTL:
         return _region_cache["regions"]
@@ -945,8 +962,13 @@ async def list_loaded_regions(
 @router.get("/regions/stats/")
 async def region_stats(
     session: SessionDep,
+    _user_id: CurrentUserId,
 ) -> list[dict]:
-    """Return item count per loaded region. Cached for 30s."""
+    """Return item count per loaded region. Cached for 30s.
+
+    Signed-in callers only: every screen that shows these counts is behind
+    sign-in, and nothing before it asks for them.
+    """
     now = _time.monotonic()
     if _region_cache["stats"] is not None and now - _region_cache["ts"] < _CACHE_TTL:
         return _region_cache["stats"]
@@ -1916,44 +1938,53 @@ async def vectorize_region(
 
     start = time.monotonic()
 
-    # Fetch cost items
-    stmt = select(CostItem).where(CostItem.is_active.is_(True))
+    # Count first so we can report to the caller and bail early.
+    from sqlalchemy import func as sa_func
+
+    count_stmt = select(sa_func.count()).select_from(CostItem).where(CostItem.is_active.is_(True))
     if region:
-        stmt = stmt.where(CostItem.region == region)
+        count_stmt = count_stmt.where(CostItem.region == region)
+    total_count = (await session.execute(count_stmt)).scalar() or 0
 
-    result = await session.execute(stmt)
-    items = result.scalars().all()
-
-    if not items:
+    if not total_count:
         return {"indexed": 0, "message": "No cost items found to index"}
 
-    logger.info("Vectorizing %d cost items (region=%s)...", len(items), region or "all")
+    logger.info("Vectorizing %d cost items (region=%s)...", total_count, region or "all")
 
-    # Pre-extract all data from ORM objects before they expire
-    items_data = []
-    for item in items:
-        cls = item.classification or {}
-        items_data.append(
-            {
-                "id": str(item.id),
-                "code": item.code,
-                "description": (item.description or "")[:200],
-                "unit": item.unit or "",
-                "rate": float(item.rate) if item.rate else 0.0,
-                "region": item.region or "",
-                "text": " ".join(
-                    p
-                    for p in [
-                        item.description or "",
-                        item.unit or "",
-                        cls.get("collection", ""),
-                        cls.get("department", ""),
-                        cls.get("section", ""),
-                    ]
-                    if p
-                ),
-            }
-        )
+    # Fetch in batches of 5000 to avoid loading 100k+ ORM objects at once.
+    # On a 4 GB server with a full national CWICR base the old unbounded
+    # .all() peaked at 200-400 MB just for ORM instances.
+    _BATCH = 5000
+    items_data: list[dict] = []
+    for offset in range(0, total_count, _BATCH):
+        stmt = select(CostItem).where(CostItem.is_active.is_(True)).order_by(CostItem.id).offset(offset).limit(_BATCH)
+        if region:
+            stmt = stmt.where(CostItem.region == region)
+        result = await session.execute(stmt)
+        for item in result.scalars():
+            cls = item.classification or {}
+            items_data.append(
+                {
+                    "id": str(item.id),
+                    "code": item.code,
+                    "description": (item.description or "")[:200],
+                    "unit": item.unit or "",
+                    "rate": float(item.rate) if item.rate else 0.0,
+                    "region": item.region or "",
+                    "text": " ".join(
+                        p
+                        for p in [
+                            item.description or "",
+                            item.unit or "",
+                            cls.get("collection", ""),
+                            cls.get("department", ""),
+                            cls.get("section", ""),
+                        ]
+                        if p
+                    ),
+                }
+            )
+        await session.flush()
 
     # Run CPU-heavy embedding in a thread to not block event loop.
     # NOTE: Uses ThreadPoolExecutor (not Process) to avoid pickling issues
@@ -1992,6 +2023,45 @@ async def vectorize_region(
         "region": region or "all",
         "duration_seconds": duration,
     }
+
+
+# Rows of the pre-built embedding parquet read, and indexed, at one time.
+#
+# The file carries one 384-float32 embedding per cost item alongside its text
+# columns, so for a large region it is tens of thousands of rows and hundreds of
+# megabytes once decoded. Reading it whole put all of that in memory before a
+# single record reached the vector store, which is the same shape of peak that
+# made a cost-base import kill a small server - and this endpoint runs on the
+# same machines, often right after that import.
+#
+# Streaming the file bounds the decoded rows to this many. The reader's own
+# buffer is bounded by the parquet row group underneath that, which is a weaker
+# guarantee than the batch size but still not the whole file. The value is the
+# batch size the indexing loop already used, so what the vector store is handed
+# per call is unchanged.
+_VECTOR_READ_ROWS = 256
+
+# Cost items read, embedded and indexed in one page of the local fallback below.
+#
+# The fallback used to take a fixed first slice of the region - ``limit=5000``,
+# with the ``total`` and ``has_more`` that came back beside it discarded - and
+# report only how many rows it had indexed. For any base larger than that the
+# caller was handed a plausible, smaller number and nothing at all to say the
+# rest of the catalogue had been left out of the search index. The evidence that
+# it had been truncated was in hand and thrown away.
+_LOCAL_VECTOR_PAGE_ROWS = 2000
+
+# Ceiling on one local generation pass.
+#
+# A cap is still right here, unlike on the reads that were merely buffered:
+# every row on this path is run through a sentence-transformer inside the
+# request, so an uncapped pass is unbounded CPU work on an open connection. It
+# is set above every base the platform ships (the largest is ~60K work items)
+# precisely so that hitting it is an anomaly and not a routine event - and when
+# it is hit the response says so, names the ceiling, and reports how much of the
+# catalogue was left unindexed. A cap that is reported is a decision; the same
+# cap unreported is a wrong answer.
+_LOCAL_VECTOR_MAX_ROWS = 100_000
 
 
 @router.post(
@@ -2054,12 +2124,6 @@ async def load_vector_from_github(
             from app.modules.costs.repository import CostItemRepository
 
             repo = CostItemRepository(session)
-            items_list, total = await repo.search(region=db_id, limit=5000)
-            if not items_list:
-                items_list, total = await repo.search(limit=5000)
-
-            if not items_list:
-                raise HTTPException(400, f"No cost items found for '{db_id}'.")
 
             # Run embedding generation in a thread to not block event loop
             def _generate_vectors(items_data):
@@ -2085,30 +2149,99 @@ async def load_vector_from_github(
                         indexed += vi(records)
                 return indexed
 
-            # Prepare data outside the thread (ORM objects can't cross threads)
-            items_data = [
-                {
-                    "id": str(ci.id),
-                    "code": ci.code or "",
-                    "desc": (ci.description or "")[:200],
-                    "unit": ci.unit or "",
-                    "rate": float(ci.rate) if ci.rate else 0.0,
-                    "region": ci.region or db_id,
-                }
-                for ci in items_list
-            ]
-
+            # Walk the catalogue in pages instead of taking a fixed first slice
+            # of it (see ``_LOCAL_VECTOR_PAGE_ROWS``). ``search`` orders by
+            # ``(code, id)`` and this loop writes neither, so the offsets stay
+            # addressable while it runs; it also returns ``has_more``, which is
+            # the fact the old fixed read discarded and the response below now
+            # carries. ``search`` returns three values - unpacking it into two
+            # names used to raise ValueError on the first call, and the
+            # ``except`` below then reported "vector generation failed", naming
+            # the embedding model rather than the unpack.
+            scanned = 0
+            indexed = 0
+            total: int | None = None
+            more_pending = False
+            offset = 0
+            # ``None`` means "the whole catalogue". Falling back to it when the
+            # named region turns up nothing is what this endpoint has always
+            # done, kept here so a db_id that is not a stored region tag still
+            # produces a usable index rather than a 400.
+            region_filter: str | None = db_id
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor(max_workers=1) as pool:
-                indexed = await loop.run_in_executor(pool, _generate_vectors, items_data)
+                while scanned < _LOCAL_VECTOR_MAX_ROWS:
+                    page_rows = min(_LOCAL_VECTOR_PAGE_ROWS, _LOCAL_VECTOR_MAX_ROWS - scanned)
+                    items_list, page_total, more_pending = await repo.search(
+                        region=region_filter,
+                        offset=offset,
+                        limit=page_rows,
+                        # Count once, on the first page, so the response can say
+                        # how much of the catalogue it covered. Counting again
+                        # per page would be the same answer at a per-page cost.
+                        skip_count=offset > 0,
+                    )
+                    if not items_list:
+                        if region_filter is not None and scanned == 0:
+                            region_filter = None
+                            continue
+                        break
+                    if total is None:
+                        total = page_total
 
+                    # Prepare data outside the thread (ORM objects can't cross threads)
+                    items_data = [
+                        {
+                            "id": str(ci.id),
+                            "code": ci.code or "",
+                            "desc": (ci.description or "")[:200],
+                            "unit": ci.unit or "",
+                            "rate": float(ci.rate) if ci.rate else 0.0,
+                            "region": ci.region or db_id,
+                        }
+                        for ci in items_list
+                    ]
+                    indexed += await loop.run_in_executor(pool, _generate_vectors, items_data)
+                    scanned += len(items_list)
+                    offset += len(items_list)
+                    if not more_pending:
+                        break
+
+            if not scanned:
+                raise HTTPException(400, f"No cost items found for '{db_id}'.")
+
+            # Truncated only when the pass stopped ON the ceiling with rows
+            # still behind it. A catalogue that ends exactly on the ceiling is
+            # complete and must not raise the flag.
+            truncated = more_pending and scanned >= _LOCAL_VECTOR_MAX_ROWS
             duration = round(time.monotonic() - start, 1)
-            logger.info("Generated %d vectors locally for %s in %.1fs", indexed, db_id, duration)
+            logger.info(
+                "Generated %d vectors locally for %s in %.1fs (%d scanned%s)",
+                indexed,
+                db_id,
+                duration,
+                scanned,
+                f", TRUNCATED at {_LOCAL_VECTOR_MAX_ROWS}" if truncated else "",
+            )
             return {
                 "indexed": indexed,
                 "database": db_id,
                 "source": "local",
                 "duration_seconds": duration,
+                # How much of the catalogue this pass actually walked, next to
+                # how much of it there is. ``indexed`` alone cannot separate
+                # "the base is this small" from "we stopped early".
+                "scanned": scanned,
+                "total": total if total is not None else scanned,
+                "truncated": truncated,
+                "cap": _LOCAL_VECTOR_MAX_ROWS,
+                "message": (
+                    f"Stopped at the {_LOCAL_VECTOR_MAX_ROWS}-item ceiling after the first {scanned} "
+                    f"of {total if total is not None else scanned} cost items. The remainder is NOT in "
+                    f"the search index and will not be found by a semantic search."
+                    if truncated
+                    else f"Indexed {indexed} of {scanned} cost items."
+                ),
             }
         except HTTPException:
             raise
@@ -2123,21 +2256,19 @@ async def load_vector_from_github(
     logger.info("Loading vector data from %s", local_path)
 
     # Read parquet: columns = id, vector, code, description, unit, rate, region
-    import pandas as pd
+    import pyarrow.parquet as pq
 
-    df = pd.read_parquet(local_path)
-    total = len(df)
+    parquet_file = pq.ParquetFile(local_path)
+    total = parquet_file.metadata.num_rows
 
     if total == 0:
         return {"indexed": 0, "database": db_id, "message": "Empty vector file"}
 
-    # Index in batches
-    batch_size = 256
+    # Read and index in bounded batches (see ``_VECTOR_READ_ROWS``).
     indexed = 0
-    for i in range(0, total, batch_size):
-        batch = df.iloc[i : i + batch_size]
+    for record_batch in parquet_file.iter_batches(batch_size=_VECTOR_READ_ROWS):
         records = []
-        for _, row in batch.iterrows():
+        for row in record_batch.to_pylist():
             vec = row.get("vector")
             if vec is None:
                 continue
@@ -2151,18 +2282,34 @@ async def load_vector_from_github(
 
             records.append(
                 {
-                    "id": str(row.get("id", "")),
+                    "id": str(row.get("id") or ""),
                     "vector": vec,
-                    "code": str(row.get("code", "")),
-                    "description": str(row.get("description", ""))[:200],
-                    "unit": str(row.get("unit", "")),
-                    "rate": float(row.get("rate", 0)),
-                    "region": str(row.get("region", db_id)),
+                    "code": str(row.get("code") or ""),
+                    "description": str(row.get("description") or "")[:200],
+                    "unit": str(row.get("unit") or ""),
+                    "rate": float(row.get("rate") or 0),
+                    "region": str(row.get("region") or db_id),
                 }
             )
 
-        if records:
+        if not records:
+            continue
+        try:
             indexed += vector_index(records)
+        except Exception as exc:
+            # The vector store is optional. An install without it raises
+            # "LanceDB not available" from the very first index call, and
+            # letting that escape turned a missing optional dependency into an
+            # unexplained 500. Report it the way the sibling /vector/index
+            # endpoint does - a readable message the caller can act on - and
+            # stop rather than failing once per batch for the whole file.
+            logger.warning("Vector indexing failed for %s: %s", db_id, exc)
+            return {
+                "indexed": indexed,
+                "database": db_id,
+                "source": "github",
+                "message": f"Vector indexing failed: {exc}",
+            }
 
     duration = round(time.monotonic() - start, 1)
     logger.info("Loaded %d vectors for %s from GitHub in %.1fs", indexed, db_id, duration)
@@ -3988,6 +4135,77 @@ async def preview_cost_file(
     }
 
 
+# Parsed rows turned into schema objects before they are handed to the service.
+#
+# The upload is capped at ``_MAX_COST_UPLOAD_BYTES``, which is 100 MB of CSV -
+# comfortably over a million rows. Building a ``CostItemCreate`` for every one
+# of them before the first insert meant the whole file existed three times over
+# at the peak: the parsed row dicts, the schema objects made from them, and the
+# ORM instances the service made from those. On a server with 3 GB of RAM the
+# kernel kills the process there, and because the kill is a SIGKILL the operator
+# sees a server that stopped rather than an import that failed.
+#
+# Handing the rows over in slices removes the middle one of those three: the
+# schema objects now live only as long as the slice. The parsed rows above are
+# still whole-file resident - narrowing that changes what the endpoint can
+# report, since ``total_rows`` is their count.
+_IMPORT_HANDOVER_ROWS = 2000
+
+# What the import promises about a run that does not finish, named so the caller
+# reads it off the response instead of inferring it. ``atomic`` means every row
+# lands or none does; there is no resume point to report because there is never
+# a partial state to resume from.
+_IMPORT_DURABILITY = "atomic"
+
+
+async def _discard_failed_import(
+    service: CostItemService,
+    catalog_service: CostCatalogService,
+    created_catalog_id: uuid.UUID | None,
+) -> None:
+    """Undo a cost-file import that failed part-way through.
+
+    The staged rows go with the transaction. The request-scoped session rolls it
+    back on the way out anyway; doing it here makes the discard a property of
+    this endpoint rather than of its caller, and it is what lets the catalog
+    cleanup below run in a transaction of its own.
+
+    ``create_catalog`` commits, on the SAME session the import then writes
+    through (both service dependencies resolve one ``SessionDep`` per request),
+    so a catalog created inline for this upload outlives the rollback that
+    removes its rows. That is not merely untidy: the name is taken now, and the
+    name-availability gate refuses the next attempt at the same upload with a
+    409. So an import that promises all-or-nothing has to remove it. Only a
+    catalog this request created is touched - one the caller addressed by
+    ``catalog_id`` existed before the upload and is not ours to delete.
+
+    Best effort throughout: a failure while cleaning up must not replace the
+    error that caused it, which is the one the caller needs to read.
+
+    Args:
+        service: The cost item service, read for the session it holds.
+        catalog_service: Used to remove the catalog this request created.
+        created_catalog_id: Id of that catalog, or ``None`` when the upload
+            targeted an existing one. Passed as an id rather than as the ORM
+            instance on purpose - ``rollback`` expires the instance, and
+            reading an attribute off it afterwards would need a lazy refresh
+            this context cannot perform.
+    """
+    session = getattr(service, "session", None)
+    if session is not None:
+        try:
+            await session.rollback()
+        except Exception:
+            logger.exception("Could not roll back a failed cost import")
+            return
+    if created_catalog_id is None or catalog_service is None:
+        return
+    try:
+        await catalog_service.delete_catalog(created_catalog_id)
+    except Exception:
+        logger.exception("Could not remove the catalog a failed cost import created")
+
+
 @router.post(
     "/import/file/",
     dependencies=[Depends(RequirePermission("costs.create"))],
@@ -4198,8 +4416,22 @@ async def import_cost_file(
     elif catalog_name and catalog_name.strip():
         catalog_region = catalog_name.strip()[:50]
 
-    # Convert rows to CostItemCreate objects and import via service
+    # Read the id now, while the instance is live. ``_discard_failed_import``
+    # rolls the session back before it gets here, which expires the instance,
+    # and ``catalog.id`` after that is a lazy refresh this context cannot run.
+    # ``catalog_id`` on the request distinguishes the two cases exactly: it is
+    # set only when the caller named an EXISTING catalog, so a value here means
+    # this request created the catalog and may therefore remove it again.
+    created_catalog_id: uuid.UUID | None = None
+    if catalog is not None and not catalog_id:
+        created_catalog_id = catalog.id
+
+    # Convert rows to CostItemCreate objects and import via service in bounded
+    # slices (see ``_IMPORT_HANDOVER_ROWS``) rather than building the whole file
+    # first.
     items_to_import: list[CostItemCreate] = []
+    handed_over = 0
+    imported_count = 0
     skipped = 0
     errors: list[dict[str, Any]] = []
     auto_code = 1
@@ -4210,95 +4442,155 @@ async def import_cost_file(
     mixed_currency_count = 0
     rate_parse_failures = 0
 
-    for row_idx, row in enumerate(rows, start=2):
-        try:
-            code = str(row.get("code", "")).strip()
-            description = str(row.get("description", "")).strip()
+    # The import is ATOMIC, and this is where that is decided rather than
+    # inherited. Nothing below commits: ``bulk_import`` adds and flushes, and
+    # the request-scoped session (``app.dependencies.get_session``) commits once
+    # when this endpoint returns and rolls back when it raises. So a failure
+    # halfway leaves none of the earlier slices behind - and the caller is told
+    # which of the two happened instead of having to guess how far it got.
+    #
+    # Resumable was the alternative and was rejected. A cost base that is half
+    # loaded prices every number downstream of it off an incomplete catalogue -
+    # region totals, the resource-sheet seed, the reprice - and nothing on the
+    # rows themselves says which part is missing, so the user cannot tell a
+    # cheap region from a truncated one. Re-uploading the same file is already
+    # safe (duplicate codes are skipped), which is most of what resuming would
+    # have bought.
+    #
+    # ``raise`` in the handler, never ``return``: returning normally after a
+    # slice has flushed hands the session back to the dependency, which commits
+    # it, and the atomic import quietly becomes the partial one this guards
+    # against.
+    try:
+        for row_idx, row in enumerate(rows, start=2):
+            try:
+                code = str(row.get("code", "")).strip()
+                description = str(row.get("description", "")).strip()
 
-            # Skip rows without both code and description
-            if not code and not description:
-                skipped += 1
-                continue
+                # Skip rows without both code and description
+                if not code and not description:
+                    skipped += 1
+                    continue
 
-            # Auto-generate code if missing
-            if not code:
-                code = f"IMPORT-{auto_code_salt}-{auto_code:04d}"
-            auto_code += 1
+                # Auto-generate code if missing
+                if not code:
+                    code = f"IMPORT-{auto_code_salt}-{auto_code:04d}"
+                auto_code += 1
 
-            # Skip obvious summary rows
-            desc_lower = description.lower()
-            if desc_lower in (
-                "total",
-                "grand total",
-                "summe",
-                "gesamt",
-                "gesamtsumme",
-                "subtotal",
-                "zwischensumme",
-            ):
-                skipped += 1
-                continue
+                # Skip obvious summary rows
+                desc_lower = description.lower()
+                if desc_lower in (
+                    "total",
+                    "grand total",
+                    "summe",
+                    "gesamt",
+                    "gesamtsumme",
+                    "subtotal",
+                    "zwischensumme",
+                ):
+                    skipped += 1
+                    continue
 
-            # Parse unit (default: pcs)
-            unit = str(row.get("unit", "pcs")).strip()
-            if not unit:
-                unit = "pcs"
+                # Parse unit (default: pcs)
+                unit = str(row.get("unit", "pcs")).strip()
+                if not unit:
+                    unit = "pcs"
 
-            # Parse rate. NaN sentinel distinguishes "value present but
-            # unparseable" from a genuine 0 - _safe_float itself never
-            # returns NaN (non-finite direct parses fall to the default).
-            raw_rate = row.get("rate")
-            rate = _safe_float(raw_rate, default=_math.nan)
-            if _math.isnan(rate):
-                if raw_rate is not None and str(raw_rate).strip():
-                    rate_parse_failures += 1
-                rate = 0.0
+                # Parse rate. NaN sentinel distinguishes "value present but
+                # unparseable" from a genuine 0 - _safe_float itself never
+                # returns NaN (non-finite direct parses fall to the default).
+                raw_rate = row.get("rate")
+                rate = _safe_float(raw_rate, default=_math.nan)
+                if _math.isnan(rate):
+                    if raw_rate is not None and str(raw_rate).strip():
+                        rate_parse_failures += 1
+                    rate = 0.0
 
-            # Parse currency - empty if absent, never country-default. Inside
-            # a catalog, an empty row currency inherits the CATALOG currency;
-            # a different non-empty currency is kept as-is but counted so the
-            # caller can surface a mixed-currency warning.
-            currency = str(row.get("currency", "")).strip().upper()
-            if catalog is not None:
-                if not currency:
-                    currency = catalog.currency
-                elif currency != catalog.currency:
-                    mixed_currency_count += 1
+                # Parse currency - empty if absent, never country-default. Inside
+                # a catalog, an empty row currency inherits the CATALOG currency;
+                # a different non-empty currency is kept as-is but counted so the
+                # caller can surface a mixed-currency warning.
+                currency = str(row.get("currency", "")).strip().upper()
+                if catalog is not None:
+                    if not currency:
+                        currency = catalog.currency
+                    elif currency != catalog.currency:
+                        mixed_currency_count += 1
 
-            # Build classification
-            classification: dict[str, str] = {}
-            class_value = str(row.get("classification", "")).strip()
-            if class_value:
-                classification["code"] = class_value
+                # Build classification
+                classification: dict[str, str] = {}
+                class_value = str(row.get("classification", "")).strip()
+                if class_value:
+                    classification["code"] = class_value
 
-            items_to_import.append(
-                CostItemCreate(
-                    code=code,
-                    description=description,
-                    unit=unit,
-                    rate=rate,
-                    currency=currency,
-                    source="file_import",
-                    classification=classification,
-                    region=catalog_region,
-                    catalog_id=catalog.id if catalog is not None else None,
+                items_to_import.append(
+                    CostItemCreate(
+                        code=code,
+                        description=description,
+                        unit=unit,
+                        rate=rate,
+                        currency=currency,
+                        source="file_import",
+                        classification=classification,
+                        region=catalog_region,
+                        catalog_id=catalog.id if catalog is not None else None,
+                    )
                 )
-            )
 
-        except Exception as exc:
-            errors.append(
-                {
-                    "row": row_idx,
-                    "error": str(exc),
-                    "data": {k: str(v)[:100] for k, v in row.items()},
-                }
-            )
-            logger.warning("Cost import error at row %d: %s", row_idx, exc)
+            except Exception as exc:
+                errors.append(
+                    {
+                        "row": row_idx,
+                        "error": str(exc),
+                        "data": {k: str(v)[:100] for k, v in row.items()},
+                    }
+                )
+                logger.warning("Cost import error at row %d: %s", row_idx, exc)
 
-    # Bulk import via service (handles duplicate detection)
-    imported_items = await service.bulk_import(items_to_import) if items_to_import else []
-    imported_count = len(imported_items)
-    skipped_by_duplicate = len(items_to_import) - imported_count
+            # Hand the slice over as soon as it is full, outside the per-row
+            # ``except`` so a failure in the import is never mis-recorded as a
+            # parse error against whichever row happened to fill the slice.
+            if len(items_to_import) >= _IMPORT_HANDOVER_ROWS:
+                handed_over += len(items_to_import)
+                imported_count += len(await service.bulk_import(items_to_import))
+                items_to_import.clear()
+
+        # Bulk import via service (handles duplicate detection). Whatever the loop
+        # did not fill a slice with lands here; both counts accumulate across the
+        # slices, so the reported totals are the same numbers a single hand-over
+        # produced.
+        if items_to_import:
+            handed_over += len(items_to_import)
+            imported_count += len(await service.bulk_import(items_to_import))
+            items_to_import.clear()
+    except HTTPException:
+        # Already a stated outcome, so it keeps its own status and message
+        # rather than being restated as a durability failure. Every gate that
+        # raises one fires before the first row is staged - but if one ever
+        # arrives from further in, the staged rows and the catalog created for
+        # them still have to go, so that case is handled rather than assumed
+        # away.
+        if handed_over:
+            await _discard_failed_import(service, catalog_service, created_catalog_id)
+        raise
+    except Exception as exc:
+        logger.exception("Cost file import failed after %d staged rows", handed_over)
+        await _discard_failed_import(service, catalog_service, created_catalog_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "message": (
+                    "The import failed and was rolled back. No cost items were imported. "
+                    "The same file can be uploaded again unchanged."
+                ),
+                "durability": _IMPORT_DURABILITY,
+                "imported": 0,
+                "rows_discarded": handed_over,
+                "total_rows": len(rows),
+                "error": str(exc)[:500],
+            },
+        ) from exc
+    skipped_by_duplicate = handed_over - imported_count
 
     logger.info(
         "Cost file import complete: imported=%d, skipped=%d (empty) + %d (duplicate), errors=%d",
@@ -4316,6 +4608,11 @@ async def import_cost_file(
         "skipped": skipped + skipped_by_duplicate,
         "errors": errors,
         "total_rows": len(rows),
+        # Which durability the run had, stated rather than implied. On this
+        # path it is also the proof that the run finished: an import that died
+        # part-way never reaches here, and says the same word in its error
+        # detail alongside the count of rows it threw away.
+        "durability": _IMPORT_DURABILITY,
         "catalog": catalog_region,
         "catalog_id": str(catalog.id) if catalog is not None else None,
         "catalog_currency": catalog.currency if catalog is not None else None,
@@ -4669,7 +4966,6 @@ async def load_cwicr_region(db_id: str, session: AsyncSession) -> dict:
     """
     import time
 
-    import pandas as pd
     from sqlalchemy import func, select
 
     start = time.monotonic()
@@ -4713,7 +5009,34 @@ async def load_cwicr_region(db_id: str, session: AsyncSession) -> dict:
             existing_count,
             resource_components,
         )
+        already_loaded: dict[str, Any] = {}
+        # A base whose items loaded while its price sheet seed failed (the
+        # dead-session failure described below, before it was fixed) has
+        # resources and no sheet, and nothing else would ever seed it: this
+        # branch is what every later load of the region takes. Seed it here.
+        # Idempotent, and it never overwrites a price a user edited.
+        if resource_components > 0:
+            from app.modules.costs.models import ResourcePrice
+
+            sheet_rows = (
+                await session.execute(
+                    select(func.count()).select_from(ResourcePrice).where(ResourcePrice.region == db_id)
+                )
+            ).scalar_one()
+            if not sheet_rows:
+                try:
+                    seed = await ResourcePriceService(session).seed_region(db_id)
+                    already_loaded["resource_prices"] = seed.as_dict()
+                    logger.info("CWICR %s: seeded the missing resource price sheet", db_id)
+                except Exception:
+                    logger.exception("Resource price seeding failed for %s (non-fatal)", db_id)
+                    try:
+                        await session.rollback()
+                    except Exception:  # noqa: BLE001 - the rollback is best effort
+                        logger.debug("rollback after the failed price seed also failed", exc_info=True)
+                    already_loaded["resource_prices_error"] = "seed_failed"
         return {
+            **already_loaded,
             "imported": 0,
             "skipped": existing_count,
             "region": db_id,
@@ -4724,6 +5047,21 @@ async def load_cwicr_region(db_id: str, session: AsyncSession) -> dict:
             f"To reload, delete the region first.",
             "duration_seconds": duration,
         }
+
+    # End the read transaction the count above opened BEFORE the long part.
+    #
+    # Everything from here to the price sheet seed is not work on this session:
+    # a download that can take minutes, then an import that runs in a thread on
+    # its own sync connection and commits there (a large base takes well over a
+    # quarter of an hour). Held open across that, this session sits "idle in
+    # transaction" and PostgreSQL terminates it once the engine's
+    # ``idle_in_transaction_session_timeout`` runs out. The seed below then fails
+    # on the dead connection and the caller's next ``commit`` raises "Can't
+    # reconnect until invalid transaction is rolled back", although every item
+    # is already in the table. Commit, not rollback: every caller hands in a
+    # session with nothing pending, and if one ever did not, committing keeps
+    # its work where a rollback would silently discard it.
+    await session.commit()
 
     # A fresh (re)load repopulates the region from its home English parquet, so
     # forget any language the market-switch swap had recorded for it.
@@ -4752,20 +5090,7 @@ async def load_cwicr_region(db_id: str, session: AsyncSession) -> dict:
 
     logger.info("Loading CWICR from %s", cwicr_path)
 
-    # Read file in thread pool to avoid blocking event loop
     import asyncio
-
-    _path = cwicr_path
-
-    def _read_file() -> pd.DataFrame:
-        if _path.suffix == ".parquet":
-            return pd.read_parquet(_path)
-        return pd.read_excel(_path, engine="openpyxl")
-
-    df = await asyncio.to_thread(_read_file)
-
-    total_rows = len(df)
-    logger.info("Raw data: %d rows", total_rows)
 
     from app.config import get_settings
 
@@ -4817,6 +5142,16 @@ async def load_cwicr_region(db_id: str, session: AsyncSession) -> dict:
             result_data["resource_prices"] = seed.as_dict()
         except Exception:
             logger.exception("Resource price seeding failed for %s (non-fatal)", db_id)
+            # Leave the session usable for the caller: a failed statement (or a
+            # dropped connection) puts it in a state where its next commit
+            # raises instead of committing. And say so in the result rather
+            # than only in the log, so a caller can report a base without its
+            # price sheet instead of reporting it ready.
+            try:
+                await session.rollback()
+            except Exception:  # noqa: BLE001 - the rollback is best effort
+                logger.debug("rollback after the failed price seed also failed", exc_info=True)
+            result_data["resource_prices_error"] = "seed_failed"
 
     _invalidate_cost_cache()
     # A new CWICR parquet may have been written alongside the SQL import
@@ -4847,6 +5182,58 @@ async def load_cwicr_region(db_id: str, session: AsyncSession) -> dict:
         await _ensure_region_text_language(db_id, base_registry.home_language_code(db_id), session)
 
     return result_data
+
+
+# Work items handed to PostgreSQL in one go while an import is running.
+#
+# The COPY inside ``_pg_bulk_insert_cost_rows`` was already chunked, but the
+# caller accumulated every row of a region first, so peak memory scaled with
+# the region: roughly 55 700 tuples for Berlin, each carrying the serialised
+# JSON of its resource breakdown. Flushing as we go bounds that to this many
+# rows, which is what lets the import finish on a 3 GB server.
+#
+# The staging table is ``ON COMMIT DROP`` and the upsert is idempotent on
+# (code, region), so every flush is a complete, self-contained transaction and
+# an interrupted import resumes instead of restarting.
+_INSERT_FLUSH_ROWS = 5000
+
+
+# How many rejected codes an import result lists. The count is always exact;
+# the list is only there so an operator can find the rows.
+_FAILED_CODES_REPORTED = 50
+
+
+def _insert_cost_rows_isolating_rejects(sync_url: str, rows: list[tuple], failed_codes: list[str]) -> int:
+    """Insert one flush of cost rows, skipping any row PostgreSQL refuses.
+
+    ``_pg_bulk_insert_cost_rows`` loads a flush as one transaction, so one row
+    the database cannot store (a NUL character in a description, a value that
+    breaks a column type) used to fail its whole flush and with it the whole
+    import. On a data error the flush is split in halves and each half retried,
+    down to single rows; a single row that still fails is left out and its code
+    appended to ``failed_codes``. The rows around it load as before.
+
+    Only data errors are isolated. A connection or server error is not a row's
+    fault, so it propagates unchanged and fails the import, rather than being
+    retried row by row and reported as every row rejected.
+
+    Returns:
+        Number of rows actually inserted.
+    """
+    import psycopg2
+
+    try:
+        return _pg_bulk_insert_cost_rows(sync_url, rows)
+    except (psycopg2.DataError, psycopg2.IntegrityError) as exc:
+        if len(rows) == 1:
+            code = str(rows[0][1])
+            logger.warning("CWICR row %s rejected by the database and skipped: %s", code, str(exc).strip())
+            failed_codes.append(code)
+            return 0
+        mid = len(rows) // 2
+        return _insert_cost_rows_isolating_rejects(
+            sync_url, rows[:mid], failed_codes
+        ) + _insert_cost_rows_isolating_rejects(sync_url, rows[mid:], failed_codes)
 
 
 def _pg_bulk_insert_cost_rows(sync_url: str, rows: list[tuple]) -> int:
@@ -5105,6 +5492,7 @@ def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> di
     the sync SQLAlchemy URL (``postgresql+psycopg2://...``) of the target
     cluster.
     """
+    import gc
     import json as _json
     import logging
     import math
@@ -5115,8 +5503,63 @@ def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> di
     _log = logging.getLogger("cwicr_import")
     start = time.monotonic()
 
-    # 1. Read parquet
-    df = pd.read_parquet(parquet_path)
+    # 1. Read parquet - only the columns this function actually uses.
+    # The full CWICR parquet has ~85 columns; loading them all doubles
+    # memory for no reason and OOM-kills 4 GB servers.
+    _NEEDED_COLUMNS = frozenset(
+        {
+            "rate_code",
+            "rate_original_name",
+            "rate_final_name",
+            "rate_unit",
+            "total_cost_per_position",
+            "collection_name",
+            "department_name",
+            "section_name",
+            "subsection_name",
+            "category_type",
+            "cost_of_working_hours",
+            "total_value_machinery_equipment",
+            "total_material_cost_per_position",
+            "total_labor_hours_all_personnel",
+            "count_total_people_per_unit",
+            # Resource columns
+            "resource_name",
+            "resource_code",
+            "resource_unit",
+            "resource_quantity",
+            "resource_cost",
+            "resource_cost_eur",
+            "resource_price_per_unit_current",
+            "resource_price_per_unit_eur_current",
+            "row_type",
+            "is_machine",
+            "is_material",
+            "is_labor",
+            # Scope of work
+            "work_composition_text",
+            "is_scope",
+            # Abstract resource / variant columns
+            "price_abstract_resource_variable_parts",
+            "price_abstract_resource_est_price_all_values",
+            "price_abstract_resource_position_count",
+            "price_abstract_resource_est_price_min",
+            "price_abstract_resource_est_price_max",
+            "price_abstract_resource_est_price_mean",
+            "price_abstract_resource_est_price_median",
+            "price_abstract_resource_unit",
+            "price_abstract_resource_group_per_unit",
+            "price_abstract_resource_variable_parts_per_unit",
+            "price_abstract_resource_est_price_all_values_per_unit",
+            "price_abstract_resource_common_start",
+        }
+    )
+    import pyarrow.parquet as pq
+
+    _file_schema = pq.read_schema(parquet_path)
+    _orig_by_lower = {n.strip().lower(): n for n in _file_schema.names}
+    _use_cols = [_orig_by_lower[k] for k in _NEEDED_COLUMNS if k in _orig_by_lower]
+    df = pd.read_parquet(parquet_path, columns=_use_cols or None)
     total_rows = len(df)
     df.columns = [str(c).strip().lower() for c in df.columns]
 
@@ -5508,6 +5951,12 @@ def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> di
 
         _log.info("Built resources for %d rate_codes in %.1fs", len(resources_by_code), time.monotonic() - start)
 
+    # Free the raw DataFrame before the INSERT phase - it is no longer
+    # needed; only ``grouped``, ``resources_by_code``, ``scope_by_code``
+    # and ``abstract_variants_by_pair`` survive past this point.
+    del df
+    gc.collect()
+
     # 5. Build the insert rows. ``db_file`` carries the sync SQLAlchemy URL
     # (postgresql://...) of the target cluster - see the caller. Every row is
     # accumulated and handed to ``_pg_bulk_insert_cost_rows`` (COPY into a
@@ -5520,7 +5969,12 @@ def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> di
     resolved_currency = _resolve_currency(None, db_id)
 
     skipped_count = 0
+    imported = 0
     batch: list[tuple] = []
+    # Codes of rows PostgreSQL refused. Kept apart from ``skipped_count``, which
+    # counts rows this transform drops on purpose (no description, no code):
+    # those are expected on every base, these are a partial load.
+    failed_codes: list[str] = []
 
     for rate_code, row in grouped.iterrows():
         desc = _safe_str(row.get("_desc", ""))
@@ -5639,12 +6093,28 @@ def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> di
             )
         )
 
+        # Hand the rows over in bounded slices instead of building the whole
+        # region first. Each flush is its own committed transaction, so peak
+        # memory stays flat and a killed import resumes rather than restarts.
+        if len(batch) >= _INSERT_FLUSH_ROWS:
+            imported += _insert_cost_rows_isolating_rejects(db_file, batch, failed_codes)
+            batch.clear()
+
     # PostgreSQL: idempotent bulk insert via ON CONFLICT (code, region)
-    # DO NOTHING. ``batch`` holds every accumulated row.
-    imported = _pg_bulk_insert_cost_rows(db_file, batch)
+    # DO NOTHING. Whatever the loop did not fill a flush with lands here.
+    if batch:
+        imported += _insert_cost_rows_isolating_rejects(db_file, batch, failed_codes)
+        batch.clear()
 
     elapsed = round(time.monotonic() - start, 1)
-    _log.info("CWICR %s: %d imported, %d skipped in %.1fs", db_id, imported, skipped_count, elapsed)
+    _log.info(
+        "CWICR %s: %d imported, %d skipped, %d rejected by the database in %.1fs",
+        db_id,
+        imported,
+        skipped_count,
+        len(failed_codes),
+        elapsed,
+    )
 
     # Total resource components carried by the imported work items. Each CWICR
     # work item (rate_code) bundles a labour/material/equipment breakdown in its
@@ -5657,6 +6127,8 @@ def _process_and_insert_cwicr(parquet_path: str, db_id: str, db_file: str) -> di
     return {
         "imported": imported,
         "skipped": skipped_count,
+        "failed": len(failed_codes),
+        "failed_codes": failed_codes[:_FAILED_CODES_REPORTED],
         "total_rows": total_rows,
         "unique_items": len(grouped),
         "resource_components": resource_components,

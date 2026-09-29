@@ -670,7 +670,6 @@ export function ProjectsPage() {
     onSuccess: (data) => {
       setShowPurgeDemo(false);
       queryClient.invalidateQueries({ queryKey: ['projects'] });
-      queryClient.invalidateQueries({ queryKey: ['projects-switcher'] });
       addToast({
         type: 'success',
         title: t('settings.demo_data_removed_title', { defaultValue: 'Sample data removed' }),
@@ -2495,7 +2494,6 @@ function ProjectCard({
     mutationFn: () => projectsApi.duplicate(project.id),
     onSuccess: (newProject) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
-      queryClient.invalidateQueries({ queryKey: ['projects-switcher'] });
       addToast({ type: 'success', title: t('projects.duplicated', 'Project duplicated successfully') });
       navigate(`/projects/${newProject.id}`);
     },
@@ -2512,7 +2510,6 @@ function ProjectCard({
     mutationFn: () => projectsApi.restore(project.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
-      queryClient.invalidateQueries({ queryKey: ['projects-switcher'] });
       addToast({
         type: 'success',
         title: t('toasts.project_restored', { defaultValue: 'Project restored' }),
@@ -2531,7 +2528,6 @@ function ProjectCard({
     mutationFn: () => apiPatch(`/v1/projects/${project.id}`, { status: 'archived' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
-      queryClient.invalidateQueries({ queryKey: ['projects-switcher'] });
       // Offer an immediate Undo — re-activates the project (the canonical
       // un-archive path) so an accidental archive is one click to reverse.
       addToast({
@@ -2570,6 +2566,7 @@ function ProjectCard({
     sekisan: 'Sekisan',
     kbim: 'KBIM',
     birimfiyat: 'Birim Fiyat',
+    nlsfb: 'NL/SfB',
   };
 
   // Currency symbol icon — falls back to neutral DollarSign for unknown codes

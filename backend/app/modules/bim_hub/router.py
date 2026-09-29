@@ -751,16 +751,21 @@ def _parse_bim_rows_from_csv(content_bytes: bytes) -> list[dict[str, Any]]:
 
 
 def _parse_bim_rows_from_excel(content_bytes: bytes) -> list[dict[str, Any]]:
-    """Parse rows from an Excel (.xlsx) file for BIM element import."""
+    """Parse rows from an Excel (.xlsx) file for BIM element import.
+
+    The header is row 1, or the table's header under a company letterhead
+    when the file is one of our own exports (see ``app.core.sheet_header``).
+    """
     from openpyxl import load_workbook
+
+    from app.core.sheet_header import locate_header_row
 
     wb = load_workbook(io.BytesIO(content_bytes), read_only=True, data_only=True)
     ws = wb.active
     if ws is None:
         raise ValueError("Excel file has no worksheets")
 
-    rows_iter = ws.iter_rows(values_only=True)
-    raw_headers = next(rows_iter, None)
+    raw_headers, rows_iter = locate_header_row(ws.iter_rows(values_only=True), _match_bim_column)
     if not raw_headers:
         raise ValueError("Excel file is empty or has no header row")
 
@@ -2255,7 +2260,8 @@ async def upload_cad_file(
 
     # Stream the upload to a temp file in 1 MB chunks instead of buffering
     # the whole body in memory.  A 500 MB IFC used to cost ~500 MB of heap
-    # in the request handler - on the 2 GB-RAM VPS, two concurrent uploads
+    # in the request handler - on the 2 GB-RAM VPS that was the target then,
+    # two concurrent uploads
     # were enough to OOM the process.  ``StreamedUpload`` exposes:
     #   - ``upload.path``    - the spooled temp file
     #   - ``upload.size``    - bytes written
@@ -5282,6 +5288,13 @@ async def bim_vector_reindex(
     tenant.  Set ``purge_first=true`` to wipe the matching subset
     before re-encoding - useful when the embedding model has changed.
 
+    Elements are walked in bounded pages and released as they are
+    indexed, so the pass holds one page rather than the table.  A scope
+    larger than the ceiling is indexed up to it and the response says
+    so: ``scanned`` next to ``cap`` and ``truncated``.  Narrowing with
+    ``model_id`` or ``project_id`` is how a scope that large gets
+    covered in full.
+
     Audit B2 - was a critical IDOR. Before this fix any user with the
     ``bim.update`` permission could:
       • pass any other tenant's ``project_id`` and re-embed their model
@@ -5296,7 +5309,7 @@ async def bim_vector_reindex(
     """
     from sqlalchemy.orm import selectinload
 
-    from app.core.vector_index import reindex_collection
+    from app.core.vector_routes import reindex_statement_in_pages
     from app.modules.bim_hub.models import BIMElement, BIMModel
     from app.modules.bim_hub.vector_adapter import bim_element_vector_adapter
 
@@ -5317,12 +5330,12 @@ async def bim_vector_reindex(
     elif project_id is not None:
         stmt = stmt.join(BIMModel, BIMElement.model_id == BIMModel.id).where(BIMModel.project_id == project_id)
 
-    rows = list((await session.execute(stmt)).scalars().all())
-    return await reindex_collection(
-        bim_element_vector_adapter,
-        rows,
-        purge_first=purge_first,
-    )
+    # The statement, not its rows. A converted model contributes its whole
+    # element set to this table, so it is the largest collection the platform
+    # indexes and the one an unbounded read costs most. The gate above is why
+    # this endpoint cannot be a ``create_vector_routes`` mount; the walk is
+    # shared with it all the same.
+    return await reindex_statement_in_pages(session, bim_element_vector_adapter, stmt, purge_first=purge_first)
 
 
 @router.get("/elements/{element_id}/similar/")

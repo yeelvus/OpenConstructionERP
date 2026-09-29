@@ -33,13 +33,16 @@ MANIFEST = PartnerPackManifest(
     default_currency="TRY",
     default_tax_template="tr_kdv_20",
     default_methodology="turkey",
-    validation_rule_packs=[],
-    # No Turkish-specific engine rule set yet. When one is built it will
-    # carry rules for birim fiyat item references and pozlar numbering.
+    validation_rule_packs=[
+        "tbdy_2018",
+        "tse_standards",
+        "bayindirlik_unit_prices",
+        "kamu_ihale",
+    ],
     validation_rule_sets=[],
     default_modules=[],  # empty = show all
     hidden_modules=[],
-    demo_template_ids=["mixed-use-istanbul"],
+    demo_template_ids=["mixed-use-istanbul", "hospital-jeddah"],
     branding=PartnerBranding(
         primary_color="#E30A17",  # Turkish red (flag crescent background)
         accent_color="#FFFFFF",  # white (flag crescent and star)

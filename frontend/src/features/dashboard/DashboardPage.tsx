@@ -5,10 +5,12 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiDelete, type Page } from '@/shared/lib/api';
+import { fetchProjectList } from '@/shared/lib/projectList';
 import { APP_VERSION } from '@/shared/lib/version';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { useAuthStore } from '@/stores/useAuthStore';
+import { useMeOnboardingQueryKey } from '@/app/layout/meOnboardingQuery';
 import { fmtList, fmtFixed } from '@/shared/lib/formatters';
 import { SUPPORTED_LANGUAGES } from '@/app/i18n';
 import { uploadDocument, fetchDocuments, type DocumentItem } from '@/features/documents/api';
@@ -885,6 +887,15 @@ function KpiRibbon({
   const { t } = useTranslation();
   const navigate = useNavigate();
 
+  // After 8 seconds of loading, show a static "--" instead of the infinite
+  // shimmer so the demo VPS does not look broken when the rollup times out.
+  const [showFallback, setShowFallback] = useState(false);
+  useEffect(() => {
+    if (loaded) { setShowFallback(false); return; }
+    const timer = setTimeout(() => setShowFallback(true), 8000);
+    return () => clearTimeout(timer);
+  }, [loaded]);
+
   // Per-currency value buckets straight from the backend rollup. Summing
   // amounts across currencies into one scalar is financially meaningless
   // (no cross-project rate table), so the Total Value tile renders one
@@ -1052,7 +1063,7 @@ function KpiRibbon({
             <div className="min-w-0">
               <div className="flex items-baseline gap-1.5">
                 <span className="text-lg font-bold tabular-nums text-content-primary leading-tight truncate">
-                  {card.value ?? <span className="inline-block h-5 w-14 animate-pulse rounded bg-surface-tertiary" />}
+                  {card.value ?? (showFallback ? <span className="text-content-tertiary">--</span> : <span className="inline-block h-5 w-14 animate-pulse rounded bg-surface-tertiary" />)}
                 </span>
                 {'sublabel' in card && card.sublabel && (
                   <span className="text-xs text-content-tertiary">{card.sublabel}</span>
@@ -1724,9 +1735,13 @@ function SystemStatusSummary({
   const { t } = useTranslation();
   const navigate = useNavigate();
 
-  const { data: modules } = useQuery({
-    queryKey: ['modules'],
-    queryFn: () => apiGet<{ modules: unknown[] }>('/system/modules').catch(() => ({ modules: [] })),
+  // The same catalogue the sidebar reads, under its key and route, so one
+  // request serves both. No catch inside the queryFn: this entry is shared,
+  // and a cached empty list would reach the Modules page as a real answer.
+  // A failed read falls back to 0 below instead.
+  const { data: modules, isError: modulesFailed } = useQuery({
+    queryKey: ['system-modules'],
+    queryFn: () => apiGet<unknown[]>('/v1/modules/'),
     retry: false,
     staleTime: 60_000,
   });
@@ -1745,10 +1760,11 @@ function SystemStatusSummary({
   });
 
   // FA-0005: `undefined` data means the query is still PENDING - every
-  // queryFn above settles errors to a concrete fallback ([], {modules: []}),
-  // so we can safely treat `undefined` as "loading" and render a skeleton
-  // pulse instead of a misleading "0" on a cold server. `null` = pending.
-  const moduleCount = modules ? modules.modules?.length ?? 0 : null;
+  // queryFn above settles errors to a concrete fallback, or (the module
+  // catalogue) reports them through isError, so we can safely treat
+  // `undefined` as "loading" and render a skeleton pulse instead of a
+  // misleading "0" on a cold server. `null` = pending.
+  const moduleCount = Array.isArray(modules) ? modules.length : modulesFailed ? 0 : null;
   const projectCount = projects ? projects.length : null;
   const boqBadgeCount = boqsLoading ? null : boqCount ?? 0;
   const userCount = canListUsers ? (usersList ? usersList.length : null) : 0;
@@ -2073,6 +2089,9 @@ export function DashboardPage() {
   );
 }
 
+/** Stable stand-in for a failed project list read, so effects do not re-run. */
+const NO_PROJECTS: ProjectSummary[] = [];
+
 function DashboardPageInner() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -2080,6 +2099,9 @@ function DashboardPageInner() {
   const [showAllActivity, setShowAllActivity] = useState(false);
   const [customizing, setCustomizing] = useState(false);
   const [showUpdateWelcome, setShowUpdateWelcome] = useState(false);
+  const [marketCasesExpanded, setMarketCasesExpanded] = useState(() =>
+    localStorage.getItem('oe_dashboard_cases_collapsed') !== 'true',
+  );
 
   // Single rollup-context read - every widget on this page shares this one
   // fetch via the provider mounted above. Replaces the per-project fan-out
@@ -2168,19 +2190,25 @@ function DashboardPageInner() {
     void hydrateDashboardLayoutFromServer();
   }, []);
 
-  const { data: projects } = useQuery({
+  // No catch to an empty list in the queryFn: ['projects'] is shared with the
+  // header switcher, which would read a cached [] as "every project is gone"
+  // and clear the active project. A failed read shows as no projects here,
+  // as it did before, without reaching the cache.
+  const { data: projectsData, isError: projectsFailed } = useQuery({
     queryKey: ['projects'],
-    // limit=500: API default is 50 and silently truncates the portfolio.
-    queryFn: () =>
-      apiGet<ProjectSummary[]>('/v1/projects/?limit=500').catch(() => []),
+    queryFn: () => fetchProjectList<ProjectSummary[]>(),
     retry: false,
     staleTime: 5 * 60_000,
   });
+  const projects = projectsData ?? (projectsFailed ? NO_PROJECTS : undefined);
 
   // Per-user onboarding state from the server. This, and not the presence of
   // demo projects, is what decides whether the first-run wizard should show.
+  // The cache entry names the user, so on a shared browser the next person is
+  // judged by their own flag, not the previous person's.
+  const onboardingQueryKey = useMeOnboardingQueryKey();
   const { data: onboardingState } = useQuery({
-    queryKey: ['me-onboarding'],
+    queryKey: onboardingQueryKey,
     queryFn: () =>
       apiGet<{ completed: boolean }>('/v1/users/me/onboarding/').catch(() => null),
     retry: false,
@@ -2262,7 +2290,7 @@ function DashboardPageInner() {
   // never fire competing fetches against the expensive status endpoint.
   const { data: systemStatus } = useQuery({
     queryKey: ['system-status'],
-    queryFn: () => fetch('/api/system/status').then((r) => r.json()) as Promise<SystemStatusData>,
+    queryFn: () => apiGet<SystemStatusData>('/system/status'),
     retry: false,
     staleTime: 60_000,
   });
@@ -2648,7 +2676,35 @@ function DashboardPageInner() {
     // Same rule: never in WIDGET_NULL_FALLBACK. It waits for the pack answer
     // so the market it leads with is decided once, and the grid's skeleton
     // stands in meanwhile rather than a card that flips.
-    cases_market: <DashboardMarketCasesCard />,
+    // Wrapped in a collapsible shell with localStorage persistence so users
+    // can fold the card when it takes too much vertical space on the dashboard.
+    cases_market: (
+      <div className="rounded-xl border border-border-light bg-surface-primary/70 overflow-hidden">
+        <button
+          type="button"
+          onClick={() => {
+            setMarketCasesExpanded((prev) => {
+              const next = !prev;
+              try {
+                localStorage.setItem('oe_dashboard_cases_collapsed', next ? 'false' : 'true');
+              } catch { /* storage unavailable */ }
+              return next;
+            });
+          }}
+          className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-surface-secondary/50 transition-colors"
+        >
+          <MapPin size={16} className="text-oe-blue shrink-0" />
+          <span className="text-sm font-semibold text-content-primary">
+            {t('dashboard.market_cases.title', { defaultValue: 'Cases for your market' })}
+          </span>
+          <ChevronDown
+            size={16}
+            className={`ml-auto text-content-tertiary transition-transform duration-200 ${marketCasesExpanded ? '' : '-rotate-90'}`}
+          />
+        </button>
+        {marketCasesExpanded && <DashboardMarketCasesCard />}
+      </div>
+    ),
 
     weather_site: <WeatherSiteWidget projects={projects} />,
     labour_cost: <LabourCostWidget />,
@@ -2714,9 +2770,12 @@ function DashboardPageInner() {
             size="md"
             icon={<FileSpreadsheet size={15} />}
             onClick={() => {
-              const firstProject = projects?.[0];
-              if (firstProject) {
-                navigate(`/projects/${firstProject.id}/boq/new`);
+              // The project in the top-bar switcher is the one the reader is
+              // working in; the first project in the list is only a fallback.
+              const target =
+                (activeProjectId && projects?.find((p) => p.id === activeProjectId)) || projects?.[0];
+              if (target) {
+                navigate(`/projects/${target.id}/boq/new`);
               } else {
                 navigate('/projects/new');
               }
@@ -3317,7 +3376,7 @@ function SystemStatus() {
 
   const { data: status } = useQuery({
     queryKey: ['system-status'],
-    queryFn: () => fetch('/api/system/status').then((r) => r.json()) as Promise<SystemStatusData>,
+    queryFn: () => apiGet<SystemStatusData>('/system/status'),
     retry: false,
     // The vector-DB probe behind this endpoint is comparatively expensive
     // (it pings LanceDB/Qdrant). Keep both ``['system-status']`` observers
@@ -3327,9 +3386,11 @@ function SystemStatus() {
     refetchInterval: 60_000,
   });
 
-  const { data: modules } = useQuery({
-    queryKey: ['modules'],
-    queryFn: () => apiGet<{ modules: unknown[] }>('/system/modules').catch(() => ({ modules: [] })),
+  // Shared with the sidebar, see the module count above for why there is no
+  // catch in the queryFn.
+  const { data: modules, isError: modulesFailed } = useQuery({
+    queryKey: ['system-modules'],
+    queryFn: () => apiGet<unknown[]>('/v1/modules/'),
     retry: false,
   });
 
@@ -3437,7 +3498,7 @@ function SystemStatus() {
       >
         <span className="text-sm text-content-secondary">{t('dashboard.modules_loaded')}</span>
         <span className="text-sm font-semibold text-content-primary tabular-nums">
-          {modules?.modules?.length ?? '\u2014'}
+          {Array.isArray(modules) ? modules.length : modulesFailed ? 0 : '\u2014'}
         </span>
       </div>
       <div

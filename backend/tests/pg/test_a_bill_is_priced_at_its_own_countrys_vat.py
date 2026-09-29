@@ -4,8 +4,8 @@
 
 The defect
 ----------
-``DEFAULT_MARKUP_TEMPLATES`` is keyed by region and fifty countries map onto
-forty-two regions, so a region that serves several markets carries one VAT
+``DEFAULT_MARKUP_TEMPLATES`` is keyed by region and fifty-one countries map onto
+forty-three regions, so a region that serves several markets carries one VAT
 number and it is one member's. A bill on a project that set no rate of its own
 took that number: Austria was invoiced at Germany's 19 against its own 20,
 Switzerland at 19 against its own 8.1, Saudi Arabia at the Gulf's 5 against its
@@ -22,15 +22,15 @@ by a rule that grows on its own.
 
 Three populations, counted apart
 -------------------------------
-"No disagreements" over the whole set would read as forty-five countries
-verified when it is thirty-four verified, ten unmeasured and one asserted
+"No disagreements" over the whole set would read as forty-six countries
+verified when it is thirty-six verified, nine unmeasured and one asserted
 against a different number. A country with no row in the seed cannot be
 checked against the seed, so it is reported as unmeasured rather than as
 agreement, and every denominator is printed beside the verdict.
 
 The third population is one country and it is the interesting one. China's
 seed row carries the headline 13 and its bill is priced at the 9 tier
-construction is charged at, so the rule the other thirty-four obey would move
+construction is charged at, so the rule the other thirty-six obey would move
 a Chinese bill to a number that is right about the wrong question. It is named
 in ``CONSTRUCTION_TIER_COUNTRIES`` and asserted against the tier instead.
 
@@ -85,7 +85,6 @@ pytestmark = pytest.mark.asyncio
 _NO_SEED_ROW: dict[str, str] = {
     "AR": "sole country of region AR, whose line carries Argentina's own 21",
     "CL": "sole country of region CL, whose line carries Chile's own 19",
-    "GR": "sole country of region GR, whose line carries Greece's own 24",
     "ID": "sole country of region ID, whose line carries Indonesia's own 11",
     "KE": "sole country of region KE, whose line carries Kenya's own 16",
     "MA": "sole country of region MA, whose line carries Morocco's own 20",
@@ -590,3 +589,64 @@ async def test_a_broken_seed_row_falls_back_loudly(pg_session, caplog) -> None:
     assert "rate_not_numeric" in warnings[0].getMessage(), (
         f"the warning must name which rule the row breaks, got {warnings[0].getMessage()!r}"
     )
+
+
+async def test_a_croatian_bill_gets_exactly_one_pdv_line_at_25(pg_session) -> None:
+    """A Croatian bill charges PDV once, at 25.
+
+    Croatia first had no stack, and the neutral one it was seeded with carried
+    no tax line, so the resolved 25 had nowhere to go and the bill showed no
+    VAT at all. Its stack is now that one PDV line, and applying the defaults
+    again replaces the stack rather than adding a second line.
+    """
+    await _install_tax_seed(pg_session)
+    boq = await _bill_for(pg_session, "HR")
+    service = BOQService(pg_session)
+
+    await service.apply_default_markups(boq.id)
+    await service.apply_default_markups(boq.id)
+    lines = await _tax_lines(pg_session, boq.id)
+
+    assert [(line.name, Decimal(line.percentage)) for line in lines] == [("PDV", Decimal("25"))]
+    # The HR stack's only line, so it sits on the direct cost; see the HR block.
+    assert lines[0].apply_to == "direct_cost"
+    assert lines[0].metadata_["vat_rate_source"] == "country_seed"
+
+
+@pytest.mark.parametrize("region", [None, "HR"])
+async def test_a_troskovnik_gets_its_tax_and_no_overhead_on_rates_that_already_hold_it(pg_session, region) -> None:
+    """Croatia's regional template adds PDV and nothing else.
+
+    A troškovnik is priced on all-in unit rates, overhead and profit inside
+    every rate. Before Croatia had a stack of its own, "Apply regional
+    template" seeded the neutral one, English Site Overhead, Head Office
+    Overhead, Profit and Contingency on top of those rates, so the bill counted
+    its overhead and profit twice. Checked both ways a bill reaches the
+    template: from the project's country and by picking the region by name.
+    """
+    from app.modules.boq.schemas import PositionCreate
+
+    await _install_tax_seed(pg_session)
+    boq = await _bill_for(pg_session, "HR")
+    service = BOQService(pg_session)
+    for ordinal, quantity, rate in (("1.1", 1, "18500"), ("2.1", 1450, "9.8"), ("6.1", 180, "32")):
+        await service.add_position(
+            PositionCreate(
+                boq_id=boq.id,
+                ordinal=ordinal,
+                description=f"Stavka {ordinal}",
+                unit="m3",
+                quantity=quantity,
+                unit_rate=rate,
+            )
+        )
+
+    await service.apply_default_markups(boq.id, region)
+
+    markups = list((await pg_session.execute(select(BOQMarkup).where(BOQMarkup.boq_id == boq.id))).scalars().all())
+    assert [(m.category, m.name, Decimal(m.percentage)) for m in markups] == [("tax", "PDV", Decimal("25"))]
+
+    breakdown = await service.get_cost_breakdown(boq.id)
+    net = Decimal("18500") + Decimal("1450") * Decimal("9.8") + Decimal("180") * Decimal("32")
+    assert breakdown.direct_cost == net
+    assert breakdown.grand_total == net * Decimal("1.25")

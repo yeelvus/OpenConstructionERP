@@ -119,6 +119,15 @@ VR_TRANSITIONS: dict[str, list[str]] = {
     "converted_to_vo": [],
 }
 
+#: Variation request statuses in which the request is a decided, frozen record:
+#: no edit and no delete. Read by ``update_request`` and ``delete_request``.
+_VR_FROZEN_STATUSES: frozenset[str] = frozenset({"approved", "rejected", "converted_to_vo"})
+
+#: Variation order statuses in which the order is closed: completed (its money
+#: has moved) or voided. No edit and no delete. Read by ``update_order`` and
+#: ``delete_order``.
+_VO_CLOSED_STATUSES: frozenset[str] = frozenset({"completed", "voided"})
+
 VO_TRANSITIONS: dict[str, list[str]] = {
     "issued": ["in_progress", "voided"],
     "in_progress": ["completed", "voided"],
@@ -1472,7 +1481,7 @@ class VariationsService:
         # its scope or cost after approval/rejection destroys the audit
         # trail (and silently moves money once it is a VO). Lifecycle
         # changes go through ``transition_variation_request``, not here.
-        if vr.status in {"approved", "rejected", "converted_to_vo"}:
+        if vr.status in _VR_FROZEN_STATUSES:
             raise HTTPException(
                 status_code=http_status.HTTP_409_CONFLICT,
                 detail=(f"Variation request is {vr.status} and can no longer be edited; create a new request instead"),
@@ -1738,7 +1747,20 @@ class VariationsService:
         return vr
 
     async def delete_request(self, vr_id: uuid.UUID) -> None:
-        await self.get_request(vr_id)
+        """Delete a variation request that has not been decided yet.
+
+        A decided request is the frozen commercial record ``update_request``
+        refuses to edit, and deleting it rewrites more than an edit would: the
+        variation order converted from it keeps pointing at nothing (the link
+        is ``SET NULL``). So the same statuses that stop an edit stop a delete.
+        A rejected request can be sent back to draft and deleted from there.
+        """
+        vr = await self.get_request(vr_id)
+        if vr.status in _VR_FROZEN_STATUSES:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail=(f"Variation request is {vr.status} and is kept as the record of that decision"),
+            )
         await self.vr_repo.delete(vr_id)
 
     # ── Variation request BOQ (Issue #435) ────────────────────────────────
@@ -2667,6 +2689,35 @@ class VariationsService:
             )
         return row
 
+    async def get_contract_impact(self, vo_id: uuid.UUID) -> dict[str, Any]:
+        """Compute the contract-level impact of one completed Variation Order.
+
+        Returns original contract value, this VO's delta, and the resulting
+        current value so the drawer can show a before-and-after card.
+        """
+        vo = await self.get_order(vo_id)
+        original = Decimal("0")
+        current = Decimal("0")
+        applied = vo.status == "completed"
+        if vo.affected_contract_id:
+            try:
+                from app.modules.contracts.models import Contract
+
+                contract = await self.session.get(Contract, vo.affected_contract_id)
+                if contract is not None:
+                    original = getattr(contract, "original_contract_value", Decimal("0")) or Decimal("0")
+                    current = getattr(contract, "total_value", original) or original
+            except Exception:  # noqa: BLE001
+                logger.debug("Could not resolve contract %s for impact card", vo.affected_contract_id)
+        return {
+            "variation_order_id": vo.id,
+            "affected_contract_id": vo.affected_contract_id,
+            "original_contract_value": original,
+            "this_variation": vo.final_cost_impact or Decimal("0"),
+            "current_contract_value": current,
+            "applied": applied,
+        }
+
     async def update_order(
         self,
         vo_id: uuid.UUID,
@@ -2679,7 +2730,7 @@ class VariationsService:
         # must not be silently rewritten - that would desync the final
         # account on the next recompute. Status moves via
         # ``transition_variation_order`` only.
-        if vo.status in {"completed", "voided"}:
+        if vo.status in _VO_CLOSED_STATUSES:
             raise HTTPException(
                 status_code=http_status.HTTP_409_CONFLICT,
                 detail=(f"Variation order is {vo.status} and is no longer editable"),
@@ -2763,7 +2814,21 @@ class VariationsService:
         return vo
 
     async def delete_order(self, vo_id: uuid.UUID) -> None:
-        await self.get_order(vo_id)
+        """Delete a variation order that is still open.
+
+        A completed order has already moved money: completing it bumped the
+        contract sum, and the final account counts its ``final_cost_impact``.
+        Deleting it drops it from the final account on the next recompute
+        while the contract sum stays bumped, which is a bigger rewrite than the
+        edit ``update_order`` refuses. A voided order is a closed record. Both
+        are refused here for the same reason they are refused there.
+        """
+        vo = await self.get_order(vo_id)
+        if vo.status in _VO_CLOSED_STATUSES:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail=(f"Variation order is {vo.status} and is kept as a closed record"),
+            )
         await self.vo_repo.delete(vo_id)
 
     async def convert_vr_to_vo(
@@ -2927,6 +2992,89 @@ class VariationsService:
             {
                 "project_id": str(vr.project_id),
                 "request_id": str(vr_id),
+                "vo_id": str(vo.id),
+                "change_order_id": str(co_id) if co_id else None,
+                "title": vo.title,
+                "cost_impact": str(vo.final_cost_impact),
+                "schedule_days": vo.final_schedule_days,
+                "currency": vo.currency,
+            },
+        )
+        return vo
+
+    async def create_linked_change_order(
+        self,
+        vo_id: uuid.UUID,
+        user_id: str | None = None,
+    ) -> VariationOrder:
+        """Create a Change Order linked to a standalone Variation Order.
+
+        Standalone VOs (those created directly, not promoted from a VR) have
+        no linked CO because the promotion path is the only thing that makes
+        one. This method fills the gap: it validates that the VO exists, has
+        no CO yet, and is not voided, then mirrors the VO into oe_changeorders
+        in the same transaction and stamps ``reference_change_order_id``.
+
+        Returns the refreshed VO so the caller sees the new link immediately.
+        """
+        vo = await self.get_order(vo_id)
+
+        if vo.reference_change_order_id is not None:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail="This variation order already has a linked change order.",
+            )
+
+        if vo.status == "voided":
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail="Cannot create a change order for a voided variation order.",
+            )
+
+        co_id: uuid.UUID | None = None
+        try:
+            from app.modules.changeorders.schemas import ChangeOrderCreate
+            from app.modules.changeorders.service import ChangeOrderService
+
+            co_service = ChangeOrderService(self.session)
+            co_payload = ChangeOrderCreate(
+                project_id=vo.project_id,
+                title=vo.title or f"VO {vo.code}",
+                description=f"Auto-created from standalone variation order {vo.code}.",
+                reason_category="design_change",
+                schedule_impact_days=max(0, int(vo.final_schedule_days or 0)),
+                currency=vo.currency or "",
+                cost_impact=str(_to_decimal(vo.final_cost_impact)),
+                metadata={
+                    "origin": "variations.create_linked_change_order",
+                    "variation_order_id": str(vo.id),
+                },
+            )
+            co = await co_service.create_order(co_payload)
+            co_id = co.id
+            await self.vo_repo.update_fields(
+                vo.id,
+                reference_change_order_id=co_id,
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception(
+                "Failed to create linked ChangeOrder for VO %s; rolling back",
+                vo_id,
+            )
+            await self.session.rollback()
+            raise HTTPException(
+                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create linked change order; operation rolled back.",
+            )
+
+        await self.session.refresh(vo)
+
+        _safe_publish(
+            "variations.change_order.created",
+            {
+                "project_id": str(vo.project_id),
                 "vo_id": str(vo.id),
                 "change_order_id": str(co_id) if co_id else None,
                 "title": vo.title,
@@ -3644,8 +3792,37 @@ class VariationsService:
         fa_id: uuid.UUID,
         data: FinalAccountUpdate,
     ) -> FinalAccount:
+        """Edit an open final account and recompute it.
+
+        A closed account is the settlement a manager signed off through
+        :meth:`close_final_account`, and the lifecycle leaves ``closed`` with no
+        way out, so it is not edited here at all. On an open account a status
+        change follows ``FA_TRANSITIONS``, except that ``closed`` is reached only
+        through the close action, which is MANAGER-only and records the signer.
+        """
         fa = await self.get_final_account(fa_id)
+        if fa.status == "closed":
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail="The final account is closed and is kept at the value it was closed at.",
+            )
         fields = data.model_dump(exclude_unset=True)
+        target = fields.get("status")
+        if target is not None and target != fa.status:
+            if target == "closed":
+                raise HTTPException(
+                    status_code=http_status.HTTP_409_CONFLICT,
+                    detail="A final account is closed through its close action, not by editing its status.",
+                )
+            allowed = allowed_final_account_transitions(fa.status)
+            if target not in allowed:
+                raise HTTPException(
+                    status_code=http_status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Cannot move a final account from {fa.status} to {target}. "
+                        f"Allowed: {', '.join(allowed) or 'none'}."
+                    ),
+                )
         for money_key in (
             "original_contract_value",
             "variations_total",
@@ -3764,6 +3941,10 @@ class VariationsService:
         fa = await self.final_account_repo.for_project(project_id)
         if fa is None:
             return None
+        if fa.status == "closed":
+            # The signed settlement keeps the totals it was closed at; a variation
+            # completed afterwards does not move it.
+            return fa
 
         fa_currency = (fa.currency or "").strip()
 
@@ -3880,6 +4061,11 @@ class VariationsService:
         vr_pending = sum(c for s, c in vr_counts.items() if s in {"draft", "submitted", "under_review"})
         vr_approved = vr_counts.get("approved", 0)
         vr_rejected = vr_counts.get("rejected", 0)
+        # Issue #435 chunk 4: pending VR cost exposure for the dashboard card.
+        if hasattr(self.vr_repo, "pending_vr_cost_sum"):
+            pending_vr_cost = await self.vr_repo.pending_vr_cost_sum(project_id)
+        else:
+            pending_vr_cost = Decimal("0")
 
         vo_counts = await self.vo_repo.status_counts(project_id)
         vo_total = sum(vo_counts.values())
@@ -3974,4 +4160,7 @@ class VariationsService:
             "daywork_value_by_currency": _money_str_map(dw_by_cur),
             "daywork_value_unconverted_by_currency": _money_str_map(dw_unconverted),
             "multi_currency": multi_currency,
+            # Issue #435 chunk 4: contract value dashboard card.
+            "pending_vr_cost_total": pending_vr_cost if pending_vr_cost else None,
+            "agreed_vo_cost_total": cost_total if cost_total else None,
         }

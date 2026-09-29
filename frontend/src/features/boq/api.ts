@@ -3,6 +3,7 @@
 import { apiGet, apiPost, apiPut, apiPatch, apiDelete, downloadWithAuth, API_BASE } from '@/shared/lib/api';
 import type { CostVariant, VariantStats } from '@/features/costs/api';
 import { resourceAwareTotalInBase } from './boqHelpers';
+import { toNum } from '@/shared/lib/money';
 
 /* ── Core BOQ types ──────────────────────────────────────────────────── */
 
@@ -29,6 +30,46 @@ export interface BOQ {
   updated_at: string;
 }
 
+/** One bill as the bill register lists it, with its money and line count. */
+export interface BOQListRow {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  /** Money arrives as a Decimal string (v3 §10); coerce before arithmetic. */
+  direct_cost_total: number | string;
+  markups_total: number | string;
+  grand_total: number | string | null;
+  position_count: number;
+}
+
+/**
+ * The projects a refused `boqApi.listForProjects` call named, in request order:
+ * ids that name no project at all. Empty for any other error, such as a network
+ * failure or a missing permission, which name no project.
+ */
+export function failedBoqListProjectIds(error: unknown): string[] {
+  const detail = (error as { body?: { detail?: { project_ids?: unknown } } } | null)?.body?.detail;
+  const ids = detail && typeof detail === 'object' ? detail.project_ids : undefined;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+}
+
+/**
+ * The projects a `boqApi.listForProjects` answer left out, in request order.
+ * The server leaves out a project that is archived or no longer readable by
+ * this user, and answers every other one as a key, with an empty list when it
+ * has no bills, so a missing key is the only sign of a skipped project.
+ */
+export function skippedBoqListProjectIds(
+  requested: readonly string[],
+  register: Record<string, unknown>,
+): string[] {
+  return requested.filter((id) => !Object.prototype.hasOwnProperty.call(register, id));
+}
+
 /**
  * Linked-position role (Issue #127 — reuse the same code across a project).
  *  - `master`   — the definition-of-record for a shared `reference_code`.
@@ -49,6 +90,9 @@ export interface Position {
   quantity: number;
   unit_rate: number;
   total: number;
+  net_cost_rate?: string | null;
+  target_rate?: string | null;
+  sale_rate?: string | null;
   classification: Record<string, string>;
   source: string;
   confidence: number | null;
@@ -111,6 +155,11 @@ export interface LinkPropagationMeta {
   /** Issue #133 — count of linked RESOURCE instances a master resource
    *  definition edit was fanned out to (separate from position links). */
   resource_propagated_to?: number;
+  /** Linked lines (positions or resources) that live in LOCKED bills and so
+   *  kept the old definition. Absent when nothing was skipped. */
+  locked_skipped?: number;
+  /** The locked bills those lines are in, sorted by name. */
+  locked_boqs?: { id: string; name: string }[];
 }
 
 /** One member of a reference-code link group. */
@@ -368,6 +417,11 @@ export interface MeasurementLineInput {
   sign?: '+' | '-';
   ref?: string;
   unit?: string;
+  /** Dimension-based measurement fields (NRM/SMM style). */
+  nos?: number | null;
+  length?: number | null;
+  breadth?: number | null;
+  depth?: number | null;
 }
 
 /** One line as the server hands it back, with its own quantity worked out. */
@@ -578,6 +632,29 @@ export function normalizePositions(positions: Position[]): Position[] {
  */
 export function isSection(pos: Pick<Position, 'unit'>): boolean {
   return !pos.unit || pos.unit.trim() === '' || pos.unit.trim().toLowerCase() === 'section';
+}
+
+/** Direct cost of a bill: the sum of its line items in the base currency.
+ *
+ * Section rows are headers and are skipped. Most carry a zero total, but a
+ * section written by an approved change order stores the sum of its lines on
+ * the header itself, so a sum over every row counted that change twice in the
+ * editor footer and everything read from it. The server's rollups skip
+ * sections the same way.
+ */
+export function billDirectCost(
+  positions: ReadonlyArray<Pick<Position, 'unit' | 'total' | 'quantity' | 'unit_rate' | 'metadata'>>,
+  baseCurrency: string | undefined | null,
+  fxRates: Array<{ currency: string; rate: number }> | undefined | null,
+): number {
+  // Same rule as the server's ``_is_section``: a header unit AND no quantity
+  // AND no rate. A priced line imported without a unit is still a line.
+  const isHeader = (p: Pick<Position, 'unit' | 'quantity' | 'unit_rate'>) =>
+    isSection(p) && !Number(p.quantity) && !Number(p.unit_rate);
+  return positions.reduce(
+    (sum, p) => (isHeader(p) ? sum : sum + resourceAwareTotalInBase(p, baseCurrency, fxRates)),
+    0,
+  );
 }
 
 /** A position nobody has typed into yet: no description and no quantity.
@@ -1594,10 +1671,20 @@ export interface CostSearchItem {
   description: string;
   unit: string;
   rate: number;
+  /** The unit rate a bill line receives when this item is added: the sum of
+   *  its components. ``null`` when the item has no components (it lands at
+   *  ``rate``) or a variant still to pick. */
+  buildup_rate?: number | null;
+  /** Hazardous materials the item is made of, as ids (``asbestos``). The
+   *  search ranks such items after ordinary hits; the picker badges them. */
+  hazards?: string[];
   currency?: string;
   region: string | null;
   classification: Record<string, string>;
   components: CostItemComponent[];
+  /** How many components the item has. A ``lite`` list row empties
+   *  ``components`` and keeps only this count. */
+  components_count?: number;
   /** Opaque CWICR metadata (variants, variant_stats, etc.) — type-erased. */
   metadata_?: Record<string, unknown>;
 }
@@ -1660,6 +1747,12 @@ export async function fetchCostSearch(
   if (params.source) qs.set('source', params.source);
   if (params.classification_path) qs.set('classification_path', params.classification_path);
   if (params.cursor) qs.set('cursor', params.cursor);
+  // Slim rows: a CWICR row's component breakdown and variant catalogues run
+  // to tens of kilobytes each and the list renders neither (it shows the
+  // variant count from ``metadata_.variant_stats``, which the slim row keeps).
+  // The modal's add flow reads the picked items in full from
+  // ``GET /v1/costs/{id}`` before it builds resources or opens a picker.
+  qs.set('lite', '1');
 
   const raw = await apiGet<{
     items: CostSearchItem[];
@@ -1670,7 +1763,17 @@ export async function fetchCostSearch(
     offset?: number;
   }>(`/v1/costs/?${qs.toString()}`);
 
-  const items = raw.items ?? [];
+  // ``rate`` is a Decimal on the server and arrives as a JSON string
+  // ("4465.43"). Coerce it here, once, so every consumer can treat it as the
+  // number the type promises: the modal's "No rate" badge, its selection
+  // preview and the add flow's fallback rate all read it as a number, and a
+  // string made every priced row look unpriced.
+  const items = (raw.items ?? []).map((item) => ({
+    ...item,
+    rate: toNum(item.rate as number | string | null | undefined),
+    buildup_rate:
+      item.buildup_rate == null ? null : toNum(item.buildup_rate as number | string),
+  }));
   const limit = raw.limit ?? params.limit ?? 50;
   const next_cursor = raw.next_cursor ?? null;
 
@@ -1718,6 +1821,21 @@ export function fetchCategoryTree(
 export const boqApi = {
   /* BOQ CRUD */
   list: (projectId: string) => apiGet<BOQ[]>(`/v1/boq/boqs/?project_id=${projectId}`),
+  /**
+   * The bill register of several projects in one request, keyed by project id.
+   * Each project's rows are what `GET /boqs/?project_id=` returns for it, with
+   * the page (50 bills by default) cut per project. Every readable project is
+   * a key. An archived or unreadable project is left out: read which with
+   * {@link skippedBoqListProjectIds}. An id that names no project refuses the
+   * whole call (404) and the error body names it: read it with
+   * {@link failedBoqListProjectIds}.
+   */
+  listForProjects: (projectIds: string[]) =>
+    apiPost<Record<string, BOQListRow[]>, { project_ids: string[] }>(
+      '/v1/boq/boqs/by-projects/',
+      { project_ids: projectIds },
+      { readOnly: true },
+    ),
   get: (boqId: string) => apiGet<BOQWithPositions>(`/v1/boq/boqs/${boqId}`),
   create: (data: CreateBOQData) => apiPost<BOQ>('/v1/boq/boqs/', data),
   deleteBoq: (boqId: string) => apiDelete(`/v1/boq/boqs/${boqId}`),

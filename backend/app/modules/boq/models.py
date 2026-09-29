@@ -141,6 +141,10 @@ class Position(Base):
     quantity: Mapped[str] = mapped_column(String(50), nullable=False, default="0")
     unit_rate: Mapped[str] = mapped_column(String(50), nullable=False, default="0")
     total: Mapped[str] = mapped_column(String(50), nullable=False, default="0")
+    # Three-tier pricing for contractor workflow: cost -> target -> sale
+    net_cost_rate: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    target_rate: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    sale_rate: Mapped[str | None] = mapped_column(String(50), nullable=True)
     classification: Mapped[dict] = mapped_column(  # type: ignore[assignment]
         JSON,
         nullable=False,
@@ -446,8 +450,8 @@ class BOQActivityLog(Base):
         nullable=True,
         index=True,
     )
-    # Nullable: system-generated activity (e.g. event-driven ``cost_breakdown.
-    # computed``) has no acting user. Previously a nil-UUID sentinel was written,
+    # Nullable: system-generated activity (an event published without an
+    # acting user) has no user. Previously a nil-UUID sentinel was written,
     # which SQLite accepted (FK enforcement off by default) but PostgreSQL
     # rejected with a ForeignKeyViolationError. NULL = "System" in the feed.
     user_id: Mapped[uuid.UUID | None] = mapped_column(

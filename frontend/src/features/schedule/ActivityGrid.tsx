@@ -3,11 +3,12 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, RotateCcw, GitBranch, Diamond, Minus, Users } from 'lucide-react';
+import { Plus, RotateCcw, GitBranch, Diamond, Minus, Users, Trash2, ChevronRight, ChevronDown } from 'lucide-react';
 import { Button, Badge, Card } from '@/shared/ui';
 import { useToastStore } from '@/stores/useToastStore';
 import { listCalendars } from '@/features/schedule-advanced/api';
 import { listAssignmentsForActivity, listResources } from '@/features/resources/api';
+import { fetchContacts } from '@/features/contacts/api';
 import { scheduleApi, type Activity } from './api';
 import { fmtList } from '@/shared/lib/formatters';
 
@@ -61,6 +62,8 @@ export function ActivityGrid({
   criticalActivityIds,
   onEditDependencies,
   onAddActivity,
+  collapsedIds,
+  onToggleCollapse,
 }: {
   scheduleId: string;
   projectId: string;
@@ -68,6 +71,8 @@ export function ActivityGrid({
   criticalActivityIds?: Set<string>;
   onEditDependencies: (activityId: string) => void;
   onAddActivity: () => void;
+  collapsedIds?: Set<string>;
+  onToggleCollapse?: (id: string) => void;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -76,6 +81,27 @@ export function ActivityGrid({
   const invalidateGantt = () =>
     queryClient.invalidateQueries({ queryKey: ['gantt', scheduleId] });
 
+  // Compute tree depth for indentation
+  const depthMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    const parentOf: Record<string, string> = {};
+    for (const a of activities) { if (a.parent_id) parentOf[a.id] = a.parent_id; }
+    const getDepth = (id: string): number => {
+      if (id in map) return map[id] ?? 0;
+      const pid = parentOf[id];
+      const d = pid ? getDepth(pid) + 1 : 0;
+      map[id] = d;
+      return d;
+    };
+    for (const a of activities) getDepth(a.id);
+    return map;
+  }, [activities]);
+  const hasChildren = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of activities) { if (a.parent_id) set.add(a.parent_id); }
+    return set;
+  }, [activities]);
+
   // #348: the project's named work calendars, for the per-row calendar picker.
   // Keyed by projectId so the picker and the WorkCalendarManager share a cache.
   const { data: calendars = [] } = useQuery({
@@ -83,6 +109,22 @@ export function ActivityGrid({
     queryFn: () => listCalendars(projectId),
     enabled: !!projectId,
   });
+
+  // Contacts for the assignee picker
+  const { data: contactsPage } = useQuery({
+    queryKey: ['contacts', 'list'],
+    queryFn: () => fetchContacts({ limit: 200 }),
+    staleTime: 120_000,
+  });
+  const contacts = contactsPage?.items ?? [];
+  const contactNameById = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const c of contacts) {
+      const name = [c.first_name, c.last_name].filter(Boolean).join(' ') || c.company_name || c.email || c.id;
+      m[c.id] = name;
+    }
+    return m;
+  }, [contacts]);
 
   // Who is booked on each activity, fanned out through ``useQueries``.
   //
@@ -207,6 +249,23 @@ export function ActivityGrid({
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => scheduleApi.deleteActivity(id),
+    onSuccess: () => {
+      invalidateGantt();
+      addToast({
+        type: 'success',
+        title: t('schedule.activity_deleted', { defaultValue: 'Activity deleted' }),
+      });
+    },
+    onError: (error: Error) =>
+      addToast({
+        type: 'error',
+        title: t('toasts.error', { defaultValue: 'Error' }),
+        message: error.message,
+      }),
+  });
+
   const busy =
     updateMutation.isPending || rescheduleMutation.isPending || setCalendarMutation.isPending;
   // Only an operation that moves rows (a full reschedule, or a calendar change
@@ -271,7 +330,9 @@ export function ActivityGrid({
       { key: 'progress', label: t('schedule.progress', { defaultValue: 'Progress' }), align: 'right' as const },
       { key: 'calendar', label: t('schedule.calendar.column', { defaultValue: 'Calendar' }), align: 'left' as const },
       { key: 'resources', label: t('schedule.assigned_resources', { defaultValue: 'Resources' }), align: 'left' as const },
+      { key: 'assignee', label: t('schedule.assignee', { defaultValue: 'Assignee' }), align: 'left' as const },
       { key: 'deps', label: t('schedule.predecessors', { defaultValue: 'Predecessors' }), align: 'left' as const },
+      { key: 'actions', label: '', align: 'right' as const },
     ],
     [t],
   );
@@ -375,7 +436,18 @@ export function ActivityGrid({
                       {a.wbs_code || '-'}
                     </td>
                     <td className="px-2 py-1.5 align-middle">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5" style={{ paddingLeft: `${(depthMap[a.id] ?? 0) * 16}px` }}>
+                        {isSummary && hasChildren.has(a.id) && onToggleCollapse ? (
+                          <button
+                            type="button"
+                            onClick={() => onToggleCollapse(a.id)}
+                            className="shrink-0 rounded p-0.5 text-content-tertiary hover:bg-surface-secondary"
+                          >
+                            {collapsedIds?.has(a.id) ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                          </button>
+                        ) : isSummary ? (
+                          <Minus size={11} className="shrink-0 text-content-tertiary" />
+                        ) : null}
                         {isCritical && (
                           <span className="shrink-0 rounded bg-semantic-error px-1 py-0.5 text-[9px] font-bold leading-none text-white">
                             CP
@@ -384,7 +456,6 @@ export function ActivityGrid({
                         {isMilestone && (
                           <Diamond size={11} className="shrink-0 text-oe-blue" fill="currentColor" />
                         )}
-                        {isSummary && <Minus size={11} className="shrink-0 text-content-tertiary" />}
                         <input
                           key={`name-${a.id}-${a.name}`}
                           data-testid={`grid-name-${a.id}`}
@@ -491,6 +562,21 @@ export function ActivityGrid({
                       )}
                     </td>
                     <td className="px-2 py-1.5 align-middle">
+                      <select
+                        data-testid={`grid-assignee-${a.id}`}
+                        aria-label={t('schedule.assignee', { defaultValue: 'Assignee' })}
+                        className={CELL_INPUT_CLS}
+                        value={a.assignee_id ?? ''}
+                        disabled={cellsDisabled}
+                        onChange={(e) => updateMutation.mutate({ id: a.id, body: { assignee_id: e.target.value || null } as Partial<Activity> })}
+                      >
+                        <option value="">{t('schedule.no_assignee', { defaultValue: 'Unassigned' })}</option>
+                        {contacts.map((c) => (
+                          <option key={c.id} value={c.id}>{contactNameById[c.id]}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-2 py-1.5 align-middle">
                       <button
                         type="button"
                         data-testid={`grid-deps-${a.id}`}
@@ -502,6 +588,18 @@ export function ActivityGrid({
                         {depCount > 0
                           ? String(depCount)
                           : t('schedule.add_predecessor', { defaultValue: 'Add predecessor' })}
+                      </button>
+                    </td>
+                    <td className="px-2 py-1.5 text-right align-middle">
+                      <button
+                        type="button"
+                        data-testid={`grid-delete-${a.id}`}
+                        onClick={() => deleteMutation.mutate(a.id)}
+                        disabled={deleteMutation.isPending}
+                        title={t('schedule.delete_activity', { defaultValue: 'Delete activity' })}
+                        className="inline-flex items-center rounded-md p-1 text-content-tertiary transition-colors hover:bg-semantic-error/10 hover:text-semantic-error"
+                      >
+                        <Trash2 size={14} />
                       </button>
                     </td>
                   </tr>

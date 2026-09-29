@@ -11,7 +11,7 @@ instead of a magic literal.
 Event reference
 ───────────────
 ``contracts.claim.populated``
-    Emitted after a draft / submitted progress claim has its line breakdown
+    Emitted after a draft progress claim has its line breakdown
     rebuilt from the latest progress observations and committed
     (``commit_preview_to_claim``). Payload::
 
@@ -69,3 +69,11 @@ EOT_SUBMITTED = "contracts.eot.submitted"
 EOT_DECIDED = "contracts.eot.decided"
 
 __all__ = ["CLAIM_POPULATED", "EOT_DECIDED", "EOT_SUBMITTED"]
+
+# The completed-variation rollup into ``Contract.total_value`` is owned by one
+# subscriber, ``_on_variation_completed`` in
+# ``app.modules.notifications._wave5_cross_module_subscribers``. It carries the
+# redelivery key, the project, currency and closed-contract guards and the
+# mirrored change order dedupe. Do not add a second writer for
+# ``variations.contract_sum.updated`` here: any second writer that works posts
+# the same variation to the contract twice.

@@ -14,9 +14,10 @@ import { useThemeStore } from '@/stores/useThemeStore';
 import { ActivePackChip, CountryFlag, ModuleInfoButton, PartnerLogoBadge } from '@/shared/ui';
 import { usePartnerPack } from '@/shared/hooks/usePartnerPack';
 import { NotificationBell } from '@/shared/ui/NotificationBell';
+import { LearnTopBarButton } from './LearnTopBarButton';
 import { HeaderNewsButton } from '@/shared/ui/HeaderNewsButton';
 import { ModuleBuilderButton } from '@/features/module-builder';
-import { apiGet } from '@/shared/lib/api';
+import { fetchProjectList } from '@/shared/lib/projectList';
 import { copyToClipboard } from '@/shared/lib/browser';
 import {
   exportErrorReport,
@@ -31,6 +32,7 @@ import { isTauri, openAppInBrowser, openLink } from '@/shared/lib/desktop';
 import { SupportUsButton } from './SupportUsButton';
 import { SubscribeButton } from './SubscribeButton';
 import { ProjectJourneyButton } from './ProjectJourney';
+import { PresenceAvatarStack } from '@/features/global_presence';
 import { getRouteIcon } from './routeIcons';
 import { isModuleI18nKey } from '@/modules/_i18n';
 
@@ -262,6 +264,8 @@ export const TITLE_I18N_MAP: Record<string, string> = {
   'ESG Site Performance': 'nav.esg',
   // Communication & documentation
   'Inbox': 'inbox.title',
+  'Timeline': 'nav.timeline',
+  'Project Timeline': 'nav.timeline',
   'Notifications': 'nav.notifications',
   'Deadlines': 'deadlines.title',
   'Phone Log': 'nav.phone_log',
@@ -281,13 +285,20 @@ export const TITLE_I18N_MAP: Record<string, string> = {
   'Portfolio': 'portfolio.title',
   'Route Classifier': 'project_route.title',
   'Post-calculation': 'postcalc.title',
+  'Public Funding': 'funding.title',
   // Learning & admin
   'Cases': 'nav.cases',
+  'Videos': 'nav.videos',
   'How it works': 'howto.page_title',
   'Inside track': 'inside.page_title',
   'Module Builder': 'nav.module_builder',
   'Pipelines': 'nav.pipelines',
   'Integrations': 'nav.integrations',
+  'Background Jobs': 'jobs.page_title',
+  'Saved Views': 'saved_views.page_title',
+  'Approval Workflows': 'enterprise_workflows.title',
+  'Rebar Schedule': 'rebar_schedule.title',
+  'RFQ Bidding': 'rfq_bidding.title',
   'Credentials': 'nav.credentials',
   'Teams and Visibility': 'teams.title',
 };
@@ -440,8 +451,17 @@ export function Header({ title, onMenuClick }: HeaderProps) {
           the zones, and the chip's own name truncation keeps it from
           overflowing. Below lg the co-brand still shows in the dashboard
           banner. */}
-      <div className="hidden lg:flex flex-1 min-w-0 items-center justify-center gap-2 px-2">
-        <ActivePackChip />
+      <div
+        className="hidden lg:flex flex-1 min-w-[2.5rem] items-center justify-center gap-2 overflow-hidden px-2"
+        data-testid="header-pack-column"
+      >
+        {/* min-w-0 on the chip and overflow-hidden on the column: at 125% and
+            150% text size the column is squeezed below the chip's width, and
+            without both the chip kept its full width and was painted over the
+            project picker instead of truncating its name. The column keeps
+            room for the globe, so the readout shrinks to its icon and tooltip
+            rather than vanishing, which is the one thing it must not do. */}
+        <ActivePackChip className="min-w-0" />
         {showCoBrand && <PartnerLogoBadge variant="nav" />}
       </div>
 
@@ -462,6 +482,7 @@ export function Header({ title, onMenuClick }: HeaderProps) {
             opens the whole-platform journey map. First in the cluster so it
             reads as "where am I" ahead of the action buttons. */}
         <ProjectJourneyButton />
+        <PresenceAvatarStack />
         <div className="hidden sm:block h-4 w-px bg-border-light/70" aria-hidden />
 
         {/* ── Zone 2 (Search) ──────────────────────────────────────── */}
@@ -510,14 +531,21 @@ export function Header({ title, onMenuClick }: HeaderProps) {
             The "ask the user for something" CTAs (Support / Subscribe) stay
             adjacent; Bug + Help sit on the right edge so a user filing a
             report doesn't have to scan past the marketing CTAs. */}
+        {/* Only while the Learn card is hidden from the menu: its way back,
+            at every width. */}
+        <LearnTopBarButton />
         <NotificationBell />
         <HeaderNewsButton />
         {/* Building a module is something you do from wherever you noticed the
             platform was missing one, so it lives here rather than in the
-            sidebar. Renders nothing for anyone who may not install one. */}
-        <ModuleBuilderButton />
-        <SupportUsButton />
-        <SubscribeButton />
+            sidebar. Renders nothing for anyone who may not install one.
+            Hidden below xl to reduce crowding on narrower screens. */}
+        {/* Shown from 2xl only: at 125% and 150% text size a 1280-1440px bar
+            had no room for these three next to the project picker, and the
+            right cluster ran off screen. */}
+        <div className="hidden 2xl:block"><ModuleBuilderButton /></div>
+        <div className="hidden 2xl:block"><SupportUsButton /></div>
+        <div className="hidden 2xl:block"><SubscribeButton /></div>
         <BugReportMenu />
         <HelpMenu />
 
@@ -1636,10 +1664,13 @@ function ProjectSwitcher() {
 
   // Pre-fetch so the dropdown renders an instant list when the user opens
   // it (no race between open → fetch → render that used to flash
-  // "No projects yet" for half a second).
+  // "No projects yet" for half a second). The same entry every page's project
+  // picker reads, so a page and the header share one request. The purge
+  // below trusts this list to be complete, which is why nothing reading
+  // ['projects'] may cache a partial list or an empty one on error.
   const { data: projects, isLoading, isError, isFetching, refetch } = useQuery({
-    queryKey: ['projects-switcher'],
-    queryFn: () => apiGet<Array<{ id: string; name: string }>>('/v1/projects/?limit=500'),
+    queryKey: ['projects'],
+    queryFn: () => fetchProjectList<Array<{ id: string; name: string }>>(),
     staleTime: 60_000,
     // Enabled as soon as the component mounts — the Header is always on
     // screen after login, so the list is warm by the time the user clicks.

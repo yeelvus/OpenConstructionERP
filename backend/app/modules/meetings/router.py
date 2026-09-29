@@ -1745,6 +1745,12 @@ async def export_meeting_pdf(
     )
     from sqlalchemy import select
 
+    from app.core.pdf_branding import (
+        branded_appearance,
+        branded_doc_metadata,
+        branded_header_logo,
+        branded_letterhead,
+    )
     from app.core.pdf_fonts import (
         BODY_FONT,
         BOLD_FONT,
@@ -1754,6 +1760,7 @@ async def export_meeting_pdf(
         register_pdf_fonts,
     )
     from app.modules.meetings.models import Meeting
+    from app.modules.meetings.pdf import draw_minutes_footer
     from app.modules.projects.models import Project
 
     register_pdf_fonts()
@@ -1841,6 +1848,12 @@ async def export_meeting_pdf(
         return style_cell_label if col_index == 0 else None
 
     elements: list = []
+
+    # The firm's letterhead, when the company profile has one. The frame pads
+    # 6pt on each side, so this is the width a flowable can use.
+    letterhead = branded_letterhead(USABLE_WIDTH - 12, doc_type="meeting_minutes")
+    if letterhead is not None:
+        elements.append(letterhead)
 
     # Header
     elements.append(Paragraph("Meeting Minutes", style_title))
@@ -1991,23 +2004,35 @@ async def export_meeting_pdf(
 
     # Build document
     buf = io.BytesIO()
+    look = branded_appearance(doc_type="meeting_minutes")
 
     def _header_footer(canvas_obj, doc):  # type: ignore[no-untyped-def]
+        # On a page that opens with the letterhead, the letterhead is the page's
+        # header: the running head and the logo above it would repeat it.
+        under_letterhead = letterhead is not None and doc.page == 1
         canvas_obj.saveState()
         canvas_obj.setFillColor(colors.HexColor("#999999"))
-        running_head = f"{project_name} - {meeting.title}"
-        canvas_obj.setFont(pdf_font_for_text(running_head), 7)
-        canvas_obj.drawString(MARGIN, PAGE_HEIGHT - 12 * mm, running_head)
-        canvas_obj.setFont(BODY_FONT, 7)
-        canvas_obj.drawRightString(
-            PAGE_WIDTH - MARGIN,
-            10 * mm,
-            f"Page {doc.page}",
-        )
+        if not under_letterhead:
+            running_head = f"{project_name} - {meeting.title}"
+            canvas_obj.setFont(pdf_font_for_text(running_head), 7)
+            canvas_obj.drawString(MARGIN, PAGE_HEIGHT - 12 * mm, running_head)
+        draw_minutes_footer(canvas_obj, doc, look, margin=MARGIN)
         canvas_obj.restoreState()
+        if not under_letterhead:
+            branded_header_logo(canvas_obj, doc)
 
     frame = Frame(MARGIN, MARGIN, USABLE_WIDTH, PAGE_HEIGHT - 2 * MARGIN, id="main")
-    doc = BaseDocTemplate(buf, pagesize=A4)
+    # The margins are the frame's, so the header logo, placed from the right
+    # margin, lines up with the text under it instead of reportlab's inch.
+    doc = BaseDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=MARGIN,
+        rightMargin=MARGIN,
+        topMargin=MARGIN,
+        bottomMargin=MARGIN,
+        **branded_doc_metadata(),
+    )
     doc.addPageTemplates([PageTemplate(id="main", frames=[frame], onPage=_header_footer)])
     doc.build(elements)
 

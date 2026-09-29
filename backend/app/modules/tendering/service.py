@@ -16,7 +16,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.events import event_bus
+from app.core.events import event_bus, publish_after_commit
 from app.core.json_merge import merge_metadata
 
 _logger_ev = __import__("logging").getLogger(__name__ + ".events")
@@ -24,6 +24,8 @@ _logger_ev = __import__("logging").getLogger(__name__ + ".events")
 # ── Lifecycle state machine ──────────────────────────────────────────────────
 # Package status transitions. ``closed`` is terminal; ``awarded`` may still be
 # closed for archival but never re-opened. Anything not listed is rejected.
+# ``evaluating -> awarded`` is the lifecycle step, but only ``apply_winner``
+# takes it: ``update_package`` refuses a PATCH to ``awarded``.
 _PACKAGE_TRANSITIONS: dict[str, set[str]] = {
     "draft": {"draft", "issued", "closed"},
     "issued": {"issued", "collecting", "closed"},
@@ -40,7 +42,22 @@ _AWARDABLE_PACKAGE_STATES: set[str] = {"collecting", "evaluating"}
 # Bid statuses that disqualify a bid from being awarded.
 _NON_AWARDABLE_BID_STATES: set[str] = {"rejected"}
 
+# Package states in which a bid's figures are final. ``apply_winner`` copies
+# the winning bid's rates into the BOQ and records the award against them, and
+# a closed package has ended its tender either way; repricing any bid after
+# that would leave the award, the bill and the comparison describing figures
+# the bid no longer carries.
+_BID_FIGURES_FROZEN_STATES: frozenset[str] = frozenset({"awarded", "closed"})
+
+# The bid fields that carry its money.
+_BID_MONEY_FIELDS: tuple[str, ...] = ("total_amount", "currency", "line_items")
+
 _CENTS = Decimal("0.01")
+
+
+#: Package metadata flag that puts the winning sum into rejection notices.
+#: Off by default; a package under a regime that requires disclosure sets it.
+DISCLOSE_AWARD_SUM_KEY = "disclose_award_sum"
 
 
 def _to_decimal(value: object, default: str = "0") -> Decimal:
@@ -274,12 +291,12 @@ class TenderingService:
         """Create a tender package pre-seeded from selected BOQ sections.
 
         Loads the BOQ the same way ``compare_bids`` and ``_build_leveling`` do,
-        identifies top-level sections (positions whose ``parent_id`` is ``None``
-        and whose ``unit`` is empty or ``"section"``), filters to the requested
-        ``section_ids`` (or takes all sections when the list is empty), then
-        recursively gathers every descendant. The resulting positions are stored
-        as a compact line-item template in ``metadata_`` so bids can be
-        pre-seeded without an additional BOQ read.
+        identifies the top-level rows (positions whose ``parent_id`` is
+        ``None``: sections, and priced lines that sit loose at the top of the
+        bill), filters to the requested ``section_ids`` (or takes every top-level
+        row when the list is empty), then recursively gathers every descendant.
+        The resulting positions are stored as a compact line-item template in
+        ``metadata_`` so bids can be pre-seeded without an additional BOQ read.
 
         Currency is inferred from the linked project via the same project
         repository path used in ``apply_winner`` and ``_build_leveling``. When
@@ -317,18 +334,24 @@ class TenderingService:
         # Index positions by id for fast descendant lookup.
         pos_by_id: dict[uuid.UUID, object] = {p.id: p for p in all_positions}
 
-        # Identify top-level sections: parent_id is None and unit is empty or "section".
-        def _is_section(pos: object) -> bool:
-            parent = getattr(pos, "parent_id", None)
-            unit = (getattr(pos, "unit", "") or "").strip().lower()
-            return parent is None and (unit == "" or unit == "section")
-
-        section_positions = [p for p in all_positions if _is_section(p)]
+        # Every top-level row is a unit of scope the caller can pick: a section
+        # with its lines, or a priced line sitting loose at the top of the bill.
+        # Only sections used to count, so a flat bill (no sections at all)
+        # became an empty package, and a loose line beside the sections was
+        # left out of a package that claimed to cover the whole bill.
+        section_positions = [p for p in all_positions if getattr(p, "parent_id", None) is None]
 
         # Filter to the requested section_ids when the caller specified any.
         if data.section_ids:
             requested = set(data.section_ids)
             section_positions = [p for p in section_positions if p.id in requested]
+            if not section_positions:
+                # A pick that matches no top-level row of this bill would make
+                # an empty package that reads as a real one.
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="None of the chosen sections is a top-level row of this BOQ",
+                )
 
         # Build set of chosen section IDs for the metadata record.
         chosen_section_ids = [str(p.id) for p in section_positions]
@@ -517,6 +540,20 @@ class TenderingService:
 
         # Validate status transition before persisting anything.
         new_status = fields.get("status")
+        if new_status == "awarded" and package.status in _AWARDABLE_PACKAGE_STATES:
+            # Awarding is a decision with consequences, not a label: apply_winner
+            # names the winning bid, writes its rates into the BOQ, rejects the
+            # other bids and announces the award. A PATCH would do none of that
+            # and leave a package that reads as awarded with no winner, which
+            # apply_winner then refuses for good. It also needs tendering.award,
+            # which this route does not ask for.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "A package is awarded by applying the winning bid, which records the winner "
+                    "and writes its rates into the BOQ. Use apply-winner instead of changing the status."
+                ),
+            )
         if new_status is not None and new_status != package.status:
             allowed = _PACKAGE_TRANSITIONS.get(package.status, set())
             if new_status not in allowed:
@@ -562,9 +599,19 @@ class TenderingService:
     # ── Bids ─────────────────────────────────────────────────────────────
 
     async def create_bid(self, package_id: uuid.UUID, data: BidCreate) -> TenderBid:
-        """Create a new bid for a package."""
-        # Verify package exists
-        await self.get_package(package_id)
+        """Create a new bid for a package.
+
+        Raises:
+            HTTPException 404: Package not found.
+            HTTPException 409: The package is awarded or closed; its tender is
+                over and a bid added now would join a decided comparison.
+        """
+        package = await self.get_package(package_id)
+        if package.status in _BID_FIGURES_FROZEN_STATES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Package is '{package.status}' and accepts no new bids",
+            )
 
         # v3 §10 - ``BidLineItem.unit_rate`` is Decimal; dump in JSON
         # mode so the serializer converts it to a string (the JSON DB
@@ -617,7 +664,13 @@ class TenderingService:
         return await self.repo.list_bids_for_package(package_id)
 
     async def update_bid(self, bid_id: uuid.UUID, data: BidUpdate) -> TenderBid:
-        """Update bid fields. Raises 404 if not found."""
+        """Update bid fields.
+
+        Raises:
+            HTTPException 404: Bid not found.
+            HTTPException 409: The package is awarded or closed and the patch
+                would change the bid's total, currency or line items.
+        """
         bid = await self.get_bid(bid_id)
 
         fields = data.model_dump(exclude_unset=True)
@@ -633,11 +686,27 @@ class TenderingService:
                 fields["metadata_"] = incoming_meta
 
         # Serialize line_items if present - JSON mode coerces Decimal to
-        # string so the persisted JSON value matches the wire contract.
-        if "line_items" in fields and fields["line_items"] is not None:
-            fields["line_items"] = [
-                item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in fields["line_items"]
-            ]
+        # string so the persisted JSON value matches the wire contract. The
+        # dump above has already turned each item into a dict that still holds
+        # Decimal values, so dump the models themselves, exactly as create_bid
+        # does; otherwise an unchanged line never equals its stored form.
+        if "line_items" in fields and data.line_items is not None:
+            fields["line_items"] = [item.model_dump(mode="json") for item in data.line_items]
+
+        # Once the package is decided the bid's money is final. Compared in the
+        # stored form, so a client that sends the bid back unchanged is not
+        # refused, and fields without money (notes, contact) stay editable.
+        changed_money = [f for f in _BID_MONEY_FIELDS if f in fields and fields[f] != getattr(bid, f, None)]
+        if changed_money:
+            package = await self.get_package(bid.package_id)
+            if package.status in _BID_FIGURES_FROZEN_STATES:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Bid is locked - package is '{package.status}'. "
+                        "Its total, currency and line items cannot change after the award or close."
+                    ),
+                )
 
         if not fields:
             return await self.get_bid(bid_id)
@@ -823,6 +892,10 @@ class TenderingService:
 
         Iterates the bid's ``line_items`` and updates the matching BOQ
         position ``unit_rate`` (recomputing ``total`` via quantity * new rate).
+        A locked BOQ is never rewritten, and a bid priced as a lump sum has no
+        line rates to write; the award still stands in both cases and the
+        response names the reason in ``rates_skipped_reason`` (``boq_locked``
+        or ``no_line_rates``, ``None`` when rates were written).
         The package is transitioned to ``awarded``, the winning bid to
         ``accepted`` and every other bid to ``rejected``. An event is
         published for downstream budget / EVM modules.
@@ -919,18 +992,35 @@ class TenderingService:
                     },
                 )
 
-        from sqlalchemy import update
+        from sqlalchemy import select, update
 
-        from app.modules.boq.models import Position
+        from app.modules.boq.models import BOQ, Position
         from app.modules.boq.service import _quantize_money_str
 
+        # The rates go into the bill only where they can go honestly. A locked
+        # bill is an approved baseline: an award must not rewrite it behind the
+        # approval, so the award stands and the bill is left as approved. A bid
+        # priced as a lump sum carries no line rates, so there is nothing to
+        # write. Either way the caller is told why, instead of reading an award
+        # that "wrote the rates back" into a bill that never changed.
+        boq_locked = bool(
+            (await self.session.execute(select(BOQ.is_locked).where(BOQ.id == package.boq_id))).scalar_one_or_none()
+        )
+        rate_lines = [
+            item
+            for item in (bid.line_items or [])
+            if isinstance(item, dict) and item.get("position_id") and "unit_rate" in item
+        ]
+        rates_skipped_reason: str | None = None
+        if boq_locked:
+            rates_skipped_reason = "boq_locked"
+            rate_lines = []
+        elif not rate_lines:
+            rates_skipped_reason = "no_line_rates"
+
         updated = 0
-        for item in bid.line_items or []:
+        for item in rate_lines:
             pos_id = item.get("position_id")
-            if not pos_id:
-                continue
-            if "unit_rate" not in item:
-                continue
             rate = _to_decimal(item.get("unit_rate"))
             try:
                 pos_uuid = uuid.UUID(str(pos_id))
@@ -978,13 +1068,18 @@ class TenderingService:
             elif other.status not in ("rejected",):
                 await self.repo.update_bid_fields(other.id, status="rejected")
 
-        await _safe_publish(
+        # After commit, not now: the subscribers (the purchase order and the
+        # contract draft) open their own sessions, and an award that rolls
+        # back must not leave either behind.
+        publish_after_commit(
+            self.session,
             "tendering.package.awarded",
             {
                 "package_id": str(package_id),
                 "bid_id": str(bid_id),
                 "company_name": bid.company_name,
                 "positions_updated": updated,
+                "rates_skipped_reason": rates_skipped_reason,
                 "boq_id": str(package.boq_id),
                 "awarded_by": str(awarded_by) if awarded_by else None,
             },
@@ -1002,6 +1097,7 @@ class TenderingService:
             "package_id": str(package_id),
             "bid_id": str(bid_id),
             "positions_updated": updated,
+            "rates_skipped_reason": rates_skipped_reason,
             "boq_id": str(package.boq_id),
         }
 
@@ -1370,9 +1466,14 @@ class TenderingService:
     async def build_rejection_letter_pdf(self, package_id: uuid.UUID, bid_id: uuid.UUID) -> tuple[bytes, str]:
         """Generate a PDF rejection notice for an unsuccessful bid.
 
-        Returns ``(pdf_bytes, filename)``. Where the package has a recorded
-        winner, the awarded sum is included for transparency (same currency
-        only - never blend currencies).
+        Returns ``(pdf_bytes, filename)``. The notice does not disclose the
+        winning price by default: the other bidders' prices are commercial
+        information, and in most private tenders the unsuccessful bidder learns
+        only that it was not selected. Some public procurement regimes require
+        the awarded value in the notice, so a package can opt in through
+        ``metadata.disclose_award_sum`` (off unless set to ``true``). Even then
+        the sum is printed only in the rejected bid's own currency, never
+        blended.
         """
         from app.modules.tendering.pdf_documents import generate_rejection_letter_pdf
 
@@ -1387,11 +1488,11 @@ class TenderingService:
         project_name, _currency = await self._project_name_and_currency(package)
         meta = package.metadata_ or {}
 
-        # Awarded sum for transparency - only when we can resolve the winning
-        # bid and it shares the rejected bid's currency (no cross-currency mix).
+        # The awarded sum only where the package opted in, the winning bid
+        # resolves, and it shares the rejected bid's currency.
         winning_amount: str | None = None
         awarded_bid_id = meta.get("awarded_bid_id")
-        if awarded_bid_id:
+        if awarded_bid_id and meta.get(DISCLOSE_AWARD_SUM_KEY) is True:
             try:
                 winner = await self.repo.get_bid_by_id(uuid.UUID(str(awarded_bid_id)))
             except (ValueError, AttributeError):
@@ -1847,13 +1948,40 @@ class TenderingService:
                     idx[str(key)] = item
             bid_index[str(bid.id)] = idx
 
-        # Per-bid mean unit rate across the lines the bidder actually quoted -
-        # used to impute omitted lines so the leveled total covers full scope.
-        bid_mean_rate: dict[str, Decimal] = {}
+        # Per-bid, per-unit mean rate for imputing missing lines (OC-24).
+        # A global mean across all units (m, m², m³, pcs, kg ...) produces
+        # absurd values when the bidder quotes heavy per-m³ rates that get
+        # applied to lightweight per-m positions.  Group by the reference
+        # row's unit so the imputed rate comes from comparable work.
+        # Build reference-unit lookup first.
+        _ref_unit: dict[str, str] = {}
+        for ref in ref_rows:
+            _ref_unit[ref["position_id"]] = (ref.get("unit") or "").strip().lower()
+
+        # {bid_id -> {unit -> [rates]}}
+        bid_unit_rates: dict[str, dict[str, list[Decimal]]] = {}
+        bid_all_rates: dict[str, list[Decimal]] = {}
         for bid in bids:
-            quoted = [_to_decimal(it.get("unit_rate", 0)) for it in bid_index[str(bid.id)].values()]
-            quoted = [r for r in quoted if r > 0]
-            bid_mean_rate[str(bid.id)] = (sum(quoted, Decimal("0")) / Decimal(len(quoted))) if quoted else Decimal("0")
+            bid_id = str(bid.id)
+            unit_buckets: dict[str, list[Decimal]] = {}
+            all_rates: list[Decimal] = []
+            for pid, item in bid_index[bid_id].items():
+                rate = _to_decimal(item.get("unit_rate", 0))
+                if rate > 0:
+                    unit = _ref_unit.get(pid, "")
+                    unit_buckets.setdefault(unit, []).append(rate)
+                    all_rates.append(rate)
+            bid_unit_rates[bid_id] = unit_buckets
+            bid_all_rates[bid_id] = all_rates
+
+        def _impute_rate(bid_id: str, unit: str) -> Decimal:
+            """Return the best available mean rate for this bid and unit."""
+            bucket = bid_unit_rates.get(bid_id, {}).get(unit, [])
+            if bucket:
+                return sum(bucket, Decimal("0")) / Decimal(len(bucket))
+            # Fallback to overall mean if no same-unit rates exist.
+            all_r = bid_all_rates.get(bid_id, [])
+            return (sum(all_r, Decimal("0")) / Decimal(len(all_r))) if all_r else Decimal("0")
 
         summaries: dict[str, dict] = {
             str(bid.id): {
@@ -1884,15 +2012,19 @@ class TenderingService:
                     # that disagrees with rate×ref_qty), level to ref_qty so all
                     # bids are compared at the SAME quantity.
                     leveled_total = unit_rate * ref_qty if ref_qty > 0 else raw_total
-                    if leveled_total != raw_total and raw_total > 0:
+                    # OC-24: use a tolerance so minor rounding differences
+                    # (e.g. 44.36 vs 44.360000) are not flagged as "scaled".
+                    if raw_total > 0 and abs(leveled_total - raw_total) > Decimal("0.01"):
                         cell_status = "scaled"
                         summaries[bid_id]["scaled_lines"] += 1
                     else:
                         cell_status = "matched"
                         summaries[bid_id]["matched_lines"] += 1
                 else:
-                    # Imputed at the bidder's mean rate × reference quantity.
-                    unit_rate = bid_mean_rate[bid_id]
+                    # Imputed at the bidder's per-unit mean rate × reference
+                    # quantity, so rates from incompatible units don't mix.
+                    ref_unit = _ref_unit.get(pid, "")
+                    unit_rate = _impute_rate(bid_id, ref_unit)
                     leveled_total = unit_rate * ref_qty if ref_qty > 0 else Decimal("0")
                     raw_total = Decimal("0")
                     cell_status = "imputed"

@@ -16,6 +16,7 @@
 import type { LucideIcon } from 'lucide-react';
 
 import {
+  Bookmark,
   LayoutDashboard,
   FolderOpen,
   Table2,
@@ -98,6 +99,7 @@ import {
   FileWarning,
   Flag,
   Wrench,
+  MonitorPlay,
 } from 'lucide-react';
 
 
@@ -168,6 +170,10 @@ export interface NavGroup {
   dynamicGroupKey?: string;
 }
 
+/** The Learn group's id: the sidebar draws it apart from the loop and stores
+ *  its hidden state under this key in `hiddenGroups`. */
+export const LEARN_GROUP_ID = 'grp_learn';
+
 // Navigation groups — collapsible thematic sections (v6.10.0 redesign).
 //
 // The flat / oversized menu was regrouped into 19 thematic groups of
@@ -201,6 +207,29 @@ export interface NavGroup {
 // The locale keys are added by a later pass; until then the English
 // default renders. Item labelKeys reuse the existing locale strings.
 export const navGroups: NavGroup[] = [
+  // ── 0. LEARN (videos and cases) ────────────────────────────────────
+  // The two ways into the product for somebody new: watch it, or walk a
+  // guided case in the app. The sidebar does not render this group in the
+  // loop with the others: it draws it as its own card above everything else,
+  // Pinned included, in Simple, Advanced and workspace menus alike, and lets
+  // the user hide the whole card from its header and bring it back from the
+  // foot of the menu (see `LearnSection` in Sidebar.tsx). Hiding goes through
+  // the same `hiddenGroups` list as the Edit-menu section toggles, keyed by
+  // LEARN_GROUP_ID, so the "{N} hidden" chip counts it too.
+  //
+  // It stays in the catalogue rather than living in the sidebar alone, so the
+  // route-icon map and the case editor's screen picker keep seeing both rows.
+  // Cases (playbooks) moved here from Overview.
+  {
+    id: LEARN_GROUP_ID,
+    labelKey: 'sidebar.group.learn',
+    defaultLabel: 'Learn',
+    defaultOpen: true,
+    items: [
+      { labelKey: 'nav.videos', defaultLabel: 'Video guides', to: '/videos', icon: MonitorPlay },
+      { labelKey: 'nav.cases', to: '/cases', icon: Route },
+    ],
+  },
   // ── 1. OVERVIEW (always visible) ───────────────────────────────────
   // The few entry points every user touches every session.
   {
@@ -211,10 +240,6 @@ export const navGroups: NavGroup[] = [
     items: [
       { labelKey: 'nav.dashboard', to: '/', icon: LayoutDashboard },
       { labelKey: 'projects.title', to: '/projects', icon: FolderOpen, tourId: 'projects' },
-      // Cases (playbooks) - guided, cross-module worked examples. Sits in
-      // Overview so the "learn by example" entry is discoverable from the top,
-      // and above Project files so the "learn by example" entry is seen first.
-      { labelKey: 'nav.cases', to: '/cases', icon: Route },
       // Documents is back in Overview by founder request. It carries no
       // hideInSimple and no advancedOnly, which is what keeps it reachable in
       // Simple mode; the sheet register and the drawing surfaces stay behind
@@ -248,6 +273,7 @@ export const navGroups: NavGroup[] = [
       { labelKey: 'nav.dwg_takeoff', to: '/dwg-takeoff', icon: PencilRuler },
       { labelKey: 'nav.bim_viewer', to: '/bim', icon: Box },
       { labelKey: 'nav.quantities', to: '/quantities', icon: Ruler },
+      { labelKey: 'nav.rebar_schedule', defaultLabel: 'Rebar Schedule', to: '/rebar-schedule', icon: Construction, advancedOnly: true },
     ],
   },
   // ── 3. COST DATA ───────────────────────────────────────────────────
@@ -496,6 +522,15 @@ export const navGroups: NavGroup[] = [
           'Formal bidding with bidder invitations, a questions board and bid leveling.',
       },
       {
+        labelKey: 'nav.rfq_bidding',
+        defaultLabel: 'RFQ Bidding',
+        to: '/rfq-bidding',
+        icon: Scale,
+        advancedOnly: true,
+        helpKey: 'sidebar.help.rfq_bidding',
+        defaultHelp: 'Request for quotation with bid comparison, evaluation and award.',
+      },
+      {
         labelKey: 'tendering.title',
         to: '/tendering',
         icon: FileText,
@@ -583,7 +618,9 @@ export const navGroups: NavGroup[] = [
       },
       { labelKey: 'nav.inbound_email', to: '/inbound-email', icon: Inbox, advancedOnly: true },
       { labelKey: 'nav.find_records', to: '/find', icon: FileSearch, advancedOnly: true },
+      { labelKey: 'nav.saved_views', defaultLabel: 'Saved Views', to: '/saved-views', icon: Bookmark, advancedOnly: true },
       { labelKey: 'project_route.title', to: '/project-route', icon: SlidersHorizontal, advancedOnly: true },
+      { labelKey: 'nav.workflows', defaultLabel: 'Approval Workflows', to: '/workflows', icon: ListChecks, advancedOnly: true },
     ],
   },
   // ── 11. FIELD OPERATIONS ───────────────────────────────────────────
@@ -826,6 +863,16 @@ export const navGroups: NavGroup[] = [
     hideInSimple: true,
     items: [
       { labelKey: 'finance.title', to: '/finance', icon: Wallet, advancedOnly: true },
+      {
+        labelKey: 'funding.title',
+        to: '/funding',
+        icon: Landmark,
+        moduleKey: 'funding',
+        advancedOnly: true,
+        helpKey: 'sidebar.help.funding',
+        defaultHelp:
+          'Grants and subsidies: what was awarded, what has been drawn, and every deadline that follows.',
+      },
       { labelKey: 'nav.analytics', to: '/analytics', icon: LineChart, advancedOnly: true },
       { labelKey: 'nav.reports', to: '/reports', icon: FileBarChart, advancedOnly: true },
       { labelKey: 'nav.reporting_dashboards', to: '/reporting', icon: BarChart3, advancedOnly: true },
@@ -918,6 +965,7 @@ export const navGroups: NavGroup[] = [
       // no role gate here: the build and remove controls on the page are what
       // an administrator sees and what the server enforces.
       { labelKey: 'nav.module_builder', to: '/module-builder', icon: Wand2, advancedOnly: true },
+      { labelKey: 'nav.background_jobs', defaultLabel: 'Background Jobs', to: '/jobs', icon: Wrench, advancedOnly: true, adminOnly: true },
     ],
   },
 ];

@@ -35,6 +35,10 @@ import socket
 import sys
 import webbrowser
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 # ── Console encoding hardening ────────────────────────────────────────────
 # On Windows + Anaconda Python the default console encoding is cp1252,
@@ -1255,6 +1259,18 @@ def _run_fatal_preflight(data_dir: Path, host: str, port: int) -> None:
     if not any(c.status == "error" for c in fatal_checks):
         return
 
+    # Emit a STAGE marker so the desktop launcher shows a specific failure on
+    # its checklist instead of timing out with no diagnosis. The pre-flight
+    # runs before the full boot machinery, so emit_stage is called directly.
+    errors = [c for c in fatal_checks if c.status == "error"]
+    stage_detail = "; ".join(c.name for c in errors[:3])
+    try:
+        from app.core.embedded_pg import emit_stage as _emit  # noqa: PLC0415
+
+        _emit("preflight", "fail", f"Pre-flight check failed: {stage_detail}")
+    except Exception:  # noqa: BLE001
+        pass
+
     print(
         _red(
             _bold(
@@ -1409,6 +1425,8 @@ def cmd_serve(args: argparse.Namespace) -> None:
     try:
         import uvicorn
 
+        from app.core.server_loop import uvicorn_loop_option
+
         uvicorn.run(
             "app.main:create_app",
             factory=True,
@@ -1416,6 +1434,11 @@ def cmd_serve(args: argparse.Namespace) -> None:
             port=args.port,
             log_level="warning" if args.quiet else "info",
             access_log=False,
+            # On Windows, a proactor loop that re-posts a failed accept: the stock
+            # one closes the listening socket for good when one client resets while
+            # waiting to be accepted, and the app then looks frozen. See
+            # app/core/server_loop.py.
+            loop=uvicorn_loop_option(),
         )
     except KeyboardInterrupt:
         print()
@@ -1988,6 +2011,65 @@ def cmd_seed(args: argparse.Namespace) -> None:
         print("Seed complete.")
 
     asyncio.run(_run_seed())
+
+
+# ── Admin recovery (promote-admin) ──────────────────────────────────────────
+# Public registration hands out admin only on a fresh install, so an install
+# whose last administrator was deactivated (or whose operator never registered
+# before other people did) has no way back in through the web UI. This command
+# is that way back: run on the server, it makes an existing account an active
+# admin.
+
+
+async def _promote_user_to_admin(session: AsyncSession, email: str) -> str:
+    """Make the account at ``email`` an active admin and return a status line.
+
+    Raises:
+        LookupError: No usable account exists at that address (missing or
+            already erased), so there is nothing to promote.
+    """
+    from sqlalchemy import func, select
+
+    from app.modules.users.models import User
+
+    user = (
+        await session.execute(select(User).where(func.lower(User.email) == email.strip().lower()))
+    ).scalar_one_or_none()
+    if user is None or user.deleted_at is not None:
+        raise LookupError(f"No user with e-mail {email!r}.")
+    if user.role == "admin" and user.is_active:
+        return f"{user.email} is already an active admin."
+    user.role = "admin"
+    user.is_active = True
+    await session.flush()
+    return f"{user.email} is now an active admin."
+
+
+def cmd_promote_admin(args: argparse.Namespace) -> None:
+    """Promote an existing user to an active admin (operator recovery)."""
+    if not (args.email or "").strip():
+        print(_red("Give the e-mail of the account to promote: openconstructionerp promote-admin <email>"))
+        sys.exit(2)
+    data_dir = _data_dir_from_args(args)
+    _setup_env(data_dir, DEFAULT_HOST, DEFAULT_PORT)
+
+    import asyncio
+
+    async def _run() -> str:
+        from app.database import async_session_factory
+
+        _register_all_module_models()
+        async with async_session_factory() as session:
+            message = await _promote_user_to_admin(session, args.email)
+            await session.commit()
+            return message
+
+    try:
+        message = asyncio.run(_run())
+    except LookupError as exc:
+        print(_red(str(exc)))
+        sys.exit(1)
+    print(_green(message))
 
 
 # ── Module management (install / list / uninstall) ─────────────────────────
@@ -2613,6 +2695,16 @@ def _build_parser() -> argparse.ArgumentParser:
     seed_p.add_argument("--demo", action="store_true", help="Install demo project with sample data")
     _add_data_dir_arg(seed_p)
 
+    # promote-admin - operator recovery when no administrator is left
+    promote_p = subparsers.add_parser(
+        "promote-admin",
+        help="Make an existing user an active admin (recovery when no admin is left)",
+    )
+    # Optional at parse time so ``promote-admin --data-dir X`` parses like every
+    # other data-dir command; cmd_promote_admin refuses a missing e-mail.
+    promote_p.add_argument("email", nargs="?", help="E-mail of the existing account to promote")
+    _add_data_dir_arg(promote_p)
+
     # module - install / list / uninstall business modules
     module_p = subparsers.add_parser(
         "module",
@@ -2717,6 +2809,8 @@ def main() -> None:
         cmd_upgrade(args)
     elif args.command == "seed":
         cmd_seed(args)
+    elif args.command == "promote-admin":
+        cmd_promote_admin(args)
     elif args.command == "module":
         cmd_module(args)
     elif args.command == "pack":

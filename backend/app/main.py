@@ -94,12 +94,18 @@ from app.core.module_loader import module_loader
 # can execute it.
 from app.core.postgres_migrator import UNVALIDATED_CONSTRAINTS_SQL
 from app.core.self_upgrade import (
+    DEMO_ACCOUNT_REFUSAL,
+    DISABLED_REFUSAL,
     FROZEN_REFUSAL,
+    UPGRADE_DEMO_ACCOUNT,
+    UPGRADE_DISABLED,
     claim_upgrade,
     current_upgrade,
     is_frozen_build,
     repair_hint,
     run_upgrade,
+    runtime_upgrade_enabled,
+    runtime_upgrade_refusal,
 )
 from app.dependencies import OptionalUserPayload, RequireRole, get_current_user_id, rls_request_context
 
@@ -198,6 +204,69 @@ def publish_data_repair_verdict(app: FastAPI, report: "DataRepairReport | None")
     # two beside it: ``true`` is the bad news on every one of them, and a
     # monitor should not need a second, opposite predicate for this one field.
     app.state.data_repair_ledger_failed = not report.ledger_written
+
+
+async def run_schema_heal(app: FastAPI, engine: Any, base: Any) -> None:
+    """Run the boot-time schema heal and record its verdict on ``app.state``.
+
+    Writes ``schema_heal_failed``, ``schema_heal_error``, ``schema_heal_skipped``
+    and ``schema_heal_incomplete``, which ``/api/health`` and the admin upgrade
+    status read. A module-level function rather than lifespan code so the
+    mapping from what the heal did to what health publishes can be driven on
+    its own.
+    """
+    from app.core.postgres_migrator import HealLockUnavailable, heal_is_incomplete, postgres_auto_migrate
+
+    _heal_skipped: list = []
+    _heal_raised = False
+    try:
+        migrated = await postgres_auto_migrate(engine, base, skipped=_heal_skipped)
+        if migrated:
+            logger.info("PostgreSQL auto-migration: %d schema objects (columns + indexes) added", migrated)
+        app.state.schema_heal_failed = False
+        app.state.schema_heal_error = None
+    except HealLockUnavailable as exc:
+        # Another worker held the heal lock past the wait, so nothing
+        # on this worker ran the heal or saw it finish. Not a failure:
+        # ``schema_heal_failed`` degrades the status, and a restart
+        # would only queue behind the same holder. Not clean either,
+        # which is what this worker used to publish by returning 0
+        # from a heal it skipped. Incomplete is the honest reading
+        # until a start that gets the lock says otherwise.
+        _heal_raised = True
+        app.state.schema_heal_failed = None
+        app.state.schema_heal_error = str(exc)
+        logger.warning("PostgreSQL schema heal not verified on this worker: %s", exc)
+    except Exception as exc:
+        _heal_error = f"{type(exc).__name__}: {exc}"
+        _heal_raised = True
+        app.state.schema_heal_failed = True
+        app.state.schema_heal_error = _heal_error
+        # Deliberately louder than the warning this replaces, and it
+        # names the cause inline rather than leaving it in a traceback.
+        # This is a heal that raised as a whole: the connection, the
+        # lock, the transaction. A role that cannot issue DDL does not
+        # land here. Its statements are refused one by one inside the
+        # heal, which names them in an ERROR line of its own and returns
+        # normally; that case is recorded just below.
+        logger.error(
+            "PostgreSQL schema heal FAILED (%s). The database is missing columns this "
+            "release expects and requests touching them will fail. If this role cannot "
+            "issue DDL, run the schema change as one that can; the application will keep "
+            "starting either way. /api/health reports schema_heal_failed=true, and this "
+            "line is where the cause is: that endpoint is unauthenticated and the message "
+            "carries the failing statement, so it is not published there.",
+            _heal_error,
+            exc_info=True,
+        )
+
+    # The flag above says whether the heal raised. What it could not
+    # do statement by statement is this list, which the heal has
+    # already logged with the SQL to run. Written only here, and the
+    # lifespan calls this only inside its PostgreSQL guard, so a deployment
+    # that never runs the heal keeps the None it was built with.
+    app.state.schema_heal_skipped = tuple(_heal_skipped)
+    app.state.schema_heal_incomplete = heal_is_incomplete(_heal_skipped, raised=_heal_raised)
 
 
 def _expected_alembic_head(ini_path: os.PathLike[str] | str) -> str | None:
@@ -645,8 +714,13 @@ def _emit_server_fail(exc: BaseException) -> None:
         pass
 
 
+# The stdlib console handler ``configure_logging`` owns, found again by name.
+_CONSOLE_HANDLER_NAME = "openconstructionerp.console"
+_CONSOLE_LOG_FORMAT = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
+
+
 def configure_logging(settings: Settings) -> None:
-    """Configure structured logging."""
+    """Configure structured logging without disturbing handlers the host installed."""
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -669,19 +743,39 @@ def configure_logging(settings: Settings) -> None:
     # ``RequestIDLogFilter`` (defaults to "-" off-request).
     from app.middleware.request_id import RequestIDLogFilter
 
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level),
-        format="%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s",
-        force=True,
-    )
-    _rid_filter = RequestIDLogFilter()
+    # Configure only the handler we own. ``logging.basicConfig(force=True)``
+    # used to do this job, and ``force`` removes AND closes every handler
+    # already on the root logger: the one a desktop shell installs to keep its
+    # log file, pytest's ``caplog`` capture, anything a host process set up
+    # before it imported us. The loss was silent, the host simply stopped
+    # receiving records. So the console handler is named, a repeat call (the
+    # test suite builds the app many times) swaps out only the handler carrying
+    # that name, and every foreign handler is left exactly as it was found.
     root_logger = logging.getLogger()
-    # Attach to root so every handler inherits the filter; also attach
-    # directly to existing handlers since logging.Filter does not propagate
-    # through ``Logger.addFilter`` to already-attached handlers reliably.
-    root_logger.addFilter(_rid_filter)
-    for handler in root_logger.handlers:
-        handler.addFilter(_rid_filter)
+    root_logger.setLevel(getattr(logging, settings.log_level))
+    for existing in list(root_logger.handlers):
+        if existing.get_name() == _CONSOLE_HANDLER_NAME:
+            root_logger.removeHandler(existing)
+            existing.close()
+    # Same stream, format and level basicConfig gave us: stderr, bound when the
+    # handler is built.
+    console = logging.StreamHandler()
+    console.set_name(_CONSOLE_HANDLER_NAME)
+    console.setFormatter(logging.Formatter(_CONSOLE_LOG_FORMAT))
+    # The filter goes on the handler, not only on the root logger: a filter on
+    # a logger sees records logged on that logger alone, never the ones that
+    # propagate up from ``app.*`` children, and without it the formatter cannot
+    # resolve ``%(request_id)s`` for them.
+    console.addFilter(RequestIDLogFilter())
+    root_logger.addHandler(console)
+    if not any(isinstance(f, RequestIDLogFilter) for f in root_logger.filters):
+        root_logger.addFilter(RequestIDLogFilter())
+    # uvicorn prints request paths with their query strings, and a few of ours
+    # carry a credential there (calendar feed, portal link, the previous
+    # frontend's socket token). Mask them on the way in.
+    from app.core.log_redaction import install_url_redaction
+
+    install_url_redaction()
 
 
 def _init_vector_db() -> None:
@@ -1079,6 +1173,45 @@ def _persist_demo_credentials(creds: dict[str, str]) -> Path | None:
         return None
 
 
+def _announce_generated_demo_credentials(generated: dict[str, str], env_var_for_email: dict[str, str]) -> None:
+    """Save freshly generated demo passwords and tell the operator where they are.
+
+    The passwords used to be logged at WARNING, one ``email / password`` line
+    per account. A log is the one thing an operator ships somewhere else: to a
+    file, a collector, a support ticket, a screen recording of the console. The
+    admin demo account's password went with it. The file this writes (chmod
+    600, next to the rest of the install's state) already holds them, and the
+    password-free "Try demo" sign-in needs none, so the log now names the file
+    and the variable that pins a password, and never the password.
+
+    Only when the file cannot be written is there no other way for a first-run
+    user to learn the password. Then it is printed once to the console, which
+    the operator is looking at, and not to the log.
+    """
+    creds_path = _persist_demo_credentials(generated)
+    for email in generated:
+        env_var = env_var_for_email.get(email, "DEMO_USER_PASSWORD")
+        if creds_path is not None:
+            logger.warning(
+                "[seed] Demo user created: %s. Password saved to %s (set %s before the first start to choose it)",
+                email,
+                creds_path,
+                env_var,
+            )
+        else:
+            logger.warning(
+                "[seed] Demo user created: %s. Password could not be saved to a file and was printed "
+                "once to the console (set %s before the first start to choose it)",
+                email,
+                env_var,
+            )
+    if creds_path is None:
+        import sys
+
+        for email, password in generated.items():
+            print(f"[seed] Demo user {email} password: {password}", file=sys.stderr, flush=True)
+
+
 #: The identity of a data directory, published by ``/api/health``.
 #:
 #: Read by the desktop launcher (``desktop/src-tauri/src/main.rs``) before it
@@ -1264,8 +1397,9 @@ async def _seed_demo_account() -> None:
     (``DEMO_USER_PASSWORD``, ``DEMO_ESTIMATOR_PASSWORD``,
     ``DEMO_MANAGER_PASSWORD``), otherwise generated per-installation via
     ``secrets.token_urlsafe(16)``. Generated values are written to
-    ``~/.openestimator/.demo_credentials.json`` (chmod 600) and printed
-    once to the startup log. Operators who want a stable password for
+    ``~/.openestimator/.demo_credentials.json`` (chmod 600) and the startup
+    log names that file, never the password itself (see
+    :func:`_announce_generated_demo_credentials`). Operators who want a stable password for
     their team can set the env vars; everyone else gets a unique secret
     they can recover from the credentials file.
 
@@ -1365,30 +1499,12 @@ async def _seed_demo_account() -> None:
                     "env" if not was_generated else "generated",
                 )
 
-            # Persist generated passwords + print once. Operators who set
-            # env vars never see this banner; new installs get a one-time
-            # log line with the location.
-            #
-            # IMPORTANT: log each generated credential as a self-contained
-            # ``[seed]`` line so a new developer sees the password
-            # immediately at first-boot time without having to know about
-            # ``~/.openestimator/.demo_credentials.json``. This was the #1
-            # cause of "why won't login work" debug sessions on fresh
-            # installs (see docs/qa/FRESH_INSTALL_RESULTS.md Issue 3).
+            # Persist generated passwords and say where they are. Operators
+            # who set env vars never see this banner.
             if generated_creds:
-                creds_path = _persist_demo_credentials(generated_creds)
-                # Email -> env-var-name lookup so each per-account banner
-                # can name the exact variable that suppresses random
-                # generation for that account.
-                env_var_for_email = {spec["email"]: spec["env_var"] for spec in demo_account_specs}
-                for email, pw in generated_creds.items():
-                    env_var = env_var_for_email.get(email, "DEMO_USER_PASSWORD")
-                    logger.warning("[seed] Demo user created: %s / %s", email, pw)
-                    logger.warning("[seed] Pre-set %s env to skip random generation", env_var)
-                logger.warning(
-                    "[seed] %d demo credential(s) also saved to %s",
-                    len(generated_creds),
-                    creds_path or "(persistence failed - check logs)",
+                _announce_generated_demo_credentials(
+                    generated_creds,
+                    {spec["email"]: spec["env_var"] for spec in demo_account_specs},
                 )
 
             # 2. Capture the demo user ids while the session is open.
@@ -1822,11 +1938,12 @@ def create_app() -> FastAPI:
     # client included.
     #
     # The signal exists because the heal is deliberately non-fatal, and a
-    # non-fatal failure that only reaches the log is invisible on the deployment
-    # it actually ruins: an external PostgreSQL whose role has no DDL rights.
-    # There the heal cannot add a single column, the application starts and
-    # looks fine, and the first read of any table that gained a column since
-    # that database was created answers 500 with an undefined-column error.
+    # non-fatal failure that only reaches the log is invisible where it lands.
+    # It covers a heal that RAISED. It was first written for an external
+    # PostgreSQL whose role has no DDL rights, and that deployment does not make
+    # the heal raise: each statement is refused and caught on its own, the heal
+    # returns normally and this reads False while the first read of a column it
+    # could not add answers 500. That case is ``schema_heal_incomplete`` below.
     #
     # ``schema_heal_error`` holds the cause for the boot log and for an operator
     # with access to this process. It is deliberately NOT published by
@@ -1838,6 +1955,16 @@ def create_app() -> FastAPI:
     # would inherit the first one's verdict about a database it never opened.
     app.state.schema_heal_failed = None
     app.state.schema_heal_error = None
+
+    # ── Did the heal do everything it set out to do ──────────────────────
+    # ``schema_heal_incomplete`` is True when the heal raised or when it
+    # returned with statements the database refused, False when it did all of
+    # it, None when it never ran. ``schema_heal_skipped`` holds the refused
+    # statements as ``SkippedStatement`` records, SQL included, for the boot
+    # log and the admin-only upgrade status. Only the verdict and a count reach
+    # ``/api/health``, which is unauthenticated, and neither moves its status.
+    app.state.schema_heal_incomplete = None
+    app.state.schema_heal_skipped = ()
 
     # ── Does the schema still match the models ───────────────────────────
     # The field above says whether the heal RAISED. This one says whether the
@@ -1963,24 +2090,27 @@ def create_app() -> FastAPI:
     # off the event loop so that first request is never the one that pays.
     _openapi_build_lock = _threading.Lock()
 
-    def _routes_version() -> int | None:
-        """Return the router's route-table counter, or ``None`` if unavailable.
+    def _routes_version() -> tuple[object, int]:
+        """Return a key that moves whenever the route table does.
 
-        FastAPI keys its own schema cache on this counter and rebuilds when it
-        moves. Here that invalidation is load-bearing rather than decorative:
-        modules mount their routers during the startup lifespan, and
-        ``enable_module`` mounts one at runtime, long after boot. A cache keyed
-        on nothing but "is it populated" pins the first document forever, so a
-        module enabled later never appears in the docs at all.
+        FastAPI keys its own schema cache on a route-table counter and rebuilds
+        when it moves. Here that invalidation is load-bearing rather than
+        decorative: modules mount their routers during the startup lifespan,
+        and ``enable_module`` mounts one at runtime, long after boot. A cache
+        keyed on nothing but "is it populated" pins the first document forever,
+        so a module enabled later never appears in the docs at all.
 
-        Private FastAPI API, hence the getattr. If a future release drops it
-        this returns ``None`` on both sides of the comparison, which degrades
-        to "serve the cache until something clears it" - exactly what this
-        override did before, so the fallback is the old behaviour rather than
-        a new failure.
+        The counter is private FastAPI API and only recent releases have it:
+        0.141 does, 0.136 does not, and the dependency range admits both, so an
+        install upgraded without its dependencies can still be on one without
+        it. The number of routes goes into the key beside it for that reason.
+        Mounting a router adds routes whatever the FastAPI version, so the key
+        moves on every release, and the counter still catches a change that
+        keeps the count.
         """
         getter = getattr(app.router, "_get_routes_version", None)
-        return getter() if callable(getter) else None
+        counter = getter() if callable(getter) else None
+        return counter, len(app.router.routes)
 
     def _custom_openapi() -> dict[str, Any]:
         version = _routes_version()
@@ -1989,7 +2119,7 @@ def create_app() -> FastAPI:
         # One builder at a time. The startup prime runs on a worker thread, so
         # without this a request arriving mid-build starts a second, equally
         # expensive build beside it: two 141s passes competing for the same
-        # core on a 2 GB VPS. Whoever loses the race re-checks under the lock
+        # core on a 3 GB server. Whoever loses the race re-checks under the lock
         # and takes the document the winner just cached.
         with _openapi_build_lock:
             version = _routes_version()
@@ -2475,6 +2605,14 @@ def create_app() -> FastAPI:
 
     app.include_router(branding_router, prefix="/api/v1")
 
+    # The company profile printed as the letterhead on generated documents.
+    # Unlike branding it is never public: it carries the registered address and
+    # tax identifiers, so it has its own router and file rather than riding on
+    # the anonymous branding GET above.
+    from app.core.company_profile_router import router as company_profile_router
+
+    app.include_router(company_profile_router, prefix="/api/v1")
+
     # The third-party licence texts that ship inside every artefact. Public for
     # the same reason branding's GET is: they are published documents that say
     # nothing about this workspace. They travelled with the product for its
@@ -2750,6 +2888,27 @@ def create_app() -> FastAPI:
         if _heal_failed is True:
             result["status"] = "degraded"
 
+        # Whether the heal did everything it set out to do, which the field
+        # above cannot say. The heal catches each refused statement so that one
+        # cannot stop the rest, so a role that may read and write rows but not
+        # change the schema has every statement refused while the heal returns
+        # normally and ``schema_heal_failed`` reads false. Measured on a 17.8.3
+        # database started by 18.0 under such a role: healthy, and a 500 on
+        # every read of a progress claim, for the column the heal could not add.
+        #
+        # A verdict and a count, nothing more. Which statements, and the SQL to
+        # run as the owner, are on ``app.state.schema_heal_skipped``, in one
+        # ERROR line in the boot log and in the admin-only upgrade status; this
+        # endpoint answers anybody. And it deliberately leaves ``status`` alone:
+        # a supervisor may restart on what this endpoint says, a restart cannot give
+        # the role the right it lacks, and degrading here would turn a missing
+        # privilege into a restart loop. ``null`` for both: the heal never ran.
+        _heal_incomplete = getattr(app.state, "schema_heal_incomplete", None)
+        result["schema_heal_incomplete"] = _heal_incomplete
+        result["schema_heal_skipped_count"] = (
+            None if _heal_incomplete is None else len(getattr(app.state, "schema_heal_skipped", ()) or ())
+        )
+
         # And whether it was enough. The field above says the heal did not
         # raise; this one says whether the database and the models actually
         # agree afterwards, which is a different question. The heal enforces a
@@ -3000,8 +3159,14 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/system/status", tags=["System"])
-    async def system_status() -> dict[str, Any]:
-        """Full system status: database, vector DB, AI providers."""
+    async def system_status(
+        _user_id: str = Depends(get_current_user_id),
+    ) -> dict[str, Any]:
+        """Full system status: database, vector DB, AI providers.
+
+        Signed-in callers only. Nothing shown before sign-in reads it, and it
+        names the AI providers and storage engines this server runs.
+        """
         # Public hosted demo flag - set OE_DEMO_MODE=true on the VPS
         # systemd unit so the frontend can show the "demo only" warning
         # banner and the /users page can strip personal data from the
@@ -3230,8 +3395,13 @@ def create_app() -> FastAPI:
         return left + (0,) * (width - len(left)) == right + (0,) * (width - len(right))
 
     @app.get("/api/system/version-check", tags=["System"])
-    async def check_version() -> dict:
+    async def check_version(
+        _user_id: str = Depends(get_current_user_id),
+    ) -> dict:
         """Return current vs latest published version.
+
+        Signed-in callers only: the update notice lives inside the signed-in
+        shell, and nothing before sign-in asks for it.
 
         Source of truth is **PyPI** (more reliable than GitHub releases -
         Trusted-Publisher OIDC always produces a wheel, GitHub release
@@ -3259,7 +3429,7 @@ def create_app() -> FastAPI:
 
         cached = getattr(app.state, cache_key, None)
         if cached and (time.time() - cached["checked_at"]) < 14400:
-            return cached["data"]
+            return {**cached["data"], **await _runtime_upgrade_state(_user_id)}
 
         latest: str | None = None
         # Held apart from what we will publish until we know the release this
@@ -3366,7 +3536,38 @@ def create_app() -> FastAPI:
             ),
         }
         setattr(app.state, cache_key, {"data": result, "checked_at": time.time()})
-        return result
+        return {**result, **await _runtime_upgrade_state(_user_id)}
+
+    async def _caller_email(user_id: str) -> str | None:
+        """The signed-in caller's email as stored, not as the token remembers it."""
+        from app.database import async_session_factory
+        from app.modules.users.models import User
+
+        try:
+            uid = uuid.UUID(str(user_id))
+        except (ValueError, TypeError):
+            return None
+        async with async_session_factory() as session:
+            user = await session.get(User, uid)
+        return user.email if user is not None else None
+
+    async def _upgrade_refusal(user_id: str) -> str | None:
+        """``runtime_upgrade_refusal`` for this caller, reading the database only when the switch is on."""
+        if not runtime_upgrade_enabled():
+            return UPGRADE_DISABLED
+        return runtime_upgrade_refusal(await _caller_email(user_id))
+
+    async def _runtime_upgrade_state(user_id: str) -> dict[str, Any]:
+        """Whether THIS caller may press "Apply update", kept out of the shared cache.
+
+        ``runtime_upgrade_allowed`` is the answer and ``runtime_upgrade_blocked``
+        the reason when it is no (``disabled`` or ``demo_account``), so the
+        dialog can say how to switch it on instead of offering a button that
+        will be refused. Separate from ``self_upgrade_supported``, which is a
+        fact about the build (can pip run here) and picks the instructions.
+        """
+        reason = None if is_frozen_build() else await _upgrade_refusal(user_id)
+        return {"runtime_upgrade_allowed": reason is None and not is_frozen_build(), "runtime_upgrade_blocked": reason}
 
     @app.post(
         "/api/system/upgrade",
@@ -3378,6 +3579,7 @@ def create_app() -> FastAPI:
     async def trigger_upgrade(
         version: str | None = None,
         force: bool = False,
+        user_id: str = Depends(get_current_user_id),
     ) -> JSONResponse:
         """Start ``pip install --upgrade openconstructionerp`` in this venv.
 
@@ -3412,34 +3614,28 @@ def create_app() -> FastAPI:
         quickstart install reachable on the network could be forced to
         reinstall / downgrade by anyone.
 
-        Additionally gated by ``ALLOW_RUNTIME_UPGRADE`` (defaults on).
-        Managed deployments that upgrade through a deploy pipeline can set
-        ``ALLOW_RUNTIME_UPGRADE=false`` to disable the route entirely;
-        localhost dev and the desktop / Windows-installer builds leave it
-        on so the Settings panel works out of the box.
+        Additionally gated by ``ALLOW_RUNTIME_UPGRADE``, which is OFF unless
+        set to ``true`` (it used to default on; see
+        :func:`app.core.self_upgrade.runtime_upgrade_enabled` for why), and
+        refused to the seeded demo accounts even when it is on: those are
+        logins shared by everyone the demo is shown to, and the demo admin
+        needs no password wherever the demo login is offered.
         """
-        import os
         import sys
-
-        if os.environ.get("ALLOW_RUNTIME_UPGRADE", "true").lower() not in (
-            "true",
-            "1",
-            "yes",
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "Runtime upgrade is disabled on this install. "
-                    "Run `pip install --upgrade openconstructionerp` from your "
-                    "shell, then restart the service."
-                ),
-            )
 
         # A frozen build would feed the pip command below back into its own CLI
         # instead of upgrading anything (issue #403), so point at the installer,
-        # which is the route that actually works there.
+        # which is the route that actually works there. First, because no
+        # switch makes pip exist in the bundle.
         if is_frozen_build():
             raise HTTPException(status_code=409, detail=FROZEN_REFUSAL)
+
+        refusal = await _upgrade_refusal(user_id)
+        if refusal is not None:
+            raise HTTPException(
+                status_code=403,
+                detail=DEMO_ACCOUNT_REFUSAL if refusal == UPGRADE_DEMO_ACCOUNT else DISABLED_REFUSAL,
+            )
 
         target = "openconstructionerp"
         if version and version.replace(".", "").replace("-", "").isalnum():
@@ -3509,15 +3705,26 @@ def create_app() -> FastAPI:
         the upgrade itself asked for: the record lived in the memory of the
         process that was replaced. By then ``running_version`` is the thing
         worth reading anyway.
+
+        Also carries what this start's schema heal could not do:
+        ``schema_heal_incomplete`` and ``schema_heal_skipped``, one entry per
+        statement the database refused, each with the SQL to run as the owner
+        of the tables. They sit here rather than on ``/api/health`` because
+        they name tables and columns and that endpoint is unauthenticated.
         """
+        heal = {
+            "schema_heal_incomplete": getattr(app.state, "schema_heal_incomplete", None),
+            "schema_heal_skipped": [s.as_dict() for s in getattr(app.state, "schema_heal_skipped", ()) or ()],
+        }
         job = current_upgrade()
         if job is None:
             return {
                 "status": "idle",
                 "job_id": None,
                 "running_version": settings.app_version,
+                **heal,
             }
-        return job.as_dict()
+        return {**job.as_dict(), **heal}
 
     @app.get("/api/system/converters/version-check", tags=["System"])
     async def check_converter_versions(user: OptionalUserPayload = None) -> dict[str, Any]:
@@ -4274,8 +4481,6 @@ def create_app() -> FastAPI:
             except Exception:
                 logger.warning("Could not tell whether the database arrived unstamped (non-fatal)", exc_info=True)
 
-            from app.core.postgres_migrator import postgres_auto_migrate
-
             # Nothing in this codebase ever runs ``alembic upgrade``, here or
             # anywhere else, and that is a decision rather than an oversight.
             # The schema is moved by the heal below (ADD COLUMN / CREATE INDEX
@@ -4294,38 +4499,14 @@ def create_app() -> FastAPI:
             # while on the databases it would touch it is an unattended schema
             # rewrite during startup with no operator watching. It is enabled by
             # neither default. What is fixed instead is the visibility: the
-            # failure below is now recorded where a human reads it.
+            # heal's failure is recorded where a human reads it.
             #
-            # Both exits of this try/except record a verdict, and only these two
-            # do. A run that never gets here because its database is not
+            # Every exit of run_schema_heal records a verdict, and only it
+            # does. A run that never gets here because its database is not
             # PostgreSQL keeps the ``None`` this application was built with,
             # which is what lets /api/health say "never ran" instead of "healed
             # fine".
-            try:
-                migrated = await postgres_auto_migrate(engine, Base)
-                if migrated:
-                    logger.info("PostgreSQL auto-migration: %d schema objects (columns + indexes) added", migrated)
-                app.state.schema_heal_failed = False
-                app.state.schema_heal_error = None
-            except Exception as exc:
-                _heal_error = f"{type(exc).__name__}: {exc}"
-                app.state.schema_heal_failed = True
-                app.state.schema_heal_error = _heal_error
-                # Deliberately louder than the warning this replaces, and it
-                # names the cause inline rather than leaving it in a traceback.
-                # An external database whose role cannot issue DDL fails here
-                # every single boot and nowhere else, and the operator meets the
-                # consequence as an undefined-column 500 in an unrelated module.
-                logger.error(
-                    "PostgreSQL schema heal FAILED (%s). The database is missing columns this "
-                    "release expects and requests touching them will fail. If this role cannot "
-                    "issue DDL, run the schema change as one that can; the application will keep "
-                    "starting either way. /api/health reports schema_heal_failed=true, and this "
-                    "line is where the cause is: that endpoint is unauthenticated and the message "
-                    "carries the failing statement, so it is not published there.",
-                    _heal_error,
-                    exc_info=True,
-                )
+            await run_schema_heal(app, engine, Base)
 
             # Now ask whether it worked, which the flag above does not answer.
             # A heal that raised nothing still leaves the models and the
@@ -5353,7 +5534,7 @@ def create_app() -> FastAPI:
         # is None in production - BUG-394 keeps the route map off a public
         # deployment - and /api/docs and /api/redoc go with it, so a production
         # boot has no consumer for this document at all. Priming there would
-        # spend the whole build on a 2 GB VPS to fill a cache nothing reads,
+        # spend the whole build on a 3 GB server to fill a cache nothing reads,
         # and spend it in the window where requests are already answering
         # slowly, which is how a healthcheck timeout turns into a restart loop.
         #

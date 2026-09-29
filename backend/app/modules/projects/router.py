@@ -17,22 +17,26 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile, status
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from app.core.content_disposition import attachment_disposition
 from app.dependencies import CurrentUserId, CurrentUserPayload, RequireRole, SessionDep, SettingsDep
 from app.modules.finance.variance import expected_outturn
 from app.modules.projects import profile_service
 from app.modules.projects.bundle_export import (
-    export_bundle as fm_export_bundle,
+    export_bundle_to_file as fm_export_bundle_to_file,
 )
 from app.modules.projects.bundle_export import (
     filename_for_bundle as fm_bundle_filename,
 )
 from app.modules.projects.bundle_export import (
     preview_bundle as fm_preview_bundle,
+)
+from app.modules.projects.bundle_export import (
+    remove_bundle_file as fm_remove_bundle_file,
 )
 from app.modules.projects.bundle_import import (
     BundleError,
@@ -1523,7 +1527,7 @@ async def project_dashboard(
     """
     from datetime import date, datetime, timedelta
 
-    from sqlalchemy import func, literal_column, select, union_all
+    from sqlalchemy import and_, func, literal_column, not_, select, union_all
 
     from app.core.sql_numeric import numeric_value
 
@@ -1582,8 +1586,21 @@ async def project_dashboard(
         boq_ids = [row[0] for row in boq_ids_result.all()]
 
         if boq_ids:
+            # Section headers are structural grouping elements (unit "" or
+            # "section", quantity 0, rate 0). They carry no price by design
+            # and must not be counted as leaf positions needing pricing.
+            _is_section_pred = and_(
+                func.lower(func.coalesce(func.trim(Position.unit), "")).in_(("", "section")),
+                numeric_value(Position.quantity) == 0,
+                numeric_value(Position.unit_rate) == 0,
+            )
             position_count = (
-                await session.execute(select(func.count(Position.id)).where(Position.boq_id.in_(boq_ids)))
+                await session.execute(
+                    select(func.count(Position.id)).where(
+                        Position.boq_id.in_(boq_ids),
+                        not_(_is_section_pred),
+                    )
+                )
             ).scalar_one()
 
             total_result = (
@@ -1622,27 +1639,20 @@ async def project_dashboard(
         revised = original
         forecast = revised if revised > 0 else original
 
-        # A-DASH-04: committed = real purchase-order commitments (sum of
-        # non-draft/cancelled PO totals), not a fabricated 0.8×actual. Same
-        # source as procurement_section.total_committed; degrades to 0 if
-        # the procurement module/table is absent.
+        # A-DASH-04: committed is what the project is bound to pay, read from
+        # the same aggregator as the 5D cost model dashboard so the two never
+        # disagree: issued purchase orders and signed contracts linked to the
+        # cost spine, the hand-typed budget-line figure only where there are
+        # none. Degrades to 0 if the cost model is absent.
         committed_total = 0.0
         try:
-            from app.modules.procurement.models import PurchaseOrder
+            from app.modules.costmodel.repository import BudgetLineRepository
 
             committed_total = float(
-                (
-                    await session.execute(
-                        select(func.sum(numeric_value(PurchaseOrder.amount_total))).where(
-                            PurchaseOrder.project_id == project_id,
-                            PurchaseOrder.status.notin_(["draft", "cancelled"]),
-                        )
-                    )
-                ).scalar_one()
-                or 0.0
+                (await BudgetLineRepository(session).aggregate_by_project(project_id))["total_committed"]
             )
         except Exception:
-            logger.debug("Dashboard: committed PO sum unavailable", exc_info=True)
+            logger.debug("Dashboard: committed total unavailable", exc_info=True)
 
         outturn_total = float(
             expected_outturn(
@@ -2497,8 +2507,8 @@ async def analytics_overview(
         # whichever of the two is smaller in its entirety.
         budget_stmt = select(
             BudgetLine.project_id,
+            BudgetLine.id,
             numeric_value(BudgetLine.planned_amount),
-            numeric_value(BudgetLine.committed_amount),
             numeric_value(BudgetLine.actual_amount),
             numeric_value(BudgetLine.forecast_amount),
         ).where(BudgetLine.project_id.in_(project_ids))
@@ -2506,8 +2516,64 @@ async def analytics_overview(
     else:
         budget_rows = []
 
+    # Committed as the 5D dashboard counts it: issued purchase orders and
+    # signed contracts on the line's cost line, the hand-typed figure only
+    # where there are none, plus documents on cost lines with no budget line.
+    from app.modules.costmodel.repository import BudgetLineRepository
+
+    # A project with orders or contracts on its cost lines and no budget line
+    # yet is committed all the same, and used to be left out of the outturn
+    # because only projects with budget lines were asked. The two queries
+    # find a superset (no status filter); ``effective_committed`` applies the
+    # rules and answers zero for a project whose documents do not count.
+    committed_projects = {row[0] for row in budget_rows}
+    if project_ids:
+        from app.modules.contracts.models import Contract, ContractLine
+        from app.modules.procurement.models import PurchaseOrder, PurchaseOrderItem
+
+        committed_projects.update(
+            (
+                await session.execute(
+                    select(PurchaseOrder.project_id)
+                    .join(PurchaseOrderItem, PurchaseOrderItem.po_id == PurchaseOrder.id)
+                    .where(PurchaseOrder.project_id.in_(project_ids), PurchaseOrderItem.cost_line_id.is_not(None))
+                    .distinct()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        committed_projects.update(
+            (
+                await session.execute(
+                    select(Contract.project_id)
+                    .join(ContractLine, ContractLine.contract_id == Contract.id)
+                    .where(Contract.project_id.in_(project_ids), ContractLine.cost_line_id.is_not(None))
+                    .distinct()
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    committed_repo = BudgetLineRepository(session)
+    committed_by_line: dict[uuid.UUID, Decimal] = {}
+    unbudgeted_by_project: dict[str, Decimal] = {}
+    for committed_project_id in committed_projects:
+        by_line, unbudgeted, _from_documents = await committed_repo.effective_committed(committed_project_id)
+        committed_by_line.update(by_line)
+        unbudgeted_by_project[str(committed_project_id)] = unbudgeted
+
     budget_map: dict[str, tuple[float, float, float]] = {}
-    for row_project_id, planned_amt, committed_amt, actual_amt, forecast_amt in budget_rows:
+    for key, unbudgeted in unbudgeted_by_project.items():
+        if unbudgeted:
+            budget_map[key] = (
+                0.0,
+                0.0,
+                float(expected_outturn(forecast_final=Decimal("0"), committed=unbudgeted, actual=Decimal("0"))),
+            )
+    for row_project_id, line_id, planned_amt, actual_amt, forecast_amt in budget_rows:
+        committed_amt = committed_by_line.get(line_id, Decimal("0"))
         key = str(row_project_id)
         planned_so_far, actual_so_far, outturn_so_far = budget_map.get(key, (0.0, 0.0, 0.0))
         budget_map[key] = (
@@ -2552,8 +2618,9 @@ async def analytics_overview(
     ]
     multi_currency = len(by_currency) > 1
 
-    # Projects with budget
-    projects_with_budget = len(budget_map)
+    # Projects with budget: budget lines, not commitments. A project that is
+    # only committed has an outturn in ``budget_map`` and still no budget.
+    projects_with_budget = len({row[0] for row in budget_rows})
 
     # Single grouped query for BOQ counts (fixes N+1)
     if project_ids:
@@ -2591,6 +2658,17 @@ async def analytics_overview(
         # BOQ count from pre-fetched map (single grouped query above)
         boq_count = boq_counts_map.get(pid, 0)
 
+        gfa = None
+        cost_per_sqm = None
+        try:
+            gfa_raw = getattr(p, "gross_floor_area", None)
+            if gfa_raw is not None and str(gfa_raw).strip():
+                gfa = float(gfa_raw)
+                if gfa > 0 and actual > 0:
+                    cost_per_sqm = round(actual / gfa, 2)
+        except (ValueError, TypeError):
+            pass
+
         projects_data.append(
             {
                 "id": pid,
@@ -2604,6 +2682,9 @@ async def analytics_overview(
                 "variance_pct": variance_pct,
                 "boq_count": boq_count,
                 "status": "over_budget" if outturn > planned else "on_budget",
+                "gross_floor_area": gfa,
+                "cost_per_sqm": cost_per_sqm,
+                "phase": getattr(p, "phase", None),
             }
         )
 
@@ -3258,10 +3339,12 @@ async def post_export_bundle(
 
     The wizard hits ``/export/preview/`` first to show sizes; this endpoint
     does the real packing and may take several seconds for large BIM scopes.
+    The archive is built in a temp file and sent from disk, which is deleted
+    once the response is sent, so a full scope never sits in memory whole.
     """
     project = await _verify_project_owner(service, project_id, user_id, payload)
     user_email = (payload or {}).get("email") if payload else None
-    raw = await fm_export_bundle(
+    path = await fm_export_bundle_to_file(
         session,
         str(project_id),
         getattr(project, "name", "project"),
@@ -3270,14 +3353,15 @@ async def post_export_bundle(
         options,
     )
     fname = fm_bundle_filename(getattr(project, "name", "project"), options.scope)
-    return Response(
-        content=raw,
+    return FileResponse(
+        path,
         media_type="application/zip",
         headers={
             "Content-Disposition": attachment_disposition(fname),
             "X-Bundle-Format": "ocep",
             "X-Bundle-Scope": options.scope,
         },
+        background=BackgroundTask(fm_remove_bundle_file, path),
     )
 
 

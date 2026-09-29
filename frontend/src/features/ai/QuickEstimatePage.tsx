@@ -52,6 +52,7 @@ import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { aiApi, type QuickEstimateRequest, type EstimateJobResponse, type EstimateItem, type CadExtractResponse, type EnrichResult, type EnrichedItem, type CostMatch, type CadColumnsResponse, type CadGroupResponse, type CadDynamicGroup, type CadGroupElementsResponse } from './api';
 import { apiGet, apiPost } from '@/shared/lib/api';
+import { fetchProjectList } from '@/shared/lib/projectList';
 import { hasLlmKey } from '@/features/ai-estimator/useAiReadiness';
 import {
   fmtList,
@@ -433,8 +434,11 @@ function RecentEstimatesPanel({
                           <>
                             <span aria-hidden="true">·</span>
                             <span>
-                              {job.items_count}{' '}
-                              {t('ai.items', { defaultValue: 'items' })}
+                              {t('ai.items_count', {
+                                count: job.items_count,
+                                defaultValue_one: '{{count}} item',
+                                defaultValue: '{{count}} items',
+                              })}
                             </span>
                           </>
                         )}
@@ -541,7 +545,7 @@ function SaveToBOQDialog({ open, onClose, onSave, saving, enrichedMatches = 0, e
 
   const { data: projects } = useQuery({
     queryKey: ['projects-list-simple'],
-    queryFn: () => apiGet<ProjectSummary[]>('/v1/projects/?page_size=100'),
+    queryFn: () => fetchProjectList<ProjectSummary[]>(),
     enabled: open,
     staleTime: 5 * 60_000,
   });
@@ -2088,7 +2092,12 @@ export function QuickEstimatePage() {
       if (currency) request.currency = currency;
       if (standard) request.standard = standard;
       if (buildingType) request.project_type = buildingType;
-      if (areaM2 && Number(areaM2) > 0) request.area_m2 = Number(areaM2);
+      if (areaM2 && Number(areaM2) > 0) {
+        // Backend expects metric m². When the user enters sq ft, convert back.
+        request.area_m2 = displayQty.system === 'imperial'
+          ? Number(areaM2) / 10.7639
+          : Number(areaM2);
+      }
 
       setResult(null);
       textEstimateRun.run(request);
@@ -2562,7 +2571,7 @@ export function QuickEstimatePage() {
 
   const { data: cadProjectsList } = useQuery({
     queryKey: ['projects-list-simple-cad'],
-    queryFn: () => apiGet<ProjectSummary[]>('/v1/projects/?page_size=100'),
+    queryFn: () => fetchProjectList<ProjectSummary[]>(),
     enabled: !!cadGroupResult,
     staleTime: 5 * 60_000,
   });
@@ -3162,7 +3171,7 @@ export function QuickEstimatePage() {
                       htmlFor={areaM2Id}
                       className="text-xs font-medium text-content-tertiary uppercase tracking-wide"
                     >
-                      {t('ai.area', { defaultValue: 'Area (m\u00b2)' })}
+                      {t('ai.area', { defaultValue: displayQty.system === 'imperial' ? 'Area (sq ft)' : 'Area (m\u00b2)' })}
                     </label>
                     <input
                       id={areaM2Id}

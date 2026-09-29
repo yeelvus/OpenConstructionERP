@@ -43,6 +43,7 @@ import {
 } from '@/shared/ui/WideModal';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import { apiGet, apiPost, apiPatch, getAuthToken, triggerDownload } from '@/shared/lib/api';
+import { fetchProjectList } from '@/shared/lib/projectList';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { BidComparisonChart } from './BidComparisonChart';
@@ -50,6 +51,7 @@ import { AddendumList } from './AddendumList';
 import { AwardRecordPanel } from './AwardRecordPanel';
 import { LevelingMatrix } from './LevelingMatrix';
 import { classifyCell, recommend } from './analysis';
+import { awardRatesMessage, type AwardResult } from './awardRates';
 import { tenderingGuide } from './tenderingGuide';
 import {
   listRecipients,
@@ -60,7 +62,7 @@ import {
   type Recipient,
   type DistributeResponse,
 } from './api';
-import { fmtList, fmtPercent, getIntlLocale } from '@/shared/lib/formatters';
+import { fmtList, fmtPercent, formatDateValue } from '@/shared/lib/formatters';
 import {
   listSubcontractors,
   type Subcontractor,
@@ -254,7 +256,9 @@ function translateStatus(status: string, t: ReturnType<typeof useTranslation>['t
 
 function formatDate(dateStr: string): string {
   try {
-    return new Intl.DateTimeFormat(getIntlLocale(), { dateStyle: 'medium' }).format(new Date(dateStr));
+    // A package deadline is a plain calendar date; formatDateValue keeps it on
+    // that day in every zone, where new Date() printed it a day early in Toronto.
+    return formatDateValue(dateStr, { dateStyle: 'medium' });
   } catch {
     return dateStr;
   }
@@ -1365,25 +1369,25 @@ function PackageDetail({
   // losing bids in a stale state and never writing rates back to the BOQ.
   const awardMutation = useMutation({
     mutationFn: (bidId: string) =>
-      apiPost<{ positions_updated: number }>(
+      apiPost<AwardResult>(
         `/v1/tendering/packages/${packageId}/apply-winner/?bid_id=${bidId}`,
         {},
       ),
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['tendering-package', packageId] });
       queryClient.invalidateQueries({ queryKey: ['tendering-comparison', packageId] });
       queryClient.invalidateQueries({ queryKey: ['tendering-packages'] });
-      // The award also writes rates back to the BOQ and the procurement
-      // module auto-creates a draft PO from the winning bid. Tell the user
-      // about the PO and offer a one-click jump to Procurement so the
-      // hand-off is visible instead of silent.
+      // The award writes the winning line rates into the BOQ where it can,
+      // and the procurement module auto-creates a draft PO from the winning
+      // bid. Say what happened to the bill, including when nothing was
+      // written and why, and offer a one-click jump to Procurement.
       addToast(
         {
           type: 'success',
           title: t('toasts.bid_awarded', { defaultValue: 'Bid awarded' }),
-          message: t('tendering.po_created_msg', {
+          message: [awardRatesMessage(result, t), t('tendering.po_created_msg', {
             defaultValue: 'A draft purchase order is being prepared in Procurement from the winning bid.',
-          }),
+          })].join(' '),
           action: {
             label: t('tendering.view_po', { defaultValue: 'View purchase orders' }),
             onClick: () => navigate('/procurement'),
@@ -1391,6 +1395,21 @@ function PackageDetail({
         },
         { duration: 8000 },
       );
+    },
+    onError: (error: Error) => {
+      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message });
+    },
+  });
+
+  // Whether rejection notices name the winning price. Off unless the
+  // package opts in, since a bidder's price is commercial information.
+  const discloseMutation = useMutation({
+    mutationFn: (disclose: boolean) =>
+      apiPatch<TenderPackage>(`/v1/tendering/packages/${packageId}`, {
+        metadata: { disclose_award_sum: disclose },
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tendering-package', packageId] });
     },
     onError: (error: Error) => {
       addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message });
@@ -1609,14 +1628,18 @@ function PackageDetail({
             )}
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={<Plus size={14} />}
-              onClick={() => setShowAddBid(true)}
-            >
-              {t('tendering.add_bid', 'Add Bid')}
-            </Button>
+            {/* An awarded or closed tender is decided: the server refuses a
+                new bid there, so the button is not offered. */}
+            {pkg.status !== 'awarded' && pkg.status !== 'closed' && (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<Plus size={14} />}
+                onClick={() => setShowAddBid(true)}
+              >
+                {t('tendering.add_bid', 'Add Bid')}
+              </Button>
+            )}
             {pkg.boq_id && (
               <Button
                 variant="ghost"
@@ -1734,9 +1757,28 @@ function PackageDetail({
       {/* Bids list */}
       {activeTab === 'bids' && pkg.bids.length > 0 && (
         <div className="space-y-2">
-          <h4 className="text-sm font-semibold text-content-primary">
-            {t('tendering.bids_received', 'Bids Received')}
-          </h4>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-sm font-semibold text-content-primary">
+              {t('tendering.bids_received', 'Bids Received')}
+            </h4>
+            <label
+              className="inline-flex items-center gap-2 text-xs text-content-secondary"
+              title={t('tendering.disclose_award_sum_hint', {
+                defaultValue:
+                  'Off by default: an unsuccessful bidder learns only that it was not selected. Turn it on where public procurement rules require the awarded value in the notice.',
+              })}
+            >
+              <input
+                type="checkbox"
+                checked={pkg.metadata?.disclose_award_sum === true}
+                disabled={discloseMutation.isPending}
+                onChange={(e) => discloseMutation.mutate(e.target.checked)}
+              />
+              {t('tendering.disclose_award_sum', {
+                defaultValue: 'Show the awarded sum in rejection notices',
+              })}
+            </label>
+          </div>
           {pkg.bids.map((bid) => (
             <Card key={bid.id} padding="none">
               <div className="flex items-center gap-3 px-4 py-3">
@@ -1769,7 +1811,12 @@ function PackageDetail({
                     onClick={async () => {
                       const ok = await confirm({
                         title: t('tendering.award_confirm_title', { defaultValue: 'Award contract?' }),
-                        message: t('tendering.award_confirm', { defaultValue: 'Award this contract to {{company}}? Winning rates are written back to the BOQ and other bids are rejected. This action cannot be undone.', company: bid.company_name }),
+                        message: t('tendering.award_confirm_rates', {
+                          defaultValue:
+                            'Award this contract to {{company}}? The other bids are rejected. Where the winning bid is priced line by line and the BOQ is not locked, its rates are written into the BOQ. This action cannot be undone.',
+                          company: bid.company_name,
+                        }),
+                        confirmLabel: t('tendering.award', 'Award'),
                         variant: 'warning',
                       });
                       if (ok) awardMutation.mutate(bid.id);
@@ -2082,7 +2129,7 @@ export function TenderingPage() {
   // Project SELECTION happens in the global top bar, not here.
   const { data: projects } = useQuery({
     queryKey: ['projects'],
-    queryFn: () => apiGet<Project[]>('/v1/projects/'),
+    queryFn: () => fetchProjectList<Project[]>(),
     staleTime: 5 * 60_000,
   });
 

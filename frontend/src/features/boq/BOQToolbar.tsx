@@ -85,6 +85,8 @@ export interface BOQToolbarProps {
   onUndo: () => void;
   onRedo: () => void;
   onShowVersionHistory: () => void;
+  /** The bill is locked: the add and import actions, all writes, are not offered. */
+  readOnly?: boolean;
   // Add actions
   onAddPosition: () => void;
   onAddSection: () => void;
@@ -96,7 +98,7 @@ export interface BOQToolbarProps {
   importInputRef: React.RefObject<HTMLInputElement | null>;
   onImportInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   // Export
-  onExport: (format: 'excel' | 'csv' | 'pdf' | 'gaeb' | 'bc3') => void;
+  onExport: (format: string) => void;
   /**
    * Open the embodied-carbon view for this BOQ. When provided, a "Carbon
    * footprint" action appears in the File group; the host wires it to
@@ -207,6 +209,7 @@ export function BOQToolbar({
   onUndo,
   onRedo,
   onShowVersionHistory,
+  readOnly = false,
   onAddPosition,
   onAddSection,
   onOpenCostDb,
@@ -286,7 +289,7 @@ export function BOQToolbar({
     };
   }, [showExportMenu]);
 
-  const handleExportItem = (format: 'excel' | 'csv' | 'pdf' | 'gaeb' | 'bc3') => {
+  const handleExportItem = (format: string) => {
     setShowExportMenu(false);
     onExport(format);
   };
@@ -324,6 +327,7 @@ export function BOQToolbar({
           {/* Quality ring + Add group */}
           <div className="flex items-center gap-1.5" data-testid="boq-quality-ring">
             {hasPositions && qualityScoreRing}
+            {!readOnly && <>
             <Button
               variant="primary"
               size="sm"
@@ -354,6 +358,7 @@ export function BOQToolbar({
             >
               <span className="hidden xl:inline">{t('boq.from_assembly', { defaultValue: 'From Assembly' })}</span>
             </Button>
+            </>}
           </div>
 
           <div className="w-px h-6 bg-border-light hidden sm:block" />
@@ -472,13 +477,15 @@ export function BOQToolbar({
           <span className="mx-0.5 h-5 w-px shrink-0 bg-border-light" />
 
           {/* File: import / export / paste / density / carbon */}
-          <IconBtn
-            icon={isImporting ? <RefreshCw size={15} className="animate-spin" /> : <Upload size={15} />}
-            title={t('common.import')}
-            onClick={onImportClick}
-            disabled={isImporting}
-          />
-          <input ref={importInputRef as React.RefObject<HTMLInputElement>} type="file" accept=".xlsx,.csv,.pdf,.jpg,.jpeg,.png,.tiff,.rvt,.ifc,.dwg,.dgn,.x81,.x83,.x84,.xml" className="hidden" onChange={onImportInputChange} aria-label={t('common.import')} />
+          {!readOnly && (
+            <IconBtn
+              icon={isImporting ? <RefreshCw size={15} className="animate-spin" /> : <Upload size={15} />}
+              title={t('common.import')}
+              onClick={onImportClick}
+              disabled={isImporting}
+            />
+          )}
+          <input ref={importInputRef as React.RefObject<HTMLInputElement>} type="file" accept=".xlsx,.csv,.pdf,.jpg,.jpeg,.png,.tiff,.rvt,.ifc,.dwg,.dgn,.x81,.x83,.x84,.x85,.x86,.xml,.bc3,.ods,.json,.yaml,.yml" className="hidden" onChange={onImportInputChange} aria-label={t('common.import')} />
           <div className="relative">
             <button
               ref={exportBtnRef}
@@ -521,6 +528,10 @@ export function BOQToolbar({
                     <FileText size={15} className="text-content-tertiary" />
                     {t('boq.export_format_gaeb', { defaultValue: 'GAEB XML (.x83)' })}
                   </button>
+                  <button role="menuitem" onClick={() => handleExportItem('gaeb_x84')} className="flex w-full items-center gap-2.5 px-3 py-2.5 text-sm text-content-primary hover:bg-surface-secondary transition-colors">
+                    <FileText size={15} className="text-content-tertiary" />
+                    {t('boq.export_format_gaeb_x84', { defaultValue: 'GAEB XML (.x84) - with prices' })}
+                  </button>
                   <button role="menuitem" onClick={() => handleExportItem('bc3')} className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-sm text-content-primary hover:bg-surface-secondary transition-colors ${gaebExchangeEnabled ? '' : 'rounded-b-lg'}`}>
                     <FileText size={15} className="text-content-tertiary" />
                     {t('boq.export_format_bc3', { defaultValue: 'FIEBDC-3 (.bc3)' })}
@@ -552,13 +563,16 @@ export function BOQToolbar({
                 document.body,
               )}
           </div>
-          {onPasteFromExcel && (
+          {onPasteFromExcel && !readOnly && (
             <IconBtn
               icon={<ClipboardPaste size={15} />}
               title={t('boq.paste_from_excel', { defaultValue: 'Paste from Excel' })}
               onClick={onPasteFromExcel}
             />
           )}
+
+          <span className="mx-0.5 h-5 w-px shrink-0 bg-border-light" />
+
           <IconBtn
             icon={<WrapText size={15} />}
             title={`${t('boq.desc_density_tooltip', { defaultValue: 'Description height: switch between a single line and a multi-line Langtext view. Double-click a description to edit the full text.' })} (${descDensityLabel[descDensity]})`}
@@ -574,7 +588,7 @@ export function BOQToolbar({
             />
           )}
 
-          {(onManageColumns || onManageVariables || onRenumber || onCycleResourceSplit) && (
+          {(onManageColumns || onManageVariables || (onRenumber && !readOnly) || onCycleResourceSplit) && (
             <span className="mx-0.5 h-5 w-px shrink-0 bg-border-light" />
           )}
 
@@ -596,7 +610,7 @@ export function BOQToolbar({
               testId="boq-manage-variables-button"
             />
           )}
-          {onRenumber && (
+          {onRenumber && !readOnly && (
             <IconBtn
               icon={<ListOrdered size={15} className={isRenumbering ? 'animate-pulse' : ''} />}
               title={t('boq.renumber', { defaultValue: 'Renumber Positions' })}

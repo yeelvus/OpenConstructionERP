@@ -49,6 +49,7 @@ from app.modules.documents.schemas import (
     DocumentBIMLinkListResponse,
     DocumentBIMLinkResponse,
     DocumentListResponse,
+    DocumentReferencesResponse,
     DocumentResponse,
     DocumentSummary,
     DocumentUpdate,
@@ -201,6 +202,8 @@ async def upload_document(
     session: SessionDep,
     project_id: uuid.UUID = Query(...),
     category: str = Query(default="other"),
+    revision_code: str | None = Query(default=None, max_length=20),
+    drawing_number: str | None = Query(default=None, max_length=100),
     file: UploadFile = File(...),
     content_length: int | None = Header(default=None),
     user_id: CurrentUserId = "",  # type: ignore[assignment]
@@ -245,6 +248,13 @@ async def upload_document(
     # No upload size cap - per product policy.
     try:
         doc = await service.upload_document(project_id, file, category, user_id)
+        if revision_code is not None:
+            doc.revision_code = revision_code
+        if drawing_number is not None:
+            doc.drawing_number = drawing_number
+        if revision_code is not None or drawing_number is not None:
+            session.add(doc)
+            await session.flush()
         return _doc_to_response(doc)
     except HTTPException:
         raise
@@ -1793,6 +1803,7 @@ async def upload_document_revision(
     session: SessionDep,
     file: UploadFile = File(...),
     notes: str | None = Form(default=None),
+    revision_code: str | None = Form(default=None),
     user_id: CurrentUserId = "",  # type: ignore[assignment]
     _perm: None = Depends(RequirePermission("documents.update")),
     service: DocumentService = Depends(_get_service),
@@ -1855,6 +1866,10 @@ async def upload_document_revision(
 
     try:
         doc = await service.upload_document_revision(document_id, file, str(user_id) if user_id else "", notes=notes)
+        if revision_code is not None:
+            doc.revision_code = revision_code
+            session.add(doc)
+            await session.flush()
         return _doc_to_response(doc)
     except HTTPException:
         raise
@@ -1867,6 +1882,46 @@ async def upload_document_revision(
 
 
 # ── Delete ───────────────────────────────────────────────────────────────────
+
+
+@router.get("/{document_id}/references", response_model=DocumentReferencesResponse)
+async def get_document_references(
+    document_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDep,
+    service: DocumentService = Depends(_get_service),
+) -> DocumentReferencesResponse:
+    """Report what still points at a document, so a delete can be informed.
+
+    Read-only and advisory. ``DELETE /{document_id}`` does not consult it and
+    is not blocked by it: the links counted here are severable on purpose
+    (``CloseoutBinding`` says so in as many words), so the call belongs to
+    the person confirming rather than to the server.
+
+    Guarded exactly like ``GET /{document_id}`` - project membership plus
+    folder read - because it says no more about the document than reading it
+    already does.
+    """
+    doc = await service.get_document(document_id)
+    await _verify_project_membership_or_404(doc.project_id, user_id, session)
+
+    from app.modules.documents.folder_permissions_service import (
+        folder_access_for,
+        kind_and_path_for_document,
+        require_read,
+    )
+
+    kind, path = kind_and_path_for_document(doc.category)
+    role = await folder_access_for(
+        session,
+        project_id=doc.project_id,
+        user_id=uuid.UUID(str(user_id)),
+        scope_kind=kind,
+        scope_path=path,
+    )
+    require_read(role)
+
+    return await service.get_references(document_id)
 
 
 @router.delete("/{document_id}", status_code=204)

@@ -499,9 +499,12 @@ async def test_the_same_project_is_counted_on_one_week_by_both_paths(
     spans = [_weekdays_between(t.start_date, t.end_date) for t in tasks]
     # Generation lands every end on a working day of the region...
     assert all(span[-1] not in rest_days for span in spans)
-    # ...and the first task starts on the Sunday, the day the two weeks disagree
-    # on, so a recount on the wrong week cannot come out equal by chance.
-    assert spans[0][0] == 6
+    # ...and the first task starts on the first working day at or after the
+    # Sunday the schedule starts on. For Doha that is the Sunday itself, the day
+    # the two weeks disagree on, so a recount on the wrong week cannot come out
+    # equal by chance. Berlin does not work Sundays, so its first task starts on
+    # the Monday instead of on a rest day.
+    assert spans[0][0] == (6 if region == _GULF else 0)
     if region == _GULF:
         monday_to_friday = [_working_days(t.start_date, t.end_date, _GERMAN_REST_DAYS) for t in tasks]
         regional = [_working_days(t.start_date, t.end_date, rest_days) for t in tasks]
@@ -532,9 +535,16 @@ async def test_update_progress_auto_status() -> None:
     assert updated.status == "not_started"
 
 
+async def _positions_always_in_project(_schedule_id: uuid.UUID, _position_ids: list[str]) -> None:
+    return None
+
+
 @pytest.mark.asyncio
 async def test_link_boq_position() -> None:
     svc = _make_service()
+    # The fake session runs no SQL; keeping a link inside the schedule's own
+    # project is covered against PostgreSQL in test_schedule_boq_links.py.
+    svc._assert_positions_in_project = _positions_always_in_project  # type: ignore[method-assign]
     schedule = await _create_schedule(svc)
     activity = await _create_activity(svc, schedule.id)
     boq_id = uuid.uuid4()
@@ -546,6 +556,9 @@ async def test_link_boq_position() -> None:
 @pytest.mark.asyncio
 async def test_link_boq_position_duplicate_rejected() -> None:
     svc = _make_service()
+    # The fake session runs no SQL; keeping a link inside the schedule's own
+    # project is covered against PostgreSQL in test_schedule_boq_links.py.
+    svc._assert_positions_in_project = _positions_always_in_project  # type: ignore[method-assign]
     schedule = await _create_schedule(svc)
     activity = await _create_activity(svc, schedule.id)
     boq_id = uuid.uuid4()

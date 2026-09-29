@@ -64,6 +64,7 @@ from app.modules.bid_management.schemas import (
     BidPackageCreate,
     BidPackageLineItemCreate,
     BidPackageLineItemUpdate,
+    BidPackageLinesFromBOQ,
     BidPackageUpdate,
     BidQAAnswer,
     BidQACreate,
@@ -91,6 +92,19 @@ PACKAGE_TRANSITIONS: dict[str, set[str]] = {
     "awarded": set(),
     "cancelled": set(),
 }
+
+#: Package states in which the contest is decided. A bid on a package in one of
+#: these is frozen: it cannot be edited, withdrawn or deleted
+#: (``_assert_submission_mutable``).
+DECIDED_PACKAGE_STATES: frozenset[str] = frozenset({"awarded", "cancelled"})
+
+#: Package states in which a NEW bid may be recorded: the tender window, from
+#: publication until the package is closed. A draft package has not gone out to
+#: bidders yet, and closing a package ends the bidding so the bids can be
+#: levelled and one awarded; a bid recorded after that would enter a contest
+#: that is already being decided. The decided states are outside it as well, so
+#: ``record_submission`` reads this set alone.
+OPEN_FOR_SUBMISSION_STATES: frozenset[str] = frozenset({"published", "open"})
 
 INVITATION_TRANSITIONS: dict[str, set[str]] = {
     "pending": {"sent", "expired"},
@@ -1031,8 +1045,38 @@ class BidManagementService:
         return package
 
     async def delete_package(self, package_id: uuid.UUID) -> None:
-        await self.get_package(package_id)
+        """Delete a package with everything under it.
+
+        Raises:
+            HTTPException 404: Package not found.
+            HTTPException 409: The package is awarded or cancelled. Every child
+                row cascades on ``package_id``, so deleting it would take the
+                frozen bids and the award with it.
+        """
+        package = await self.get_package(package_id)
+        if package.status in DECIDED_PACKAGE_STATES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Package is '{package.status}' and can no longer be deleted",
+            )
         await self.package_repo.delete(package_id)
+
+    async def _assert_package_parts_deletable(self, package_id: uuid.UUID, what: str) -> None:
+        """Refuse removing a line item, bidder or invitation of a decided package.
+
+        Each of them cascades into the bids recorded against it: a line item
+        into every bid's priced line for it, an invitation into its submission,
+        a bidder into its submission, award and rejection. On an awarded or
+        cancelled package that would remove frozen bids and the award, the
+        same removal ``_assert_submission_mutable`` refuses for
+        ``delete_submission``.
+        """
+        package = await self.package_repo.get_by_id(package_id)
+        if package is not None and package.status in DECIDED_PACKAGE_STATES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Package is '{package.status}' and its {what} can no longer be deleted",
+            )
 
     async def _transition_package(self, package: BidPackage, new_status: str) -> None:
         if new_status not in allowed_package_transitions(package.status):
@@ -1263,8 +1307,81 @@ class BidManagementService:
 
     # ── Lines ─────────────────────────────────────────────────────────
 
+    async def _load_project_positions(
+        self, project_id: uuid.UUID, position_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, Any]:
+        """Load bill positions by id, refusing any outside ``project_id``.
+
+        A scope line carries its position to the contract on award, where the
+        progress bridge bills against it, so a position from another project
+        would put that project's progress on this contract.
+        """
+        if not position_ids:
+            return {}
+        from sqlalchemy import select  # noqa: PLC0415
+
+        from app.modules.boq.models import BOQ, Position  # noqa: PLC0415
+
+        rows = (
+            await self.session.execute(
+                select(Position, BOQ.project_id)
+                .join(BOQ, BOQ.id == Position.boq_id)
+                .where(Position.id.in_(set(position_ids))),
+            )
+        ).all()
+        found = {pos.id: pos for pos, pos_project in rows if pos_project == project_id}
+        missing = [str(pid) for pid in dict.fromkeys(position_ids) if pid not in found]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "boq_position_not_in_project",
+                    "message": "Bill position not found in the project of this package",
+                    "position_ids": missing,
+                },
+            )
+        return found
+
+    async def add_lines_from_boq(self, package_id: uuid.UUID, data: BidPackageLinesFromBOQ) -> list[BidPackageLineItem]:
+        """Copy bill positions into the package as scope lines.
+
+        Each line takes the position's ordinal, description, unit and quantity
+        and keeps ``boq_position_id``, which the award carries onto the
+        contract line. A position already in the package is skipped, so adding
+        the same selection twice adds nothing. Section headers carry no
+        quantity to price and are skipped too.
+        """
+        from app.modules.boq.service import _is_section  # noqa: PLC0415
+
+        package = await self.get_package(package_id)
+        positions = await self._load_project_positions(package.project_id, data.position_ids)
+        existing = await self.line_repo.list_for_package(package_id)
+        already = {line.boq_position_id for line in existing if line.boq_position_id is not None}
+        next_index = max((line.order_index for line in existing), default=-1) + 1
+        rows: list[BidPackageLineItem] = []
+        for pid in dict.fromkeys(data.position_ids):
+            pos = positions[pid]
+            if pid in already or _is_section(pos):
+                continue
+            rows.append(
+                BidPackageLineItem(
+                    package_id=package_id,
+                    code=(pos.ordinal or "")[:64],
+                    description=pos.description or "",
+                    unit=(pos.unit or "")[:20],
+                    quantity=str(_to_decimal(pos.quantity)),
+                    order_index=next_index + len(rows),
+                    boq_position_id=pid,
+                ),
+            )
+        if not rows:
+            return []
+        return await self.line_repo.bulk_create(rows)
+
     async def create_line(self, data: BidPackageLineItemCreate) -> BidPackageLineItem:
-        await self.get_package(data.package_id)  # 404 if missing
+        package = await self.get_package(data.package_id)  # 404 if missing
+        if data.boq_position_id is not None:
+            await self._load_project_positions(package.project_id, [data.boq_position_id])
         line = BidPackageLineItem(
             package_id=data.package_id,
             code=data.code,
@@ -1276,13 +1393,17 @@ class BidManagementService:
             parent_line_id=data.parent_line_id,
             spec_attachment_url=data.spec_attachment_url,
             is_mandatory=data.is_mandatory,
+            boq_position_id=data.boq_position_id,
         )
         return await self.line_repo.create(line)
 
     async def bulk_create_lines(
         self, package_id: uuid.UUID, items: list[BidPackageLineItemCreate]
     ) -> list[BidPackageLineItem]:
-        await self.get_package(package_id)
+        package = await self.get_package(package_id)
+        await self._load_project_positions(
+            package.project_id, [item.boq_position_id for item in items if item.boq_position_id is not None]
+        )
         rows = [
             BidPackageLineItem(
                 package_id=package_id,
@@ -1295,6 +1416,7 @@ class BidManagementService:
                 parent_line_id=item.parent_line_id,
                 spec_attachment_url=item.spec_attachment_url,
                 is_mandatory=item.is_mandatory,
+                boq_position_id=item.boq_position_id,
             )
             for item in items
         ]
@@ -1307,6 +1429,9 @@ class BidManagementService:
         fields: dict[str, Any] = data.model_dump(exclude_unset=True)
         if "quantity" in fields and fields["quantity"] is not None:
             fields["quantity"] = str(fields["quantity"])
+        if fields.get("boq_position_id") is not None:
+            package = await self.get_package(line.package_id)
+            await self._load_project_positions(package.project_id, [fields["boq_position_id"]])
         if not fields:
             return line
         await self.line_repo.update_fields(line_id, **fields)
@@ -1314,12 +1439,43 @@ class BidManagementService:
         return line
 
     async def delete_line(self, line_id: uuid.UUID) -> None:
+        line = await self.line_repo.get_by_id(line_id)
+        if line is None:
+            raise HTTPException(status_code=404, detail="Line not found")
+        await self._assert_package_parts_deletable(line.package_id, "line items")
         await self.line_repo.delete(line_id)
 
     # ── Bidders ───────────────────────────────────────────────────────
 
+    async def _resolve_bidder_links(
+        self,
+        subcontractor_id: uuid.UUID | None,
+        contact_id: uuid.UUID | None,
+    ) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+        """Check a bidder's directory links and fill the contact from the subcontractor.
+
+        A link is what an award turns into the contract counterparty, so one
+        that points at nothing is refused here rather than discovered there.
+        When only the subcontractor is given, its own contact stands for it.
+        """
+        if subcontractor_id is not None:
+            from app.modules.subcontractors.models import Subcontractor  # noqa: PLC0415
+
+            sub = await self.session.get(Subcontractor, subcontractor_id)
+            if sub is None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Subcontractor not found")
+            if contact_id is None:
+                contact_id = sub.contact_id
+        if contact_id is not None:
+            from app.modules.contacts.models import Contact  # noqa: PLC0415
+
+            if await self.session.get(Contact, contact_id) is None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Contact not found")
+        return subcontractor_id, contact_id
+
     async def create_bidder(self, data: BidderCreate) -> Bidder:
         await self.get_package(data.package_id)
+        subcontractor_id, contact_id = await self._resolve_bidder_links(data.subcontractor_id, data.contact_id)
         bidder = Bidder(
             package_id=data.package_id,
             company_name=data.company_name,
@@ -1329,6 +1485,8 @@ class BidManagementService:
             country=data.country,
             status=data.status,
             notes=data.notes,
+            subcontractor_id=subcontractor_id,
+            contact_id=contact_id,
         )
         return await self.bidder_repo.create(bidder)
 
@@ -1337,6 +1495,17 @@ class BidManagementService:
         if bidder is None:
             raise HTTPException(status_code=404, detail=translate("errors.bidder_not_found", locale=get_locale()))
         fields = data.model_dump(exclude_unset=True)
+        if "subcontractor_id" in fields or "contact_id" in fields:
+            # A new subcontractor brings its own contact unless one is given;
+            # keeping the old contact would pair the new firm with the old one.
+            sub_id = fields.get("subcontractor_id", bidder.subcontractor_id)
+            if "contact_id" in fields:
+                contact_id = fields["contact_id"]
+            elif "subcontractor_id" in fields:
+                contact_id = None
+            else:
+                contact_id = bidder.contact_id
+            fields["subcontractor_id"], fields["contact_id"] = await self._resolve_bidder_links(sub_id, contact_id)
         if not fields:
             return bidder
         await self.bidder_repo.update_fields(bidder_id, **fields)
@@ -1344,6 +1513,10 @@ class BidManagementService:
         return bidder
 
     async def delete_bidder(self, bidder_id: uuid.UUID) -> None:
+        bidder = await self.bidder_repo.get_by_id(bidder_id)
+        if bidder is None:
+            raise HTTPException(status_code=404, detail=translate("errors.bidder_not_found", locale=get_locale()))
+        await self._assert_package_parts_deletable(bidder.package_id, "bidders")
         await self.bidder_repo.delete(bidder_id)
 
     async def disqualify_bidder(self, bidder_id: uuid.UUID, reason: str) -> Bidder:
@@ -1451,6 +1624,10 @@ class BidManagementService:
         return inv
 
     async def delete_invitation(self, invitation_id: uuid.UUID) -> None:
+        inv = await self.invitation_repo.get_by_id(invitation_id)
+        if inv is None:
+            raise HTTPException(status_code=404, detail=translate("errors.invitation_not_found", locale=get_locale()))
+        await self._assert_package_parts_deletable(inv.package_id, "invitations")
         await self.invitation_repo.delete(invitation_id)
 
     # ── Submissions ───────────────────────────────────────────────────
@@ -1492,6 +1669,15 @@ class BidManagementService:
             raise HTTPException(
                 status_code=404,
                 detail="Bidder not found for this invitation's package",
+            )
+        # A bid is recorded only inside the tender window: not on a draft that
+        # has not gone out, not on a closed package whose bids are being
+        # levelled, and not on a decided one. Same 409 for all of them.
+        package = await self.package_repo.get_by_id(inv_for_bidder.package_id)
+        if package is not None and package.status not in OPEN_FOR_SUBMISSION_STATES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Package is '{package.status}' and accepts no new submissions",
             )
         sub = BidSubmission(
             invitation_id=data.invitation_id,
@@ -1554,7 +1740,7 @@ class BidManagementService:
         been awarded or cancelled breaks the audit trail / award integrity.
         """
         package = await self._package_for_submission(submission_id)
-        if package is not None and package.status in ("awarded", "cancelled"):
+        if package is not None and package.status in DECIDED_PACKAGE_STATES:
             raise HTTPException(
                 status_code=409,
                 detail=(f"Submission is locked - package is '{package.status}'"),
@@ -1591,6 +1777,13 @@ class BidManagementService:
         return sub
 
     async def delete_submission(self, submission_id: uuid.UUID) -> None:
+        sub = await self.submission_repo.get_by_id(submission_id)
+        if sub is None:
+            raise HTTPException(status_code=404, detail=translate("errors.submission_not_found", locale=get_locale()))
+        # Deleting a bid removes its figures outright, which is more than an
+        # edit does, so it honours the same awarded/cancelled lock as
+        # update_submission and withdraw_submission.
+        await self._assert_submission_mutable(submission_id)
         await self.submission_repo.delete(submission_id)
 
     # ── Submission lines ──────────────────────────────────────────────
@@ -1677,6 +1870,12 @@ class BidManagementService:
         return line
 
     async def delete_submission_line(self, line_id: uuid.UUID) -> None:
+        line = await self.submission_line_repo.get_by_id(line_id)
+        if line is None:
+            raise HTTPException(status_code=404, detail="Submission line not found")
+        # Same lock as update_submission_line: a priced line of a bid on a
+        # decided package is part of the record the award was made on.
+        await self._assert_submission_mutable(line.submission_id)
         await self.submission_line_repo.delete(line_id)
 
     # ── Q&A ───────────────────────────────────────────────────────────
@@ -1933,6 +2132,21 @@ class BidManagementService:
         if award is None:
             return
         package = await self.package_repo.get_by_id(award.package_id)
+        # Procurement raises a purchase order from the award. Stepping the
+        # package back while that PO stands would let a re-award to another
+        # bidder leave the first supplier's order in place.
+        if package is not None:
+            po = await self._live_po_from_award(package)
+            if po is not None:
+                remedy = (
+                    "Cancel it in procurement first, then withdraw the award."
+                    if po.status != "completed"
+                    else "A completed order cannot be cancelled, so the award is kept."
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Purchase order {po.po_number} was raised from this award and is {po.status}. {remedy}",
+                )
         await self.award_repo.delete(award_id)
         # Revert FSM: awarded → closed so the package can be re-awarded.
         if package is not None and package.status == "awarded":
@@ -1948,6 +2162,31 @@ class BidManagementService:
                 },
                 source_module="bid_management",
             )
+
+    async def _live_po_from_award(self, package: Any) -> Any:
+        """The purchase order procurement raised from this package's award, unless cancelled.
+
+        Procurement stamps ``metadata.bid_package_id`` on the PO it creates
+        from a bid_management award. Returns ``None`` when the procurement
+        module is not installed.
+        """
+        try:
+            from sqlalchemy import select
+
+            from app.modules.procurement.models import PurchaseOrder
+        except ImportError:
+            return None
+        rows = (
+            (await self.session.execute(select(PurchaseOrder).where(PurchaseOrder.project_id == package.project_id)))
+            .scalars()
+            .all()
+        )
+        wanted = str(package.id)
+        for po in rows:
+            md = po.metadata_ if isinstance(po.metadata_, dict) else {}
+            if md.get("bid_package_id") == wanted and po.status != "cancelled":
+                return po
+        return None
 
     async def create_rejection(self, data: BidRejectionCreate) -> BidRejection:
         await self.get_package(data.package_id)

@@ -707,7 +707,7 @@ class ChangeOrderService:
                 VariationOrder.status.notin_(["rejected", "cancelled", "voided"]),
             )
         )
-        active_vo_count = (await self.session.execute(stmt)).scalar() or 0
+        active_vo_count = (await self.session.execute(stmt)).scalar_one_or_none() or 0
         if active_vo_count > 0:
             metadata = dict(order.metadata_) if order.metadata_ else {}
             metadata["standalone_overlap_warning"] = (
@@ -1480,6 +1480,14 @@ class ChangeOrderService:
         except (InvalidOperation, ValueError):
             delta = Decimal("0")
         project_updated = False
+        # Bound before the branch so both are defined on every path. An order
+        # with no cost impact, or one whose project row is gone, never enters
+        # the branch, and when the budget delta row below still read them that
+        # approval raised UnboundLocalError instead of completing. The row no
+        # longer reads either, but a later reader should not have to find that
+        # out again.
+        delta_base: Decimal | None = None
+        current = Decimal("0")
         if delta != 0:
             # Use the snapshot captured before the status write so the lookup
             # keys off the project the order was approved against without
@@ -1499,7 +1507,7 @@ class ChangeOrderService:
 
                 base_ccy = (getattr(project, "currency", "") or "").strip().upper()
                 co_ccy = (currency_s or "").strip().upper()
-                delta_base: Decimal | None = delta
+                delta_base = delta
                 if co_ccy and base_ccy and co_ccy != base_ccy:
                     converted, missing = _convert_to_base(
                         {co_ccy: delta},
@@ -1571,6 +1579,7 @@ class ChangeOrderService:
                 "boq_positions_added": boq_result.get("positions_added", 0),
                 "budget_row_id": budget_writeback.get("budget_id"),
                 "budget_row_action": budget_writeback.get("action"),
+                "schedule_impact_days": getattr(order, "schedule_impact_days", 0) or 0,
             },
             source_module="oe_changeorders",
         )
@@ -1601,6 +1610,17 @@ class ChangeOrderService:
         Keyed idempotently by ``metadata_->>'change_order_id' == order_id``
         so re-approving (or a second pass on the same CO) updates the
         existing row instead of inserting duplicates.
+
+        The row carries the change and nothing else: the create path writes
+        ``original_budget`` 0 and ``revised_budget`` the order's effect, and the
+        update path rewrites ``revised_budget`` only. Every reader sums all of a project's rows, so a row
+        that also carried the project budget forward as its ``original`` (as
+        17.7.0 and 17.7.1 wrote it) added that budget once more per change
+        order. A project whose only rows are delta rows gets its original
+        budget from ``BudgetRepository.aggregate_for_dashboard``, which reads
+        it off the project, not from here. Rows already written in the
+        carried-forward shape are put back by the boot repair in
+        ``app.modules.changeorders.budget_delta_repair``.
 
         Returns ``{"action": "created"|"updated"|"skipped", "budget_id": str|None}``
         - the ``action`` value flows into the ``changeorder.approved`` event

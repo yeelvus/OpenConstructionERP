@@ -522,40 +522,45 @@ class EstimateBasisService:
 
     @staticmethod
     def class_catalog() -> EstimateClassCatalog:
-        """Publish the AACE 18R-97 class table the platform judges against.
+        """Publish all registered classification systems the platform supports.
 
-        Served to the client so a UI never hardcodes a standard's accuracy
-        ranges, and read back when an estimator picks a class so the band it
-        seeds is the published one rather than a number somebody remembered.
+        Returns every class from every registered system (AACE, Canadian CCA,
+        etc.) so a UI never hardcodes a standard's accuracy ranges. Each item
+        carries a ``classification_system`` field so the client can filter or
+        group by jurisdiction.
         """
-        from app.modules.boq.service import _AACE_CLASSES
+        from app.modules.boq.service import ESTIMATE_CLASSIFICATION_SYSTEMS
 
-        return EstimateClassCatalog(
-            items=[
-                EstimateClassOption(
-                    estimate_class=key,
-                    label=str(info.get("label", "")),
-                    accuracy_low=str(info.get("accuracy_low", "")),
-                    accuracy_high=str(info.get("accuracy_high", "")),
-                    definition_level_low=int(info.get("definition_low", 0)),
-                    definition_level_high=int(info.get("definition_high", 0)),
-                    methodology=str(info.get("methodology", "")),
+        items: list[EstimateClassOption] = []
+        for system_key, (classes_table, _) in ESTIMATE_CLASSIFICATION_SYSTEMS.items():
+            for key, info in sorted(classes_table.items(), key=lambda kv: str(kv[0])):
+                items.append(
+                    EstimateClassOption(
+                        estimate_class=key,
+                        classification_system=system_key,
+                        label=str(info.get("label", "")),
+                        accuracy_low=str(info.get("accuracy_low", "")),
+                        accuracy_high=str(info.get("accuracy_high", "")),
+                        definition_level_low=int(info.get("definition_low", 0)),
+                        definition_level_high=int(info.get("definition_high", 0)),
+                        methodology=str(info.get("methodology", "")),
+                    )
                 )
-                for key, info in sorted(_AACE_CLASSES.items())
-            ]
-        )
+        return EstimateClassCatalog(items=items)
 
     @staticmethod
-    def _default_band(estimate_class: int) -> tuple[str, str]:
+    def _default_band(estimate_class: int | str) -> tuple[str, str]:
         """Return the published accuracy band of a class as signed percentages."""
-        from app.modules.boq.service import _AACE_CLASSES
+        from app.modules.boq.service import ESTIMATE_CLASSIFICATION_SYSTEMS
 
-        info = _AACE_CLASSES.get(estimate_class)
-        if not info:
-            return "", ""
-        low = parse_accuracy_pct(info.get("accuracy_low"))
-        high = parse_accuracy_pct(info.get("accuracy_high"))
-        return fmt_pct(low), fmt_pct(high)
+        # Search across all registered classification systems for this class key.
+        for classes_table, _ in ESTIMATE_CLASSIFICATION_SYSTEMS.values():
+            info = classes_table.get(estimate_class)  # type: ignore[arg-type]
+            if info:
+                low = parse_accuracy_pct(info.get("accuracy_low"))
+                high = parse_accuracy_pct(info.get("accuracy_high"))
+                return fmt_pct(low), fmt_pct(high)
+        return "", ""
 
     @staticmethod
     def _provenance_summary(

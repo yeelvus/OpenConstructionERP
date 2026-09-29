@@ -81,7 +81,7 @@ def _phase_progress(start: datetime, end: datetime, now: datetime) -> tuple[int,
     elif start >= now:
         prog = 0
     else:
-        prog = max(0, min(99, int((now - start).days / max((end - start).days, 1) * 100)))
+        prog = max(1, min(99, int((now - start).days / max((end - start).days, 1) * 100)))
     return prog, "completed" if prog >= 100 else "in_progress" if prog > 0 else "planned"
 
 
@@ -2311,6 +2311,25 @@ PACK_DEMO_PROJECT: dict[str, str] = {
     "uae-ae": "warehouse-dubai",
     "netherlands-nl": "office-amsterdam",
     "poland-pl": "residential-warsaw",
+    "switzerland-ch": "office-zurich",
+    "austria-at": "office-vienna",
+    "sweden-se": "office-stockholm",
+    "norway-no": "office-oslo",
+    "denmark-dk": "office-copenhagen",
+    # Tier 2 country packs added 2026-09-15.
+    "belgium-be": "office-brussels",
+    "canada-ca": "office-toronto",
+    "croatia-hr": "residential-zagreb",
+    "czechia-cz": "office-prague",
+    "indonesia-id": "commercial-jakarta",
+    "ireland-ie": "office-dublin",
+    "nigeria-ng": "residential-abuja",
+    "portugal-pt": "office-lisbon",
+    "singapore-sg": "office-singapore",
+    # Romania, Greece and Ukraine, added 2026-09-25.
+    "romania-ro": "residential-cluj",
+    "greece-gr": "residential-athens",
+    "ukraine-ua": "residential-lviv",
 }
 
 # Country-name → ISO 3166-1 alpha-2, for catalog rows auto-derived from a
@@ -2346,6 +2365,23 @@ _COUNTRY_ISO2: dict[str, str] = {
     "Türkiye": "TR",
     "Japan": "JP",
     "South Korea": "KR",
+    "Switzerland": "CH",
+    "Austria": "AT",
+    "Sweden": "SE",
+    "Norway": "NO",
+    "Denmark": "DK",
+    "Belgium": "BE",
+    "Croatia": "HR",
+    "Czech Republic": "CZ",
+    "Czechia": "CZ",
+    "Indonesia": "ID",
+    "Ireland": "IE",
+    "Nigeria": "NG",
+    "Portugal": "PT",
+    "Singapore": "SG",
+    "Romania": "RO",
+    "Greece": "GR",
+    "Ukraine": "UA",
 }
 
 # Who really receives a notice of commencement, per country. Named because a
@@ -2381,6 +2417,16 @@ _AUTHORITY_BY_COUNTRY: dict[str, str] = {
     # body rather than the local authority, so this is the role, not an office.
     "JP": "the designated confirmation and inspection body",
     "KR": "the local government building department",
+    "CH": "die Baubewilligungsbehoerde",
+    "AT": "die Baubehoerde",
+    "SE": "byggnadsnamnden",
+    "NO": "kommunen som bygningsmyndighet",
+    "DK": "kommunalbestyrelsen",
+    # The start of works is notified to the state construction inspectorate
+    # alongside the authority that issued the permit.
+    "RO": "Inspectoratul de Stat în Construcții",
+    "GR": "η Υπηρεσία Δόμησης (ΥΔΟΜ)",
+    "UA": "Державна інспекція архітектури та містобудування",
 }
 
 # The provision a formal notice is raised under, per country, so the register's
@@ -2404,6 +2450,11 @@ _NOTICE_CLAUSE_BY_COUNTRY: dict[str, str] = {
     "HU": "Ptk. vállalkozási szerződés, írásbeli értesítés",
     "RU": "ГК РФ ст. 716, письменное уведомление",
     "PL": "Prawo budowlane art. 41 ust. 4, zawiadomienie",
+    "CH": "SIA 118 Art. 25, Behinderungsanzeige",
+    "AT": "OENORM B 2110, schriftliche Anzeige",
+    "SE": "AB 04 kap. 4 sec. 4, skriftligt meddelande",
+    "NO": "NS 8405 pkt. 23.2, skriftlig varsel",
+    "DK": "AB 18 sec. 24, skriftlig meddelelse",
 }
 # IT, ES, TR, JP and KR have packs but no row above, and that is the policy in
 # the comment rather than an oversight. Each of those markets has a standard
@@ -2444,6 +2495,8 @@ _PACK_DEMO_TYPE: dict[str, str] = {
     "retail-market-karlsruhe": "Retail",
     "residential-budapest": "Residential",
     "office-debrecen": "Commercial",
+    "residential-zagreb": "Residential",
+    "office-split": "Mixed-use",
     "residential-moscow": "Residential",
     "school-stpetersburg": "Education",
     "residential-rome": "Residential",
@@ -2465,6 +2518,41 @@ _PACK_DEMO_TYPE: dict[str, str] = {
     "school-paris": "Education",
     "warehouse-dubai": "Industrial",
     "medical-us": "Healthcare",
+    "office-milan": "Commercial",
+    "office-toronto": "Commercial",
+    "residential-vancouver": "Residential",
+    "office-zurich": "Commercial",
+    "residential-lausanne": "Residential",
+    "office-vienna": "Commercial",
+    "residential-salzburg": "Residential",
+    # Tier 2 packs: Singapore, Ireland, Belgium, Czech Republic, Portugal,
+    # Indonesia and Nigeria.
+    "office-singapore": "Commercial",
+    "residential-singapore": "Residential",
+    "office-dublin": "Commercial",
+    "residential-cork": "Residential",
+    "office-brussels": "Commercial",
+    "residential-antwerp": "Residential",
+    "office-prague": "Commercial",
+    "residential-brno": "Residential",
+    "office-lisbon": "Commercial",
+    "residential-porto": "Residential",
+    "commercial-jakarta": "Commercial",
+    "residential-surabaya": "Residential",
+    "commercial-lagos": "Commercial",
+    "residential-abuja": "Residential",
+    "office-stockholm": "Commercial",
+    "residential-gothenburg": "Residential",
+    "office-oslo": "Commercial",
+    "residential-bergen": "Residential",
+    "office-copenhagen": "Commercial",
+    "residential-aarhus": "Residential",
+    "residential-cluj": "Residential",
+    "office-bucharest": "Commercial",
+    "residential-athens": "Residential",
+    "school-thessaloniki": "Education",
+    "residential-lviv": "Residential",
+    "school-kyiv": "Education",
 }
 
 
@@ -2482,6 +2570,15 @@ _CURRENCY_SYMBOL: dict[str, str] = {
     "CNY": "¥",
     "HUF": "Ft",
     "RUB": "₽",
+    "SGD": "S$",
+    "CZK": "Kč",
+    "IDR": "Rp",
+    "NGN": "₦",
+    "SEK": "kr",
+    "NOK": "kr",
+    "DKK": "kr",
+    "RON": "lei",
+    "UAH": "₴",
 }
 
 
@@ -2539,6 +2636,39 @@ _DEMO_COST_LEVEL: dict[str, tuple[float, float]] = {
     "TRY": (43.00, 10.00),
     "JPY": (165.00, 160.00),
     "KRW": (1500.00, 1300.00),
+    # Tier 2 packs. Singapore is a high-cost city-state, material prices
+    # track international markets, labour is mid-range (foreign worker levy
+    # keeps it below Japan but well above the region). CZK is Central
+    # European: materials track EUR closely, labour is lower. IDR and NGN
+    # are emerging markets: materials at world prices in local currency,
+    # labour well below European levels. Ireland, Belgium and Portugal
+    # price in EUR and need no row.
+    "SGD": (1.50, 1.20),
+    "CZK": (25.00, 10.00),
+    "IDR": (17000.00, 3500.00),
+    "NGN": (1700.00, 250.00),
+    # Nordic currencies. All three are high-cost construction markets.
+    # Material tracks the conversion, labour sits close because Nordic
+    # construction wages are at or above the German level, like Japan.
+    "SEK": (11.50, 13.00),
+    "NOK": (11.50, 15.00),
+    "DKK": (7.50, 8.50),
+    # Switzerland, for the Zurich and Lausanne demos, which shipped without a
+    # row and so seeded German prices under a CHF label. The conversion is
+    # close to one, so both columns are mostly the Swiss price level:
+    # materials about a quarter above German prices once logistics and a
+    # small market are in, and construction wages among the highest in
+    # Europe, which puts labour above material the way the Nordic rows do.
+    "CHF": (1.25, 1.60),
+    # Romania and Ukraine, for the Cluj, Bucharest, Lviv and Kyiv demos.
+    # Materials are traded and track the conversion (about 5.28 lei and 51
+    # hryvnias to the euro in September 2026) a little under the German
+    # level. Labour is where both fall away: the Romanian construction minimum
+    # is 4,582 lei a month and the Ukrainian estimate wage runs from about
+    # 20,000 hryvnias in Lviv to 38,000 in Kyiv, a third and roughly a seventh
+    # of a German wage.
+    "RON": (5.00, 1.90),
+    "UAH": (44.00, 7.00),
 }
 
 # The words the assemblies and resources vocabularies use for people. Both
@@ -9947,10 +10077,15 @@ async def _seed_module_data(
                     currency_code=bl.get("currency_code") or budget_currency,
                     original_budget=bl["original_budget"],
                     revised_budget=bl["revised_budget"],
-                    committed=bl["committed"],
+                    # The templates write committed as the full order value;
+                    # the column holds the part not yet incurred, so what has
+                    # been spent comes off it.
+                    committed=str(max(Decimal(bl["committed"]) - Decimal(bl["actual"]), Decimal("0"))),
                     actual=bl["actual"],
                     forecast_final=bl["forecast_final"],
-                    metadata_={"demo_id": demo_id},
+                    # Typed figures: the budget sync adds the records on top
+                    # and never resets them.
+                    metadata_={"demo_id": demo_id, "budget_sync": "1"},
                 )
             )
         # Report what was written, not what was offered. Reporting the input

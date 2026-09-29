@@ -23,7 +23,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
-from app.core.cpm import readable_exception_dates, readable_work_days
+from app.core.calendar import _holidays_cn
+from app.core.cpm import normalise_exception_date, readable_exception_dates, readable_work_days
 from app.core.events import event_bus
 from app.core.json_merge import merge_metadata
 
@@ -202,6 +203,54 @@ def _meta_number(meta: dict, key: str) -> float:
         return 0.0
 
 
+def plan_span_work_days(sections: list[list[int]]) -> int:
+    """Working days a generated plan spans, in the layout BOQ generation uses.
+
+    The children of a section run back to back, and each next section starts
+    ``max(3, section_total // 2)`` working days after the previous one did.
+
+    Args:
+        sections: Per section, the working days of each of its activities.
+
+    Returns:
+        The number of working days from the first start to the last finish.
+    """
+    offset = 0
+    finish = 0
+    for rows in sections:
+        total = sum(rows)
+        finish = max(finish, offset + total)
+        offset += max(3, total // 2)
+    return finish
+
+
+def fit_plan_to_budget(sections: list[list[int]], budget: int) -> list[list[int]]:
+    """Scale a generated plan's working days down until it spans ``budget``.
+
+    Every activity keeps at least one working day, so a plan with more
+    activities than the budget allows comes back as short as it can be and
+    still over; the caller decides what to say about that.
+
+    Args:
+        sections: Per section, the working days of each of its activities.
+        budget: The working days the whole plan may span.
+
+    Returns:
+        The same shape with every duration scaled by one common factor.
+    """
+    span = plan_span_work_days(sections)
+    if span <= budget:
+        return sections
+    factor = budget / span
+    fitted = sections
+    for _ in range(200):
+        fitted = [[max(1, int(w * factor)) for w in rows] for rows in sections]
+        if plan_span_work_days(fitted) <= budget or all(w == 1 for rows in fitted for w in rows):
+            break
+        factor *= 0.95
+    return fitted
+
+
 def _calc_duration_from_resources(
     pos_meta: dict,
     quantity: float,
@@ -301,8 +350,8 @@ def _calc_duration_from_resources(
 
 # ── Regional work calendar configuration ─────────────────────────────────
 # Each entry defines hours_per_day, work_days (weekday indices) and label.
-# There are no holidays here and never have been: compute_duration counts
-# every non-weekend day as a working day, for every region in this table.
+# An entry may carry a ``holidays`` callable (year -> set[date]).
+# compute_duration skips those dates in addition to weekends.
 # weekday(): Monday=0, Tuesday=1, ... Saturday=5, Sunday=6
 #
 # WHAT THIS TABLE IS. The week the planner schedules against, which is not the
@@ -440,14 +489,15 @@ WORK_CALENDARS: dict[str, dict] = {
     # been invented for it. core.calendar._WORKING_WEEK carries Monday-Friday for
     # CN, also uncited, so the two are not evidence for one another.
     #
-    # China's holidays are modelled, but not here: see core.calendar._holidays_cn,
-    # which cites the State Council national holiday measures. That function also
-    # documents the annual arrangement that turns particular weekends into working
-    # days, which neither this table nor the seeded calendar can express.
+    # China's holidays come from core.calendar._holidays_cn, which cites the
+    # State Council national holiday measures. That function also documents the
+    # annual arrangement that turns particular weekends into working days, which
+    # neither this table nor the seeded calendar can express.
     "CHINA": {
         "hours_per_day": 8,
         "work_days": {0, 1, 2, 3, 4, 5},  # Mon-Sat (common in construction)
         "label": "China (Mon-Sat, 8h)",
+        "holidays": _holidays_cn,  # year -> set[date]; Spring Festival et al.
     },
     # 11. India - HI_MUMBAI
     #
@@ -627,7 +677,14 @@ def get_work_calendar(region: str | None = None) -> dict:
     return WORK_CALENDARS["DEFAULT"]
 
 
-def compute_duration(start_date: str, end_date: str, region: str | None = None) -> int:
+def compute_duration(
+    start_date: str,
+    end_date: str,
+    region: str | None = None,
+    *,
+    work_weekdays: frozenset[int] | None = None,
+    extra_holidays: frozenset[date] | None = None,
+) -> int:
     """Calculate working days between two ISO date strings, inclusive.
 
     ``region`` selects the working week from :data:`WORK_CALENDARS` through
@@ -639,8 +696,15 @@ def compute_duration(start_date: str, end_date: str, region: str | None = None) 
     Monday-to-Friday week and is the right answer only when there is no project
     to ask, which is why no caller in the product passes it any more.
 
-    Holidays are not counted here and never have been: every day of the working
-    week between the two dates is a working day.
+    When ``work_weekdays`` or ``extra_holidays`` are supplied (typically from an
+    activity-level custom calendar resolved by the progress service), they
+    override the region-based working week and supplement the region holidays
+    respectively.
+
+    When the resolved calendar carries a ``holidays`` callable (year ->
+    set[date]), those dates are skipped even if they fall on a working weekday.
+    Currently only CHINA carries one (Spring Festival, Qingming, Dragon Boat,
+    Mid-Autumn and the fixed Gregorian holidays).
 
     Args:
         start_date: ISO date string (e.g. "2026-04-01").
@@ -649,6 +713,8 @@ def compute_duration(start_date: str, end_date: str, region: str | None = None) 
             :func:`get_work_calendar` accepts: a calendar key ("GULF"), an ISO
             country code ("QA"), a catalogue region id ("DE_BERLIN"), a picker
             token ("GulfStates") or a label ("Saudi Arabia").
+        work_weekdays: Override weekday set (0=Mon..6=Sun) from a custom calendar.
+        extra_holidays: Additional holiday dates from a custom calendar.
 
     Returns:
         Number of working days between start and end, inclusive. 0 when either
@@ -664,15 +730,53 @@ def compute_duration(start_date: str, end_date: str, region: str | None = None) 
         return 0
 
     cal = get_work_calendar(region)
-    work_days_set = cal["work_days"]
+    work_days_set = work_weekdays if work_weekdays is not None else cal["work_days"]
+
+    # Collect holiday dates when the calendar provides a holidays callable.
+    holiday_func = cal.get("holidays")
+    holiday_dates: set[date] = set()
+    if holiday_func is not None:
+        for y in range(start.year, end.year + 1):
+            holiday_dates.update(holiday_func(y))
+    if extra_holidays:
+        holiday_dates.update(extra_holidays)
 
     working_days = 0
     current = start
     while current <= end:
-        if current.weekday() in work_days_set:
+        if current.weekday() in work_days_set and current not in holiday_dates:
             working_days += 1
         current += timedelta(days=1)
 
+    return working_days
+
+
+def _compute_duration_from_cal(start_date: str, end_date: str, cal_data: dict) -> int:
+    """Working days between two dates using a resolved calendar dict.
+
+    ``cal_data`` is the ``{"work_days": [int, ...], "exceptions": [str, ...]}``
+    shape returned by ``_resolve_activity_calendars``.
+    """
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+    except (ValueError, TypeError):
+        return 0
+    if end < start:
+        return 0
+    work_days_set = set(cal_data.get("work_days", [0, 1, 2, 3, 4]))
+    exception_dates = set()
+    for d in cal_data.get("exceptions", []):
+        try:
+            exception_dates.add(date.fromisoformat(d) if isinstance(d, str) else d)
+        except (ValueError, TypeError):
+            pass
+    working_days = 0
+    current = start
+    while current <= end:
+        if current.weekday() in work_days_set and current not in exception_dates:
+            working_days += 1
+        current += timedelta(days=1)
     return working_days
 
 
@@ -701,6 +805,39 @@ def resolve_calendar(schedule: Schedule) -> dict:
         exceptions = readable_exception_dates(cal.get("exceptions"), source="schedule metadata calendar exceptions")
         return {"work_days": work_days or list(default_work_days), "exceptions": exceptions}
     return {"work_days": list(default_work_days), "exceptions": []}
+
+
+def inclusive_end_from_cpm(early_start: int, early_finish: int, calendar: dict, project_start: date) -> str:
+    """Turn a CPM finish offset into the inclusive end date an activity shows.
+
+    The engine's ``early_finish`` is the first day an FS successor may start,
+    that is the day after the work. An activity of N working days ends on its
+    Nth working day, so the end date is the last working day before that
+    offset on the activity's own calendar. Writing ``early_finish`` itself made
+    every linked activity end one working day late and put its successor's
+    start on the predecessor's end day. A zero-duration activity ends where it
+    starts.
+
+    Args:
+        early_start: CPM early start, a day offset from ``project_start``.
+        early_finish: CPM early finish, a day offset from ``project_start``.
+        calendar: ``{"work_days": [...], "exceptions": [...]}``, the calendar
+            the engine measured this activity on.
+        project_start: The CPM origin date.
+
+    Returns:
+        The inclusive end date as an ISO string.
+    """
+    start = project_start + timedelta(days=int(early_start))
+    finish = project_start + timedelta(days=int(early_finish))
+    if finish <= start:
+        return start.isoformat()
+    work_days = set(calendar.get("work_days") or [0, 1, 2, 3, 4])
+    exceptions = {d for d in (normalise_exception_date(e) for e in calendar.get("exceptions") or []) if d}
+    current = finish - timedelta(days=1)
+    while current > start and (current.weekday() not in work_days or current in exceptions):
+        current -= timedelta(days=1)
+    return current.isoformat()
 
 
 def _effective_activity_status(
@@ -969,6 +1106,7 @@ class ScheduleService:
             dep["activity_id"] = str(dep["activity_id"])
         resources_data = [res.model_dump() for res in data.resources]
         boq_ids = [str(pid) for pid in data.boq_position_ids]
+        await self._assert_positions_in_project(data.schedule_id, boq_ids)
 
         activity = Activity(
             schedule_id=data.schedule_id,
@@ -1398,6 +1536,12 @@ class ScheduleService:
 
         if "boq_position_ids" in fields and fields["boq_position_ids"] is not None:
             fields["boq_position_ids"] = [str(pid) for pid in fields["boq_position_ids"]]
+            # Only ids this write adds are checked, so resending a list that
+            # already holds an older link does not fail on it.
+            already = {str(pid) for pid in (activity.boq_position_ids or [])}
+            await self._assert_positions_in_project(
+                schedule_id, [pid for pid in fields["boq_position_ids"] if pid not in already]
+            )
 
         # Map 'metadata' key to the model's 'metadata_' column. Merge the
         # incoming dict over the stored value so a partial PATCH never drops
@@ -1410,16 +1554,23 @@ class ScheduleService:
                 else _incoming
             )
 
-        # Recalculate duration if dates changed, on the project's working week.
-        # A duration persisted on another week (every recompute before the
-        # region was threaded through counted Monday to Friday) is corrected
-        # here, the first time its dates are saved again, and not before.
+        # Recalculate duration if dates changed. Use the activity's own
+        # calendar when assigned, falling back to the project's regional week.
         new_start = fields.get("start_date", activity.start_date)
         new_end = fields.get("end_date", activity.end_date)
         if "start_date" in fields or "end_date" in fields:
             schedule = await self.get_schedule(schedule_id)
-            region = await self.resolve_project_region(schedule.project_id)
-            fields["duration_days"] = compute_duration(new_start, new_end, region)
+            cal_id = getattr(activity, "calendar_id", None)
+            if cal_id:
+                cal_map = await self._resolve_activity_calendars([activity], schedule.project_id)
+                cal_data = cal_map.get(str(activity_id))
+            else:
+                cal_data = None
+            if cal_data:
+                fields["duration_days"] = _compute_duration_from_cal(new_start, new_end, cal_data)
+            else:
+                region = await self.resolve_project_region(schedule.project_id)
+                fields["duration_days"] = compute_duration(new_start, new_end, region)
 
         # Completion guard (mirrors tasks.complete_task): reject the transition
         # to completed while any canonical predecessor is still open. Skipped
@@ -1531,6 +1682,46 @@ class ScheduleService:
         logger.info("Cleared %d activity(ies) from schedule %s", deleted, schedule_id)
         return deleted
 
+    async def _assert_positions_in_project(self, schedule_id: uuid.UUID, position_ids: list[str]) -> None:
+        """Reject BOQ positions that are not in the schedule's own project.
+
+        The activity keeps position ids as a JSON list with no foreign key, so
+        without this a link could name a position of another project, and the
+        schedule would then read that project's quantities and money. Answers
+        404 for a foreign id exactly as for a missing one, so a caller cannot
+        probe which ids exist elsewhere.
+
+        Args:
+            schedule_id: The schedule the activity belongs to.
+            position_ids: Position ids about to be linked.
+
+        Raises:
+            HTTPException 404 if any id is not a position of that project.
+        """
+        if not position_ids:
+            return
+        from app.modules.boq.models import BOQ, Position
+
+        schedule = await self.get_schedule(schedule_id)
+        wanted: set[uuid.UUID] = set()
+        for pid in position_ids:
+            try:
+                wanted.add(uuid.UUID(str(pid)))
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="BOQ position not found") from exc
+        rows = await self.session.execute(
+            select(Position.id)
+            .join(BOQ, BOQ.id == Position.boq_id)
+            .where(Position.id.in_(wanted))
+            .where(BOQ.project_id == schedule.project_id)
+        )
+        found = set(rows.scalars().all())
+        if wanted - found:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="BOQ position not found in this project",
+            )
+
     async def link_boq_position(self, activity_id: uuid.UUID, boq_position_id: uuid.UUID) -> Activity:
         """Link a BOQ position to an activity.
 
@@ -1556,6 +1747,7 @@ class ScheduleService:
                 detail="BOQ position is already linked to this activity",
             )
 
+        await self._assert_positions_in_project(activity.schedule_id, [position_str])
         current_ids.append(position_str)
         await self.activity_repo.update_fields(activity_id, boq_position_ids=current_ids)
 
@@ -1658,7 +1850,58 @@ class ScheduleService:
         )
 
         logger.info("Activity %s progress updated to %.1f%%", activity_id, progress_pct)
+
+        # Roll up progress to parent summary if this activity has one.
+        if activity.parent_id:
+            await self._rollup_summary_progress(activity.parent_id)
+
         return await self.get_activity(activity_id)
+
+    async def _rollup_summary_progress(self, summary_id: uuid.UUID, _depth: int = 0) -> None:
+        """Recompute a summary activity's progress as the duration-weighted mean of its children.
+
+        Recurses up the ancestor chain so that updating a leaf under a
+        nested summary propagates all the way to the root.  Depth is
+        capped at 20 to prevent infinite loops if the data has a cycle.
+        """
+        if _depth > 20:
+            return
+
+        children = (
+            await self.session.execute(
+                select(Activity.progress_pct, Activity.duration_days).where(Activity.parent_id == summary_id)
+            )
+        ).all()
+        if not children:
+            return
+
+        total_weight = 0.0
+        weighted_sum = 0.0
+        for pct_str, dur in children:
+            weight = max(dur, 1)
+            weighted_sum += _str_to_float(pct_str) * weight
+            total_weight += weight
+        rolled_up = weighted_sum / total_weight if total_weight > 0 else 0.0
+
+        if rolled_up >= 100.0:
+            new_status = "completed"
+        elif rolled_up > 0:
+            new_status = "in_progress"
+        else:
+            new_status = "not_started"
+
+        await self.activity_repo.update_fields(
+            summary_id,
+            progress_pct=str(round(rolled_up, 1)),
+            status=new_status,
+        )
+
+        # Recurse to grandparent if this summary itself has a parent.
+        parent_row = (
+            await self.session.execute(select(Activity.parent_id).where(Activity.id == summary_id))
+        ).scalar_one_or_none()
+        if parent_row:
+            await self._rollup_summary_progress(parent_row, _depth + 1)
 
     # ── BIM ↔ Activity linking ─────────────────────────────────────────────
 
@@ -2244,7 +2487,12 @@ class ScheduleService:
                 continue
             if str(act.id) in has_predecessor:
                 new_start = offset_to_iso(cpm["early_start"], project_start)
-                new_end = offset_to_iso(cpm["early_finish"], project_start)
+                new_end = inclusive_end_from_cpm(
+                    cpm["early_start"],
+                    cpm["early_finish"],
+                    activity_calendars.get(str(act.id), calendar),
+                    project_start,
+                )
             else:
                 new_start = act.start_date
                 new_end = act.end_date
@@ -2366,7 +2614,10 @@ class ScheduleService:
                 }
             )
 
-        # Determine project duration
+        # Determine project duration. Only a window the caller supplied (the
+        # project's own dates) is a promise the plan has to keep; the default
+        # below is a guess and merely caps a single activity.
+        window_is_explicit = total_project_days is not None
         if total_project_days is None:
             boq_meta = boq.metadata_ or {}
             building_type = boq_meta.get("building_type", "residential")
@@ -2440,6 +2691,7 @@ class ScheduleService:
                     "total": section_total,
                     "parent_position": pos,
                     "children": children if children else [pos],
+                    "is_leaf": not children,
                 }
             )
 
@@ -2464,6 +2716,51 @@ class ScheduleService:
         else:
             schedule_start = date.today()
 
+        # ── Durations, fitted to the project window ──────────────────────
+        # Each position's duration is computed first, per section, as
+        # (calendar days, source, working days). The layout below runs the
+        # children of a section back to back and starts each next section half
+        # way into the previous one, so a section of a few long positions can
+        # run far past the project even though every single position is capped
+        # at the window. When the caller gave the project's window, the working
+        # days are scaled down together until the whole plan fits inside it,
+        # keeping the positions' proportions. One working day is held back for
+        # the completion milestone, which CPM puts on the day after the work.
+        plan: list[list[tuple[int, str, int]]] = []
+        for section in sections:
+            rows: list[tuple[int, str, int]] = []
+            for pos in section["children"]:
+                duration_cal, duration_source = _calc_duration_from_resources(
+                    pos.get("metadata_", {}) or {},
+                    _str_to_float(pos["quantity"]),
+                    pos["unit"] or "",
+                    _str_to_float(pos["total"]),
+                    grand_total,
+                    total_project_days,
+                    hours_per_day=hours_per_day,
+                    work_days_per_week=work_days_per_week,
+                )
+                # Calendar days to working days on the project's own week, so
+                # six-day regions get counts consistent with their calendar.
+                work_days = max(1, math.ceil(duration_cal * work_days_per_week / 7))
+                rows.append((duration_cal, duration_source, work_days))
+            plan.append(rows)
+
+        if window_is_explicit and total_project_days > 0:
+            window_end = schedule_start + timedelta(days=total_project_days - 1)
+            budget = max(1, _working_days_between(schedule_start - timedelta(days=1), window_end) - 1)
+            raw = [[w for _, _, w in rows] for rows in plan]
+            if plan_span_work_days(raw) > budget:
+                fitted = fit_plan_to_budget(raw, budget)
+                if plan_span_work_days(fitted) > budget:
+                    logger.warning(
+                        "BOQ %s has too many positions to fit %d days even at one day each", boq_id, total_project_days
+                    )
+                plan = [
+                    [(cal, source, w) for (cal, source, _), w in zip(rows, new_rows, strict=True)]
+                    for rows, new_rows in zip(plan, fitted, strict=True)
+                ]
+
         # ── Create hierarchical activities ───────────────────────────────
         created_activities: list[Activity] = []
         sort_counter = 0
@@ -2475,10 +2772,71 @@ class ScheduleService:
         # Track per-section data for summary rollup
         summary_activity_map: dict[uuid.UUID, list[Activity]] = {}
 
-        # Current date cursor for section starts
+        # Current date cursor for section starts, on a working day so an
+        # activity's first day is one it is worked.
         section_start = schedule_start
+        while section_start.weekday() not in work_days_set:
+            section_start += timedelta(days=1)
 
         for section_idx, section in enumerate(sections):
+            # ── Leaf position: create a standalone TASK, no Summary wrapper ──
+            if section["is_leaf"]:
+                pos = section["parent_position"]
+                pos_quantity = _str_to_float(pos["quantity"])
+                pos_unit = pos["unit"] or ""
+                pos_total = _str_to_float(pos["total"])
+                pos_meta = pos.get("metadata_", {}) or {}
+
+                duration_cal, duration_source, work_days = plan[section_idx][0]
+                # The end date is inclusive: the activity's last working day.
+                leaf_end = _add_working_days(section_start, work_days - 1)
+
+                leaf_deps: list[dict] = []
+                if prev_section_summary_id is not None:
+                    lag = max(3, prev_section_duration_work_days // 2)
+                    leaf_deps = [{"activity_id": str(prev_section_summary_id), "type": "SS", "lag_days": lag}]
+
+                sort_counter += 1
+                leaf_name = pos["description"][:255] if pos["description"] else f"Position {pos['ordinal']}"
+                leaf_activity = Activity(
+                    schedule_id=schedule_id,
+                    parent_id=None,
+                    name=leaf_name,
+                    description=f"Auto-generated from BOQ position {pos['ordinal']} ({pos_quantity} {pos_unit})",
+                    wbs_code=pos["ordinal"],
+                    start_date=section_start.isoformat(),
+                    end_date=leaf_end.isoformat(),
+                    duration_days=work_days,
+                    progress_pct="0",
+                    status="not_started",
+                    activity_type="task",
+                    dependencies=leaf_deps,
+                    resources=[],
+                    boq_position_ids=[str(pos["id"])],
+                    color="#0071e3",
+                    sort_order=sort_counter,
+                    metadata_={
+                        "source": "boq_generation",
+                        "boq_id": str(boq_id),
+                        "quantity": pos_quantity,
+                        "unit": pos_unit,
+                        "labor_hours": pos_meta.get("labor_hours", 0),
+                        "workers_per_unit": pos_meta.get("workers_per_unit", 0),
+                        "duration_method": duration_source,
+                        "duration_source": duration_source,
+                    },
+                )
+                leaf_activity = await self.activity_repo.create(leaf_activity)
+                leaf_activity_id = leaf_activity.id
+                created_activities.append(
+                    {"activity_type": "task", "end_date": leaf_activity.end_date, "id": leaf_activity_id}
+                )
+
+                prev_section_summary_id = leaf_activity_id
+                prev_section_duration_work_days = work_days
+                section_start = _add_working_days(section_start, max(3, work_days // 2))
+                continue
+
             # ── Create SUMMARY activity (placeholder dates, updated later) ──
             sort_counter += 1
             summary = Activity(
@@ -2537,24 +2895,11 @@ class ScheduleService:
                 child_total = _str_to_float(child_pos["total"])
                 child_meta = child_pos.get("metadata_", {}) or {}
 
-                duration_cal, duration_source = _calc_duration_from_resources(
-                    child_meta,
-                    child_quantity,
-                    child_unit,
-                    child_total,
-                    grand_total,
-                    total_project_days,
-                    hours_per_day=hours_per_day,
-                    work_days_per_week=work_days_per_week,
-                )
-                # Convert calendar days to working days for date arithmetic.
-                # Use the project's regional work-week (not a hardcoded 5/7)
-                # so 6-day-week regions (GULF, BRAZIL, CHINA, INDIA) get
-                # working-day counts consistent with the stored duration.
-                work_days = max(1, math.ceil(duration_cal * work_days_per_week / 7))
+                duration_cal, duration_source, work_days = plan[section_idx][child_idx]
                 section_work_days_total += work_days
 
-                child_end = _add_working_days(child_start, work_days)
+                # The end date is inclusive: the activity's last working day.
+                child_end = _add_working_days(child_start, work_days - 1)
 
                 # Within-section dependency: sequential FS
                 child_deps: list[dict] = []
@@ -2581,7 +2926,7 @@ class ScheduleService:
                     wbs_code=child_pos["ordinal"] or f"{section['ordinal']}.{child_idx + 1:03d}",
                     start_date=child_start.isoformat(),
                     end_date=child_end.isoformat(),
-                    duration_days=duration_cal,
+                    duration_days=work_days,
                     progress_pct="0",
                     status="not_started",
                     activity_type="task",
@@ -2626,14 +2971,14 @@ class ScheduleService:
                 )
 
                 prev_child_id = child_activity_id
-                child_start = child_end  # next child starts after this one ends
+                child_start = _add_working_days(child_end, 1)  # the next working day
 
             # ── Update SUMMARY dates from children (rollup) ─────────────
             children_data = summary_activity_map[summary_id]
             if children_data:
                 earliest_start = min(date.fromisoformat(a["start_date"]) for a in children_data)
                 latest_end = max(date.fromisoformat(a["end_date"]) for a in children_data)
-                summary_duration = (latest_end - earliest_start).days
+                summary_duration = _working_days_between(earliest_start - timedelta(days=1), latest_end)
                 await self.activity_repo.update_fields(
                     summary_id,
                     start_date=earliest_start.isoformat(),

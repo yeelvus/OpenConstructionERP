@@ -10,8 +10,10 @@ import { RegionalSettings } from './RegionalSettings';
 import { EInvoiceSettings } from './EInvoiceSettings';
 import { ModulesSettings } from './ModulesSettings';
 import { SettingsTeamPanel } from './SettingsTeamPanel';
+import { CompanyDocumentsSettings } from './CompanyDocumentsSettings';
 import { WebhookLeads } from './WebhookLeads';
 import { DesktopServerCard } from './DesktopServerCard';
+import { TextSizeSetting } from './TextSizeSetting';
 import VectorStatusCard from './VectorStatusCard';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -46,13 +48,14 @@ import {
   LayoutGrid,
   Users,
   ScrollText,
+  Building2,
 } from 'lucide-react';
 import { Card, CardHeader, CardContent, CardFooter, Button, Badge, InfoHint, Skeleton, Breadcrumb, DismissibleInfo, IntroRichText, ConfirmDialog, ModuleGuideButton, CountryFlag } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { settingsGuide } from './settingsGuide';
 import { useTabKeyboardNav } from '@/shared/hooks/useTabKeyboardNav';
 import { DashboardLayoutManager } from '@/features/dashboard/DashboardLayoutManager';
-import { UpdateNotification } from '@/shared/ui/UpdateChecker';
+import { UpdateInlineNotice } from '@/shared/ui/UpdateChecker';
 import { apiGet, apiPatch, apiPost, apiPut, apiDelete } from '@/shared/lib/api';
 import { SUPPORTED_LANGUAGES } from '@/app/i18n';
 import { useAuthStore } from '@/stores/useAuthStore';
@@ -966,6 +969,7 @@ function AppearanceCard() {
             );
           })}
         </div>
+        <TextSizeSetting />
       </CardContent>
     </Card>
   );
@@ -1245,7 +1249,7 @@ function DemoLoginAdminRow() {
 
 // ── Tab definitions ──────────────────────────────────────────────────────────
 
-type SettingsTab = 'general' | 'dashboard' | 'team' | 'account' | 'regional' | 'einvoice' | 'converters' | 'ai' | 'security' | 'integrations' | 'modules' | 'governance' | 'audit' | 'advanced';
+type SettingsTab = 'general' | 'dashboard' | 'team' | 'company' | 'account' | 'regional' | 'einvoice' | 'converters' | 'ai' | 'security' | 'integrations' | 'modules' | 'governance' | 'audit' | 'advanced';
 
 interface TabDef {
   id: SettingsTab;
@@ -1270,6 +1274,9 @@ const TABS: readonly TabDef[] = [
   { id: 'dashboard',    labelKey: 'settings.tab_dashboard',    defaultLabel: 'Dashboard',    icon: LayoutGrid, descKey: 'settings.tab_dashboard_desc',  descDefault: 'Reorder, show or hide dashboard sections' },
   { id: 'account',      labelKey: 'settings.tab_account',      defaultLabel: 'Account',      icon: User,     descKey: 'settings.tab_account_desc',      descDefault: 'Password and sign out' },
   { id: 'team',         labelKey: 'settings.tab_team',         defaultLabel: 'Team & Plan',  icon: Users,    descKey: 'settings.tab_team_desc',         descDefault: 'Members, roles, and license' },
+  // Company & documents - logos and the letterhead printed on exported
+  // documents. Visible to everyone; the panel is read-only below admin.
+  { id: 'company',      labelKey: 'settings.tab_company',      defaultLabel: 'Company & documents', icon: Building2, descKey: 'settings.tab_company_desc', descDefault: 'Logos, letterhead, and how printed documents look' },
   { id: 'regional',     labelKey: 'settings.tab_regional',     defaultLabel: 'Regional',     icon: Globe,    descKey: 'settings.tab_regional_desc',     descDefault: 'Language, timezone, and formats' },
   { id: 'einvoice',     labelKey: 'settings.tab_einvoice',     defaultLabel: 'E-invoice',    icon: ReceiptText, descKey: 'settings.tab_einvoice_desc',  descDefault: 'Seller identity and bank account for electronic invoices' },
   { id: 'converters',   labelKey: 'settings.tab_converters',   defaultLabel: 'Converters',  icon: Layers,   descKey: 'settings.tab_converters_desc',   descDefault: 'DDC converters - installed versions and GitHub sources' },
@@ -1429,6 +1436,17 @@ export function SettingsPage() {
     validTabIds.includes(initialTab) ? initialTab : 'general',
   );
 
+  // A link that only changes the query string (the branding editor's "logo and
+  // company details for documents") leaves this page mounted, so the tab has to
+  // follow the URL rather than read it once on mount. The functional update
+  // keeps the active tab out of the dependencies, so a click, which sets both
+  // at once, cannot bounce between the old and the new value.
+  useEffect(() => {
+    if (validTabIds.includes(initialTab)) {
+      setActiveTab((current) => (current === initialTab ? current : initialTab));
+    }
+  }, [initialTab, validTabIds]);
+
   const handleTabChange = useCallback((id: SettingsTab) => {
     setActiveTab(id);
     const params = new URLSearchParams(searchParams);
@@ -1456,14 +1474,9 @@ export function SettingsPage() {
 
   return (
     <div className="space-y-5 animate-fade-in">
-      {/* Update notification — surfaced in Settings so users see new
-          versions even if they dismissed the sidebar widget for the session.
-          Rendered FIRST so that when UpdateNotification returns null (the
-          common no-update case) it is the leading space-y child and reserves
-          no phantom margin (audit: settings-top). Full-bleed when shown. */}
-      <div className="-mx-4 sm:-mx-7 empty:hidden">
-        <UpdateNotification forceShow hideDismiss />
-      </div>
+      {/* Update notification, one line. The sidebar carries the full card;
+          both follow the same per-version dismissal. */}
+      <UpdateInlineNotice className="mb-4" />
 
       <Breadcrumb items={[{ label: t('nav.settings', 'Settings') }]} />
 
@@ -1842,6 +1855,9 @@ export function SettingsPage() {
 
           {/* ── TEAM & PLAN ──────────────────────────────────────── */}
           {activeTab === 'team' && <SettingsTeamPanel />}
+
+          {/* ── COMPANY & DOCUMENTS ──────────────────────────────── */}
+          {activeTab === 'company' && <CompanyDocumentsSettings />}
 
           {/* ── REGIONAL ─────────────────────────────────────────── */}
           {activeTab === 'regional' && (

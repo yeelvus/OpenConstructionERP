@@ -23,7 +23,7 @@ from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 from typing import Any
 
-from app.core.money import minor_units
+from app.core.currency_registry import sentence_amount
 from app.core.validation.engine import (
     RuleCategory,
     RuleResult,
@@ -249,14 +249,23 @@ def _reference_multiplier(fx: Any, currency: str) -> tuple[float | None, dict[st
     }
 
 
-def _fmt_money(value: float, currency: str) -> str:
+def _fmt_money(value: float | Decimal, currency: str) -> str:
     """Format an amount with the decimals its currency actually has, plus the code.
 
     ``175,000,000 IDR`` rather than ``175,000,000.00 IDR``: the rupiah has no
     subunit, and two decimals in it invite the reader to look for a decimal
     error that is not there.
+
+    The spelling itself is :func:`app.core.currency_registry.sentence_amount`,
+    and this is a name for it rather than a second copy of it. It has to be
+    reachable from two places that cannot both import the same module: the rules
+    here, which already import half the platform, and the validator modules that
+    declare themselves standard-library-only. Writing it out twice is how two
+    findings on one screen end up disagreeing about what an amount looks like,
+    and the disagreement shows up first on the currencies that do not have two
+    decimals, which are the ones nobody tests by hand.
     """
-    return f"{value:,.{minor_units(currency)}f} {currency}".rstrip()
+    return sentence_amount(value, currency)
 
 
 def _thresholds_not_scaled(
@@ -1517,9 +1526,11 @@ class NegativeValues(ValidationRule):
             else:
                 parts: list[str] = []
                 if qty_val < 0:
+                    # A quantity is a count of units, not money: it keeps its
+                    # bare number and must never pick up a currency code.
                     parts.append(f"quantity={qty_val}")
                 if rate_val < 0:
-                    parts.append(f"unit_rate={rate_val}")
+                    parts.append(f"unit_rate={_fmt_money(rate_val, _bill_currency(context, pos))}")
                 message = translate(
                     "boq_quality.negative_values.fail",
                     locale=locale,
@@ -1585,7 +1596,11 @@ class UnrealisticRate(ValidationRule):
             scale = multiplier if multiplier is not None else 1.0
             rate_limit = self.RATE_THRESHOLD * scale
             total_limit = self.TOTAL_THRESHOLD * scale
-            rate_ok = rate <= rate_limit
+            # A lump sum is one unit whose rate is the whole line, so its rate
+            # is its total and only the total ceiling says anything about it.
+            # Judging it per unit flagged every lump-sum section of a schedule
+            # of values above the rate ceiling.
+            rate_ok = rate <= rate_limit or _unit_dimension(str(pos.get("unit") or "")) == "lump"
             total_ok = total <= total_limit
             passed = rate_ok and total_ok
             if passed:
@@ -2155,10 +2170,31 @@ class BOQUnitSystemConsistencyRule(ValidationRule):
             f"BOQ position(s) use {wrong_label} units (e.g. {first_unit} on "
             f"position {first_ordinal})."
         )
+        # The suggestion names the field the reader can actually go and look
+        # at. It used to say "update the project's unit_system", and no such
+        # field exists: not on ``Project``, not in ``ProjectCreate`` or
+        # ``ProjectUpdate``, and nowhere in the interface. The column of that
+        # name is added by the migration chain alone, which no supported
+        # install walks, so the advice sent the reader hunting for a setting
+        # that is not there on any install.
+        #
+        # What decides the value instead is the project's country: the payload
+        # key comes from ``project_context._measurement_system``, which asks
+        # ``regional_packs.resolve_measurement_system`` for the system the pack
+        # claiming ``Project.country_code`` declares, falling back to
+        # ``Project.region`` when no pack claims the country. So the derivation
+        # is stated as a fact rather than as an instruction to go and change
+        # the country: the country is chosen when the project is created and
+        # the project settings page does not offer it, and re-countrying a
+        # project to change its units would move its compliance pack and its
+        # payment-application gate with it. Converting the units is the action
+        # that is always available, so that is what leads.
         suggestion = (
-            f"Convert {wrong_label} units to {project_system} equivalents "
-            f"or update the project's unit_system if {wrong_label} is "
-            f"actually intended."
+            f"Convert the {wrong_label} units to {project_system} equivalents. A project has no "
+            f"unit-system field to switch instead: the measurement system is the one declared by "
+            f"the regional pack that claims the project's country, and its region is read only "
+            f"when no pack claims the country. So {wrong_label} units are intended here only if "
+            f"the project's country is wrong."
         )
         return [
             RuleResult(
@@ -4849,6 +4885,339 @@ class HungarianItemNumberUnique(ValidationRule):
         return results
 
 
+# ── Romania, Greece, Ukraine: the national structure a line is filed under ──
+#
+# The three packs classify their bills against DIN 276, the nearest hierarchy
+# the product renders, the way the Czech and Polish packs do. What makes each
+# bill national is a second code every line carries next to it, under its own
+# classification key, and that is what these rules read:
+#
+#   romania  ``deviz``  the chapter and subchapter of the deviz general,
+#                       HG 907/2016 Annex 7 (4.1 Construcții și instalații)
+#   greece   ``net``    the article of the national unified price lists
+#                       (ΝΕΤ ΟΙΚ, ΟΔΟ, ΥΔΡ, ΛΙΜ, ΗΛΜ, ΠΡΣ; ΑΤΗΕ for services)
+#   ukraine  ``zkr``    the chapter, 1 to 12, of the зведений кошторисний
+#                       розрахунок in the Настанова approved by наказ
+#                       Мінрегіону №281 of 01.11.2021
+#
+# The engine rule-set names are the country names and the classification keys
+# are different words on purpose, which is the lesson of ``hungary`` and
+# ``tetelrend``. Each set has a presence rule that fails on a line with no
+# code, so the set is never silent on a bill written without the local
+# structure, and a recognition rule that names the code it could not place.
+# The chapter titles are the standards' own and are data, not prose.
+
+RO_DEVIZ_GENERAL_CHAPTERS: dict[str, str] = {
+    "1": "Cheltuieli pentru obținerea și amenajarea terenului",
+    "1.1": "Obținerea terenului",
+    "1.2": "Amenajarea terenului",
+    "1.3": "Amenajări pentru protecția mediului și aducerea terenului la starea inițială",
+    "1.4": "Cheltuieli pentru relocarea/protecția utilităților",
+    "2": "Cheltuieli pentru asigurarea utilităților necesare obiectivului de investiții",
+    "3": "Cheltuieli pentru proiectare și asistență tehnică",
+    "3.1": "Studii",
+    "3.2": "Documentații-suport și cheltuieli pentru obținerea de avize, acorduri și autorizații",
+    "3.3": "Expertizare tehnică",
+    "3.4": "Certificarea performanței energetice și auditul energetic al clădirilor",
+    "3.5": "Proiectare",
+    "3.6": "Organizarea procedurilor de achiziție",
+    "3.7": "Consultanță",
+    "3.8": "Asistență tehnică",
+    "4": "Cheltuieli pentru investiția de bază",
+    "4.1": "Construcții și instalații",
+    "4.2": "Montaj utilaje, echipamente tehnologice și funcționale",
+    "4.3": "Utilaje, echipamente tehnologice și funcționale care necesită montaj",
+    "4.4": "Utilaje, echipamente tehnologice și funcționale care nu necesită montaj și echipamente de transport",
+    "4.5": "Dotări",
+    "4.6": "Active necorporale",
+    "5": "Alte cheltuieli",
+    "5.1": "Organizare de șantier",
+    "5.2": "Comisioane, cote, taxe, costul creditului",
+    "5.3": "Cheltuieli diverse și neprevăzute",
+    "5.4": "Cheltuieli pentru informare și publicitate",
+    "6": "Cheltuieli pentru probe tehnologice și teste",
+    "6.1": "Pregătirea personalului de exploatare",
+    "6.2": "Probe tehnologice și teste",
+}
+
+# A chapter, a subchapter, and one level below it for the per-object lines of
+# a deviz general (4.1.1, 4.1.2 ...) and the split of 3.8 into 3.8.1 and 3.8.2.
+_RO_DEVIZ_CODE_RE = re.compile(r"^\d(?:\.\d{1,2}){0,2}$")
+
+# The ΝΕΤ ΟΙΚ chapters, by the two digits that open an article code. From the
+# descriptive price list for building works; an English gloss is enough here
+# because the rule reports the number, not the title.
+GR_NET_OIK_CHAPTERS: frozenset[str] = frozenset(
+    {
+        "10",  # loading, unloading and transport
+        "20",  # excavation for buildings
+        "21",  # pumping and dewatering
+        "22",  # demolition and stripping out
+        "23",  # scaffolding and shoring
+        "31",  # gravel concrete
+        "32",  # concrete structures
+        "33",  # lime and earth concrete
+        "34",  # stone concrete
+        "35",  # lightweight concrete
+        "38",  # formwork and reinforcement
+        "41",  # stone fill and paving
+        "42",  # rubble masonry
+        "43",  # stone masonry
+        "45",  # stone facing
+        "46",  # brick masonry
+        "47",  # other masonry units
+        "48",  # special masonry
+        "49",  # tie beams
+        "50",  # glass walls and partitions
+        "51",  # timber works
+        "52",
+        "53",
+        "54",
+        "55",
+        "56",
+        "61",  # miscellaneous ironwork
+        "62",  # steel frames and doors
+        "63",  # steel stairs
+        "64",  # steel railings
+        "65",  # aluminium
+        "71",  # pointing and plaster
+        "72",  # roofing
+        "73",  # floor and wall finishes
+        "74",  # marble floors
+        "75",  # other marble work
+        "76",  # glazing
+        "77",  # painting
+        "78",  # decorative finishes
+        "79",  # damp, sound and thermal insulation
+    }
+)
+
+# Latin capitals that look like Greek ones. A code keyed on an English layout
+# reads ``OIK`` for ``ΟΙΚ``; mapping the lookalikes lets the shape judge the
+# code rather than the keyboard it was typed on.
+_GR_LOOKALIKES = str.maketrans("ABEHIKMNOPTXYZ", "ΑΒΕΗΙΚΜΝΟΡΤΧΥΖ")
+
+_GR_OIK_RE = re.compile(r"^(?:ΝΑ)?ΟΙΚ ?(\d{2})(?:\.\d{2}){1,3}$")
+_GR_OTHER_NET_RE = re.compile(r"^(?:ΝΑ)?(?:ΟΔΟ|ΥΔΡ|ΛΙΜ|ΗΛΜ|ΠΡΣ) ?[Α-Ω0-9][Α-Ω0-9.\-]*$")
+_GR_ATHE_RE = re.compile(r"^(?:ΝΑ)?ΑΤΗΕ ?\d{3,5}(?:\.\d+)*$")
+
+UA_ZKR_CHAPTERS: dict[int, str] = {
+    1: "Підготовка території будівництва",
+    2: "Об'єкти основного призначення",
+    3: "Об'єкти підсобного та обслуговуючого призначення",
+    4: "Об'єкти енергетичного господарства",
+    5: "Об'єкти транспортного господарства і зв'язку",
+    6: "Зовнішні мережі та споруди",
+    7: "Благоустрій та озеленення території",
+    8: "Тимчасові будівлі і споруди",
+    9: "Кошти на інші роботи та витрати",
+    10: "Утримання служби замовника та інжинірингові послуги",
+    11: "Підготовка експлуатаційних кадрів",
+    12: "Проектні, вишукувальні роботи, експертиза та авторський нагляд",
+}
+
+
+def _national_code(pos: dict[str, Any], key: str) -> str:
+    """The code a position carries under one classification key, trimmed."""
+    return str((pos.get("classification") or {}).get(key, "") or "").strip()
+
+
+def _gr_net_code(pos: dict[str, Any]) -> str:
+    """The ΝΕΤ article on a position, upper-cased, lookalikes mapped, spaces collapsed."""
+    code = re.sub(r"\s+", " ", _national_code(pos, "net")).upper()
+    return code.translate(_GR_LOOKALIKES)
+
+
+class _NationalCodeRequired(ValidationRule):
+    """Every priced line carries a code under ``key``; the message prefix is the rule id."""
+
+    severity = Severity.ERROR
+    category = RuleCategory.COMPLIANCE
+    key = ""
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        results: list[RuleResult] = []
+        for pos in _get_leaf_positions(context):
+            passed = bool(_national_code(pos, self.key))
+            results.append(
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=passed,
+                    message=(
+                        _ok(locale)
+                        if passed
+                        else translate(f"{self.rule_id}.fail", locale=locale, ordinal=pos.get("ordinal", "?"))
+                    ),
+                    element_ref=pos.get("id"),
+                    suggestion=None if passed else translate(f"{self.rule_id}.suggestion", locale=locale),
+                )
+            )
+        return results
+
+
+class RomanianDevizChapterRequired(_NationalCodeRequired):
+    rule_id = "romania.deviz_chapter_required"
+    name = "Romanian Deviz General Chapter Required"
+    standard = "romania"
+    description = "Priced lines must name the deviz general chapter they are budgeted under (HG 907/2016)"
+    key = "deviz"
+
+
+class RomanianDevizChapterRecognised(ValidationRule):
+    rule_id = "romania.deviz_chapter_recognised"
+    name = "Romanian Deviz General Chapter Is Recognised"
+    standard = "romania"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "The deviz code must be a chapter or subchapter of the HG 907/2016 deviz general"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        results: list[RuleResult] = []
+        for pos in _get_positions(context):
+            code = _national_code(pos, "deviz")
+            if not code:
+                continue
+            # The two top levels are the standard's; a third level is the
+            # per-object split of a recognised subchapter.
+            head = ".".join(code.split(".")[:2])
+            passed = bool(_RO_DEVIZ_CODE_RE.match(code)) and head in RO_DEVIZ_GENERAL_CHAPTERS
+            results.append(
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=passed,
+                    message=(
+                        _ok(locale)
+                        if passed
+                        else translate(
+                            "romania.deviz_chapter_recognised.fail",
+                            locale=locale,
+                            code=code,
+                            ordinal=pos.get("ordinal", "?"),
+                        )
+                    ),
+                    element_ref=pos.get("id"),
+                    details={"given_code": code, "chapter_name": RO_DEVIZ_GENERAL_CHAPTERS.get(head, "")},
+                    suggestion=(
+                        None if passed else translate("romania.deviz_chapter_recognised.suggestion", locale=locale)
+                    ),
+                )
+            )
+        return results
+
+
+class GreekNetArticleRequired(_NationalCodeRequired):
+    rule_id = "greece.net_article_required"
+    name = "Greek Unified Price List Article Required"
+    standard = "greece"
+    description = "Priced lines must carry the article of the national unified price lists (ΝΕΤ) they are priced from"
+    key = "net"
+
+
+class GreekNetArticleValid(ValidationRule):
+    rule_id = "greece.net_article_valid"
+    name = "Greek Unified Price List Article Is Well Formed"
+    standard = "greece"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = (
+        "ΝΕΤ article codes follow the price list's own shape, and a building-works article opens a real chapter"
+    )
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        results: list[RuleResult] = []
+        for pos in _get_positions(context):
+            code = _gr_net_code(pos)
+            if not code:
+                continue
+            oik = _GR_OIK_RE.match(code)
+            if oik:
+                chapter = oik.group(1)
+                passed = chapter in GR_NET_OIK_CHAPTERS
+                key = "greece.net_article_valid.chapter"
+            else:
+                chapter = ""
+                passed = bool(_GR_OTHER_NET_RE.match(code) or _GR_ATHE_RE.match(code))
+                key = "greece.net_article_valid.invalid"
+            results.append(
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=passed,
+                    message=(
+                        _ok(locale)
+                        if passed
+                        else translate(key, locale=locale, code=code, chapter=chapter, ordinal=pos.get("ordinal", "?"))
+                    ),
+                    element_ref=pos.get("id"),
+                    details={"given_code": code, "chapter": chapter},
+                    suggestion=None if passed else translate("greece.net_article_valid.suggestion", locale=locale),
+                )
+            )
+        return results
+
+
+class UkrainianZkrChapterRequired(_NationalCodeRequired):
+    rule_id = "ukraine.zkr_chapter_required"
+    name = "Ukrainian Summary Estimate Chapter Required"
+    standard = "ukraine"
+    description = "Priced lines must name the chapter of the зведений кошторисний розрахунок they belong to"
+    key = "zkr"
+
+
+class UkrainianZkrChapterRecognised(ValidationRule):
+    rule_id = "ukraine.zkr_chapter_recognised"
+    name = "Ukrainian Summary Estimate Chapter Is One of the Twelve"
+    standard = "ukraine"
+    severity = Severity.WARNING
+    category = RuleCategory.COMPLIANCE
+    description = "The chapter must be one of the twelve of the зведений кошторисний розрахунок"
+
+    async def validate(self, context: ValidationContext) -> list[RuleResult]:
+        locale = _get_locale(context)
+        results: list[RuleResult] = []
+        for pos in _get_positions(context):
+            code = _national_code(pos, "zkr")
+            if not code:
+                continue
+            passed = code.isdigit() and int(code) in UA_ZKR_CHAPTERS
+            results.append(
+                RuleResult(
+                    rule_id=self.rule_id,
+                    rule_name=self.name,
+                    severity=self.severity,
+                    category=self.category,
+                    passed=passed,
+                    message=(
+                        _ok(locale)
+                        if passed
+                        else translate(
+                            "ukraine.zkr_chapter_recognised.fail",
+                            locale=locale,
+                            chapter=code,
+                            ordinal=pos.get("ordinal", "?"),
+                        )
+                    ),
+                    element_ref=pos.get("id"),
+                    details={"chapter": code, "chapter_name": UA_ZKR_CHAPTERS.get(int(code), "") if passed else ""},
+                    suggestion=(
+                        None if passed else translate("ukraine.zkr_chapter_recognised.suggestion", locale=locale)
+                    ),
+                )
+            )
+        return results
+
+
 # ── Birim Fiyat Rules (Turkey) ──────────────────────────────────────────
 
 
@@ -6382,8 +6751,9 @@ class PropDevEscrowBalanceReconciled(ValidationRule):
                             "property_dev.escrow_balance_reconciled.fail",
                             locale=locale,
                             account=str(acc.id),
-                            ledger=str(declared.quantize(Decimal("0.01"))),
-                            drift=str(drift.quantize(Decimal("0.01"))),
+                            ledger=_fmt_money(declared, acc.currency or ""),
+                            drift=_fmt_money(drift, acc.currency or ""),
+                            # A transaction count, not an amount: no formatting.
                             transactions=tx_count,
                         ),
                         element_ref=f"property_dev:escrow_account:{acc.id}",
@@ -6585,9 +6955,9 @@ class PropDevPaymentScheduleInstalmentsSumToContractValue(ValidationRule):
                             "property_dev.payment_schedule_instalments_sum_to_contract_value.fail",
                             locale=locale,
                             contract=str(c.id),
-                            instalments=str(instalment_total.quantize(Decimal("0.01"))),
-                            contract_value=str(contract_value.quantize(Decimal("0.01"))),
-                            drift=str(drift.quantize(Decimal("0.01"))),
+                            instalments=_fmt_money(instalment_total, c.currency or ""),
+                            contract_value=_fmt_money(contract_value, c.currency or ""),
+                            drift=_fmt_money(drift, c.currency or ""),
                         ),
                         element_ref=f"property_dev:sales_contract:{c.id}",
                         details={
@@ -9230,6 +9600,47 @@ class ProcurementPOLineCostCoded(_ProcurementRule):
     check_name = "check_line_cost_coded"
 
 
+# ── Supplier invoice against its purchase order (simple three-way match) ────
+#
+# Run by ``ProcurementService.check_invoice_against_po`` while an invoice linked
+# to an order is being entered. Both rules are WARNINGS: the person approving
+# the invoice sees the mismatch and decides; nothing is blocked. The payload
+# shape is documented beside the checks in ``procurement.validators``.
+
+
+class ProcurementInvoiceWithinOrder(_ProcurementRule):
+    """An invoice should not bill more than is still open on its order."""
+
+    rule_id = "procurement.invoice_within_order"
+    name = "Invoice Within Order"
+    severity = Severity.WARNING
+    category = RuleCategory.CONSISTENCY
+    description = "Flags a supplier invoice whose net exceeds the order's net not yet invoiced."
+    check_name = "check_invoice_within_order"
+
+
+class ProcurementInvoiceQuantityReceived(_ProcurementRule):
+    """Invoiced quantity should not run ahead of the goods received."""
+
+    rule_id = "procurement.invoice_quantity_received"
+    name = "Invoice Quantity Received"
+    severity = Severity.WARNING
+    category = RuleCategory.CONSISTENCY
+    description = "Flags an order line invoiced for more than its confirmed goods receipts."
+    check_name = "check_invoice_quantity_received"
+
+
+class ProcurementInvoiceValueReceived(_ProcurementRule):
+    """An invoice entered as one sum should not run ahead of the value received."""
+
+    rule_id = "procurement.invoice_value_received"
+    name = "Invoice Value Received"
+    severity = Severity.WARNING
+    category = RuleCategory.CONSISTENCY
+    description = "Flags an invoice without line quantities whose net exceeds the received goods at order rates."
+    check_name = "check_invoice_value_received"
+
+
 # ── Subcontract agreements (activation gate) ────────────────────────────────
 #
 # An agreement leaving ``draft`` for ``active`` is the moment a subcontractor
@@ -9382,6 +9793,20 @@ class SubcontractInsuranceValidAtStart(_SubcontractRule):
     category = RuleCategory.COMPLIANCE
     description = "Flags an agreement activated for a subcontractor whose insurance has lapsed."
     check_name = "check_insurance_valid_at_start"
+
+
+class SubcontractUnlinkedContractTwin(_SubcontractRule):
+    """The agreement looks like a subcontract also written, unlinked, in contracts."""
+
+    rule_id = "subcontract.unlinked_contract_twin"
+    name = "Subcontract Written Twice"
+    severity = Severity.WARNING
+    category = RuleCategory.CONSISTENCY
+    description = (
+        "Flags an agreement and a contract with the same subcontractor and currency that are not linked, "
+        "which finance would count as two commitments."
+    )
+    check_name = "check_unlinked_contract_twin"
 
 
 # ── Submittals (submission gate) ────────────────────────────────────────────
@@ -9773,6 +10198,15 @@ def register_builtin_rules() -> None:
         (HungarianChapterRecognised(), None),
         (HungarianMaterialFeeSplit(), None),
         (HungarianItemNumberUnique(), None),
+        # Romania (deviz general, HG 907/2016)
+        (RomanianDevizChapterRequired(), None),
+        (RomanianDevizChapterRecognised(), None),
+        # Greece (national unified price lists)
+        (GreekNetArticleRequired(), None),
+        (GreekNetArticleValid(), None),
+        # Ukraine (summary estimate chapters, наказ Мінрегіону №281)
+        (UkrainianZkrChapterRequired(), None),
+        (UkrainianZkrChapterRecognised(), None),
         # Birim Fiyat (Turkey)
         (BirimFiyatCodeRequired(), None),
         (BirimFiyatValidPoz(), None),
@@ -9847,6 +10281,11 @@ def register_builtin_rules() -> None:
         (ProcurementPORetentionWithinBounds(), ["procurement"]),
         (ProcurementPODeliveryAfterIssue(), ["procurement"]),
         (ProcurementPOLineCostCoded(), ["procurement"]),
+        # Supplier invoice against its order. Registered into "invoice_po_match",
+        # which ProcurementService.check_invoice_against_po passes explicitly.
+        (ProcurementInvoiceWithinOrder(), ["invoice_po_match"]),
+        (ProcurementInvoiceQuantityReceived(), ["invoice_po_match"]),
+        (ProcurementInvoiceValueReceived(), ["invoice_po_match"]),
         # Subcontract agreements (activation gate)
         # Registered into the "subcontract" set, which
         # SubcontractorService._validate_agreement passes on activation and on
@@ -9859,6 +10298,7 @@ def register_builtin_rules() -> None:
         (SubcontractAgreementCurrencySet(), ["subcontract"]),
         (SubcontractRetentionWithinBounds(), ["subcontract"]),
         (SubcontractInsuranceValidAtStart(), ["subcontract"]),
+        (SubcontractUnlinkedContractTwin(), ["subcontract"]),
         # Submittals (submission gate)
         # Registered into the "submittal" set, which
         # SubmittalService._validate_submittal passes on submit and on the

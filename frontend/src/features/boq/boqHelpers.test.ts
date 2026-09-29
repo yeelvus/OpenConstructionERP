@@ -12,8 +12,10 @@ import { describe, it, expect } from 'vitest';
 import {
   classificationCode,
   convertToBase,
+  getUnitsForLocale,
   hasContributingResources,
   resourceAwareTotalInBase,
+  catalogComponentAmounts,
 } from './boqHelpers';
 
 describe('convertToBase - multi-currency rebase', () => {
@@ -282,5 +284,54 @@ describe('classificationCode - every standard, not the legacy three', () => {
 
   it('skips an empty entry and keeps looking', () => {
     expect(classificationCode({ din276: '', tetelrend: 'MA-06-21-03' })).toBe('MA-06-21-03');
+  });
+});
+
+// P-56: the Croatian site units existed but sat behind the hundred-odd base
+// tokens, so a Croatian estimator scrolling the dropdown never reached them.
+describe('getUnitsForLocale - locale trade units lead the list', () => {
+  it('offers the Croatian troskovnik units first under hr', () => {
+    const units = getUnitsForLocale('hr');
+    expect(units.slice(0, 4)).toEqual(['kom', 'kpl', 'pauš.', "m'"]);
+  });
+
+  it('keeps the base catalogue, without duplicates', () => {
+    const units = getUnitsForLocale('hr-HR');
+    expect(units).toContain('m2');
+    expect(units).toContain('lsum');
+    expect(new Set(units).size).toBe(units.length);
+  });
+
+  it('starts with the base catalogue for a locale without trade units', () => {
+    expect(getUnitsForLocale('en')[0]).toBe('mm');
+  });
+});
+
+describe('catalogComponentAmounts', () => {
+  it('keeps the source cost and takes the quantity it implies', () => {
+    // 0.00 kg listed, 12.84 costed: the quantity column was rounded away.
+    const r = catalogComponentAmounts({ quantity: 0, unit_rate: 15107.19, cost: 12.84 });
+    expect(r.total).toBe(12.84);
+    expect(r.quantity * r.unit_rate).toBeCloseTo(12.84, 9);
+  });
+
+  it('takes the implied quantity even when the gap is under a cent', () => {
+    // 24.38 h x 19.67 = 479.5546, the source costs 479.55.
+    const r = catalogComponentAmounts({ quantity: 24.38, unit_rate: 19.67, cost: 479.55 });
+    expect(r.total).toBe(479.55);
+    expect(r.quantity * r.unit_rate).toBeCloseTo(479.55, 9);
+  });
+
+  it('leaves a component that already adds up alone', () => {
+    expect(catalogComponentAmounts({ quantity: 2, unit_rate: 15, cost: 30 })).toEqual({
+      quantity: 2,
+      unit_rate: 15,
+      total: 30,
+    });
+  });
+
+  it('prices a component without a cost at quantity x rate, one unit when unset', () => {
+    expect(catalogComponentAmounts({ quantity: 3, unit_rate: 4, cost: null }).total).toBe(12);
+    expect(catalogComponentAmounts({ unit_rate: 7 })).toEqual({ quantity: 1, unit_rate: 7, total: 7 });
   });
 });

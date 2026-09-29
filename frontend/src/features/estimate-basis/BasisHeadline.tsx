@@ -23,14 +23,14 @@ import type { ClassReason, EstimateBasisDocument, EstimateClassOption } from './
 
 export interface BasisHeadlineProps {
   doc: EstimateBasisDocument;
-  /** The AACE class table as the platform publishes it (may still be loading). */
+  /** The estimate class table as the platform publishes it (may still be loading). */
   classes: EstimateClassOption[];
   /** Called when the estimator states, changes or clears the class (0 clears). */
-  onClassChange: (estimateClass: number) => void;
+  onClassChange: (estimateClass: number | string) => void;
   /** Called when the estimator edits one of the two accuracy bounds. */
   onBandChange: (bound: 'low' | 'high', value: string) => void;
   /** The class the draft currently states, which may be ahead of `doc`. */
-  estimateClass: number | null;
+  estimateClass: number | string | null;
   accuracyLowPct: string;
   accuracyHighPct: string;
 }
@@ -55,17 +55,17 @@ export function BasisHeadline({
   const suggestion = doc.provenance?.suggestion;
 
   const byClass = useMemo(() => {
-    const map = new Map<number, EstimateClassOption>();
+    const map = new Map<number | string, EstimateClassOption>();
     for (const option of classes) map.set(option.estimate_class, option);
     return map;
   }, [classes]);
 
   // The served English label is the fallback, so a locale that has not
   // translated a class still reads the standard's own wording rather than a key.
-  const classLabel = (n: number) =>
+  const classLabel = (n: number | string) =>
     t(`estimateBasis.class.label.${n}`, { defaultValue: byClass.get(n)?.label || String(n) });
 
-  const stated = estimateClass !== null && estimateClass > 0;
+  const stated = estimateClass !== null && estimateClass !== 0 && estimateClass !== '';
   // The band on the draft is authoritative while editing; the amounts are
   // recomputed by the server on save, so an unsaved band shows its percentages
   // without pretending to know the money yet.
@@ -171,7 +171,10 @@ export function BasisHeadline({
             <select
               id="estimate-basis-class"
               value={estimateClass ?? 0}
-              onChange={(e) => onClassChange(Number(e.target.value))}
+              onChange={(e) => {
+                const raw = e.target.value;
+                onClassChange(/^\d+$/.test(raw) ? Number(raw) : raw);
+              }}
               className="rounded-lg border border-border-light bg-surface-primary px-2.5 py-1.5 text-sm text-content-primary"
             >
               <option value={0}>

@@ -30,13 +30,16 @@ import {
   Network,
   ArrowRight,
   ListPlus,
+  Trash2,
+  PlayCircle,
 } from 'lucide-react';
 import { Button, Card, Badge, Input, SkeletonTable, Breadcrumb, DismissibleInfo, IntroRichText, GanttChart as SVGGanttChart, ViewInBIMButton, ConfirmDialog, ModuleGuideButton, CollapsibleSection } from '@/shared/ui';
 import { PageHeader } from '@/shared/ui/PageHeader';
 import { useConfirm } from '@/shared/hooks/useConfirm';
 import type { GanttActivity as SVGGanttActivity, GanttViewMode } from '@/shared/ui';
 import { apiGet } from '@/shared/lib/api';
-import { getIntlLocale } from '@/shared/lib/formatters';
+import { fetchProjectList } from '@/shared/lib/projectList';
+import { fmtDate, getIntlLocale } from '@/shared/lib/formatters';
 import { useToastStore } from '@/stores/useToastStore';
 import { useProjectContextStore } from '@/stores/useProjectContextStore';
 import { scheduleApi } from './api';
@@ -53,6 +56,8 @@ import { ScheduleCodesPanel } from './ScheduleCodesPanel';
 import { ScheduleResourcePanel } from './ScheduleResourcePanel';
 import { ScheduleRealtimePanel } from './ScheduleRealtimePanel';
 import { DependencyEditor } from './DependencyEditor';
+import { BoqLinkEditor } from './BoqLinkEditor';
+import { generateInWindow, projectWindowDays, refreshAfterGenerate } from './generateWindow';
 import { ActivityGrid } from './ActivityGrid';
 import { WorkCalendarManager } from './WorkCalendarManager';
 import { scheduleGuide } from './scheduleGuide';
@@ -95,16 +100,13 @@ interface CreateActivityForm {
   start_date: string;
   end_date: string;
   activity_type: 'task' | 'milestone' | 'summary';
+  parent_id?: string;
 }
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString(getIntlLocale(), {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  });
+  return fmtDate(dateStr, { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
 /**
@@ -126,8 +128,8 @@ function neutraliseFormula(value: unknown): string {
 }
 
 function daysBetween(start: string, end: string): number {
-  const s = new Date(start).getTime();
-  const e = new Date(end).getTime();
+  const s = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(start) ? start + 'T00:00:00Z' : start);
+  const e = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(end) ? end + 'T00:00:00Z' : end);
   if (isNaN(s) || isNaN(e)) return 1;
   return Math.max(1, Math.ceil((e - s) / (1000 * 60 * 60 * 24)));
 }
@@ -483,8 +485,9 @@ function GanttChart({
       };
     }
 
-    const starts = activities.map((a) => new Date(a.start_date).getTime()).filter((t) => !isNaN(t));
-    const ends = activities.map((a) => new Date(a.end_date).getTime()).filter((t) => !isNaN(t));
+    const parseDate = (s: string) => Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(s) ? s + 'T00:00:00Z' : s);
+    const starts = activities.map((a) => parseDate(a.start_date)).filter((t) => !isNaN(t));
+    const ends = activities.map((a) => parseDate(a.end_date)).filter((t) => !isNaN(t));
     if (starts.length === 0 || ends.length === 0) {
       const now = new Date();
       const fallbackStart = new Date(now);
@@ -496,9 +499,10 @@ function GanttChart({
     const minStart = new Date(Math.min(...starts));
     const maxEnd = new Date(Math.max(...ends));
 
-    // Add padding of 2 days on each side
-    minStart.setDate(minStart.getDate() - 2);
-    maxEnd.setDate(maxEnd.getDate() + 2);
+    // Add padding of 2 days on each side — use UTC methods so the day
+    // arithmetic is not shifted by the browser's local timezone offset.
+    minStart.setUTCDate(minStart.getUTCDate() - 2);
+    maxEnd.setUTCDate(maxEnd.getUTCDate() + 2);
 
     const days = daysBetween(minStart.toISOString(), maxEnd.toISOString());
 
@@ -517,19 +521,23 @@ function GanttChart({
     const markers: Array<{ label: string; offsetPct: number }> = [];
     const current = new Date(timelineStart);
 
+    // All date arithmetic below uses UTC methods so the timeline stays
+    // day-stable regardless of the viewer's local timezone offset.
+    const utcDateOpts = { timeZone: 'UTC' as const };
+
     if (zoomLevel === 'day') {
       // One marker per day
-      current.setDate(current.getDate() + 1);
+      current.setUTCDate(current.getUTCDate() + 1);
       while (current <= timelineEnd) {
         const dayOffset = daysBetween(timelineStart.toISOString(), current.toISOString());
         const pct = (dayOffset / totalDays) * 100;
         if (pct >= 0 && pct <= 100) {
           markers.push({
-            label: current.toLocaleDateString(getIntlLocale(), { day: '2-digit', month: 'short' }),
+            label: current.toLocaleDateString(getIntlLocale(), { day: '2-digit', month: 'short', ...utcDateOpts }),
             offsetPct: pct,
           });
         }
-        current.setDate(current.getDate() + 1);
+        current.setUTCDate(current.getUTCDate() + 1);
       }
     } else if (zoomLevel === 'week') {
       // One marker per week (advance to next Monday). Monday is deliberate
@@ -537,9 +545,9 @@ function GanttChart({
       // the ISO week columns in `Gantt/ganttUtils`: these gridlines sit under
       // a programme whose weeks are ISO weeks, and rotating them per language
       // would put the same task in two different weeks for two readers.
-      const dayOfWeek = current.getDay();
+      const dayOfWeek = current.getUTCDay();
       const daysUntilMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
-      current.setDate(current.getDate() + daysUntilMonday);
+      current.setUTCDate(current.getUTCDate() + daysUntilMonday);
       while (current <= timelineEnd) {
         const dayOffset = daysBetween(timelineStart.toISOString(), current.toISOString());
         const pct = (dayOffset / totalDays) * 100;
@@ -548,16 +556,17 @@ function GanttChart({
             label: current.toLocaleDateString(getIntlLocale(), {
               day: '2-digit',
               month: 'short',
+              ...utcDateOpts,
             }),
             offsetPct: pct,
           });
         }
-        current.setDate(current.getDate() + 7);
+        current.setUTCDate(current.getUTCDate() + 7);
       }
     } else if (zoomLevel === 'month') {
       // Month view — one marker per month
-      current.setDate(1);
-      current.setMonth(current.getMonth() + 1);
+      current.setUTCDate(1);
+      current.setUTCMonth(current.getUTCMonth() + 1);
       while (current <= timelineEnd) {
         const dayOffset = daysBetween(timelineStart.toISOString(), current.toISOString());
         const pct = (dayOffset / totalDays) * 100;
@@ -567,43 +576,43 @@ function GanttChart({
             // this axis where a year is written at all, and a programme that
             // runs from 2026 into 2028 is exactly the one where "Aug 26" has
             // to be read twice - the first reading is a day of the month.
-            label: current.toLocaleDateString(getIntlLocale(), { month: 'short', year: 'numeric' }),
+            label: current.toLocaleDateString(getIntlLocale(), { month: 'short', year: 'numeric', ...utcDateOpts }),
             offsetPct: pct,
           });
         }
-        current.setMonth(current.getMonth() + 1);
+        current.setUTCMonth(current.getUTCMonth() + 1);
       }
     } else if (zoomLevel === 'quarter') {
       // Quarter view — one marker per quarter
-      current.setDate(1);
-      current.setMonth(Math.floor(current.getMonth() / 3) * 3 + 3);
+      current.setUTCDate(1);
+      current.setUTCMonth(Math.floor(current.getUTCMonth() / 3) * 3 + 3);
       while (current <= timelineEnd) {
         const dayOffset = daysBetween(timelineStart.toISOString(), current.toISOString());
         const pct = (dayOffset / totalDays) * 100;
         if (pct >= 0 && pct <= 100) {
-          const q = Math.floor(current.getMonth() / 3) + 1;
+          const q = Math.floor(current.getUTCMonth() / 3) + 1;
           markers.push({
-            label: `Q${q} ${current.getFullYear()}`,
+            label: `Q${q} ${current.getUTCFullYear()}`,
             offsetPct: pct,
           });
         }
-        current.setMonth(current.getMonth() + 3);
+        current.setUTCMonth(current.getUTCMonth() + 3);
       }
     } else {
       // Year view — one marker per year
-      current.setDate(1);
-      current.setMonth(0);
-      current.setFullYear(current.getFullYear() + 1);
+      current.setUTCDate(1);
+      current.setUTCMonth(0);
+      current.setUTCFullYear(current.getUTCFullYear() + 1);
       while (current <= timelineEnd) {
         const dayOffset = daysBetween(timelineStart.toISOString(), current.toISOString());
         const pct = (dayOffset / totalDays) * 100;
         if (pct >= 0 && pct <= 100) {
           markers.push({
-            label: current.getFullYear().toString(),
+            label: current.getUTCFullYear().toString(),
             offsetPct: pct,
           });
         }
-        current.setFullYear(current.getFullYear() + 1);
+        current.setUTCFullYear(current.getUTCFullYear() + 1);
       }
     }
 
@@ -1122,6 +1131,7 @@ function ScheduleDetail({
     'table' | 'gantt' | 'evm' | '4d' | 'quality' | 'risk' | 'compare' | 'progress' | 'delay' | 'codes' | 'calendars' | 'resources' | 'realtime' | 'interchange'
   >('gantt');
   const [showAddActivity, setShowAddActivity] = useState(false);
+  const [showBaseline, setShowBaseline] = useState(false);
   // #348: activity whose dependency editor is open (click a Gantt bar to edit).
   const [selectedActivityId, setSelectedActivityId] = useState<string | null>(null);
   const [showGenerateBOQ, setShowGenerateBOQ] = useState(false);
@@ -1129,7 +1139,17 @@ function ScheduleDetail({
   const [generateStartDate, setGenerateStartDate] = useState(
     () => schedule.start_date?.slice(0, 10) || new Date().toISOString().slice(0, 10),
   );
+  const [generateEndDate, setGenerateEndDate] = useState('');
+  const generateWindowDays = projectWindowDays(generateStartDate, generateEndDate);
   const [activityFilter, setActivityFilter] = useState('all');
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
+  const toggleCollapse = useCallback((id: string) => {
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
   const [activityForm, setActivityForm] = useState<CreateActivityForm>({
     name: '',
     wbs_code: '',
@@ -1141,9 +1161,31 @@ function ScheduleDetail({
   // Fetch project data for region / work calendar / currency
   const { data: projectData } = useQuery({
     queryKey: ['project', projectId],
-    queryFn: () => apiGet<{ id: string; region: string; currency?: string }>(`/v1/projects/${projectId}`),
+    queryFn: () =>
+      apiGet<{
+        id: string;
+        region: string;
+        currency?: string;
+        planned_start_date?: string | null;
+        planned_end_date?: string | null;
+      }>(`/v1/projects/${projectId}`),
     staleTime: 300_000,
   });
+  // The generate dialog fits the plan between the project's planned dates.
+  // They are filled in once, when the project first arrives, the start only
+  // when the schedule has none of its own, so a later refetch never overwrites
+  // a date the planner typed. The schedule's own end
+  // date is not used: generation writes it, so it would feed a previous run's
+  // result back in as the window.
+  const plannedDatesAppliedRef = useRef(false);
+  useEffect(() => {
+    if (!projectData || plannedDatesAppliedRef.current) return;
+    plannedDatesAppliedRef.current = true;
+    const plannedStart = projectData.planned_start_date?.slice(0, 10);
+    const plannedEnd = projectData.planned_end_date?.slice(0, 10);
+    if (plannedStart && !schedule.start_date) setGenerateStartDate(plannedStart);
+    if (plannedEnd) setGenerateEndDate((cur) => cur || plannedEnd);
+  }, [projectData, schedule.start_date]);
   // Project ISO currency drives EVM money formatting; blank -> no symbol
   // (never mislabel a non-EUR amount). The activity cost columns are all
   // project-scoped so they share this single currency.
@@ -1220,6 +1262,7 @@ function ScheduleDetail({
         start_date: data.start_date,
         end_date: data.end_date,
         activity_type: data.activity_type,
+        ...(data.parent_id ? { parent_id: data.parent_id } : {}),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['gantt', schedule.id] });
@@ -1239,16 +1282,12 @@ function ScheduleDetail({
   });
 
   const generateFromBOQ = useMutation({
-    mutationFn: async (boqId: string) => {
-      // Update the schedule start_date before generating so activities use the chosen date
-      if (generateStartDate) {
-        await scheduleApi.updateSchedule(schedule.id, { start_date: generateStartDate });
-      }
-      return scheduleApi.generateFromBOQ(schedule.id, boqId);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['gantt', schedule.id] });
-      queryClient.invalidateQueries({ queryKey: ['schedules'] });
+    mutationFn: (boqId: string) => generateInWindow(schedule.id, boqId, generateStartDate, generateEndDate),
+    onSuccess: async () => {
+      // The dialog stays open with its button spinning until the new plan is
+      // loaded, so the toast lands on the generated schedule and not on the
+      // empty one it replaces.
+      await refreshAfterGenerate(queryClient, schedule.id);
       setShowGenerateBOQ(false);
       setSelectedBOQId('');
       // Reset CPM/risk results since activities changed
@@ -1360,6 +1399,30 @@ function ScheduleDetail({
     },
   });
 
+  const deleteSchedule = useMutation({
+    mutationFn: () => scheduleApi.deleteSchedule(schedule.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['schedules'] });
+      addToast({ type: 'success', title: t('schedule.deleted', { defaultValue: 'Schedule deleted' }) });
+      onBack();
+    },
+    onError: (error: Error) => {
+      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message });
+    },
+  });
+
+  const activateSchedule = useMutation({
+    mutationFn: () => scheduleApi.updateSchedule(schedule.id, { status: 'active' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gantt', schedule.id] });
+      queryClient.invalidateQueries({ queryKey: ['schedules'] });
+      addToast({ type: 'success', title: t('schedule.activated', { defaultValue: 'Schedule activated' }) });
+    },
+    onError: (error: Error) => {
+      addToast({ type: 'error', title: t('toasts.error', { defaultValue: 'Error' }), message: error.message });
+    },
+  });
+
   const handleUpdateProgress = useCallback(
     (activityId: string, progress: number) => {
       updateProgress.mutate({ activityId, progress });
@@ -1386,19 +1449,30 @@ function ScheduleDetail({
 
   // Filtered activities for the Gantt chart (Improvement #5)
   const filteredActivities = useMemo(() => {
-    const activities = ganttData?.activities ?? [];
-    if (activityFilter === 'all') return activities;
+    let activities = ganttData?.activities ?? [];
     if (activityFilter === 'critical') {
-      return activities.filter((a) => criticalActivityIds?.has(a.id));
+      activities = activities.filter((a) => criticalActivityIds?.has(a.id));
+    } else if (activityFilter === 'delayed') {
+      activities = activities.filter((a) => a.status === 'delayed');
+    } else if (activityFilter === 'in_progress') {
+      activities = activities.filter((a) => a.status === 'in_progress');
     }
-    if (activityFilter === 'delayed') {
-      return activities.filter((a) => a.status === 'delayed');
-    }
-    if (activityFilter === 'in_progress') {
-      return activities.filter((a) => a.status === 'in_progress');
+    // Hide children of collapsed summary activities
+    if (collapsedIds.size > 0) {
+      const hidden = new Set<string>();
+      const parentOf = new Map<string, string>();
+      for (const a of activities) { if (a.parent_id) parentOf.set(a.id, a.parent_id); }
+      const isHidden = (id: string): boolean => {
+        if (hidden.has(id)) return true;
+        const pid = parentOf.get(id);
+        if (!pid) return false;
+        if (collapsedIds.has(pid) || isHidden(pid)) { hidden.add(id); return true; }
+        return false;
+      };
+      activities = activities.filter((a) => !isHidden(a.id));
     }
     return activities;
-  }, [ganttData, activityFilter, criticalActivityIds]);
+  }, [ganttData, activityFilter, criticalActivityIds, collapsedIds]);
 
   // Map activities to SVG Gantt format
   const svgGanttActivities = useMemo<SVGGanttActivity[]>(() => {
@@ -1530,6 +1604,19 @@ function ScheduleDetail({
                   </button>
                 ))}
               </div>
+              <button
+                type="button"
+                aria-pressed={showBaseline}
+                onClick={() => setShowBaseline((v) => !v)}
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                  showBaseline
+                    ? 'bg-oe-blue text-white'
+                    : 'text-content-secondary hover:bg-surface-secondary'
+                }`}
+                title={t('schedule.baseline_tooltip', { defaultValue: 'Toggle baseline comparison overlay' })}
+              >
+                {t('schedule.baseline', { defaultValue: 'Baseline' })}
+              </button>
               <Button
                 variant="secondary"
                 icon={<Zap size={16} />}
@@ -1600,6 +1687,7 @@ function ScheduleDetail({
                   const ok = await confirm({
                     title: t('schedule.confirm_reset_title', { defaultValue: 'Reset schedule?' }),
                     message: t('schedule.confirm_reset', { defaultValue: 'Delete all activities in this schedule? This cannot be undone. You can regenerate them afterwards from a BOQ.' }),
+                    confirmLabel: t('schedule.reset', { defaultValue: 'Reset' }),
                   });
                   if (ok) resetSchedule.mutate();
                 }}
@@ -1608,6 +1696,34 @@ function ScheduleDetail({
                 {t('schedule.reset', { defaultValue: 'Reset' })}
               </Button>
             </>
+          )}
+          {schedule.status === 'draft' && (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<PlayCircle size={14} />}
+              onClick={() => activateSchedule.mutate()}
+              loading={activateSchedule.isPending}
+            >
+              {t('schedule.activate', { defaultValue: 'Activate' })}
+            </Button>
+          )}
+          {schedule.status === 'draft' && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<Trash2 size={14} />}
+              onClick={async () => {
+                const ok = await confirm({
+                  title: t('schedule.confirm_delete_title', { defaultValue: 'Delete schedule?' }),
+                  message: t('schedule.confirm_delete', { defaultValue: 'This will permanently delete the schedule and all its activities. This cannot be undone.' }),
+                });
+                if (ok) deleteSchedule.mutate();
+              }}
+              loading={deleteSchedule.isPending}
+            >
+              {t('common.delete', { defaultValue: 'Delete' })}
+            </Button>
           )}
           <Button
             variant="primary"
@@ -1789,7 +1905,7 @@ function ScheduleDetail({
                 <SVGGanttChart
                   activities={svgGanttActivities}
                   viewMode={zoomLevel as GanttViewMode}
-                  showBaseline={false}
+                  showBaseline={showBaseline}
                   showDependencies={true}
                   showCriticalPath={!!cpmResult}
                   todayLine={true}
@@ -1804,6 +1920,8 @@ function ScheduleDetail({
                   criticalActivityIds={criticalActivityIds}
                   onEditDependencies={(id) => setSelectedActivityId(id)}
                   onAddActivity={() => setShowAddActivity(true)}
+                  collapsedIds={collapsedIds}
+                  onToggleCollapse={toggleCollapse}
                 />
               ) : (
                 <GanttChart
@@ -1939,6 +2057,28 @@ function ScheduleDetail({
               required aria-required="true"
             />
           </div>
+          {/* Parent section - insert under a summary */}
+          {(() => {
+            const summaries = (ganttData?.activities ?? []).filter((a) => a.activity_type === 'summary');
+            if (summaries.length === 0) return null;
+            return (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium text-content-primary">
+                  {t('schedule.parent_section', { defaultValue: 'Parent section' })}
+                </label>
+                <select
+                  className="h-9 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
+                  value={activityForm.parent_id ?? ''}
+                  onChange={(e) => setActivityForm((f) => ({ ...f, parent_id: e.target.value || undefined }))}
+                >
+                  <option value="">{t('schedule.no_parent', { defaultValue: 'Top level (no parent)' })}</option>
+                  {summaries.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+            );
+          })()}
           <div className="flex flex-col gap-1.5">
             <label className="text-sm font-medium text-content-primary">
               {t('schedule.activity_type', 'Type')}
@@ -1975,7 +2115,7 @@ function ScheduleDetail({
       <Modal
         open={!!selectedActivity}
         onClose={() => setSelectedActivityId(null)}
-        title={t('schedule.edit_dependencies', { defaultValue: 'Edit dependencies' })}
+        title={t('schedule.edit_activity_links', { defaultValue: 'Dependencies and BOQ links' })}
       >
         {selectedActivity && (
           <div className="space-y-4">
@@ -1990,6 +2130,9 @@ function ScheduleDetail({
               activity={selectedActivity}
               activities={ganttData?.activities ?? []}
             />
+            <div className="border-t border-border-light pt-4">
+              <BoqLinkEditor scheduleId={schedule.id} projectId={projectId} activity={selectedActivity} />
+            </div>
             <div className="flex items-center justify-end pt-1">
               <Button variant="ghost" type="button" onClick={() => setSelectedActivityId(null)}>
                 {t('common.done', { defaultValue: 'Done' })}
@@ -2026,6 +2169,30 @@ function ScheduleDetail({
             />
             <p className="mt-1 text-xs text-content-tertiary">
               {t('schedule.start_date_hint', 'All activities will be scheduled relative to this date.')}
+            </p>
+          </div>
+
+          {/* End date: the generated plan is fitted between the two dates. */}
+          <div>
+            <label className="block text-sm font-medium text-content-primary mb-1.5">
+              {t('schedule.project_end_date', { defaultValue: 'Project End Date' })}
+            </label>
+            <input
+              type="date"
+              data-testid="generate-end-date"
+              value={generateEndDate}
+              min={generateStartDate || undefined}
+              onChange={(e) => setGenerateEndDate(e.target.value)}
+              className="h-10 w-full rounded-lg border border-border bg-surface-primary px-3 text-sm focus:outline-none focus:ring-2 focus:ring-oe-blue/30 focus:border-oe-blue"
+            />
+            <p className="mt-1 text-xs text-content-tertiary">
+              {!generateEndDate
+                ? t('schedule.end_date_missing', {
+                    defaultValue: 'This project has no planned end date yet. Enter one so the plan fits the project.',
+                  })
+                : generateWindowDays == null
+                  ? t('schedule.end_before_start', { defaultValue: 'The end date must be after the start date.' })
+                  : t('schedule.end_date_hint', { defaultValue: 'The generated plan is fitted between these two dates.' })}
             </p>
           </div>
 
@@ -2069,7 +2236,7 @@ function ScheduleDetail({
             </Button>
             <Button
               variant="primary"
-              disabled={!selectedBOQId || !generateStartDate}
+              disabled={!selectedBOQId || generateWindowDays == null}
               loading={generateFromBOQ.isPending}
               onClick={() => {
                 if (selectedBOQId) {
@@ -2114,7 +2281,7 @@ function ProjectSchedules({
     end_date: '',
   });
 
-  const { data: schedules, isLoading } = useQuery({
+  const { data: schedules, isLoading, isError: isScheduleListError } = useQuery({
     queryKey: ['schedules', project.id],
     queryFn: () => scheduleApi.listSchedules(project.id).then((page) => page.items),
   });
@@ -2212,6 +2379,10 @@ function ProjectSchedules({
       {/* Schedule list */}
       {isLoading ? (
         <SkeletonTable rows={3} columns={4} />
+      ) : isScheduleListError ? (
+        <div className="w-full py-8 text-center">
+          <p className="text-content-secondary">{t('schedule.load_error', { defaultValue: 'Failed to load schedules. Please try again.' })}</p>
+        </div>
       ) : !schedules || schedules.length === 0 ? (
         <div className="max-w-3xl mx-auto py-6">
           {/* Hero */}
@@ -2521,7 +2692,7 @@ export function SchedulePage() {
 
   const { data: projects, isLoading } = useQuery({
     queryKey: ['projects'],
-    queryFn: () => apiGet<Project[]>('/v1/projects/'),
+    queryFn: () => fetchProjectList<Project[]>(),
     staleTime: 5 * 60_000,
   });
 

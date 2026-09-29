@@ -1149,6 +1149,19 @@ _MORE_COUNTRY_TEMPLATES: list[dict[str, Any]] = [
         profit="8",
         tax_label="DPH",
     ),
+    # Croatia. A troškovnik is priced on all-in unit rates, so the regional
+    # table's HR stack is the PDV line alone and replaces the three steps built
+    # here; overhead and profit are zero because they already sit in the rates.
+    _flat_country_template(
+        slug="croatia",
+        name="Croatia",
+        country_code="HR",
+        currency="EUR",
+        vat="25",
+        overhead="0",
+        profit="0",
+        tax_label="PDV",
+    ),
     _flat_country_template(
         slug="romania",
         name="Romania",
@@ -1174,6 +1187,22 @@ _MORE_COUNTRY_TEMPLATES: list[dict[str, Any]] = [
         profit="8",
         tax_label="AFA",
         decimals=0,
+    ),
+    # Ukraine, with the Ukrainian country pack. The flat arguments here are
+    # replaced by the UA stack in the regional markup table, which states the
+    # structure of the Настанова (наказ Мінрегіону №281 of 01.11.2021): general
+    # production costs, risk, administrative costs, profit and ПДВ. Overhead
+    # 11.5 is general production 9 plus administrative 2.5, the starting points
+    # that stack carries inside the wartime ceilings of КМУ постанова №1512.
+    _flat_country_template(
+        slug="ukraine",
+        name="Ukraine",
+        country_code="UA",
+        currency="UAH",
+        vat="20",
+        overhead="11.5",
+        profit="7",
+        tax_label="PDV",
     ),
     # Russia. The rates written here are the fallback and are not what ships:
     # the regional table states the national stack (НР, СП, unforeseen costs,

@@ -86,8 +86,8 @@ interface Draft {
   inclusions: QualificationItem[];
   exclusions: QualificationItem[];
   assumptions: QualificationItem[];
-  /** The AACE class the estimator has stated. `null` = nobody has stated one. */
-  estimateClass: number | null;
+  /** The estimate class the estimator has stated. `null` = nobody has stated one. */
+  estimateClass: number | string | null;
   accuracyLowPct: string;
   accuracyHighPct: string;
   marketConditions: string;
@@ -316,11 +316,11 @@ export function EstimateBasisPanel({ projectId, boqId, currency, baseDate }: Est
    * server seeds the same band on its side; doing it here as well is what makes
    * the decision one click rather than three.
    */
-  function setEstimateClass(next: number) {
+  function setEstimateClass(next: number | string) {
     const option = classesQuery.data?.items.find((o) => o.estimate_class === next);
     setDraft((prev) => {
       if (!prev) return prev;
-      if (next <= 0) {
+      if (next === 0 || next === '') {
         return { ...prev, estimateClass: null, accuracyLowPct: '', accuracyHighPct: '' };
       }
       return {
@@ -485,7 +485,7 @@ export function EstimateBasisPanel({ projectId, boqId, currency, baseDate }: Est
           </Button>
           {/* OC-09: brief "Saved" confirmation after a successful save. */}
           {savedAt && !dirty && !saveMutation.isPending && (
-            <span className="flex items-center gap-1 text-xs text-semantic-success animate-in fade-in duration-300">
+            <span className="flex items-center gap-1 text-xs text-semantic-success transition-opacity duration-300">
               <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
               {t('estimateBasis.saved', { defaultValue: 'Saved' })}
             </span>

@@ -499,6 +499,64 @@ def allowed_capa_transitions(current: str) -> list[str]:
     return mapping.get(current, [])
 
 
+# Statuses a CAPA reaches only through its own action, which records the
+# completion time and the verification notes, checks the state machine and
+# tells the dashboards. The CAPA PATCH does none of that.
+_CAPA_ACTION_STATUSES: dict[str, str] = {
+    "completed": "complete",
+    "cancelled": "cancel",
+    "overdue": "escalate",
+}
+# A completed CAPA is reopened only by a failed effectiveness check, and a
+# cancelled one not at all. Its verification notes carry the closure evidence
+# and the effectiveness results appended to it.
+_CAPA_TERMINAL_STATUSES = frozenset({"completed", "cancelled"})
+# A JSA from approval on is the signed record crews worked under.
+_JSA_KEPT_STATUSES = frozenset({"approved", "active", "archived"})
+
+
+def _refuse_capa_patch_past_its_actions(capa: Any, fields: dict[str, Any]) -> None:
+    """Refuse a CAPA PATCH that would do the work of an action or undo a closure.
+
+    Only real changes are refused, so a form that sends the stored status or
+    notes back unchanged still saves its other fields.
+    """
+    current = capa.status
+    target = fields.get("status", current)
+    if target != current:
+        if current in _CAPA_TERMINAL_STATUSES:
+            remedy = (
+                "Record a failed effectiveness check to reopen it."
+                if current == "completed"
+                else "Raise a new CAPA instead."
+            )
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"A {current} CAPA cannot change status by an edit. {remedy}",
+            )
+        action = _CAPA_ACTION_STATUSES.get(target)
+        if action is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"A CAPA is set to {target} only through the {action} action, "
+                "which records it and checks the state machine.",
+            )
+        if target not in allowed_capa_transitions(current):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Invalid CAPA transition {current} → {target}",
+            )
+    if (
+        current in _CAPA_TERMINAL_STATUSES
+        and "verification_notes" in fields
+        and (fields["verification_notes"] or "") != (capa.verification_notes or "")
+    ):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"The verification notes of a {current} CAPA are its closure record and cannot be edited.",
+        )
+
+
 def allowed_corrective_action_transitions(current: str) -> list[str]:
     """Pure slim CorrectiveAction FSM (incident-scoped).
 
@@ -789,6 +847,15 @@ class HSEAdvancedService:
         user_id: str | None = None,
     ) -> None:
         obj = await self.get_jsa(item_id)
+        # An approved JSA is the signed safety record crews worked under;
+        # update_jsa already freezes its content. It leaves the register by
+        # being archived, and an archived one stays as the record.
+        if obj.status in _JSA_KEPT_STATUSES:
+            remedy = "Archive it instead." if obj.status != "archived" else "It is kept as the record."
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"An {obj.status} JSA is the signed safety record and cannot be deleted. {remedy}",
+            )
         snapshot = {
             "project_id": str(obj.project_id),
             "status": obj.status,
@@ -1453,6 +1520,7 @@ class HSEAdvancedService:
     ) -> CorrectiveAction:
         obj = await self.get_capa(item_id)
         fields = data.model_dump(exclude_unset=True)
+        _refuse_capa_patch_past_its_actions(obj, fields)
         if fields:
             await self.capa_repo.update_fields(item_id, **fields)
             await self.session.refresh(obj)
@@ -1475,6 +1543,14 @@ class HSEAdvancedService:
         user_id: str | None = None,
     ) -> None:
         obj = await self.get_capa(item_id)
+        # A completed or cancelled CAPA is the closure record of the incident
+        # or finding it answered, verification notes and effectiveness check
+        # included. An open CAPA raised by mistake is cancelled, not deleted.
+        if obj.status in _CAPA_TERMINAL_STATUSES:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"A {obj.status} CAPA is the closure record of its finding and cannot be deleted.",
+            )
         snapshot = {
             "project_id": str(obj.project_id),
             "title": (obj.title or "")[:200],
@@ -1646,6 +1722,14 @@ class HSEAdvancedService:
         if len(payload.steps) > 10:
             raise HTTPException(422, "5-Whys chain capped at 10 steps")
         obj = await self.get_capa(item_id)
+        # The root-cause chain is part of the closure record, like the
+        # verification notes the CAPA patch already freezes.
+        if obj.status in _CAPA_TERMINAL_STATUSES:
+            remedy = " Record a failed effectiveness check to reopen it." if obj.status == "completed" else ""
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"The 5-Whys of a {obj.status} CAPA is part of its closure record and cannot be rewritten.{remedy}",
+            )
         await self.capa_repo.update_fields(
             item_id,
             five_whys=[s.model_dump() for s in payload.steps],

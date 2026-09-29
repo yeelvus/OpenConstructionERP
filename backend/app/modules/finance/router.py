@@ -512,6 +512,9 @@ async def export_invoices(
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
+    from app.core.xlsx_branding import apply_company_header
+    from app.core.xlsx_text import store_strings_as_text
+
     await _require_project_access(session, project_id, _user_id)
 
     stmt = select(Invoice).where(Invoice.project_id == project_id)
@@ -568,6 +571,10 @@ async def export_invoices(
         ws.cell(row=row_idx, column=7, value=_safe_decimal(inv.tax_amount))
         ws.cell(row=row_idx, column=8, value=_safe_decimal(inv.amount_total))
         ws.cell(row=row_idx, column=9, value=inv.status)
+
+    # Company letterhead above the table; a no-op without a company profile.
+    store_strings_as_text(ws)
+    apply_company_header(ws, title=ws.title)
 
     output = io.BytesIO()
     wb.save(output)
@@ -1440,8 +1447,8 @@ async def get_receivable_for_claim(
     description="Record a payment against an invoice, holding back retainage. When "
     "withholding_amount is omitted it is derived from the invoice retention_amount; when "
     "amount is omitted the invoice net (total - retention) is paid. Idempotent on "
-    "idempotency_key. The cash leg (not the withheld retainage) is posted to the cost "
-    "spine. MANAGER-only - a payment is a binding ledger entry.",
+    "idempotency_key. A payment on a client invoice is income and posts nothing to the "
+    "cost spine. MANAGER-only - a payment is a binding ledger entry.",
 )
 async def record_payment_with_withholding(
     invoice_id: uuid.UUID,
@@ -1560,10 +1567,13 @@ async def list_budgets(
     # VIEWER does not receive every tenant's budgets (admins -> None -> all).
     scope = None if project_id is not None else await accessible_project_ids(session, user_id)
     items, total = await service.list_budgets(project_id=project_id, project_ids=scope, category=category)
-    return BudgetListResponse(
-        items=[BudgetResponse.model_validate(b) for b in items],
-        total=total,
-    )
+    labels = await service.budget_wbs_labels([b.wbs_id for b in items])
+    out = []
+    for b in items:
+        row = BudgetResponse.model_validate(b)
+        row.wbs_label = labels.get(b.wbs_id or "")
+        out.append(row)
+    return BudgetListResponse(items=out, total=total)
 
 
 @router.post(
@@ -1705,16 +1715,21 @@ def _parse_budget_rows_from_csv(content_bytes: bytes) -> list[dict[str, Any]]:
 
 
 def _parse_budget_rows_from_excel(content_bytes: bytes) -> list[dict[str, Any]]:
-    """Parse rows from an Excel (.xlsx) file for budget import."""
+    """Parse rows from an Excel (.xlsx) file for budget import.
+
+    The header is row 1, or the table's header under a company letterhead
+    when the file is one of our own exports (see ``app.core.sheet_header``).
+    """
     from openpyxl import load_workbook
+
+    from app.core.sheet_header import locate_header_row
 
     wb = load_workbook(io.BytesIO(content_bytes), read_only=True, data_only=True)
     ws = wb.active
     if ws is None:
         raise ValueError("Excel file has no worksheets")
 
-    rows_iter = ws.iter_rows(values_only=True)
-    raw_headers = next(rows_iter, None)
+    raw_headers, rows_iter = locate_header_row(ws.iter_rows(values_only=True), _match_budget_column)
     if not raw_headers:
         raise ValueError("Excel file is empty or has no header row")
 
@@ -1833,7 +1848,7 @@ async def import_budgets_file(
     if not rows:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No data rows found in file. Check that the first row contains column headers.",
+            detail="No data rows found in file. Check that the header row names the columns.",
         )
 
     # Convert rows to BudgetCreate objects and import
@@ -1935,6 +1950,9 @@ async def export_budgets(
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
+    from app.core.xlsx_branding import apply_company_header
+    from app.core.xlsx_text import store_strings_as_text
+
     await _require_project_access(session, project_id, _user_id)
 
     result = await session.execute(select(ProjectBudget).where(ProjectBudget.project_id == project_id).limit(50000))
@@ -1997,6 +2015,10 @@ async def export_budgets(
         ws.cell(row=row_idx, column=6, value=actual)
         ws.cell(row=row_idx, column=7, value=forecast)
         ws.cell(row=row_idx, column=8, value=variance)
+
+    # Company letterhead above the table; a no-op without a company profile.
+    store_strings_as_text(ws)
+    apply_company_header(ws, title=ws.title)
 
     output = io.BytesIO()
     wb.save(output)

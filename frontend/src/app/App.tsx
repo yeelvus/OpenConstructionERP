@@ -21,6 +21,7 @@ import { syncCustomUnitsFromServer } from '@/features/boq/boqHelpers';
 import { NlRuleBuilderPanel } from '@/features/compliance';
 import { useModuleRouteElements } from '@/modules/ModuleRoutes';
 import { DatabaseSetupPage } from '@/features/setup';
+import { ModuleVideosSlot } from '@/features/videos/ModuleVideosSlot';
 import { Logo, ShortcutsDialog, CommandPalette, ToastContainer, DemoReadOnlyDialog, BackgroundInstallBanner, ErrorBoundary, NotFoundPage, ProductTour, OfflineBanner, PWAInstallPrompt } from '@/shared/ui';
 import { AdminOnly } from '@/shared/auth/AdminOnly';
 import GlobalSearchModal from '@/features/search/GlobalSearchModal';
@@ -31,6 +32,7 @@ import { useThemeStore } from '@/stores/useThemeStore';
 import { useBrandingStore } from '@/stores/useBrandingStore';
 import { usePreferencesStore } from '@/stores/usePreferencesStore';
 import { hydrateInfoBlocksFromServer } from '@/stores/useInfoBlockPrefsStore';
+import { useViewModeDefault } from './layout/useViewModeDefault';
 import { ddcVerifyIntegrity, ddcInjectMeta, DDC_ORIGIN } from '@/shared/lib/ddc-integrity';
 import { NavigationProgress } from '@/shared/lib/navigationProgress';
 import { useKeyboardShortcuts } from '@/shared/hooks/useKeyboardShortcuts';
@@ -66,6 +68,9 @@ const MatchElementsPage = lazy(() =>
 );
 const NotificationsPage = lazy(() =>
   import('@/features/notifications/NotificationsPage').then((m) => ({ default: m.NotificationsPage }))
+);
+const FundingPage = lazy(() =>
+  import('@/features/funding/FundingPage').then((m) => ({ default: m.FundingPage }))
 );
 const TenderingPage = lazy(() =>
   import('@/features/tendering/TenderingPage').then((m) => ({ default: m.TenderingPage }))
@@ -608,6 +613,9 @@ const OnboardingWizard = lazy(() =>
 const LoginPageNext = lazy(() =>
   import('@/features/auth/LoginPageNext').then((m) => ({ default: m.LoginPageNext }))
 );
+const OidcCallbackPage = lazy(() =>
+  import('@/features/auth/OidcCallback').then((m) => ({ default: m.OidcCallback }))
+);
 const QuickEstimatePage = lazy(() =>
   import('@/features/ai/QuickEstimatePage').then((m) => ({ default: m.QuickEstimatePage }))
 );
@@ -707,6 +715,11 @@ const HowItWorksPage = lazy(() => import('@/features/help/HowItWorksPage'));
 const CasesPage = lazy(() =>
   import('@/features/cases').then((m) => ({ default: m.CasesPage }))
 );
+// Videos - tutorial and training videos. Lazy: the page is a list of posters,
+// and nothing on it is needed at boot.
+const VideosPage = lazy(() =>
+  import('@/features/videos').then((m) => ({ default: m.VideosPage }))
+);
 // The case editor, split from the hub: most readers never author one.
 const CaseEditorPage = lazy(() =>
   import('@/features/cases').then((m) => ({ default: m.CaseEditorPage }))
@@ -715,6 +728,24 @@ const CaseEditorPage = lazy(() =>
 // changelog it reuses does not weigh down the boot bundle.
 const InsidePage = lazy(() =>
   import('@/features/inside').then((m) => ({ default: m.InsidePage }))
+);
+
+// Module UIs that sit behind their backend counterpart (no data without
+// the backend module enabled).
+const JobsPage = lazy(() =>
+  import('@/features/jobs').then((m) => ({ default: m.JobsPage }))
+);
+const WorkflowsPage = lazy(() =>
+  import('@/features/enterprise-workflows').then((m) => ({ default: m.WorkflowsPage }))
+);
+const RebarSchedulePage = lazy(() =>
+  import('@/features/rebar-schedule').then((m) => ({ default: m.RebarSchedulePage }))
+);
+const RFQBiddingPage = lazy(() =>
+  import('@/features/rfq-bidding').then((m) => ({ default: m.RFQBiddingPage }))
+);
+const SavedViewsPage = lazy(() =>
+  import('@/features/saved-views').then((m) => ({ default: m.SavedViewsPage }))
 );
 
 // CPMView is keyed by the schedule it analyses, so the route reads :id and
@@ -803,6 +834,11 @@ function AppShell() {
       <ErrorBoundary scope="app">
         <AppLayout title={title}>
           <Suspense fallback={<PageLoadingInline />}>
+            {/* "Videos for this step": renders nothing on a screen with no
+                videos, and a failure in it must never take the page down. */}
+            <ErrorBoundary key={`videos:${location.pathname}`} fallback={null}>
+              <ModuleVideosSlot />
+            </ErrorBoundary>
             <ErrorBoundary key={location.pathname}>
               <PageTitleContext.Provider value={setTitle}>
                 <Outlet />
@@ -976,6 +1012,9 @@ function useDocumentDirection() {
 export default function App() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   useDocumentDirection();
+  // The Simple / Advanced menu mode: the user's stored choice, or while there
+  // is none a default derived from the company profile.
+  useViewModeDefault();
 
   // DDC-CWICR-OE integrity verification
   if (typeof window !== 'undefined') {
@@ -1121,6 +1160,7 @@ export default function App() {
         <Route path="/login" element={isAuthenticated ? <AuthedHome /> : <LoginPage />} />
         <Route path="/login-next" element={isAuthenticated ? <AuthedHome /> : <Suspense fallback={<LoadingScreen />}><LoginPageNext /></Suspense>} />
         <Route path="/register" element={isAuthenticated ? <AuthedHome /> : <RegisterPage />} />
+        <Route path="/auth/oidc/callback" element={<Suspense fallback={<LoadingScreen />}><OidcCallbackPage /></Suspense>} />
         <Route path="/forgot-password" element={isAuthenticated ? <AuthedHome /> : <ForgotPasswordPage />} />
 
         {/* Onboarding — full-screen, no layout */}
@@ -1273,6 +1313,7 @@ export default function App() {
         <Route path="/esg" element={<P title="ESG Site Performance"><EsgPage /></P>} />
         <Route path="/forms" element={<P title="Forms & checklists"><FormsPage /></P>} />
 
+        <Route path="/funding" element={<P title="Public Funding"><FundingPage /></P>} />
         <Route path="/tendering" element={<P title="Tendering"><TenderingPage /></P>} />
 
         <Route path="/changeorders" element={<P title="Change Orders"><ChangeOrdersPage /></P>} />
@@ -1412,6 +1453,15 @@ export default function App() {
         <Route path="/setup/databases" element={<P title="Databases & Resources"><DatabaseSetupPage /></P>} />
         <Route path="/settings" element={<P title="Settings"><SettingsPage /></P>} />
         <Route path="/integrations" element={<P title="Integrations"><IntegrationsPage /></P>} />
+        <Route path="/jobs" element={<P title="Background Jobs"><JobsPage /></P>} />
+        <Route path="/workflows" element={<P title="Approval Workflows"><WorkflowsPage /></P>} />
+        <Route path="/projects/:projectId/workflows" element={<P title="Approval Workflows"><WorkflowsPage /></P>} />
+        <Route path="/rebar-schedule" element={<P title="Rebar Schedule"><RebarSchedulePage /></P>} />
+        <Route path="/projects/:projectId/rebar-schedule" element={<P title="Rebar Schedule"><RebarSchedulePage /></P>} />
+        <Route path="/rfq-bidding" element={<P title="RFQ Bidding"><RFQBiddingPage /></P>} />
+        <Route path="/projects/:projectId/rfq-bidding" element={<P title="RFQ Bidding"><RFQBiddingPage /></P>} />
+        <Route path="/saved-views" element={<P title="Saved Views"><SavedViewsPage /></P>} />
+        <Route path="/projects/:projectId/saved-views" element={<P title="Saved Views"><SavedViewsPage /></P>} />
         <Route path="/about" element={<P title="About"><AboutPage /></P>} />
         <Route path="/how-it-works" element={<P title="How it works"><HowItWorksPage /></P>} />
         {/* Cases (playbooks) - list at /cases, the stepper at /cases/:playbookId
@@ -1420,6 +1470,7 @@ export default function App() {
             and the form has no business loading for the ones who do not.
             /cases/new is declared before the stepper for readability only -
             the router ranks a static segment above a dynamic one regardless. */}
+        <Route path="/videos" element={<P title="Videos"><VideosPage /></P>} />
         <Route path="/cases" element={<P title="Cases"><CasesPage /></P>} />
         <Route path="/cases/new" element={<P title="Cases"><CaseEditorPage /></P>} />
         <Route path="/cases/:playbookId/edit" element={<P title="Cases"><CaseEditorPage /></P>} />

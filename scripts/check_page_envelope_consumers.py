@@ -239,6 +239,37 @@ MIGRATED_ENDPOINTS: dict[str, str] = {
     # decorative entry the notes above ban three times. Add it the day a caller
     # appears. `/v1/variations/site-measurements/` sits in the same position
     # for the same reason.
+    #
+    # Wave 6. One reader, the procurement api wrapper, and it had to be made
+    # visible before this line was worth writing: it built the route with the
+    # query string interpolated as one suffix, so the literal collapsed to
+    # `.../committed-by-position/{}` and no entry could have matched it. The
+    # route now carries its own `?`, which is what `/v1/transmittals/` does and
+    # why that one is guarded. Worth knowing before enveloping anything else:
+    # an endpoint can be correct, enveloped, read, and still unguardable
+    # because of where a caller put a `?`.
+    "/v1/procurement/project/{}/committed-by-position/": "committed by BOQ position",
+    #
+    # Deliberately absent, same rule as fuel-logs above: the funding
+    # application's four child registers, `/disbursements/`, `/proofs/`,
+    # `/obligations/` and `/allocations/`. All four are enveloped, and the
+    # application detail response embeds the four lists whole, so the interface
+    # never reads the paged routes - it POSTs to them and reads the detail.
+    # Nothing to count, so nothing to list yet.
+    #
+    # The lines of one subcontractor pay application. This one is read by
+    # somebody approving an amount on every line and reading a payable total
+    # underneath, so a first page would have them confirm part of a payment
+    # on a screen that reads as the whole of it. Its api wrapper follows the
+    # pages to the end for that reason, which is a use of the envelope rather
+    # than a way round it: without a total there is nothing to say a page was
+    # short, and the wrapper would have no way to know it had everything.
+    "/v1/subcontractors/payment-applications/{}/lines": "pay application lines",
+    # Not paged: every pair on the project comes back and `total` says so. The
+    # CVR claim picker went to the same shape at the same time, but its caller
+    # builds the URL on a `${BASE}` prefix this scan cannot read, so it is not
+    # listed rather than listed at zero call sites.
+    "/v1/subcontractors/unlinked-twins/": "subcontract twin pairs",
 }
 
 # Left bare on purpose in wave 4: `/v1/documents/photos/recent/`. It is a

@@ -29,6 +29,8 @@ import {
 } from './api';
 import { looksLikeCoordinatePair, parseCoordinates } from './parseCoordinates';
 import { useTelemetry } from '@/shared/lib/telemetry';
+import { lookupCountryDefault } from './currencyGroups';
+import { regionOptionLabel, type RegionOption } from './regionLabel';
 import { onlyChangedFields } from '@/shared/lib/apiHelpers';
 import { fmtFixed } from '@/shared/lib/formatters';
 
@@ -57,7 +59,9 @@ const PHASE_OPT_LABELS: Record<string, string> = {
 
 export interface OptionGroup {
   group: string;
-  options: { value: string; label: string }[];
+  // `iso` marks a single-country region, named in the reader's language by
+  // ``regionOptionLabel``; every other option shows its label as written.
+  options: RegionOption[];
 }
 
 /** Shared region catalogue (create form + projects bulk tools). */
@@ -66,35 +70,36 @@ export const REGION_GROUPS: OptionGroup[] = [
     group: 'Europe',
     options: [
       { value: 'DACH', label: 'DACH (Germany, Austria, Switzerland)' },
-      { value: 'UK', label: 'United Kingdom' },
+      { value: 'UK', label: 'United Kingdom', iso: 'GB' },
       { value: 'Nordics', label: 'Nordics (Sweden, Norway, Denmark, Finland)' },
-      { value: 'France', label: 'France' },
-      { value: 'Spain', label: 'Spain' },
-      { value: 'Italy', label: 'Italy' },
-      { value: 'Netherlands', label: 'Netherlands' },
-      { value: 'Poland', label: 'Poland' },
-      { value: 'Czech', label: 'Czech Republic' },
-      { value: 'Turkey', label: 'Turkey' },
-      { value: 'Russia', label: 'Russia' },
+      { value: 'France', label: 'France', iso: 'FR' },
+      { value: 'Spain', label: 'Spain', iso: 'ES' },
+      { value: 'Italy', label: 'Italy', iso: 'IT' },
+      { value: 'Netherlands', label: 'Netherlands', iso: 'NL' },
+      { value: 'Poland', label: 'Poland', iso: 'PL' },
+      { value: 'Czech', label: 'Czech Republic', iso: 'CZ' },
+      { value: 'Croatia', label: 'Croatia', iso: 'HR' },
+      { value: 'Turkey', label: 'Turkey', iso: 'TR' },
+      { value: 'Russia', label: 'Russia', iso: 'RU' },
     ],
   },
   {
     group: 'Americas',
     options: [
-      { value: 'US', label: 'United States' },
-      { value: 'Canada', label: 'Canada' },
-      { value: 'Brazil', label: 'Brazil' },
-      { value: 'Mexico', label: 'Mexico' },
+      { value: 'US', label: 'United States', iso: 'US' },
+      { value: 'Canada', label: 'Canada', iso: 'CA' },
+      { value: 'Brazil', label: 'Brazil', iso: 'BR' },
+      { value: 'Mexico', label: 'Mexico', iso: 'MX' },
       { value: 'LatinAmerica', label: 'Latin America (Other)' },
     ],
   },
   {
     group: 'Asia & Middle East',
     options: [
-      { value: 'China', label: 'China' },
-      { value: 'Japan', label: 'Japan' },
-      { value: 'Korea', label: 'South Korea' },
-      { value: 'India', label: 'India' },
+      { value: 'China', label: 'China', iso: 'CN' },
+      { value: 'Japan', label: 'Japan', iso: 'JP' },
+      { value: 'Korea', label: 'South Korea', iso: 'KR' },
+      { value: 'India', label: 'India', iso: 'IN' },
       { value: 'SoutheastAsia', label: 'Southeast Asia' },
       { value: 'MiddleEast', label: 'Middle East (General)' },
       { value: 'GulfStates', label: 'Gulf States (UAE, Saudi Arabia, Qatar)' },
@@ -104,7 +109,7 @@ export const REGION_GROUPS: OptionGroup[] = [
     group: 'Africa',
     options: [
       { value: 'NorthAfrica', label: 'North Africa' },
-      { value: 'SouthAfrica', label: 'South Africa' },
+      { value: 'SouthAfrica', label: 'South Africa', iso: 'ZA' },
       { value: 'EastAfrica', label: 'East Africa' },
       { value: 'WestAfrica', label: 'West Africa' },
     ],
@@ -112,8 +117,8 @@ export const REGION_GROUPS: OptionGroup[] = [
   {
     group: 'Oceania',
     options: [
-      { value: 'Australia', label: 'Australia' },
-      { value: 'NewZealand', label: 'New Zealand' },
+      { value: 'Australia', label: 'Australia', iso: 'AU' },
+      { value: 'NewZealand', label: 'New Zealand', iso: 'NZ' },
     ],
   },
   {
@@ -184,9 +189,6 @@ const STANDARD_GROUPS: OptionGroup[] = [
       { value: 'din276', label: 'DIN 276 (Germany / DACH)' },
       { value: 'nrm', label: 'NRM 1/2 (United Kingdom)' },
       { value: 'masterformat', label: 'MasterFormat (US / Canada)' },
-      { value: 'uniformat', label: 'UniFormat (US / Canada)' },
-      { value: 'uniclass', label: 'Uniclass (United Kingdom)' },
-      { value: 'omniclass', label: 'OmniClass (North America)' },
       { value: 'gb50500', label: 'GB/T (China)' },
       { value: 'tetelrend', label: 'Tételrend (Hungary)' },
     ],
@@ -215,11 +217,7 @@ const STANDARD_GROUPS: OptionGroup[] = [
       { value: 'sekisan', label: 'Sekisan (Japan)' },
       { value: 'kbim', label: 'KBIM (South Korea)' },
       { value: 'birimfiyat', label: 'Birim Fiyat (Turkey)' },
-      { value: 'dpgf', label: 'DPGF (France)' },
-      { value: 'cpwd', label: 'CPWD (India)' },
       { value: 'nlsfb', label: 'NL/SfB (Netherlands)' },
-      { value: 'onorm', label: 'ÖNORM (Austria)' },
-      { value: 'gaeb', label: 'GAEB (Germany)' },
     ],
   },
   {
@@ -246,8 +244,6 @@ export const CURRENCY_GROUPS: OptionGroup[] = [
       { value: 'RUB', label: 'RUB (₽) - Russian Ruble' },
       { value: 'HUF', label: 'HUF (Ft) - Hungarian Forint' },
       { value: 'RON', label: 'RON (lei) - Romanian Leu' },
-      { value: 'BGN', label: 'BGN (лв) - Bulgarian Lev' },
-      { value: 'HRK', label: 'HRK (kn) - Croatian Kuna' },
       { value: 'ISK', label: 'ISK (kr) - Icelandic Krona' },
     ],
   },
@@ -334,6 +330,7 @@ const LANGUAGES = [
   { value: 'nl', label: 'Nederlands' },
   { value: 'pl', label: 'Polski' },
   { value: 'cs', label: 'Čeština' },
+  { value: 'hr', label: 'Hrvatski' },
   { value: 'hu', label: 'Magyar' },
   { value: 'ru', label: 'Русский' },
   { value: 'tr', label: 'Türkçe' },
@@ -491,7 +488,7 @@ export function CreateProjectModal({
   onClose,
   editProjectId,
 }: CreateProjectModalProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const addToast = useToastStore((s) => s.addToast);
@@ -593,6 +590,18 @@ export function CreateProjectModal({
     if (parts.postcode) setAddressPostal(parts.postcode);
     // Resolve ISO country code from geocoder — Nominatim returns lowercase.
     if (sel.country_code) setCountryCode(sel.country_code.toUpperCase());
+    // A new project in a known country takes that country's region and
+    // currency, unless the user already chose them. The currency counts as
+    // unchosen while it is still the preference the form opened with, which
+    // is how a Croatian project stopped opening on DACH defaults.
+    const countryDefault = isEdit ? null : lookupCountryDefault(sel.country_code);
+    if (countryDefault) {
+      setForm((prev) => ({
+        ...prev,
+        region: prev.region ? prev.region : countryDefault.region,
+        currency: prev.currency && prev.currency !== defaultCurrency ? prev.currency : countryDefault.currency,
+      }));
+    }
     // OC-11: derive location precision from Nominatim addresstype.
     if (sel.addresstype) {
       const at = sel.addresstype.toLowerCase();
@@ -984,10 +993,9 @@ export function CreateProjectModal({
       return project;
     },
     onSuccess: (project) => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      // The header project switcher caches under its own key; without this
+      // The header project switcher reads this same entry. Without the refetch
       // its stale-list purge effect clears the just-activated project.
-      queryClient.invalidateQueries({ queryKey: ['projects-switcher'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
       queryClient.invalidateQueries({ queryKey: ['project', project.id] });
       queryClient.invalidateQueries({
         queryKey: ['project-profile', project.id],
@@ -2315,7 +2323,7 @@ export function CreateProjectModal({
                     value={
                       form.region === '__custom__'
                         ? (customRegion.trim() || '—')
-                        : (labelFor(REGION_GROUPS, form.region ?? '') || '—')
+                        : (labelFor(REGION_GROUPS, form.region ?? '', i18n.language) || '—')
                     }
                   />
                   <SummaryRow
@@ -2323,7 +2331,7 @@ export function CreateProjectModal({
                     value={
                       form.currency === '__custom__'
                         ? (customCurrency.trim() || '—')
-                        : (labelFor(CURRENCY_GROUPS, form.currency ?? '') || '—')
+                        : (labelFor(CURRENCY_GROUPS, form.currency ?? '', i18n.language) || '—')
                     }
                   />
                   <SummaryRow
@@ -2331,7 +2339,7 @@ export function CreateProjectModal({
                     value={
                       form.classification_standard === '__custom__'
                         ? (customStandard.trim() || '—')
-                        : (labelFor(STANDARD_GROUPS, form.classification_standard ?? '') || '—')
+                        : (labelFor(STANDARD_GROUPS, form.classification_standard ?? '', i18n.language) || '—')
                     }
                   />
                   <SummaryRow
@@ -2528,11 +2536,11 @@ function humanize(s: string): string {
 
 /** Resolve a select value to its human label by scanning the option
  *  groups. Falls back to the raw value (custom entries, unknown keys). */
-function labelFor(groups: OptionGroup[], value: string): string {
+function labelFor(groups: OptionGroup[], value: string, lang: string): string {
   if (!value) return '';
   for (const g of groups) {
     const o = g.options.find((x) => x.value === value);
-    if (o) return o.label;
+    if (o) return regionOptionLabel(o, lang);
   }
   return value;
 }
@@ -2652,7 +2660,7 @@ function GroupedSelectField({
   optional?: boolean;
   optionalText?: string;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   return (
     <div className="flex flex-col gap-1.5">
       <label className="text-sm font-medium text-content-primary">
@@ -2677,7 +2685,7 @@ function GroupedSelectField({
           <optgroup key={g.group} label={t(`projects.group_${g.group.toLowerCase().replace(/[^a-z0-9]/g, '_')}`, { defaultValue: g.group })}>
             {g.options.map((o) => (
               <option key={o.value} value={o.value}>
-                {o.label}
+                {regionOptionLabel(o, i18n.language)}
               </option>
             ))}
           </optgroup>

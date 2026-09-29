@@ -529,10 +529,21 @@ Function PageLeaveReinstall
       ; stuck: the old uninstaller is broken, the new installer refuses to
       ; proceed, and the only way forward is manual removal via Windows Settings.
       ;
-      ; We still tell them what happened so they are not surprised, and we
-      ; proceed on Yes rather than forcing the issue. Code -1 in the field has
-      ; been traced to old hooks (pre-v15.9) whose PowerShell fails under
-      ; antivirus or group policy on specific machines.
+      ; On an UPGRADE ($R0 = 1) this is completely silent. Code -1 in the field
+      ; has been traced to old hooks (pre-v15.9) whose PowerShell fails under
+      ; antivirus or group policy on specific machines, and showing a scary
+      ; "Unable to uninstall!" dialog on every upgrade when the fix is always
+      ; "click Yes and continue" is worse than the error it reports. The new
+      ; installer's NSIS_HOOK_PREINSTALL stops every process the old uninstaller
+      ; missed, and every file is overwritten. On same-version reinstalls or
+      ; downgrades the dialog is kept so the user can decide.
+      ${If} $R0 = 1
+        ; Upgrading: silently continue. Log it for diagnostics but do not
+        ; block the user with a dialog they can only answer one way.
+        DetailPrint "Note: the previous version's uninstaller exited with code $0. Continuing with the upgrade."
+        Goto reinst_done
+      ${EndIf}
+
       ${If} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
         StrCpy $R5 "$R5$\nIt left $INSTDIR\${MAINBINARYNAME}.exe behind."
       ${EndIf}
@@ -940,9 +951,11 @@ Section Uninstall
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
-  ; Delete the app directory and its content from disk
-  ; Copy main executable
-  Delete "$INSTDIR\${MAINBINARYNAME}.exe"
+  ; Delete the app directory and its content from disk.
+  ; /REBOOTOK: if the executable is still locked (antivirus, indexer), Windows
+  ; schedules it for deletion on the next reboot instead of silently failing.
+  ; Without it the file stays behind and the directory cannot be removed.
+  Delete /REBOOTOK "$INSTDIR\${MAINBINARYNAME}.exe"
 
   ; Delete resources
   {{#each resources}}
@@ -971,7 +984,7 @@ Section Uninstall
 
 
   ; Delete uninstaller
-  Delete "$INSTDIR\uninstall.exe"
+  Delete /REBOOTOK "$INSTDIR\uninstall.exe"
 
   {{#each resources_ancestors}}
   RMDir /REBOOTOK "$INSTDIR\\{{this}}"

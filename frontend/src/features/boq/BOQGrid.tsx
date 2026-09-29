@@ -96,6 +96,7 @@ import {
   convertToBase,
   fmtWithCurrency,
   getUnitsForLocale,
+  isResourceDrivenRate,
   resourceAwareTotalInBase,
   saveCustomUnit,
 } from './boqHelpers';
@@ -113,6 +114,8 @@ import { useDisplayQuantity } from '@/shared/hooks/useDisplayQuantity';
 import { VariantPicker } from '@/features/costs/VariantPicker';
 import type { CostVariant, VariantStats } from '@/features/costs/api';
 import { copyToClipboard, readClipboard } from '@/shared/lib/browser';
+import { parseDecimalInput } from '@/shared/lib/parseDecimal';
+import { isAltOrAltGraph } from './boqShortcuts';
 
 /* ── Column width persistence ─────────────────────────────────────── */
 
@@ -145,7 +148,41 @@ const PASTE_PROTECTED_FIELDS = new Set(['total', '_actions', '_drag', '_checkbox
 const NUMERIC_FIELDS = new Set(['quantity', 'unit_rate']);
 
 /** Outcome of pasting one clipboard cell, so partial failures are not silent. */
-type CellPasteOutcome = 'applied' | 'unchanged' | 'blocked' | 'invalid';
+type CellPasteOutcome = 'applied' | 'unchanged' | 'blocked' | 'invalid' | 'derived';
+
+/* ── Row selection config ─────────────────────────────────────────── */
+
+/**
+ * Selection config for AG Grid, built ONCE at module level on purpose.
+ *
+ * AG Grid 32 compares grid options by identity, and a new `rowSelection`
+ * object counts as a selection-config change even when every field is equal:
+ * the grid stops the open cell editor and rebuilds every rendered row. This
+ * used to be an inline literal, so each re-render of BOQGrid (a row click, a
+ * save, a sibling refetch on the editor page) closed the Unit Rate editor
+ * about 200 ms after it opened and swallowed the price being typed, and every
+ * save paid for a full redraw of the viewport. Nothing in it depends on props
+ * or state, so it must never move back inside the component.
+ */
+const BOQ_ROW_SELECTION = {
+  mode: 'multiRow',
+  checkboxes: true,
+  headerCheckbox: true,
+  selectAll: 'filtered',
+  enableClickSelection: false,
+  isRowSelectable: (node: { data?: Record<string, unknown> }) =>
+    !node.data?._isFooter && !node.data?._isSection && !node.data?._isResource && !node.data?._isAddResource,
+} as const;
+
+/**
+ * Parse a number typed into a free-text field of the grid (manual resource
+ * dialog). Same grammar as the cells: `1.234,56`, `1 234,56` and `1,234.56`
+ * all read as 1234.56. Unreadable or zero input yields `fallback`, which keeps
+ * the `parseFloat(...) || fallback` semantics this replaced.
+ */
+export function parseTypedAmount(raw: string, fallback: number): number {
+  return parseDecimalInput(raw) || fallback;
+}
 
 /**
  * Parse a pasted string into a number. Handles thousand separators
@@ -454,6 +491,12 @@ export interface BOQGridProps {
    */
   onShowMeasurement?: (positionId: string) => void;
   /**
+   * The project's configured classification standard (e.g. "din276",
+   * "sinapi"). Threaded into the grid context so the Code column shows
+   * the project's own standard when a row carries more than one.
+   */
+  classificationStandard?: string;
+  /**
    * Issue #435 - open the provenance control for one line of a variation's
    * bill: which contract line or estimate position it comes from, and
    * whether it adds, removes or modifies that scope. Wired by BOQEditorPage
@@ -549,6 +592,13 @@ export interface BOQGridProps {
   /** Custom column definitions from BOQ metadata */
   customColumns?: import('./grid/columnDefs').CustomColumnDef[];
   /**
+   * The bill is locked. The server refuses every write to it, so the grid
+   * offers none: no cell editor opens, rows do not drag, and the write actions
+   * leave the section header, the resource rows and the row menu. What only
+   * reads (collapse, price analysis, links, actuals) stays.
+   */
+  readOnly?: boolean;
+  /**
    * Show the Material/Labor/Equipment % cost-driver split columns (tri-state
    * `columns` position). Toggled from the BOQ toolbar; off by default.
    */
@@ -607,11 +657,15 @@ export interface BOQGridHandle {
 
 /* ── Component ─────────────────────────────────────────────────────── */
 
+/** Stable stand-in for "no positions" so memo deps do not see a new array. */
+const NO_POSITIONS: Position[] = [];
+
 const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   positions,
   onUpdatePosition,
   onDeletePosition,
   onAddPosition,
+  readOnly = false,
   onSelectSuggestion: _onSelectSuggestion,
   onSaveToDatabase,
   onAddComment,
@@ -626,7 +680,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   currencyCode,
   fxRates,
   onUpsertProjectFxRate,
-  displayCurrency,
+  displayCurrency: displayCurrencyProp,
   sectionTotalBasis,
   onOpenFxRateSettings,
   locale,
@@ -645,6 +699,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   onPriceAnalysis,
   onShowPositionActuals,
   onShowMeasurement,
+  classificationStandard,
   onTraceLine,
   variationTraces,
   variationUntracedBadge,
@@ -684,6 +739,18 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   // — v4.3 audit (BOQGrid column-defs thrash).
   const tRef = useRef(t);
   tRef.current = t;
+  // The caller may build the display-currency override inline, a new object
+  // on every render with the same code and rate. It feeds the column defs, so
+  // key it on its two values or every parent render rebuilds every column.
+  const displayCurrencyCode = displayCurrencyProp?.code;
+  const displayCurrencyRate = displayCurrencyProp?.rate;
+  const displayCurrency = useMemo(
+    () =>
+      displayCurrencyCode !== undefined && displayCurrencyRate !== undefined
+        ? { code: displayCurrencyCode, rate: displayCurrencyRate }
+        : null,
+    [displayCurrencyCode, displayCurrencyRate],
+  );
   const navigate = useNavigate();
   const gridRef = useRef<AgGridReact>(null);
   const gridApiRef = useRef<GridApi | null>(null);
@@ -937,6 +1004,10 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   const commitPositionCurrency = useCallback(() => {
     const dlg = positionCurrencyDialog;
     if (!dlg) return;
+    if (readOnly) {
+      setPositionCurrencyDialog(null);
+      return;
+    }
     const pos = positions.find((p) => p.id === dlg.positionId);
     if (!pos) {
       setPositionCurrencyDialog(null);
@@ -960,7 +1031,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
     );
     setPositionCurrencyDialog(null);
     scheduleGridRefresh(['unit_rate', 'total']);
-  }, [positionCurrencyDialog, positions, onUpdatePosition, currencyCode, scheduleGridRefresh]);
+  }, [positionCurrencyDialog, positions, onUpdatePosition, currencyCode, scheduleGridRefresh, readOnly]);
 
   const openPositionVariantPicker = useCallback(
     (positionId: string, anchorEl: HTMLElement | null) => {
@@ -1276,6 +1347,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       locale,
       fmt,
       t,
+      classificationStandard,
       collapsedSections,
       onToggleSection,
       onAddPosition,
@@ -1312,7 +1384,10 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       anomalyMap,
       onApplyAnomalySuggestion,
       bimModelId,
-      onUpdatePosition,
+      // Renderers that write outside a cell editor (variant pick, model and
+      // takeoff quantities, section rename) reach the bill through this; a
+      // locked bill hands them nothing to call.
+      onUpdatePosition: readOnly ? undefined : onUpdatePosition,
       onHighlightBIMElements,
       onDeleteSection: onDeleteSection ?? (() => {}),
       onReorderSections: onReorderSections ?? (() => {}),
@@ -1338,6 +1413,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       // Issue #435: per-line provenance chips, defined only on a variation bill.
       variationTraces,
       variationUntracedBadge,
+      readOnly,
     }) as FullGridContext,
     [descDensity, currencySymbol, currencyCode, fxRates, onUpsertProjectFxRate, displayCurrency, onOpenFxRateSettings, locale, fmt, t, collapsedSections, onToggleSection, onAddPosition, onAddSubSection,
      expandedPositions, toggleResources, onRemoveResource, onUpdateResource, onUpdateResourceFields,
@@ -1347,19 +1423,30 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
      onDuplicatePosition, showContextMenu, anomalyMap, onApplyAnomalySuggestion, bimModelId,
      onUpdatePosition, onHighlightBIMElements, onDeleteSection, onReorderSections, onFormulaApplied,
      positions, boqVariablesMap, customColumns, showResourceSplit, showResourceSplitPill, renderInlineCopilot, displayQuantity,
-     sectionTotalBasis, variationTraces, variationUntracedBadge],
+     sectionTotalBasis, variationTraces, variationUntracedBadge, readOnly],
   );
 
   /* ── Column defs (standard + custom) ─────────────────────────────── */
-  const columnDefs = useMemo(() => {
-    // Longest ordinal in the loaded rows drives the "Pos." column width so a
-    // full German GAEB OZ ("01.01.0010") is never ellipsised in the default
-    // layout. `positions` is already a dependency of this memo.
-    let maxOrdinalChars = 0;
+  // Longest ordinal in the loaded rows drives the "Pos." column width so a
+  // full German GAEB OZ ("01.01.0010") is never ellipsised in the default
+  // layout. Kept as its own number so the column defs below depend on the
+  // width, not on the positions array: every save writes the query cache
+  // twice, and rebuilding the column defs on each write made AG Grid reload
+  // every column (columnEverythingChanged) for a price edit.
+  const maxOrdinalChars = useMemo(() => {
+    let max = 0;
     for (const p of positions) {
       const len = (p.ordinal ?? '').length;
-      if (len > maxOrdinalChars) maxOrdinalChars = len;
+      if (len > max) max = len;
     }
+    return max;
+  }, [positions]);
+  // Custom columns still read the positions (calculated formulas and the
+  // parent lookup of derived columns are built when the defs are), so they
+  // keep rebuilding on a data change. Without custom columns there is
+  // nothing to rebuild, and a stable empty list keeps the memo quiet.
+  const customColumnPositions = customColumns && customColumns.length > 0 ? positions : NO_POSITIONS;
+  const columnDefs = useMemo(() => {
     const defs = getColumnDefs({ currencySymbol, currencyCode, locale, fmt, t: tRef.current, displayCurrency: displayCurrency ?? null, showResourceSplit, displayQuantity, maxOrdinalChars });
     // Override ordinal column with custom renderer
     const ordinalCol = defs.find((c) => c.field === 'ordinal');
@@ -1388,7 +1475,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       // automatically re-runs the calculation (we trigger refreshes via
       // the effect below).
       const customDefs = getCustomColumnDefs(customColumns, {
-        positions,
+        positions: customColumnPositions,
         variables: boqVariablesMap,
       });
       if (actionsIdx >= 0) {
@@ -1397,8 +1484,10 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
         defs.push(...customDefs);
       }
     }
+    // A locked bill: no column opens an editor and no row drags.
+    if (readOnly) return defs.map((c) => ({ ...c, editable: false, rowDrag: false }));
     return defs;
-  }, [currencySymbol, currencyCode, locale, fmt, i18n.language, customColumns, positions, boqVariablesMap, displayCurrency, showResourceSplit, displayQuantity]);
+  }, [currencySymbol, currencyCode, locale, fmt, i18n.language, customColumns, customColumnPositions, boqVariablesMap, displayCurrency, showResourceSplit, displayQuantity, maxOrdinalChars, readOnly]);
 
   /* ── Calculated-column refresh on positions change ──────────────────
    * AG Grid re-runs `valueGetter` on every refresh; for cross-position
@@ -2435,8 +2524,10 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
   );
 
   /**
-   * Check whether a cell is editable given its row data and column id.
-   * Mirrors the editable logic from column definitions.
+   * Check whether a paste or fill may write this cell given its row data and
+   * column id. Covers footers, sections and the protected columns; the Unit
+   * Rate of a resource-driven position is checked separately by the callers
+   * (isResourceDrivenRate) so they can count and report what they skipped.
    */
   const isCellPasteable = useCallback(
     (data: Record<string, unknown>, colId: string): boolean => {
@@ -2464,6 +2555,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
 
       const data = rowNode.data as Record<string, unknown>;
       if (!isCellPasteable(data, colId)) return 'blocked';
+      if (isResourceDrivenRate(colId, data)) return 'derived';
 
       const oldValue = data[colId];
       let newValue: string | number = rawClipboard;
@@ -2502,9 +2594,12 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       const api = gridApiRef.current;
       if (!api) return;
 
-      // Only handle Ctrl+C / Ctrl+V (or Cmd on macOS)
+      // Only handle Ctrl+C / Ctrl+V (or Cmd on macOS). Windows reports AltGr
+      // as Ctrl+Alt, and AltGr types characters on most European layouts
+      // (on a Croatian keyboard AltGr+V is '@'), so a chord with Alt is text,
+      // not a shortcut.
       const isCtrlOrMeta = e.ctrlKey || e.metaKey;
-      if (!isCtrlOrMeta) return;
+      if (!isCtrlOrMeta || isAltOrAltGraph(e)) return;
 
       // Don't intercept when a cell editor is active — let the editor handle clipboard natively
       if (api.getEditingCells().length > 0) return;
@@ -2572,6 +2667,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
 
         let pastedCount = 0;
         let invalidCount = 0;
+        let derivedCount = 0;
         const totalRowCount = api.getDisplayedRowCount();
 
         for (let rowOffset = 0; rowOffset < clipboardRows.length; rowOffset++) {
@@ -2591,10 +2687,24 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
             // drop from #347: count it so the user is warned. Read-only targets
             // ('blocked') and no-op matches ('unchanged') stay quiet by design.
             else if (outcome === 'invalid') invalidCount++;
+            else if (outcome === 'derived') derivedCount++;
           }
         }
 
-        if (pastedCount === 0 && invalidCount === 0) {
+        // Rates a position derives from its resources are not written, the
+        // same as the locked cell. Say how many, so a pasted column of prices
+        // that did not land on those rows is not a silent drop.
+        const derivedNote =
+          derivedCount > 0
+            ? t('boq.derived_rates_skipped', {
+                defaultValue: 'Unit rates calculated from resources were left as they are: {{count}}',
+                count: derivedCount,
+              })
+            : undefined;
+
+        if (pastedCount === 0 && invalidCount === 0 && derivedNote) {
+          addToast({ type: 'warning', title: derivedNote }, { duration: 4000 });
+        } else if (pastedCount === 0 && invalidCount === 0) {
           addToast(
             {
               type: 'error',
@@ -2610,6 +2720,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                 defaultValue: 'Could not paste, {{count}} values were not valid numbers',
                 count: invalidCount,
               }),
+              message: derivedNote,
             },
             { duration: 3500 },
           );
@@ -2622,16 +2733,18 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                 pasted: pastedCount,
                 skipped: invalidCount,
               }),
+              message: derivedNote,
             },
             { duration: 4000 },
           );
         } else {
           addToast(
             {
-              type: 'success',
+              type: derivedNote ? 'warning' : 'success',
               title: t('boq.value_pasted', { defaultValue: 'Value pasted' }),
+              message: derivedNote,
             },
-            { duration: 2000 },
+            { duration: derivedNote ? 4000 : 2000 },
           );
         }
 
@@ -2678,10 +2791,15 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
 
         e.preventDefault();
         let filled = 0;
+        let derived = 0;
         for (const node of targets) {
           const data = node.data as Record<string, unknown>;
           if (data[colId] === sourceValue) continue;
           if (!isCellPasteable(data, colId)) continue;
+          if (isResourceDrivenRate(colId, data)) {
+            derived++;
+            continue;
+          }
           const update: UpdatePositionData = {
             [colId]: sourceValue,
           } as UpdatePositionData;
@@ -2705,6 +2823,18 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
               } as Record<string, string>),
             },
             { duration: 2000 },
+          );
+        }
+        if (derived > 0) {
+          addToast(
+            {
+              type: 'warning',
+              title: t('boq.derived_rates_skipped', {
+                defaultValue: 'Unit rates calculated from resources were left as they are: {{count}}',
+                count: derived,
+              }),
+            },
+            { duration: 4000 },
           );
         }
       } else if (e.key === ';' || e.key === ':') {
@@ -2805,9 +2935,10 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
       const effName =
         (override?.name ?? name).trim() || effCode || effUnit;
       if (!effName) return;
-      const qty = parseFloat(quantity.replace(',', '.')) || 1;
-      const rate =
-        override?.unit_rate ?? (parseFloat(unitRate.replace(',', '.')) || 0);
+      // A string replace of the first comma read `1.234,56` as 1.234 and
+      // `1 234,56` as 1; the shared grammar reads both as 1234.56.
+      const qty = parseTypedAmount(quantity, 1);
+      const rate = override?.unit_rate ?? parseTypedAmount(unitRate, 0);
       // Persist user-typed units so they show up next time app-wide.
       if (effUnit) saveCustomUnit(effUnit);
       onAddManualResource?.(positionId, {
@@ -2999,16 +3130,10 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
           onRowDragEnd={handleRowDragEnd}
           onGridReady={onGridReady}
           onCellContextMenu={onCellContextMenu}
-          rowSelection={{
-            mode: 'multiRow',
-            checkboxes: true,
-            headerCheckbox: true,
-            selectAll: 'filtered',
-            enableClickSelection: false,
-            isRowSelectable: (node: { data?: Record<string, unknown> }) => !node.data?._isFooter && !node.data?._isSection && !node.data?._isResource && !node.data?._isAddResource,
-          }}
+          // Stable identity is load-bearing, see BOQ_ROW_SELECTION.
+          rowSelection={BOQ_ROW_SELECTION}
           onSelectionChanged={handleSelectionChanged}
-          rowDragManaged
+          rowDragManaged={!readOnly}
           animateRows
           singleClickEdit
           enterNavigatesVertically
@@ -3078,6 +3203,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                     onClick={() => { toggleResources(d.id as string); closeContextMenu(); }}
                   />
                 )}
+                {!readOnly && <>
                 <CtxItem icon={<Plus size={14}/>}
                   label={t('boq.add_resource_manual', { defaultValue: 'Add Resource' })}
                   onClick={() => {
@@ -3093,7 +3219,8 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                   label={t('boq.add_from_catalog', { defaultValue: 'Pick from Catalog' })}
                   onClick={() => { onOpenCatalogForPosition?.(d.id as string); closeContextMenu(); }}
                 />
-                {onOpenAICopilot && (
+                </>}
+                {onOpenAICopilot && !readOnly && (
                   <CtxItem icon={<Sparkles size={14} className="text-violet-500"/>}
                     label={t('boq.ai_copilot', { defaultValue: 'AI Copilot' })}
                     onClick={() => { onOpenAICopilot(d.id as string); closeContextMenu(); }}
@@ -3123,7 +3250,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                     frontend calling them, so this was reachable only by a
                     hand-written request. Label carries no defaultValue for the
                     reason given above; the key is in en.ts. */}
-                {onShowMeasurement && (
+                {onShowMeasurement && !readOnly && (
                   <CtxItem icon={<Ruler size={14}/>}
                     label={t('boq.measurement.title')}
                     onClick={() => { onShowMeasurement(d.id as string); closeContextMenu(); }}
@@ -3144,12 +3271,14 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                   );
                 })()}
                 <CtxSeparator />
+                {!readOnly && (
                 <CtxItem icon={<Copy size={14}/>}
                   label={t('boq.duplicate_position', { defaultValue: 'Duplicate Position' })}
                   onClick={() => { onDuplicatePosition?.(d.id as string); closeContextMenu(); }}
                 />
+                )}
                 {/* ── Issue #136: nest a child Partida under this one ── */}
-                {onAddChildPosition && (() => {
+                {onAddChildPosition && !readOnly && (() => {
                   const capped = childWouldExceedCap(d.id as string);
                   return (
                     <CtxItem icon={<Plus size={14}/>}
@@ -3161,14 +3290,14 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                   );
                 })()}
                 {/* ── Feature 1: live model→quantity binding ───────── */}
-                {onModelLink && (
+                {onModelLink && !readOnly && (
                   <CtxItem icon={<Cuboid size={14} className="text-oe-blue"/>}
                     label={t('boq.model_link_action', { defaultValue: 'Model link…' })}
                     onClick={() => { onModelLink(d.id as string); closeContextMenu(); }}
                   />
                 )}
                 {/* ── Issue #127: reuse / linked-positions ──────────── */}
-                {onReuseCode && (
+                {onReuseCode && !readOnly && (
                   <CtxItem icon={<Link2 size={14}/>}
                     label={t('boq.reuse_code_action', { defaultValue: 'Reuse Existing Code…' })}
                     onClick={() => { onReuseCode(d.parent_id as string | undefined); closeContextMenu(); }}
@@ -3182,7 +3311,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                         onClick={() => { onShowLinks(d.id as string); closeContextMenu(); }}
                       />
                     )}
-                    {onUnlinkPosition && (
+                    {onUnlinkPosition && !readOnly && (
                       <CtxItem icon={<Link2Off size={14}/>}
                         label={t('boq.unlink_this', { defaultValue: 'Unlink this position' })}
                         onClick={() => { onUnlinkPosition(d.id as string); closeContextMenu(); }}
@@ -3190,6 +3319,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                     )}
                   </>
                 )}
+                {(!readOnly || cmtCount > 0) && (
                 <CtxItem icon={<MessageSquare size={14}/>}
                   label={cmtCount > 0
                     ? t('boq.view_comments', { defaultValue: 'Comments ({{count}})', count: cmtCount })
@@ -3197,6 +3327,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                   }
                   onClick={() => { gridContext.onAddComment(d.id as string); closeContextMenu(); }}
                 />
+                )}
                 <CtxItem icon={<BookmarkPlus size={14}/>}
                   label={t('boq.save_to_database', { defaultValue: 'Save to Catalog' })}
                   onClick={() => { onSaveToDatabase(d.id as string); closeContextMenu(); }}
@@ -3242,6 +3373,9 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                     />
                   );
                 })()}
+                {/* Everything below writes the line: currency, the AI
+                    suggestions and delete. None of it on a locked bill. */}
+                {!readOnly && <>
                 {/* ── Currency (multi-currency BOQ) ──────────────────
                      Sets ``metadata.currency`` on the position so it can
                      be priced in a currency other than the project base.
@@ -3294,6 +3428,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                   danger
                   onClick={() => { onDeletePosition(d.id as string); closeContextMenu(); }}
                 />
+                </>}
               </>;
             })()}
 
@@ -3307,12 +3442,14 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                   label={t('boq.save_to_catalog', { defaultValue: 'Save to Catalog' })}
                   onClick={() => { gridContext.onSaveResourceToCatalog(posId, resIdx); closeContextMenu(); }}
                 />
+                {!readOnly && <>
                 <CtxSeparator />
                 <CtxItem icon={<X size={14}/>}
                   label={t('boq.remove_resource', { defaultValue: 'Remove Resource' })}
                   danger
                   onClick={() => { gridContext.onRemoveResource(posId, resIdx); closeContextMenu(); }}
                 />
+                </>}
               </>;
             })()}
 
@@ -3322,6 +3459,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
               const isCollapsed = collapsedSections.has(d.id as string);
               const sectionCapped = childWouldExceedCap(d.id as string);
               return <>
+                {!readOnly && <>
                 <CtxItem icon={<Plus size={14}/>}
                   label={t('boq.add_position', { defaultValue: 'Add Position' })}
                   disabled={sectionCapped}
@@ -3342,6 +3480,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
                     onClick={() => { onReuseCode(d.id as string); closeContextMenu(); }}
                   />
                 )}
+                </>}
                 <CtxItem icon={isCollapsed ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
                   label={isCollapsed ? t('boq.expand_section', { defaultValue: 'Expand Section' }) : t('boq.collapse_section', { defaultValue: 'Collapse Section' })}
                   onClick={() => { onToggleSection(d.id as string); closeContextMenu(); }}
@@ -3350,7 +3489,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
             })()}
 
             {/* — Add Resource row context menu — */}
-            {contextMenu.type === 'addResource' && (() => {
+            {contextMenu.type === 'addResource' && !readOnly && (() => {
               const posId = contextMenu.data._parentPositionId as string;
               return <>
                 <CtxItem icon={<Plus size={14}/>}
@@ -3582,8 +3721,8 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
               <span className="text-[11px] text-content-tertiary">{t('boq.total', { defaultValue: 'Total' })}</span>
               <span className="text-sm font-bold text-content-primary tabular-nums">
                 {fmtWithCurrency(
-                  (parseFloat(manualResourceDialog.quantity.replace(',', '.')) || 0) *
-                  (parseFloat(manualResourceDialog.unitRate.replace(',', '.')) || 0),
+                  parseTypedAmount(manualResourceDialog.quantity, 0) *
+                  parseTypedAmount(manualResourceDialog.unitRate, 0),
                   locale,
                   currencyCode,
                 )}
@@ -3657,7 +3796,7 @@ const BOQGrid = forwardRef<BOQGridHandle, BOQGridProps>(function BOQGrid({
        *   override. The unit-rate cell then shows the currency badge and
        *   the position total rebases to base via the project FX rate so
        *   currencies are never blended in the grand total. */}
-      {positionCurrencyDialog && createPortal(
+      {positionCurrencyDialog && !readOnly && createPortal(
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
           onClick={() => setPositionCurrencyDialog(null)}

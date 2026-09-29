@@ -147,14 +147,16 @@ class ProvenanceSummaryOut(BaseModel):
 
 
 class EstimateClassOption(BaseModel):
-    """One AACE 18R-97 estimate class, as the platform publishes it.
+    """One estimate class option, as the platform publishes it.
 
-    Served so the client never hardcodes a standard's numbers. The label and
+    Supports both AACE 18R-97 (int classes 1-5) and jurisdiction-specific
+    systems like Canadian CCA (string classes D/C/B/A). The label and
     methodology are English source strings; the client keys its own translated
     copy off ``estimate_class`` and falls back to these.
     """
 
-    estimate_class: int = Field(..., ge=1, le=5)
+    estimate_class: int | str = Field(..., description="Class identifier: int for AACE (1-5), str for others")
+    classification_system: str = Field(default="aace", description="System that defines this class")
     label: str = ""
     accuracy_low: str = ""
     accuracy_high: str = ""
@@ -164,7 +166,7 @@ class EstimateClassOption(BaseModel):
 
 
 class EstimateClassCatalog(BaseModel):
-    """The five estimate classes, most defined first."""
+    """All estimate classes across registered classification systems."""
 
     items: list[EstimateClassOption] = Field(default_factory=list)
 

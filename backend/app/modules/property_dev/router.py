@@ -2717,7 +2717,7 @@ async def expire_reservation(
     session: SessionDep,
     payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
-    _perm: None = Depends(RequirePermission("property_dev.reservation.expire")),
+    _perm: None = Depends(RequirePermission("property_dev.owner_scoped_reservation_expire")),
 ) -> ReservationResponse:
     await _verify_owner_via_reservation(session, r_id, payload)
     return ReservationResponse.model_validate(await service.expire_reservation(r_id))
@@ -3282,7 +3282,7 @@ async def waive_instalment(
     session: SessionDep,
     payload: CurrentUserPayload,
     service: PropertyDevService = Depends(_svc),
-    _perm: None = Depends(RequirePermission("property_dev.instalment.waive")),
+    _perm: None = Depends(RequirePermission("property_dev.owner_scoped_instalment_waive")),
 ) -> InstalmentResponse:
     await _verify_owner_via_instalment(session, ins_id, payload)
     return InstalmentResponse.model_validate(await service.waive_instalment(ins_id, data))
@@ -3900,8 +3900,7 @@ async def delete_escrow_account(
     _perm: None = Depends(RequirePermission("property_dev.owner_scoped_delete")),
 ) -> None:
     await _verify_owner_via_escrow_account(session, account_id, user_payload)
-    await service.get_escrow_account(account_id)
-    await service.escrow_accounts.delete(account_id)
+    await service.delete_escrow_account(account_id)
 
 
 @router.get(
@@ -4041,10 +4040,7 @@ async def delete_escrow_transaction(
     _perm: None = Depends(RequirePermission("property_dev.owner_scoped_delete")),
 ) -> None:
     await _verify_owner_via_escrow_transaction(session, tx_id, user_payload)
-    obj = await service.escrow_transactions.get_by_id(tx_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail=translate("errors.escrow_not_found", locale=get_locale()))
-    await service.escrow_transactions.delete(tx_id)
+    await service.delete_escrow_transaction(tx_id)
 
 
 @router.post(

@@ -549,6 +549,11 @@ async def _handle_invoice_paid(event: Event) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Unpublished: procurement emits ``procurement.po.issued``, never ``po.issued``,
+# so this handler never runs. Do not revive it as it stands. It writes the
+# project's whole committed total onto every budget row, the same defect the
+# invoice.paid handler had, and it commits gross. Finance owns the
+# commitment (``finance/events.py``, ``finance/cost_position.py``).
 async def _handle_po_issued(event: Event) -> None:
     """Recalculate project budget committed when a PO is issued.
 
@@ -615,6 +620,10 @@ async def _handle_po_issued(event: Event) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Unpublished: no module emits ``estimate.approved``. A locked BOQ seeds the
+# finance budget through ``costmodel.budget.generated`` instead
+# (``FinanceService.seed_budget_from_boq``). Reviving this as well would seed
+# the same bill twice.
 async def _handle_estimate_approved(event: Event) -> None:
     """BOQ approved -> create project_budgets.original_budget entries.
 
@@ -1831,7 +1840,9 @@ def register_event_handlers() -> None:
     event_bus.subscribe_once("rfi.response.design_change", _handle_rfi_response_design_change)
     event_bus.subscribe_once("ncr.cost_impact", _handle_ncr_cost_impact)
     event_bus.subscribe_once("document.revision.created", _handle_document_revision_created)
-    event_bus.subscribe_once("invoice.paid", _handle_invoice_paid)
+    # invoice.paid is NOT subscribed here any more: _handle_invoice_paid wrote the
+    # total of every paid invoice onto EACH budget line, inflating actual N times.
+    # FinanceService.pay_invoice buckets actual per (wbs, category, currency) itself.
     event_bus.subscribe_once("po.issued", _handle_po_issued)
     event_bus.subscribe_once("estimate.approved", _handle_estimate_approved)
     event_bus.subscribe_once("schedule.progress_updated", _handle_schedule_progress)

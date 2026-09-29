@@ -329,6 +329,37 @@
       "suggestion": "Asigne a cada posición su propio número de partida antes de enviar el presupuesto"
     }
   },
+  "romania": {
+    "deviz_chapter_required": {
+      "fail": "La posición {ordinal} no indica ningún capítulo del deviz general",
+      "suggestion": "Asigne la partida a su capítulo y subcapítulo según la HG 907/2016, por ejemplo 4.1 para obras de construcción e instalaciones o 5.1 para la organización de obra"
+    },
+    "deviz_chapter_recognised": {
+      "fail": "El código de deviz '{code}' de la posición {ordinal} no es un capítulo ni un subcapítulo del deviz general",
+      "suggestion": "Use un código de los capítulos 1 a 6 del deviz general de la HG 907/2016, como 1.2, 2, 3.5, 4.1, 5.1 o 6.2"
+    }
+  },
+  "greece": {
+    "net_article_required": {
+      "fail": "La posición {ordinal} no lleva ningún artículo de las listas de precios unificadas (ΝΕΤ)",
+      "suggestion": "Indique el artículo ΝΕΤ con el que se valora la partida, por ejemplo ΟΙΚ 32.01.06, o ΝΑΟΙΚ para un artículo nuevo"
+    },
+    "net_article_valid": {
+      "invalid": "El artículo '{code}' de la posición {ordinal} no tiene la forma de un artículo ΝΕΤ",
+      "chapter": "El artículo '{code}' de la posición {ordinal} abre el capítulo {chapter}, que la lista de precios de edificación no tiene",
+      "suggestion": "Escriba el prefijo de la lista y el número de artículo, por ejemplo ΟΙΚ 38.20.02, ΟΔΟ Α-2 o ΑΤΗΕ 8151.1"
+    }
+  },
+  "ukraine": {
+    "zkr_chapter_required": {
+      "fail": "La posición {ordinal} no indica ningún capítulo del presupuesto resumen",
+      "suggestion": "Asigne la partida a su capítulo del зведений кошторисний розрахунок, del 1 al 12; las obras del objeto principal van en el capítulo 2"
+    },
+    "zkr_chapter_recognised": {
+      "fail": "El capítulo {chapter} de la posición {ordinal} no es uno de los doce capítulos del presupuesto resumen",
+      "suggestion": "Use un número de capítulo del 1 al 12"
+    }
+  },
   "birimfiyat": {
     "code_required": {
       "fail": "A la posición {ordinal} le falta el número de poz de birim fiyat",
@@ -509,6 +540,18 @@
     "po_line_cost_coded": {
       "fail": "La línea {line} no tiene WBS, categoría de coste ni línea de coste, por lo que no aparecerá en el desglose",
       "suggestion": "Asigne un código de coste para que el compromiso impute a un presupuesto"
+    },
+    "invoice_within_order": {
+      "fail": "La factura de {invoice} supera en {excess} los {remaining} pendientes del pedido {po}",
+      "suggestion": "Compare la factura con el pedido; si el exceso se acordó, regístrelo como cambio del pedido antes de aprobar"
+    },
+    "invoice_quantity_received": {
+      "fail": "La línea {line} quedaría facturada por {invoiced} en total, pero solo se han recibido {received}",
+      "suggestion": "Espere el albarán o confirme la recepción de mercancía antes de aprobar esta cantidad"
+    },
+    "invoice_value_received": {
+      "fail": "En el pedido {po} las facturas sumarían {invoiced}, pero la mercancía recibida solo vale {received} a los precios del pedido",
+      "suggestion": "Espere el albarán o confirme la recepción de mercancía antes de aprobar este importe"
     }
   },
   "subcontract": {
@@ -543,6 +586,10 @@
     "insurance_valid_at_start": {
       "fail": "El seguro del subcontratista vencio el {expiry}, antes del inicio de los trabajos el {reference}",
       "suggestion": "Recabe un certificado vigente antes de dar acceso a obra al subcontratista"
+    },
+    "unlinked_contract_twin": {
+      "fail": "El subcontrato {agreement} y el contrato {contract} parecen ser el mismo subcontrato, por lo que las finanzas podrían contarlo dos veces",
+      "suggestion": "Vincúlelos si son el mismo subcontrato, o márquelos como distintos"
     }
   },
   "submittal": {
@@ -648,7 +695,10 @@
     "estimate_job_not_found": "Tarea de estimación no encontrada",
     "escrow_not_found": "Transacción de depósito en garantía no encontrada",
     "commission_accrual_not_found": "Devengo de comisión no encontrado",
-    "baseline_not_found": "Línea base no encontrada"
+    "baseline_not_found": "Línea base no encontrada",
+    "fx_rate_set_locked": "Los tipos del BCE del {date} están bloqueados, por lo que esta actualización no los ha sobrescrito. Desbloquee primero ese conjunto de tipos si debe recibir la nueva publicación.",
+    "boq_locked": "El BOQ está bloqueado y no se puede modificar. Cree una revisión para hacer cambios.",
+    "boq_link_owner_locked": "El código '{code}' está definido por una partida del BOQ bloqueado '{bill}', y vincularlo modificaría ese BOQ. Desbloquee primero ese BOQ o introduzca la partida con un código nuevo."
   },
   "variations": {
     "boq_lines_are_traced": {

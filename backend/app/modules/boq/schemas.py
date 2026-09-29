@@ -138,6 +138,56 @@ def _sanitise_free_text(value: str | None) -> str | None:
     return strip_dangerous_html(value)
 
 
+#: What a caller is told when it puts a tax rate on a bill of quantities.
+#:
+#: A bill's consumption tax is a markup row of category ``tax``. It has never
+#: been a column: ``BOQ`` does not declare ``tax_rate``, the service never
+#: reads or writes it, and ``BOQTotals`` says outright that the matching
+#: output fields hold their defaults for wire compatibility only. The input
+#: side went on advertising the field with a worked example anyway, and the
+#: two paths lost the value differently. ``create_boq`` builds its ``BOQ``
+#: from a named field list, so a rate sent to ``POST /boqs/`` was dropped and
+#: the caller got 201. ``update_boq`` dumps the payload straight into
+#: ``BOQRepository.update_fields``, so a rate sent to ``PATCH /boqs/{id}``
+#: reached ``update(BOQ).values(tax_rate=...)`` and raised
+#: ``CompileError: Unconsumed column names: tax_rate``, which the global
+#: handler at ``app.main`` turns into an opaque 500.
+#:
+#: Refusing it is the answer this file already gives a ``per_unit`` markup
+#: (see ``MarkupCreate.markup_type``): a value the engine has no way to use is
+#: rejected at the schema rather than accepted and dropped.
+TAX_RATE_NOT_STORED_MESSAGE = (
+    "A bill of quantities does not store a tax rate. Consumption tax is a markup row of "
+    "category 'tax' - add one with POST /boqs/{boq_id}/markups/ (markup_type 'percentage', "
+    "percentage '19', apply_to 'cumulative' to charge it on the marked-up total). Omit "
+    "tax_rate, or send null."
+)
+
+
+def _refuse_stored_tax_rate(value: Any) -> Any:
+    """Refuse a tax rate on a bill, naming the markup row that carries one.
+
+    Runs before coercion so that every non-null input gets this answer rather
+    than a bound or type message about a number that would be thrown away
+    whatever its value.
+
+    Args:
+        value: Whatever the caller sent for ``tax_rate``.
+
+    Returns:
+        ``value`` unchanged, which is only reached when it is ``None``.
+
+    Raises:
+        ValueError: When the caller sent anything other than ``None``.
+            Pydantic turns it into the 422 entry for this field, and the
+            handler in ``app.main`` passes the message through untranslated,
+            the same as every other constraint message on these schemas.
+    """
+    if value is not None:
+        raise ValueError(TAX_RATE_NOT_STORED_MESSAGE)
+    return value
+
+
 # ── BOQ schemas ───────────────────────────────────────────────────────────────
 
 
@@ -178,18 +228,35 @@ class BOQCreate(BaseModel):
         ),
         examples=["2026-Q2"],
     )
+    #: Accepted as ``null`` and refused otherwise - see
+    #: :data:`TAX_RATE_NOT_STORED_MESSAGE` for where a bill's tax lives and
+    #: what each path used to do with a rate sent here.
+    #:
+    #: The field keeps its place in the published request schema instead of
+    #: being deleted, because ``BOQListItem`` and ``BOQWithSections`` still
+    #: emit ``tax_rate`` (always null), so a client that reads a bill and
+    #: sends the object back carries a null here and must not be refused for
+    #: it. The bounds are gone with the example: a rate is refused whatever
+    #: its value, and a ``ge``/``le`` pair in the published schema would go on
+    #: saying that some values are acceptable.
     tax_rate: Decimal | None = Field(
         default=None,
-        ge=0,
-        le=1,
-        description="VAT / sales-tax rate as a fraction (0.19 = 19%). None = no tax line.",
-        examples=["0.19"],
+        description=(
+            "Not stored on the bill. A bill's consumption tax is a markup row of category "
+            "'tax'; see POST /boqs/{boq_id}/markups/. Accepted only as null, so a client "
+            "can echo back a bill it read; any other value is refused rather than dropped."
+        ),
     )
 
     @field_validator("name", "description", mode="after")
     @classmethod
     def _sanitise(cls, v: str) -> str:
         return _sanitise_free_text(v) or ""
+
+    @field_validator("tax_rate", mode="before")
+    @classmethod
+    def _no_stored_tax_rate(cls, v: Any) -> Any:
+        return _refuse_stored_tax_rate(v)
 
 
 class BOQUpdate(BaseModel):
@@ -214,12 +281,35 @@ class BOQUpdate(BaseModel):
     metadata: dict[str, Any] | None = None
     estimate_type: str | None = Field(default=None, max_length=50)
     base_date: str | None = Field(default=None, max_length=20)
-    tax_rate: Decimal | None = Field(default=None, ge=0, le=1)
+    #: Same contract as ``BOQCreate.tax_rate``, plus ``exclude``, which is
+    #: load-bearing here and only here. ``BOQService.update_boq`` dumps this
+    #: model with ``exclude_unset=True`` and hands the result to
+    #: ``update(BOQ).values(**fields)``. An explicit ``null`` is set, so
+    #: without ``exclude`` it would survive the dump and reach a table with no
+    #: such column, and the round-tripping client this field is kept for would
+    #: get the 500 instead of the silent drop. ``exclude`` leaves the
+    #: published request schema alone; it only keeps a key the table cannot
+    #: take out of the dump. Nothing else can ride it out: the validator above
+    #: means ``None`` is the only value that gets this far.
+    tax_rate: Decimal | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Not stored on the bill. A bill's consumption tax is a markup row of category "
+            "'tax'; see POST /boqs/{boq_id}/markups/. Accepted only as null, so a client "
+            "can echo back a bill it read; any other value is refused rather than dropped."
+        ),
+    )
 
     @field_validator("name", "description", mode="after")
     @classmethod
     def _sanitise(cls, v: str | None) -> str | None:
         return _sanitise_free_text(v)
+
+    @field_validator("tax_rate", mode="before")
+    @classmethod
+    def _no_stored_tax_rate(cls, v: Any) -> Any:
+        return _refuse_stored_tax_rate(v)
 
 
 class BOQResponse(BaseModel):
@@ -298,6 +388,26 @@ class BOQListItem(BOQResponse):
         return _serialise_money(v)
 
 
+#: The most projects one ``POST /boqs/by-projects/`` may ask about. It is the
+#: ceiling ``GET /projects/`` puts on its own page, so a client that read its
+#: projects in one page can ask for all of their bills in one call.
+MAX_PROJECTS_PER_BOQ_LIST = 500
+
+
+class BOQListByProjectsRequest(BaseModel):
+    """The projects whose bill registers ``POST /boqs/by-projects/`` returns."""
+
+    project_ids: list[UUID] = Field(
+        ...,
+        max_length=MAX_PROJECTS_PER_BOQ_LIST,
+        description=(
+            "Projects to list the bills of. A repeated id is answered once. An archived project, or "
+            "one the caller may not read, is left out of the answer. Every id must name a project, "
+            "or the whole request is refused and the refusal names each id that named none."
+        ),
+    )
+
+
 # ── Position schemas ───────────────────────────────────────────────────────
 
 
@@ -340,6 +450,9 @@ class PositionCreate(BaseModel):
         description="Price per unit",
         examples=["285.00"],
     )
+    net_cost_rate: Decimal | None = Field(default=None, ge=0, description="Net cost rate (contractor's cost)")
+    target_rate: Decimal | None = Field(default=None, ge=0, description="Target rate (budget benchmark)")
+    sale_rate: Decimal | None = Field(default=None, ge=0, description="Sale rate (client price)")
     classification: dict[str, Any] = Field(
         default_factory=dict,
         description="Classification codes (e.g. din276, nrm, masterformat)",
@@ -505,6 +618,9 @@ class PositionUpdate(BaseModel):
     quantity: float | None = Field(default=None, ge=0.0)
     # v3 §10 - money is Decimal-in / Decimal-as-string out.
     unit_rate: Decimal | None = Field(default=None, ge=0)
+    net_cost_rate: Decimal | None = Field(default=None, ge=0)
+    target_rate: Decimal | None = Field(default=None, ge=0)
+    sale_rate: Decimal | None = Field(default=None, ge=0)
     classification: dict[str, Any] | None = None
     source: str | None = Field(
         default=None,
@@ -860,6 +976,9 @@ class PositionResponse(BaseModel):
     quantity: Decimal
     unit_rate: Decimal
     total: Decimal
+    net_cost_rate: Decimal | None = None
+    target_rate: Decimal | None = None
+    sale_rate: Decimal | None = None
     classification: dict[str, Any]
     source: str
     confidence: float | None
@@ -1094,6 +1213,25 @@ class MarkupListResponse(BaseModel):
     """
 
     markups: list[MarkupResponse] = Field(default_factory=list)
+    items: list[MarkupResponse] = Field(
+        default_factory=list,
+        description="The same rows as ``markups``, under the ``items`` key most list routes use.",
+    )
+    total: int = Field(default=0, description="Number of rows in ``items``.")
+
+    @model_validator(mode="after")
+    def _mirror_markups_as_items(self) -> "MarkupListResponse":
+        """Carry the rows under ``items`` too, so a generic list reader finds them.
+
+        ``markups`` stays for the clients that read it; ``items`` and ``total``
+        follow the envelope most list routes answer with.
+        """
+        if not self.items and self.markups:
+            self.items = list(self.markups)
+        elif self.items and not self.markups:
+            self.markups = list(self.items)
+        self.total = len(self.items)
+        return self
 
 
 # ── Composite schemas ─────────────────────────────────────────────────────────
@@ -1157,7 +1295,12 @@ class BOQWithSections(BOQResponse):
     because a consumption tax is stored as a markup row of category ``tax``.
     ``grand_total`` - the same figure again; the service assigns net_total to it.
     ``tax_rate`` / ``tax_amount`` - never populated by the service, so they hold
-    their defaults of ``None`` and ``0``. Kept for wire compatibility only.
+    their defaults of ``None`` and ``0``. Kept for wire compatibility only, and
+    the reason ``BOQCreate`` / ``BOQUpdate`` still accept a null ``tax_rate``:
+    a client that reads this object and sends it back carries one. Anything
+    else is refused there, which is the other half of this paragraph and was
+    missing from it for as long as the input side advertised a worked example
+    for a value nothing stored.
 
     This block used to read "net_total + tax_amount", describing a bill whose
     net excluded tax. Nothing has ever computed that. The PDF writer implemented
@@ -1404,9 +1547,13 @@ class SnapshotResponse(BaseModel):
     name: str
     description: str = ""
     position_count: int | None = None
-    grand_total: float | None = None
+    grand_total: Decimal | None = None
     created_at: datetime
     created_by: UUID | None = None
+
+    @field_serializer("grand_total", when_used="json")
+    def _ser_grand_total(self, v: Decimal | None) -> str | None:
+        return _serialise_money(v)
 
 
 class SnapshotDetail(SnapshotResponse):
@@ -1742,13 +1889,20 @@ class EstimateClassificationMetrics(BaseModel):
 
 
 class EstimateClassificationResponse(BaseModel):
-    """AACE 18R-97 estimate classification result for a BOQ.
+    """Estimate classification result for a BOQ.
 
-    See AACE International Recommended Practice 18R-97 for the full standard.
-    Classes range from 5 (least defined) to 1 (most defined).
+    Supports multiple classification systems resolved from the project's
+    jurisdiction. AACE 18R-97 (integer classes 1-5) is the default, but
+    jurisdictions may use their own taxonomy, e.g. Canadian CCA classes
+    (letter classes D/C/B/A).
     """
 
-    estimate_class: int = Field(..., ge=1, le=5, description="AACE class 1-5")
+    estimate_class: int | str = Field(
+        ..., description="Class identifier: int for AACE (1-5), str for others (e.g. 'D')"
+    )
+    classification_system: str = Field(
+        default="aace", description="Which system produced this class (aace, ca_cca, ...)"
+    )
     class_label: str = Field(default="", description="Human-readable label (e.g. 'Screening')")
     accuracy_low: str = Field(default="", description="Lower accuracy bound (e.g. '-50%')")
     accuracy_high: str = Field(default="", description="Upper accuracy bound (e.g. '+100%')")
@@ -2585,11 +2739,15 @@ class ImportPreviewPosition(BaseModel):
     description: str = ""
     unit: str = "pcs"
     quantity: float = 0.0
-    unit_rate: float = 0.0
-    total: float = 0.0
+    unit_rate: Decimal = Decimal("0")
+    total: Decimal = Decimal("0")
     is_section: bool = False
     classification: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_serializer("unit_rate", "total", when_used="json")
+    def _ser_money(self, v: Decimal) -> str | None:
+        return _serialise_money(v)
 
 
 class ImportPreviewResponse(BaseModel):

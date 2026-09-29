@@ -81,7 +81,7 @@ import { useRecentStore } from '@/stores/useRecentStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useToastStore } from '@/stores/useToastStore';
 import { useModuleStore } from '@/stores/useModuleStore';
-import { fmtPercent, fmtFixed } from '@/shared/lib/formatters';
+import { fmtPercent, fmtFixed, formatDateValue } from '@/shared/lib/formatters';
 import { formatCurrency as formatMoney, toNum } from '@/shared/lib/money';
 
 // ---------------------------------------------------------------------------
@@ -118,6 +118,7 @@ interface BOQDetail {
 interface PositionSummary {
   id: string;
   description: string;
+  unit: string;
   quantity: number | string;
   unit_rate: number | string;
   total: number | string;
@@ -157,6 +158,21 @@ export function isPositionUnpriced(
   unitRate: PositionSummary['unit_rate'] | null | undefined,
 ): boolean {
   return toNum(unitRate) === 0;
+}
+
+/**
+ * Section headers are structural grouping elements with no unit/quantity/rate.
+ * They must not be counted as leaf positions needing pricing.
+ *
+ * Mirrors the backend `_is_section` in `boq/service.py`: a position is a
+ * section when its unit is `""` or `"section"` and both quantity and unit_rate
+ * are zero.
+ */
+const SECTION_UNITS = new Set(['', 'section']);
+
+export function isSection(pos: Pick<PositionSummary, 'unit' | 'quantity' | 'unit_rate'>): boolean {
+  const unit = (pos.unit ?? '').trim().toLowerCase();
+  return SECTION_UNITS.has(unit) && toNum(pos.quantity) === 0 && toNum(pos.unit_rate) === 0;
 }
 
 interface ImportResult {
@@ -272,11 +288,8 @@ export function formatCurrency(value: number, currency?: string): string {
 }
 
 function formatDate(iso: string, locale = 'en-US'): string {
-  return new Date(iso).toLocaleDateString(locale, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
+  // Milestone and activity dates are plain calendar dates: keep their day.
+  return formatDateValue(iso, { year: 'numeric', month: 'short', day: 'numeric' }, locale);
 }
 
 const statusVariant: Record<string, 'neutral' | 'blue' | 'success' | 'warning' | 'error'> = {
@@ -309,6 +322,7 @@ const standardLabels: Record<string, string> = {
   sekisan: 'Sekisan',
   kbim: 'KBIM',
   birimfiyat: 'Birim Fiyat',
+  nlsfb: 'NL/SfB',
 };
 
 // ---------------------------------------------------------------------------
@@ -357,10 +371,15 @@ function computeProjectHealth(
   let errorCount = 0;
   let validatedCount = 0;
   let totalPositions = 0;
+  let hasAnyPosition = false;
 
   if (boqDetails) {
     for (const detail of boqDetails) {
       for (const pos of detail.positions) {
+        hasAnyPosition = true;
+        // Section headers are structural grouping elements - they carry no
+        // unit rate by design and must not inflate the "unpriced" count.
+        if (isSection(pos)) continue;
         totalPositions++;
         if (isPositionUnpriced(pos.unit_rate)) unpricedCount++;
         if (pos.validation_status === 'error') errorCount++;
@@ -372,8 +391,10 @@ function computeProjectHealth(
   }
 
   const hasBoq = (boqs?.length ?? 0) > 0;
-  const hasPositions = totalPositions > 0;
-  const allPriced = hasPositions && unpricedCount === 0;
+  // "Positions added" is true when any position exists, including sections -
+  // sections mean the user started structuring their BOQ.
+  const hasPositions = hasAnyPosition;
+  const allPriced = totalPositions > 0 && unpricedCount === 0;
   const validationRun = validatedCount > 0;
   const noErrors = validationRun && errorCount === 0;
 
@@ -630,16 +651,10 @@ function ProjectLocationPanel({ project }: { project: Project }) {
     // map's alone, and with the map widget off there is nothing left to show.
     if (!mapEnabled) return null;
     return (
-      <Card padding="lg">
-        <EmptyState
-          icon={<MapPin size={28} strokeWidth={1.5} />}
-          title={t('projects.map_no_location', { defaultValue: 'No location set' })}
-          description={t('projects.map_no_location_hint', {
-            defaultValue:
-              'This project has no site address or coordinates yet, so there is nothing to place on the map.',
-          })}
-        />
-      </Card>
+      <div className="flex items-center gap-3 rounded-lg border border-dashed border-border-medium p-3 text-sm text-content-secondary">
+        <MapPin size={16} className="shrink-0 text-content-tertiary" />
+        <span>{t('projects.map_no_location', { defaultValue: 'No location set' })}</span>
+      </div>
     );
   }
 
@@ -1569,7 +1584,10 @@ export function ProjectDetailPage() {
         boqCount: boqs?.length ?? 0,
         totalPositions: 0,
         avgValidationScore: 0,
-        unavailable,
+        // When there are genuinely no BOQs (not a fetch error), the total is
+        // "not yet calculated", not "0.00 EUR". Mark as unavailable so the
+        // display shows a dash instead of a misleading zero.
+        unavailable: unavailable || (boqs?.length ?? 0) === 0,
         partial: false,
       };
     }
@@ -2175,6 +2193,14 @@ export function ProjectDetailPage() {
             />
           );
         })()}
+        {project.budget_estimate && (
+          <SummaryCard
+            label={t('projects.budget_target', { defaultValue: 'Budget target' })}
+            value={formatCurrency(parseFloat(project.budget_estimate) || 0, currency)}
+            icon={<DollarSign size={20} strokeWidth={1.75} />}
+            variant="default"
+          />
+        )}
         <SummaryCard
           label={t('boq.title')}
           value={stats.unavailable ? '\u2014' : String(stats.boqCount)}

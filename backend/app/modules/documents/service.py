@@ -39,6 +39,8 @@ from app.modules.documents.repository import DocumentRepository, PhotoRepository
 from app.modules.documents.schemas import (
     PHOTO_CATEGORIES,
     DocumentBIMLinkCreate,
+    DocumentReferenceItem,
+    DocumentReferencesResponse,
     DocumentUpdate,
     PhotoUpdate,
     SheetUpdate,
@@ -199,7 +201,7 @@ MAX_PHOTO_SIZE = 200 * 1024 * 1024  # 200MB
 # A photo's PIXEL count, not its byte size, is what OOMs the image decoder: a
 # ~150 MP image is only a few MB on disk (so it sails past MAX_PHOTO_SIZE) but
 # decodes to ~600 MB of uncompressed RGB, enough to OOM-kill the single-worker
-# container on the 2 GB target box while it blocks the event loop. Pillow ships
+# container on the 3 GB target box while it blocks the event loop. Pillow ships
 # NO pixel guard by default, so cap decoded pixels the same way geo_hub caps
 # rasters (raster_pipeline.MAX_RASTER_PIXELS). 64 MP is ~8000x8000, well above
 # any real construction-site phone or DSLR photo.
@@ -1124,6 +1126,54 @@ class DocumentService:
         return document
 
     # ── Delete ─────────────────────────────────────────────────────────────
+
+    async def get_references(self, document_id: uuid.UUID) -> DocumentReferencesResponse:
+        """Summarise what still points at a document, for the delete prompt.
+
+        Read-only, and deliberately not consulted by :meth:`delete_document`:
+        the links these counts describe are severable by design, so what the
+        caller does with the answer is a decision for the person confirming.
+        See :mod:`app.modules.documents.references` for how the set is
+        curated and why it is not derived from column names.
+        """
+        from app.modules.documents.references import (
+            count_references,
+            resolved_references,
+        )
+
+        counts = await count_references(self.session, document_id)
+        by_key = {ref.key: ref for ref in resolved_references()}
+
+        items: list[DocumentReferenceItem] = []
+        totals = {"strands": 0, "unlinks": 0, "retains": 0}
+        for key, hits in counts.items():
+            ref = by_key.get(key)
+            if ref is None:  # pragma: no cover - resolved set built above
+                continue
+            totals[ref.impact] += hits
+            items.append(
+                DocumentReferenceItem(
+                    key=key,
+                    module=ref.module,
+                    model=ref.model,
+                    impact=ref.impact,
+                    count=hits,
+                )
+            )
+
+        # Heaviest consequence first, then biggest, so the prompt leads with
+        # what cannot be repaired.
+        order = {"strands": 0, "unlinks": 1, "retains": 2}
+        items.sort(key=lambda item: (order[item.impact], -item.count, item.key))
+
+        return DocumentReferencesResponse(
+            document_id=document_id,
+            total=sum(totals.values()),
+            strands=totals["strands"],
+            unlinks=totals["unlinks"],
+            retains=totals["retains"],
+            references=items,
+        )
 
     async def delete_document(
         self,

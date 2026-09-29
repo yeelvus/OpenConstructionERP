@@ -1,6 +1,6 @@
 # OpenConstructionERP documentation
 
-OpenConstructionERP is an open, self-hosted platform for construction estimating and project delivery. It covers the whole job in one place: build a bill of quantities, take off quantities from drawings and models, price the work against national cost bases, turn a BIM model into cost and carbon, run a tender, plan and control the programme, and capture what happens on site. It is modular, so you enable only the parts you need, and 190 modules ship in the box.
+OpenConstructionERP is an open, self-hosted platform for construction estimating and project delivery. It covers the whole job in one place: build a bill of quantities, take off quantities from drawings and models, price the work against national cost bases, turn a BIM model into cost and carbon, run a tender, plan and control the programme, and capture what happens on site. It is modular, so you enable only the parts you need, and 193 modules ship in the box.
 
 This page is the map for the written documentation. Pick the path that matches why you are here, or scroll the sections below.
 
@@ -30,6 +30,10 @@ Price, check, deliver:
 - [Tendering and bid comparison](./user-guide/tendering-and-bids.md) - package the work, invite subcontractors, and compare bids side by side.
 - [Planning and cost control](./user-guide/planning-and-cost-control.md) - 4D schedule, 5D cost model, earned value, forecasts and cash flow.
 - [Field and site operations](./user-guide/field-and-site.md) - daily diary, inspections, safety, logistics and the record that holds up later.
+
+Work with the assistant:
+
+- [The AI assistant](./user-guide/ai-assistant.md) - describe a change in plain words, check the prepared card, apply it, and find every AI change again in the ledger and the audit trail.
 
 ## Cost data
 
